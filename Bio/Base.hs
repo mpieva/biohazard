@@ -18,6 +18,7 @@ module Bio.Base(
 
     Range(..),
     shift_range,
+    reverse_range,
     extend,
     inside,
     wraprange
@@ -154,6 +155,10 @@ shift_pos a p = case p_sense p of Forward -> p { p_start = p_start p + a }
 shift_range :: Int -> Range -> Range
 shift_range a r = r { r_pos = shift_pos a (r_pos r) }
 
+reverse_range :: Range -> Range
+reverse_range (Range (Pos sq Forward pos) len) = Range (Pos sq Reverse (pos+len-1)) len
+reverse_range (Range (Pos sq Reverse pos) len) = Range (Pos sq Forward (pos-len+1)) len
+
 -- | extends a range
 -- The length of the range is simply increased.
 extend :: Int -> Range -> Range
@@ -161,8 +166,9 @@ extend a r = r { r_length = r_length r + a }
 
 
 -- | expands a subrange
--- (range1 `inside` range2) interprets range1 as a subrange of range2 and computes its absolute coordinates.  The sequence name
--- range1 is ignored.
+-- (range1 `inside` range2) interprets range1 as a subrange of range2
+-- and computes its absolute coordinates.  The sequence name range1 is
+-- ignored.
 inside :: Range -> Range -> Range
 inside (Range (Pos  _ dir1 start2) length2)
        (Range (Pos sq dir2 start1) length1) =
