@@ -16,6 +16,7 @@ module Bio.File.Bam (
 
     MdOp(..),
     getMd,
+    readMd,
 
     cig_op,
     cig_len,
@@ -25,7 +26,8 @@ module Bio.File.Bam (
 
     decode_seq,
     inflate_seq,
-    pack_cigar
+    pack_cigar,
+    unpack_cigar
 
 ) where
 
@@ -104,7 +106,8 @@ data BamRec = BamRec {
 
 
 is_bam :: L.ByteString -> Bool
-is_bam s = L.pack "BAM\SOH" `L.isPrefixOf` decompress_bgzf s
+is_bam s = L.length s > 26 && L.pack "\31\139" `L.isPrefixOf` s &&
+           L.pack "BAM\SOH" `L.isPrefixOf` decompress_bgzf s
 
 decompress_bgzf :: L.ByteString -> L.ByteString
 decompress_bgzf = go
@@ -315,26 +318,29 @@ inflate_seq :: L.ByteString -> [Word8]
 inflate_seq s | L.null s = []
               | otherwise = let x = LB.head s in x `shiftR` 4 : x .&. 0xf : inflate_seq (L.tail s)
 
-decode_seq :: CodedSeq -> String
+decode_seq :: CodedSeq -> [Nucleotide]
 decode_seq (CodedSeq l s) = map (bases !) $ genericTake l $ inflate_seq s
-  where bases = listArray (0,15) "=AC.G...T......N" :: UArray Word8 Char
+  where bases = listArray (0,15) (map toNucleotide "NACNGNNNTNNNNNNN") :: Array Word8 Nucleotide
 
 pack_cigar :: [Int] -> CodedCigar
 pack_cigar cs = CodedCigar $ listArray (1, length cs) cs
 
+unpack_cigar :: CodedCigar -> [Int]
+unpack_cigar = elems . unCodedCigar
 
-data MdOp = MdNum Int | MdRep Char | MdDel [Char] deriving Show
+data MdOp = MdNum Int | MdRep Nucleotide | MdDel [Nucleotide] deriving Show
 
 getMd :: BamRec -> Maybe [MdOp]
 getMd r = case M.lookup (mk_ext_key 'M' 'D') $ b_exts r of
     Just (Text mdfield) -> readMd mdfield
     _                   -> Nothing
-  where
-    readMd s | L.null s           = return []
-             | isDigit (L.head s) = do (n,t) <- maybe (fail "parse error") return $ L.readInt s
-                                       (MdNum n :) <$> readMd t
-             | L.head s == '^'    = let (a,b) = L.break isDigit (L.tail s)
-                                    in (MdDel (L.unpack a) :) <$> readMd b
-             | otherwise          = (MdRep (L.head s) :) <$> readMd (L.tail s)
+
+readMd :: L.ByteString -> Maybe [MdOp]
+readMd s | L.null s           = return []
+         | isDigit (L.head s) = do (n,t) <- L.readInt s
+                                   (MdNum n :) <$> readMd t
+         | L.head s == '^'    = let (a,b) = L.break isDigit (L.tail s)
+                                in (MdDel (map toNucleotide $ L.unpack a) :) <$> readMd b
+         | otherwise          = (MdRep (toNucleotide $ L.head s) :) <$> readMd (L.tail s)
 
 

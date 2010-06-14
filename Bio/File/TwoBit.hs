@@ -4,7 +4,11 @@ module Bio.File.TwoBit (
     closeTwoBit,
     withTwoBit,
 
-    getSubseq
+    getSubseq,
+    getSeqnames,
+    hasSequence,
+    getSeqLength,
+    clampPosition
 ) where
 
 {-
@@ -44,10 +48,11 @@ data TwoBitFile = TBF {
     tbf_seqs :: !(M.Map Seqid (IORef TwoBitSequence))
 }
 
-data TwoBitSequence = Untouched { tbs_offset :: !Int }
-                    | Indexed   { tbs_s_blocks :: !( M.Map Int Int )
+data TwoBitSequence = Untouched { tbs_offset :: {-# UNPACK #-} !Int }
+                    | Indexed   { tbs_s_blocks :: !( I.IntMap Int )
                                 , tbs_m_blocks :: !( I.IntMap Int )
-                                , tbs_dna_offset :: !Int }
+                                , tbs_dna_offset :: {-# UNPACK #-} !Int
+                                , tbs_dna_size   :: {-# UNPACK #-} !Int }
 
 openTwoBit :: FilePath -> IO TwoBitFile
 openTwoBit fp = do
@@ -68,12 +73,12 @@ openTwoBit fp = do
                 getWord32
 
                 (,) getWord32 `fmap` replicateM nseqs ( liftM2 (,)
-                        ( getWord8 >>= getByteString . fromIntegral )
+                        ( getWord8 >>= getLazyByteString . fromIntegral )
                         ( getWord32 >>= return . Untouched ) )
 
     m <- let foldM' [    ] acc = return acc
              foldM' (x:xs) acc = cons x acc >>= foldM' xs
-             cons (k,v) m = v `seq` newIORef v >>= \r -> return $! M.insert (S.copy k) r m
+             cons (k,v) m = v `seq` newIORef v >>= \r -> return $! M.insert (shelve k) r m
          in foldM' ix M.empty
     return $! TBF h g m
 
@@ -95,8 +100,9 @@ read_block_index tbf r = do
                                                 skip_block_list
                                                 len <- getWord32 >> bytesRead
 
-                                                return $! Indexed (M.fromList $ to_good_blocks ds nb)
-                                                                  (I.empty {-I.fromList mb-}) (ofs + fromIntegral len)
+                                                return $! Indexed (I.fromList $ to_good_blocks ds nb)
+                                                                  (I.empty {-I.fromList mb-})
+                                                                  (ofs + fromIntegral len) ds
                                    writeIORef r $! sq'
                                    return sq'
   where
@@ -117,36 +123,36 @@ repM :: Monad m => Int -> m a -> m [a]
 repM 0 _ = return []
 repM n m = m >>= \x -> seq x (repM (n-1) m >>= return . (x:))
 
-do_frag :: Int -> Int -> Sense -> M.Map Int Int -> (Integer -> IO L.ByteString) -> Int -> IO [Nucleotide]
+do_frag :: Int -> Int -> Sense -> I.IntMap Int -> (Integer -> IO L.ByteString) -> Int -> IO [Nucleotide]
 do_frag start len revcomplp s_blocks raw ofs0 = do
     dna <- get_dna (case revcomplp of Forward -> fwd_nt ; Reverse -> cmp_nt) 
                    start len final_blocks raw ofs0
     return $ case revcomplp of { Forward -> dna ; Reverse -> reverse dna }
 
   where
-    (left_junk, mfirst, left_clipped) = M.splitLookup start s_blocks
+    (left_junk, mfirst, left_clipped) = I.splitLookup start s_blocks
 
-    left_fragment | M.null left_junk = Nothing
-                  | otherwise  = case M.findMax left_junk of
-        (start1, len1) -> 
+    left_fragment = case I.maxViewWithKey left_junk of
+        Nothing -> Nothing
+        Just ((start1, len1), _) -> 
             let d = start - start1 
             in if d >= len1 then Nothing
                             else Just (start, len1-d)
 
-    (right_clipped, _) = M.split (start+len) .
-                         maybe id (uncurry M.insert) left_fragment .
-                         maybe id (M.insert start) mfirst $ left_clipped
+    (right_clipped, _) = I.split (start+len) .
+                         maybe id (uncurry I.insert) left_fragment .
+                         maybe id (I.insert start) mfirst $ left_clipped
 
-    right_fragment | M.null right_clipped = Nothing
-                   | otherwise = case M.findMax right_clipped of
-        (startn, lenn) ->
+    right_fragment = case I.maxViewWithKey right_clipped of
+        Nothing -> Nothing
+        Just ((startn, lenn), _) ->
             let l' = start + len - startn 
             in if l' <= 0 then Nothing
                           else Just (startn, min l' lenn)
 
     rdrop1 [] = [] ; rdrop1 [_] = [] ; rdrop1 (x:xs) = x : rdrop1 xs
 
-    final_blocks = rdrop1 (M.toAscList right_clipped) ++ maybe [] (:[]) right_fragment
+    final_blocks = rdrop1 (I.toAscList right_clipped) ++ maybe [] (:[]) right_fragment
 
     fwd_nt = (!!) [T,C,A,G] . fromIntegral
     cmp_nt = (!!) [A,G,T,C] . fromIntegral
@@ -177,11 +183,6 @@ getSubseq tbf (Range { r_pos = Pos { p_seq = chr, p_start = start, p_sense = str
              sq1 <- read_block_index tbf ref
              do_frag start len strand (tbs_s_blocks sq1) (pGetContents $ tbf_handle tbf) (tbs_dna_offset sq1)
 
-test :: IO ()
-test =
-    withTwoBit "/mnt/sequencedb/mammalian_genomes/9606.2bit"
-            (\f -> getSubseq f (Range (Pos (S.pack "chr1") Reverse 217280) 60000) >>= print)
-
 pGetContents :: Handle -> Integer -> IO L.ByteString
 pGetContents hdl ofs = L.fromChunks `fmap` go ofs
   where
@@ -189,4 +190,26 @@ pGetContents hdl ofs = L.fromChunks `fmap` go ofs
     go o = unsafeInterleaveIO $ liftM2 (:)
             (hSeek hdl AbsoluteSeek o >> S.hGet hdl chunk_size)
             (go $ o + fromIntegral chunk_size)
+
+getSeqnames :: TwoBitFile -> [Seqid]
+getSeqnames = M.keys . tbf_seqs
+
+hasSequence :: TwoBitFile -> Seqid -> Bool
+hasSequence tbf sq = isJust . M.lookup sq . tbf_seqs $ tbf
+
+getSeqLength :: TwoBitFile -> Seqid -> IO Int
+getSeqLength tbf chr = do
+             ref <- maybe (fail $ shows chr " doesn't exist") return 
+                    $ M.lookup chr (tbf_seqs tbf)
+             sq1 <- read_block_index tbf ref
+             return $ tbs_dna_size sq1
+
+-- | limits a range to a position within the actual sequence
+clampPosition :: TwoBitFile -> Range -> IO Range
+clampPosition g (Range (Pos n dir start) len) = do
+    size <- getSeqLength g n
+    let start' = max 0 start
+        end' = min size (start + len)
+    return $ Range (Pos n dir start') (end' - start')
+
 

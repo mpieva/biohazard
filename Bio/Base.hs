@@ -14,13 +14,17 @@ module Bio.Base(
     shelve,
 
     Position(..),
-    shift,
+    shift_pos,
 
     Range(..),
-    extend
+    shift_range,
+    extend,
+    inside,
+    wraprange
 ) where
 
 import Data.Char            ( isAlpha, isSpace )
+import Data.Ix              ( Ix )
 
 import qualified Data.ByteString      as S
 import qualified Data.ByteString.Lazy as L
@@ -30,7 +34,7 @@ import qualified Data.ByteString.Lazy as L
 -- | A base in an alignment.
 -- Experience says we're dealing with Ns and gaps all the type, so
 -- purity be damned, they are included as if they were real bases.
-data Nucleotide = Gap | A | C | G | T | N deriving (Eq, Ord, Enum)
+data Nucleotide = Gap | A | C | G | T | N deriving (Eq, Ord, Enum, Ix)
 
 -- | Sense of a strand.
 -- Avoids the confusion inherent in using a simple bool.
@@ -55,9 +59,9 @@ shelve s = case L.toChunks s of
 -- | Coordinates in a genome.
 -- The position is zero-based, no questions about it.
 data Position = Pos {
-        p_seq :: !Seqid,
-        p_sense :: !Sense,
-        p_start :: !Int
+        p_seq   :: {-# UNPACK #-} !Seqid,
+        p_sense :: {-# UNPACK #-} !Sense,
+        p_start :: {-# UNPACK #-} !Int
     } deriving (Show, Eq, Ord)
 
 -- | Ranges in genomes
@@ -65,8 +69,8 @@ data Position = Pos {
 -- always the start of a stretch of length 'len'.  Positions therefore
 -- move in the opposite direction on the reverse strand.
 data Range = Range {
-        r_pos :: !Position, 
-        r_length :: !Int 
+        r_pos    :: {-# UNPACK #-} !Position, 
+        r_length :: {-# UNPACK #-} !Int 
     } deriving (Show, Eq, Ord)
 
 
@@ -143,12 +147,34 @@ compl x = x
 -- | moves a position
 -- The position is moved forward according to the strand, negative
 -- indexes move backward accordingly.
-shift :: Position -> Int -> Position
-shift p a = case p_sense p of Forward -> p { p_start = p_start p + a }
-                              Reverse -> p { p_start = p_start p - a }
+shift_pos :: Int -> Position -> Position
+shift_pos a p = case p_sense p of Forward -> p { p_start = p_start p + a }
+                                  Reverse -> p { p_start = p_start p - a }
+
+shift_range :: Int -> Range -> Range
+shift_range a r = r { r_pos = shift_pos a (r_pos r) }
 
 -- | extends a range
 -- The length of the range is simply increased.
-extend :: Range -> Int -> Range
-extend r a = r { r_length = r_length r + a }
+extend :: Int -> Range -> Range
+extend a r = r { r_length = r_length r + a }
+
+
+-- | expands a subrange
+-- (range1 `inside` range2) interprets range1 as a subrange of range2 and computes its absolute coordinates.  The sequence name
+-- range1 is ignored.
+inside :: Range -> Range -> Range
+inside (Range (Pos  _ dir1 start2) length2)
+       (Range (Pos sq dir2 start1) length1) =
+    Range (Pos sq dir' pos') length2
+  where
+    dir' = if dir1 == dir2 then Forward else Reverse
+
+    pos' = case dir2 of Forward -> start1 + start2
+                        Reverse -> start1 + length1 - start2 - length2
+
+-- | wraps a range to a ragion
+-- This simply normalizes the start position to be in the interval [0,n).
+wraprange :: Int -> Range -> Range
+wraprange n (Range (Pos sq str s) l) = Range (Pos sq str (s `mod` n)) l
 
