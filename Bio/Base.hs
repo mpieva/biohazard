@@ -3,6 +3,7 @@ module Bio.Base(
     toNucleotide,
     isGap,
     isBase,
+    isProperBase,
     minBase,
     maxBase,
     compl,
@@ -11,6 +12,7 @@ module Bio.Base(
     Sense(..),
 
     Seqid,
+    unpackSeqid,
     shelve,
 
     Position(..),
@@ -27,7 +29,7 @@ module Bio.Base(
 import Data.Char            ( isAlpha, isSpace )
 import Data.Ix              ( Ix )
 
-import qualified Data.ByteString      as S
+import qualified Data.ByteString.Char8 as S
 import qualified Data.ByteString.Lazy as L
 
 -- Common data types used everywhere
@@ -47,6 +49,9 @@ data Sense = Forward | Reverse deriving (Show, Eq, Ord)
 -- it for storage.
 type Seqid = S.ByteString
 
+unpackSeqid :: Seqid -> String
+unpackSeqid = S.unpack
+
 -- | copies a lazy bytestring into a strict one
 -- A copy is forced, even if the lazy bytestring is a single chunk.
 -- This makes sure bytestrings in long term storage don't hold onto
@@ -58,7 +63,10 @@ shelve s = case L.toChunks s of
     cs  -> S.concat cs
 
 -- | Coordinates in a genome.
--- The position is zero-based, no questions about it.
+-- The position is zero-based, no questions about it.  Think of the
+-- position as pointing to the crack between two bases: looking forward
+-- you see the next base to the right, looking in the reverse direction
+-- you see the complement of the first base to the left.  
 data Position = Pos {
         p_seq   :: {-# UNPACK #-} !Seqid,
         p_sense :: {-# UNPACK #-} !Sense,
@@ -68,7 +76,9 @@ data Position = Pos {
 -- | Ranges in genomes
 -- We combine a position with a length.  In 'Range pos len', 'pos' is
 -- always the start of a stretch of length 'len'.  Positions therefore
--- move in the opposite direction on the reverse strand.
+-- move in the opposite direction on the reverse strand.  Shifting r_pos
+-- by r_length, then reversing direction yields the same stretch on the
+-- reverse strand.
 data Range = Range {
         r_pos    :: {-# UNPACK #-} !Position, 
         r_length :: {-# UNPACK #-} !Int 
@@ -98,6 +108,11 @@ toNucleotide  _  = N
 isBase :: Nucleotide -> Bool
 isBase Gap = False
 isBase  _  = True
+
+isProperBase :: Nucleotide -> Bool
+isProperBase Gap = False
+isProperBase  N  = False
+isProperBase  _  = True
 
 -- | Tests if a 'Nucleotide' is a gap.
 -- Returns true only for the gap.
@@ -156,8 +171,8 @@ shift_range :: Int -> Range -> Range
 shift_range a r = r { r_pos = shift_pos a (r_pos r) }
 
 reverse_range :: Range -> Range
-reverse_range (Range (Pos sq Forward pos) len) = Range (Pos sq Reverse (pos+len-1)) len
-reverse_range (Range (Pos sq Reverse pos) len) = Range (Pos sq Forward (pos-len+1)) len
+reverse_range (Range (Pos sq Forward pos) len) = Range (Pos sq Reverse (pos+len)) len
+reverse_range (Range (Pos sq Reverse pos) len) = Range (Pos sq Forward (pos-len)) len
 
 -- | extends a range
 -- The length of the range is simply increased.
@@ -170,14 +185,12 @@ extend a r = r { r_length = r_length r + a }
 -- and computes its absolute coordinates.  The sequence name range1 is
 -- ignored.
 inside :: Range -> Range -> Range
-inside (Range (Pos  _ dir1 start2) length2)
-       (Range (Pos sq dir2 start1) length1) =
+inside (Range (Pos  _ dir2 start2) length2) (Range (Pos sq dir1 start1) length1) =
     Range (Pos sq dir' pos') length2
   where
     dir' = if dir1 == dir2 then Forward else Reverse
-
-    pos' = case dir2 of Forward -> start1 + start2
-                        Reverse -> start1 + length1 - start2 - length2
+    pos' = case dir1 of Forward -> start1 + start2
+                        Reverse -> start1 - start2
 
 -- | wraps a range to a ragion
 -- This simply normalizes the start position to be in the interval [0,n).

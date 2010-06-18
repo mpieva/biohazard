@@ -11,6 +11,8 @@ module Bio.File.TwoBit (
     clampPosition
 ) where
 
+-- TODO: masking is unsupported right now
+
 {-
 
 Would you believe it?  The 2bit format stores blocks of Ns in a table at
@@ -126,7 +128,8 @@ repM n m = m >>= \x -> seq x (repM (n-1) m >>= return . (x:))
 do_frag :: Int -> Int -> Sense -> I.IntMap Int -> (Integer -> IO L.ByteString) -> Int -> IO [Nucleotide]
 do_frag start len revcomplp s_blocks raw ofs0 = do
     dna <- get_dna (case revcomplp of Forward -> fwd_nt ; Reverse -> cmp_nt) 
-                   start len final_blocks raw ofs0
+                   (case revcomplp of Forward -> start ; Reverse -> start - len)
+                   len final_blocks raw ofs0
     return $ case revcomplp of { Forward -> dna ; Reverse -> reverse dna }
 
   where
@@ -206,10 +209,16 @@ getSeqLength tbf chr = do
 
 -- | limits a range to a position within the actual sequence
 clampPosition :: TwoBitFile -> Range -> IO Range
-clampPosition g (Range (Pos n dir start) len) = do
+clampPosition g (Range (Pos n Forward start) len) = do
     size <- getSeqLength g n
     let start' = max 0 start
         end' = min size (start + len)
-    return $ Range (Pos n dir start') (end' - start')
+    return $ Range (Pos n Forward start') (end' - start')
+
+clampPosition g (Range (Pos n Reverse start) len) = do
+    size <- getSeqLength g n
+    let start' = min start len
+        end'   = max 0 (start - len)
+    return $ Range (Pos n Reverse start') (start' - end')
 
 
