@@ -37,7 +37,7 @@ import qualified Data.ByteString.Lazy as L
 -- | A base in an alignment.
 -- Experience says we're dealing with Ns and gaps all the type, so
 -- purity be damned, they are included as if they were real bases.
-data Nucleotide = Gap | A | C | G | T | N deriving (Eq, Ord, Enum, Ix)
+data Nucleotide = Gap | A | C | G | T | N deriving (Eq, Ord, Enum, Ix, Bounded)
 
 -- | Sense of a strand.
 -- Avoids the confusion inherent in using a simple bool.

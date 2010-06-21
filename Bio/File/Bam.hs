@@ -18,6 +18,7 @@ module Bio.File.Bam (
     getMd,
     readMd,
 
+    CigOp(..),
     cig_op,
     cig_len,
     mk_cig_op,
@@ -305,14 +306,19 @@ putValue (Int i) | i < -0xffff = putChr 'i' >> put_int_32 i
                  | i > -0xff   = putChr 'S' >> put_int_16 i
                  | otherwise   = putChr 'C' >> put_int_8  i
 
-cig_op :: Int -> Int
-cig_op c = c .&. 0xf
+data CigOp = Mat | Ins | Del | Nop | SMa | HMa | Pad 
+    deriving ( Eq, Ord, Enum, Show, Bounded, Ix )
+
+cig_op :: Int -> CigOp
+cig_op c | cc <= fromEnum (maxBound :: CigOp) = toEnum cc
+         | otherwise = error "unknown Cigar operation"
+  where cc = c .&. 0xf
 
 cig_len :: Int -> Int
 cig_len c = c `shiftR` 4
 
-mk_cig_op :: Int -> Int -> Int
-mk_cig_op op len = (fromIntegral len `shiftL` 4) .|. op
+mk_cig_op :: CigOp -> Int -> Int
+mk_cig_op op len = (fromIntegral len `shiftL` 4) .|. fromEnum op
 
 inflate_seq :: L.ByteString -> [Word8]
 inflate_seq s | L.null s = []
@@ -327,6 +333,7 @@ pack_cigar cs = CodedCigar $ listArray (1, length cs) cs
 
 unpack_cigar :: CodedCigar -> [Int]
 unpack_cigar = elems . unCodedCigar
+
 
 data MdOp = MdNum Int | MdRep Nucleotide | MdDel [Nucleotide] deriving Show
 
