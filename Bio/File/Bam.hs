@@ -9,9 +9,11 @@ module Bio.File.Bam (
     CodedCigar(..),
     BamRec(..),
     Refs,
+    noRefs,
     Ext(..),
     Refseq(..),
     invalidRefseq,
+    invalidPos,
     isValidRefseq,
 
     MdOp(..),
@@ -26,7 +28,9 @@ module Bio.File.Bam (
     mk_ext_key,
 
     decode_seq,
+    encode_seq,
     inflate_seq,
+    deflate_seq,
     pack_cigar,
     unpack_cigar
 
@@ -88,6 +92,9 @@ isValidRefseq = (/=) invalidRefseq
 -- Bam uses this value to encode an invalid reference sequence.
 invalidRefseq :: Refseq
 invalidRefseq = Refseq 0xffffffff
+
+invalidPos :: Int
+invalidPos = -1
 
 data BamRec = BamRec {
     b_qname :: !L.ByteString,
@@ -178,6 +185,9 @@ readBam s0 = ( refs, go s1 p1 )
     getBamEntry' = isEmpty >>= \e -> if e then return Nothing else Just <$> getBamEntry
 
 type Refs = Array Int (Seqid, Int)
+
+noRefs :: Refs
+noRefs = listArray (1,0) []
 
 getBamHeader :: Get Refs
 getBamHeader = do "BAM\SOH" <- L.unpack <$> getLazyByteString 4
@@ -324,9 +334,28 @@ inflate_seq :: L.ByteString -> [Word8]
 inflate_seq s | L.null s = []
               | otherwise = let x = LB.head s in x `shiftR` 4 : x .&. 0xf : inflate_seq (L.tail s)
 
+deflate_seq :: [Word8] -> L.ByteString
+deflate_seq = LB.pack . go
+  where
+    go (x:y:zs) = ((x `shiftL` 4) .|. y) : go zs
+    go [x] = [x `shiftL` 4]
+    go [] = []
+
 decode_seq :: CodedSeq -> [Nucleotide]
 decode_seq (CodedSeq l s) = map (bases !) $ genericTake l $ inflate_seq s
   where bases = listArray (0,15) (map toNucleotide "NACNGNNNTNNNNNNN") :: Array Word8 Nucleotide
+
+encode_seq :: [Nucleotide] -> CodedSeq
+encode_seq s = CodedSeq (fromIntegral $ length s) (deflate_seq $ map num s)
+  where
+    num A = 1
+    num C = 2
+    num G = 4
+    num T = 8
+    num N = 15
+    num _ = 0
+
+
 
 pack_cigar :: [Int] -> CodedCigar
 pack_cigar cs = CodedCigar $ listArray (1, length cs) cs
