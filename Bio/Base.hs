@@ -16,14 +16,14 @@ module Bio.Base(
     shelve,
 
     Position(..),
-    shift_pos,
+    shiftPosition,
 
     Range(..),
-    shift_range,
-    reverse_range,
-    extend,
-    inside,
-    wraprange
+    shiftRange,
+    reverseRange,
+    extendRange,
+    insideRange,
+    wrapRange
 ) where
 
 import Data.Char            ( isAlpha, isSpace )
@@ -32,9 +32,11 @@ import Data.Ix              ( Ix )
 import qualified Data.ByteString.Char8 as S
 import qualified Data.ByteString.Lazy as L
 
--- Common data types used everywhere
+-- | Common data types used everywhere
+-- This module is a collection of very basic "bioinformatics" data types
+-- that are simple, but don't make sense to define over and over.
 
--- | A base in an alignment.
+-- | A nucleotide base in an alignment.
 -- Experience says we're dealing with Ns and gaps all the type, so
 -- purity be damned, they are included as if they were real bases.
 data Nucleotide = Gap | A | C | G | T | N deriving (Eq, Ord, Enum, Ix, Bounded)
@@ -45,7 +47,7 @@ data Sense = Forward | Reverse deriving (Show, Eq, Ord)
 
 -- | Sequence identifiers are ACSII strings
 -- Since we tend to store them for a while, we use strict byte strings.
--- If you get a lazu bytestring from somewhere, use 'shelve' to convert
+-- If you get a lazy bytestring from somewhere, use 'shelve' to convert
 -- it for storage.
 type Seqid = S.ByteString
 
@@ -76,9 +78,9 @@ data Position = Pos {
 -- | Ranges in genomes
 -- We combine a position with a length.  In 'Range pos len', 'pos' is
 -- always the start of a stretch of length 'len'.  Positions therefore
--- move in the opposite direction on the reverse strand.  Shifting r_pos
--- by r_length, then reversing direction yields the same stretch on the
--- reverse strand.
+-- move in the opposite direction on the reverse strand.  To get the
+-- same stretch on the reverse strand, shift r_pos by r_length, then
+-- reverse direction (or call reverseRange).
 data Range = Range {
         r_pos    :: {-# UNPACK #-} !Position, 
         r_length :: {-# UNPACK #-} !Int 
@@ -109,6 +111,8 @@ isBase :: Nucleotide -> Bool
 isBase Gap = False
 isBase  _  = True
 
+-- | Tests if a 'Nucleotide' is a proper base.
+-- Returns 'True' for A,C,G,T only.
 isProperBase :: Nucleotide -> Bool
 isProperBase Gap = False
 isProperBase  N  = False
@@ -135,14 +139,14 @@ instance Read Nucleotide where
     readList s = let (hd,tl) = span (\c -> isAlpha c || isSpace c || '-' == c) s
                  in [(map toNucleotide $ filter (not . isSpace) hd, tl)]
     
--- | returns the smallest Nucleotide
--- This returns the smallest Nucleotide according to the Ord instance
--- that is not a gap.
+-- | returns the smallest base
+-- This returns the smallest 'Nucleotide' according to the 'Ord'
+-- instance that is not a gap.
 minBase :: Nucleotide
 minBase = A
 
--- | returns the largest Nucleotide
--- This returns the largest Nucleotide according to the Ord instance
+-- | returns the largest base
+-- This returns the largest 'Nucleotide' according to the 'Ord' instance
 -- that is not a gap.
 maxBase :: Nucleotide
 maxBase = N
@@ -163,37 +167,39 @@ compl x = x
 -- | moves a position
 -- The position is moved forward according to the strand, negative
 -- indexes move backward accordingly.
-shift_pos :: Int -> Position -> Position
-shift_pos a p = case p_sense p of Forward -> p { p_start = p_start p + a }
-                                  Reverse -> p { p_start = p_start p - a }
+shiftPosition :: Int -> Position -> Position
+shiftPosition a p = case p_sense p of Forward -> p { p_start = p_start p + a }
+                                      Reverse -> p { p_start = p_start p - a }
 
-shift_range :: Int -> Range -> Range
-shift_range a r = r { r_pos = shift_pos a (r_pos r) }
+shiftRange :: Int -> Range -> Range
+shiftRange a r = r { r_pos = shiftPosition a (r_pos r) }
 
-reverse_range :: Range -> Range
-reverse_range (Range (Pos sq Forward pos) len) = Range (Pos sq Reverse (pos+len)) len
-reverse_range (Range (Pos sq Reverse pos) len) = Range (Pos sq Forward (pos-len)) len
+-- | reverse-complements a 'Range'
+-- Gives the same 'Range' on the opposite strand.
+reverseRange :: Range -> Range
+reverseRange (Range (Pos sq Forward pos) len) = Range (Pos sq Reverse (pos+len)) len
+reverseRange (Range (Pos sq Reverse pos) len) = Range (Pos sq Forward (pos-len)) len
 
 -- | extends a range
 -- The length of the range is simply increased.
-extend :: Int -> Range -> Range
-extend a r = r { r_length = r_length r + a }
+extendRange :: Int -> Range -> Range
+extendRange a r = r { r_length = r_length r + a }
 
 
 -- | expands a subrange
 -- (range1 `inside` range2) interprets range1 as a subrange of range2
--- and computes its absolute coordinates.  The sequence name range1 is
+-- and computes its absolute coordinates.  The sequence name of range1 is
 -- ignored.
-inside :: Range -> Range -> Range
-inside (Range (Pos  _ dir2 start2) length2) (Range (Pos sq dir1 start1) length1) =
+insideRange :: Range -> Range -> Range
+insideRange (Range (Pos  _ dir2 start2) length2) (Range (Pos sq dir1 start1) length1) =
     Range (Pos sq dir' pos') length2
   where
     dir' = if dir1 == dir2 then Forward else Reverse
     pos' = case dir1 of Forward -> start1 + start2
                         Reverse -> start1 - start2
 
--- | wraps a range to a ragion
+-- | wraps a range to a region
 -- This simply normalizes the start position to be in the interval [0,n).
-wraprange :: Int -> Range -> Range
-wraprange n (Range (Pos sq str s) l) = Range (Pos sq str (s `mod` n)) l
+wrapRange :: Int -> Range -> Range
+wrapRange n (Range (Pos sq str s) l) = Range (Pos sq str (s `mod` n)) l
 

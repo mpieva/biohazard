@@ -1,7 +1,9 @@
 module Bio.File.Bam (
-    decompress_bgzf,
-    compress_bgzf,
-    is_bam,
+    module Bio.Base,
+
+    decompressBgzf,
+    compressBgzf,
+    isBam,
     readBam,
     writeBam,
 
@@ -21,19 +23,28 @@ module Bio.File.Bam (
     readMd,
 
     CigOp(..),
-    cig_op,
-    cig_len,
-    mk_cig_op,
-    cigar_to_aln_len,
-    mk_ext_key,
+    cigOp,
+    cigLen,
+    mkCigOp,
+    cigarToAlnLen,
+    mkExtKey,
 
-    decode_seq,
-    encode_seq,
-    inflate_seq,
-    deflate_seq,
-    pack_cigar,
-    unpack_cigar
+    decodeSeq,
+    encodeSeq,
+    packCigar,
+    unpackCigar,
 
+    bamFlagPaired,
+    bamFlagProperlyPaired,
+    bamFlagUnmapped,
+    bamFlagMateUnmapped,
+    bamFlagStrand,
+    bamFlagMateStrand,
+    bamFlagFirstMate,
+    bamFlagSecondMate,
+    bamFlagAuxillary,
+    bamFlagFailsQC,
+    bamFlagDuplicate
 ) where
 
 import Bio.Base
@@ -59,7 +70,7 @@ import qualified Data.Map as M
 -- allow reconstruction without trailing junk.
 data CodedSeq = CodedSeq { coded_seq_length :: !Int64, coded_seq_bases :: L.ByteString }
 
-instance Show CodedSeq where show = show . decode_seq
+instance Show CodedSeq where show = show . decodeSeq
 
 -- | Cigar line in BAM coding
 -- Bam encodes an operation and a length into a single integer, we keep
@@ -72,8 +83,8 @@ instance Show CodedCigar where show = show . elems . unCodedCigar
 -- This gives the length of an alignment as measured on the reference,
 -- which is different from the length on the query or the length of the
 -- alignment.
-cigar_to_aln_len :: CodedCigar -> Int
-cigar_to_aln_len (CodedCigar cig) = sum $ map l $ elems cig
+cigarToAlnLen :: CodedCigar -> Int
+cigarToAlnLen (CodedCigar cig) = sum $ map l $ elems cig
   where l c = let op = c .&. 0xf
               in if op == 0 || op == 2 || op == 3 then c `shiftR` 4 else 0
     
@@ -113,16 +124,27 @@ data BamRec = BamRec {
 } deriving Show
 
 
-is_bam :: L.ByteString -> Bool
-is_bam s = L.length s > 26 && L.pack "\31\139" `L.isPrefixOf` s &&
-           L.pack "BAM\SOH" `L.isPrefixOf` decompress_bgzf s
+-- | Tests if a data stream is a Bam file.
+-- Recognizes plain Bam, gzipped Bam and bgzf'd Bam.
+isBam :: L.ByteString -> Bool
+isBam s = L.pack "BAM\SOH" `L.isPrefixOf` s ||
+           ( isGzip s && isBam (decompressBgzf s))
 
-decompress_bgzf :: L.ByteString -> L.ByteString
-decompress_bgzf = go
+-- | Tests if a stream is a GZip stream.
+-- This only tests the magic number.  Since Bgzf (and therefore Bam) is
+-- GZip with added conventions, these files also return true.
+isGzip :: L.ByteString -> Bool
+isGzip s = L.length s > 26 && L.pack "\31\139" `L.isPrefixOf` s
+
+-- | decompresses Bgzf or Gzip
+-- This checks for the Bgzf header, and if present, decompresses Bgzf
+-- chunks.  Else it decompresses GZip.
+decompressBgzf :: L.ByteString -> L.ByteString
+decompressBgzf = go
   where
     go s = case runGet get_bgzf_hdr s of 
                 _ | L.null s -> L.empty 
-                Nothing -> s
+                Nothing -> if isGzip s then decompress s else s
                 Just l  -> case L.splitAt (fromIntegral l + 1) s of 
                     (u,v) -> decompress u `L.append` go v
                      
@@ -144,9 +166,13 @@ decompress_bgzf = go
                       then Just <$> getWord16le
                       else skip (fromIntegral len) >> get_bsize
 
-compress_bgzf :: L.ByteString -> L.ByteString
-compress_bgzf s | L.null s = s 
-                | otherwise = hdr `L.append` rest `L.append` compress_bgzf r
+-- | Compresses a stream as Bgzf
+-- We use a slighly smaller blocksize than the maximum of 64k to avoid
+-- the problem of uncompressible blocks becoming larger and consequently
+-- unrepresentable.  So far no program has complained.
+compressBgzf :: L.ByteString -> L.ByteString
+compressBgzf s | L.null s = s 
+               | otherwise = hdr `L.append` rest `L.append` compressBgzf r
   where
     (l,r) = L.splitAt 65000 s
     z = compress l
@@ -175,7 +201,7 @@ compress_bgzf s | L.null s = s
 readBam :: L.ByteString -> ( Refs, [ BamRec ] )
 readBam s0 = ( refs, go s1 p1 )
   where
-    (refs, s1, p1) = runGetState getBamHeader (decompress_bgzf s0) 0
+    (refs, s1, p1) = runGetState getBamHeader (decompressBgzf s0) 0
 
     go s p = case runGetState getBamEntry' s p of
             _ | L.null s      -> []
@@ -252,11 +278,11 @@ getExt = do key <- get_int_16
                     x   -> error $ "cannot handle optional field type " ++ [x]
             return (key,res)
 
-mk_ext_key :: Char -> Char -> Int
-mk_ext_key x y = ord x .|. (ord y `shiftL` 8)
+mkExtKey :: Char -> Char -> Int
+mkExtKey x y = ord x .|. (ord y `shiftL` 8)
 
 writeBam :: Refs -> [ BamRec ] -> L.ByteString
-writeBam refs xs = compress_bgzf $ runPut $ putHeader >> mapM_ putEntry xs
+writeBam refs xs = compressBgzf $ runPut $ putHeader >> mapM_ putEntry xs
   where 
     putHeader = do putByteString $ S.pack "BAM\SOH"
                    putWord32le 0
@@ -277,7 +303,7 @@ writeBam refs xs = compress_bgzf $ runPut $ putHeader >> mapM_ putEntry xs
                      put_int_32 $ b_pos b
                      put_int_8 $ L.length (b_qname b) + 1
                      put_int_8 $ b_mapq b
-                     put_int_16 $ bin (b_pos b) (b_pos b + cigar_to_aln_len (b_cigar b) - 1)
+                     put_int_16 $ bin (b_pos b) (b_pos b + cigarToAlnLen (b_cigar b) - 1)
                      let (l,r) = bounds $ unCodedCigar $ b_cigar b
                      put_int_16 (r-l+1)
                      put_int_16 $ b_flag b
@@ -319,21 +345,23 @@ putValue (Int i) | i < -0xffff = putChr 'i' >> put_int_32 i
 data CigOp = Mat | Ins | Del | Nop | SMa | HMa | Pad 
     deriving ( Eq, Ord, Enum, Show, Bounded, Ix )
 
-cig_op :: Int -> CigOp
-cig_op c | cc <= fromEnum (maxBound :: CigOp) = toEnum cc
-         | otherwise = error "unknown Cigar operation"
+cigOp :: Int -> CigOp
+cigOp c | cc <= fromEnum (maxBound :: CigOp) = toEnum cc
+        | otherwise = error "unknown Cigar operation"
   where cc = c .&. 0xf
 
-cig_len :: Int -> Int
-cig_len c = c `shiftR` 4
+cigLen :: Int -> Int
+cigLen c = c `shiftR` 4
 
-mk_cig_op :: CigOp -> Int -> Int
-mk_cig_op op len = (fromIntegral len `shiftL` 4) .|. fromEnum op
+mkCigOp :: CigOp -> Int -> Int
+mkCigOp op len = (fromIntegral len `shiftL` 4) .|. fromEnum op
 
+-- | unpack a two-bases-per-byte sequence
 inflate_seq :: L.ByteString -> [Word8]
 inflate_seq s | L.null s = []
               | otherwise = let x = LB.head s in x `shiftR` 4 : x .&. 0xf : inflate_seq (L.tail s)
 
+-- | repeatedly packs two bases into one byte
 deflate_seq :: [Word8] -> L.ByteString
 deflate_seq = LB.pack . go
   where
@@ -341,12 +369,15 @@ deflate_seq = LB.pack . go
     go [x] = [x `shiftL` 4]
     go [] = []
 
-decode_seq :: CodedSeq -> [Nucleotide]
-decode_seq (CodedSeq l s) = map (bases !) $ genericTake l $ inflate_seq s
+-- | converts a Bam sequence into Nucleotides
+-- Everything that isn't representable maps to N.
+decodeSeq :: CodedSeq -> [Nucleotide]
+decodeSeq (CodedSeq l s) = map (bases !) $ genericTake l $ inflate_seq s
   where bases = listArray (0,15) (map toNucleotide "NACNGNNNTNNNNNNN") :: Array Word8 Nucleotide
 
-encode_seq :: [Nucleotide] -> CodedSeq
-encode_seq s = CodedSeq (fromIntegral $ length s) (deflate_seq $ map num s)
+-- | converts a sequence of Nucleotides into the Bam representaion
+encodeSeq :: [Nucleotide] -> CodedSeq
+encodeSeq s = CodedSeq (fromIntegral $ length s) (deflate_seq $ map num s)
   where
     num A = 1
     num C = 2
@@ -357,17 +388,17 @@ encode_seq s = CodedSeq (fromIntegral $ length s) (deflate_seq $ map num s)
 
 
 
-pack_cigar :: [Int] -> CodedCigar
-pack_cigar cs = CodedCigar $ listArray (1, length cs) cs
+packCigar :: [Int] -> CodedCigar
+packCigar cs = CodedCigar $ listArray (1, length cs) cs
 
-unpack_cigar :: CodedCigar -> [Int]
-unpack_cigar = elems . unCodedCigar
+unpackCigar :: CodedCigar -> [Int]
+unpackCigar = elems . unCodedCigar
 
 
 data MdOp = MdNum Int | MdRep Nucleotide | MdDel [Nucleotide] deriving Show
 
 getMd :: BamRec -> Maybe [MdOp]
-getMd r = case M.lookup (mk_ext_key 'M' 'D') $ b_exts r of
+getMd r = case M.lookup (mkExtKey 'M' 'D') $ b_exts r of
     Just (Text mdfield) -> readMd mdfield
     _                   -> Nothing
 
@@ -379,4 +410,21 @@ readMd s | L.null s           = return []
                                 in (MdDel (map toNucleotide $ L.unpack a) :) <$> readMd b
          | otherwise          = (MdRep (toNucleotide $ L.head s) :) <$> readMd (L.tail s)
 
+
+bamFlagPaired, bamFlagProperlyPaired, bamFlagUnmapped,
+ bamFlagMateUnmapped, bamFlagStrand, bamFlagMateStrand,
+ bamFlagFirstMate, bamFlagSecondMate, bamFlagAuxillary,
+ bamFlagFailsQC, bamFlagDuplicate :: Int
+
+bamFlagPaired = 0x1
+bamFlagProperlyPaired = 0x2
+bamFlagUnmapped = 0x4
+bamFlagMateUnmapped = 0x8
+bamFlagStrand = 0x10
+bamFlagMateStrand = 0x20
+bamFlagFirstMate = 0x40
+bamFlagSecondMate = 0x80
+bamFlagAuxillary = 0x100
+bamFlagFailsQC = 0x200
+bamFlagDuplicate = 0x400
 

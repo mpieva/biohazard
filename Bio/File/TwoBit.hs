@@ -1,4 +1,6 @@
 module Bio.File.TwoBit (
+    module Bio.Base,
+
     TwoBitFile,
     openTwoBit,
     closeTwoBit,
@@ -11,7 +13,8 @@ module Bio.File.TwoBit (
     clampPosition
 ) where
 
--- TODO: masking is unsupported right now
+-- TODO: proper masking is unsupported right now (Binary.Get doesn't
+-- react too kindly to this kind of data, for whatever reason)
 
 {-
 
@@ -23,6 +26,10 @@ Instead Ts are stored which the reader has to replace with Ns.
 
 How stupid is that?
 
+The sensible way to treat these is probably to just say there are two
+kinds of implied annotation (repeats and large gaps for a typical
+genome), which can be interpreted in whatever way fits.  All of this
+isn't really supported right now.
 -}
 
 import Bio.Base
@@ -50,9 +57,9 @@ data TwoBitFile = TBF {
     tbf_seqs :: !(M.Map Seqid (IORef TwoBitSequence))
 }
 
-data TwoBitSequence = Untouched { tbs_offset :: {-# UNPACK #-} !Int }
-                    | Indexed   { tbs_s_blocks :: !( I.IntMap Int )
-                                , tbs_m_blocks :: !( I.IntMap Int )
+data TwoBitSequence = Untouched { tbs_offset     :: {-# UNPACK #-} !Int }
+                    | Indexed   { tbs_s_blocks   :: {-# UNPACK #-} !( I.IntMap Int )
+                                , tbs_m_blocks   :: {-# UNPACK #-} !( I.IntMap Int )
                                 , tbs_dna_offset :: {-# UNPACK #-} !Int
                                 , tbs_dna_size   :: {-# UNPACK #-} !Int }
 
