@@ -171,7 +171,7 @@ decompressBgzf = go
 -- the problem of uncompressible blocks becoming larger and consequently
 -- unrepresentable.  So far no program has complained.
 compressBgzf :: L.ByteString -> L.ByteString
-compressBgzf s | L.null s = s 
+compressBgzf s | L.null s  = hdr `L.append` rest -- compress empty string := write EOF marker
                | otherwise = hdr `L.append` rest `L.append` compressBgzf r
   where
     (l,r) = L.splitAt 65000 s
@@ -181,7 +181,8 @@ compressBgzf s | L.null s = s
                       m <- getWord8
                       f <- getWord8
                       t <- getWord32le
-                      xf <- getWord16le
+                      xf <- getWord8
+                      getWord8 -- OS
                       xlen <- if f `testBit` 2 then getWord16le else return 0
 
                       return $ runPut $ do 
@@ -189,7 +190,8 @@ compressBgzf s | L.null s = s
                             putWord8 m
                             putWord8 $ f .|. 4
                             putWord32le t
-                            putWord16le xf
+                            putWord8 xf
+                            putWord8 0xff
                             putWord16le $ xlen + 6
                             putWord8 66
                             putWord8 67
