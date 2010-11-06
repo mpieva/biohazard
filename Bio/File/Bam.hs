@@ -2,10 +2,12 @@ module Bio.File.Bam (
     module Bio.Base,
 
     decompressBgzf,
-    compressBgzf,
+    compressBgzfDynamic,
+    compressBgzfSingle,
     isBam,
     readBam,
-    writeBam,
+    encodeBam,
+    writeBamFile,
 
     CodedSeq(..),
     CodedCigar(..),
@@ -60,6 +62,8 @@ import Data.Char ( chr, ord, isDigit )
 import Data.Int ( Int64 )
 import Data.List ( genericTake )
 import Data.Word ( Word32, Word8 )
+import System.IO -- ( withBinaryFile, OpenMode(WriteMode) )
+
 import qualified Data.ByteString.Lazy.Char8 as L
 import qualified Data.ByteString.Lazy as LB
 import qualified Data.ByteString.Char8 as S
@@ -166,15 +170,38 @@ decompressBgzf = go
                       then Just <$> getWord16le
                       else skip (fromIntegral len) >> get_bsize
 
--- | Compresses a stream as Bgzf
--- We use a slighly smaller blocksize than the maximum of 64k to avoid
--- the problem of uncompressible blocks becoming larger and consequently
--- unrepresentable.  So far no program has complained.
-compressBgzf :: L.ByteString -> L.ByteString
-compressBgzf s | L.null s  = hdr `L.append` rest -- compress empty string := write EOF marker
-               | otherwise = hdr `L.append` rest `L.append` compressBgzf r
+maxBlockSize :: Int64
+maxBlockSize = 65450 -- 64k with some room for headers and uncompressible stuff
+
+-- | The EOF marker for BGZF files.
+-- This is just an empty string compressed as BGZF.  Append to BAM files
+-- to indicate their end.
+bgzfEofMarker :: L.ByteString
+bgzfEofMarker = compressBgzfSingle L.empty
+
+-- | Compresses a list of strings into a dynamic BGZF stream.
+-- We try to create large blocks (no more than 64k, of course), but if
+-- we have to start a new block, we try to do it at the start of a new
+-- input element.  Inputs are compressed using 'compressBgzfSingle',
+-- possibly resulting in new blocks.  The output can be concatenated
+-- into a BGZF stream, output elements correspond to block boundaries
+-- that coincide with input block boundaries.
+compressBgzfDynamic :: [ L.ByteString ] -> [ L.ByteString ]
+compressBgzfDynamic = go L.empty
+  where go acc [    ]                                             = [ compressBgzfSingle acc ]
+        go acc (s:ss) | L.length acc + L.length s <= maxBlockSize = go (acc `L.append` s) ss
+                      | L.null acc                                = go s ss
+                      | otherwise                                 = compressBgzfSingle acc : go s ss
+    
+-- | Compress a single string into a BGZF stream.
+-- The resulting stream has arbitrary blocks, as the maximum size
+-- dictates, and no EOF marker.  Technically the result is a valid file,
+-- but this more valuable as a building block.
+compressBgzfSingle :: L.ByteString -> L.ByteString
+compressBgzfSingle s | L.null s  = L.empty
+                     | otherwise = hdr `L.append` rest `L.append` compressBgzfSingle r
   where
-    (l,r) = L.splitAt 65000 s
+    (l,r) = L.splitAt maxBlockSize s
     z = compress l
     (hdr, rest, _) = runGetState patch_header z 0
     patch_header = do k <- getWord16le
@@ -283,8 +310,14 @@ getExt = do key <- get_int_16
 mkExtKey :: Char -> Char -> Int
 mkExtKey x y = ord x .|. (ord y `shiftL` 8)
 
-writeBam :: Refs -> [ BamRec ] -> L.ByteString
-writeBam refs xs = compressBgzf $ runPut $ putHeader >> mapM_ putEntry xs
+-- | Encode stuff into a BAM stream.
+-- We start new BGZF blocks at sensible places, then return them
+-- individually.  Concatening the result gives a valid file, but the
+-- chunks can be turned into an index, too.
+encodeBam :: Refs -> [ BamRec ] -> [ L.ByteString ]
+encodeBam refs xs = compressBgzfSingle (runPut putHeader) :
+                    compressBgzfDynamic (map (runPut . putEntry) xs) ++ 
+                    [ bgzfEofMarker ]
   where 
     putHeader = do putByteString $ S.pack "BAM\SOH"
                    putWord32le 0
@@ -320,6 +353,27 @@ writeBam refs xs = compressBgzf $ runPut $ putHeader >> mapM_ putEntry xs
                      putLazyByteString $ b_qual b
                      mapM_ (\(k,v) -> put_int_16 k >> putValue v) $ M.toList $ b_exts b
                      
+-- | writes stuff to a BAM file                     
+-- We generate BAM with dynamic blocks, then stream them out to the
+-- file.  We also keep the offsets of those blocks and write a separate
+-- binary index (for Sector).
+-- Note: The index format of Sector is underspecified.  We write the
+-- offset as little endian, but it's probably platform dependent.
+writeBamFile :: FilePath -> Refs -> [ BamRec ] -> IO ()
+writeBamFile fp refs alns =
+    withBinaryFile fp WriteMode                 $ \h_bam ->
+    withBinaryFile (fp ++ ".idx") WriteMode     $ \h_idx ->
+    let go _ [    ] = return ()                                     -- done
+        go p (b:bs) = do
+            L.hPut h_bam b                                          -- write block
+            L.hPut h_idx $ runPut $ putWord64le (fromIntegral p)    -- to index, too
+            go (p+L.length b) bs                                    -- recurse
+    in case encodeBam refs alns of
+        []     -> return ()                 -- can't actually happen
+        (b:bs) -> do L.hPut h_bam b         -- write header, not part of index
+                     go (L.length b) bs     -- recurse
+
+
 put_int_32, put_int_16, put_int_8 :: Integral a => a -> Put
 put_int_32 = putWord32le . fromIntegral
 put_int_16 = putWord16le . fromIntegral
