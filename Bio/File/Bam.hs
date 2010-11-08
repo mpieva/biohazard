@@ -198,10 +198,10 @@ compressBgzfDynamic = go L.empty
 -- dictates, and no EOF marker.  Technically the result is a valid file,
 -- but this more valuable as a building block.
 compressBgzfSingle :: L.ByteString -> L.ByteString
-compressBgzfSingle s | L.null s  = L.empty
-                     | otherwise = hdr `L.append` rest `L.append` compressBgzfSingle r
+compressBgzfSingle s = hdr `L.append` rest `L.append` cont
   where
     (l,r) = L.splitAt maxBlockSize s
+    cont  = if L.null r then L.empty else compressBgzfSingle r
     z = compress l
     (hdr, rest, _) = runGetState patch_header z 0
     patch_header = do k <- getWord16le
