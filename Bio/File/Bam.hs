@@ -33,6 +33,8 @@ module Bio.File.Bam (
 
     decodeSeq,
     encodeSeq,
+    inflateSeq,
+    deflateSeq,
     packCigar,
     unpackCigar,
 
@@ -59,10 +61,10 @@ import Data.Binary.Get
 import Data.Binary.Put
 import Data.Bits ( testBit, shiftL, shiftR, (.&.), (.|.) )
 import Data.Char ( chr, ord, isDigit )
-import Data.Int ( Int64 )
-import Data.List ( genericTake )
+import Data.Int  ( Int64 )
+import Data.List ( genericTake, genericLength )
 import Data.Word ( Word32, Word8 )
-import System.IO -- ( withBinaryFile, OpenMode(WriteMode) )
+import System.IO ( withBinaryFile, IOMode(WriteMode) )
 
 import qualified Data.ByteString.Lazy.Char8 as L
 import qualified Data.ByteString.Lazy as LB
@@ -239,6 +241,7 @@ readBam s0 = ( refs, go s1 p1 )
 
     getBamEntry' = isEmpty >>= \e -> if e then return Nothing else Just <$> getBamEntry
 
+-- note: first reference sequence must have index 0
 type Refs = Array Int (Seqid, Int)
 
 noRefs :: Refs
@@ -413,13 +416,15 @@ mkCigOp :: CigOp -> Int -> Int
 mkCigOp op len = (fromIntegral len `shiftL` 4) .|. fromEnum op
 
 -- | unpack a two-bases-per-byte sequence
-inflate_seq :: L.ByteString -> [Word8]
-inflate_seq s | L.null s = []
-              | otherwise = let x = LB.head s in x `shiftR` 4 : x .&. 0xf : inflate_seq (L.tail s)
+inflateSeq :: CodedSeq -> [Word8]
+inflateSeq (CodedSeq l s) = genericTake l $ go s
+  where
+    go s | L.null s = []
+         | otherwise = let x = LB.head s in x `shiftR` 4 : x .&. 0xf : go (L.tail s)
 
 -- | repeatedly packs two bases into one byte
-deflate_seq :: [Word8] -> L.ByteString
-deflate_seq = LB.pack . go
+deflateSeq :: [Word8] -> CodedSeq
+deflateSeq ws = CodedSeq (genericLength ws) (LB.pack $ go ws)
   where
     go (x:y:zs) = ((x `shiftL` 4) .|. y) : go zs
     go [x] = [x `shiftL` 4]
@@ -428,12 +433,12 @@ deflate_seq = LB.pack . go
 -- | converts a Bam sequence into Nucleotides
 -- Everything that isn't representable maps to N.
 decodeSeq :: CodedSeq -> [Nucleotide]
-decodeSeq (CodedSeq l s) = map (bases !) $ genericTake l $ inflate_seq s
+decodeSeq = map (bases !) . inflateSeq
   where bases = listArray (0,15) (map toNucleotide "NACNGNNNTNNNNNNN") :: Array Word8 Nucleotide
 
 -- | converts a sequence of Nucleotides into the Bam representaion
 encodeSeq :: [Nucleotide] -> CodedSeq
-encodeSeq s = CodedSeq (fromIntegral $ length s) (deflate_seq $ map num s)
+encodeSeq = deflateSeq . map num
   where
     num A = 1
     num C = 2
