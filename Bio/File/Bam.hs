@@ -113,6 +113,7 @@ invalidRefseq = Refseq 0xffffffff
 invalidPos :: Int
 invalidPos = -1
 
+-- | internal representation of a BAM record
 data BamRec = BamRec {
     b_qname :: !L.ByteString,
     b_flag  :: !Int,
@@ -124,9 +125,9 @@ data BamRec = BamRec {
     b_mpos  :: !Int,
     b_isize :: !Int,
     b_seq   :: !CodedSeq,
-    b_qual  :: !L.ByteString,
+    b_qual  :: !L.ByteString,       -- ^ quality, may be empty
     b_exts  :: M.Map Int Ext,
-    b_virtual_offset :: !Int64
+    b_virtual_offset :: !Int64      -- ^ virtual offset for indexing purposes
 } deriving Show
 
 
@@ -279,7 +280,7 @@ getBamEntry = do
     read_name <- getLazyByteStringNul
     cigar <- listArray (1,cigar_len) <$> replicateM cigar_len get_int_32
     qry_seq <- getLazyByteString ((read_len+1) `div` 2)
-    qual <- getLazyByteString read_len
+    qual <- (\qs -> if LB.all (0xff ==) qs then L.empty else qs) <$> getLazyByteString read_len
     exts <- getExtensions end_pos M.empty
 
     return $ BamRec read_name flag rid start mapq (CodedCigar cigar)
@@ -353,7 +354,8 @@ encodeBam refs xs = compressBgzfSingle (runPut putHeader) :
                      putWord8 0
                      mapM_ put_int_32 $ elems $ unCodedCigar $ b_cigar b
                      putLazyByteString $ coded_seq_bases $ b_seq b
-                     putLazyByteString $ b_qual b
+                     putLazyByteString $ if not (L.null (b_qual b)) then b_qual b
+                                         else LB.replicate (coded_seq_length $ b_seq b) 0xff
                      mapM_ (\(k,v) -> put_int_16 k >> putValue v) $ M.toList $ b_exts b
                      
 -- | writes stuff to a BAM file                     
