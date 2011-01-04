@@ -141,7 +141,7 @@ isBam s = L.pack "BAM\SOH" `L.isPrefixOf` s ||
 -- This only tests the magic number.  Since Bgzf (and therefore Bam) is
 -- GZip with added conventions, these files also return true.
 isGzip :: L.ByteString -> Bool
-isGzip s = L.length s > 26 && L.pack "\31\139" `L.isPrefixOf` s
+isGzip s = not (L.null (L.drop 26 s)) && L.pack "\31\139" `L.isPrefixOf` s
 
 -- | decompresses Bgzf or Gzip
 -- This checks for the Bgzf header, and if present, decompresses Bgzf
@@ -149,20 +149,20 @@ isGzip s = L.length s > 26 && L.pack "\31\139" `L.isPrefixOf` s
 decompressBgzf :: L.ByteString -> L.ByteString
 decompressBgzf = go
   where
+    go s | L.null s = L.empty 
     go s = case runGet get_bgzf_hdr s of 
-                _ | L.null s -> L.empty 
                 Nothing -> if isGzip s then decompress s else s
                 Just l  -> case L.splitAt (fromIntegral l + 1) s of 
-                    (u,v) -> decompress u `L.append` go v
+                                (u,v) -> decompress u `L.append` go v
                      
     get_bgzf_hdr = do id1 <- getWord8
                       id2 <- getWord8
                       skip 1
                       flg <- getWord8
-                      skip 6
-                      xdata <- getWord16le >>= getLazyByteString . fromIntegral
                       if id1 == 31 && id2 == 139 && flg `testBit` 2 
-                        then return $ runGet get_bsize xdata
+                        then do skip 6
+                                xdata <- getWord16le >>= getLazyByteString . fromIntegral
+                                return $ runGet get_bsize xdata
                         else return Nothing
 
     get_bsize = isEmpty >>= \e -> if e then return Nothing else do
