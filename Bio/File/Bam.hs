@@ -19,6 +19,7 @@ module Bio.File.Bam (
     invalidRefseq,
     invalidPos,
     isValidRefseq,
+    compareNames,
 
     MdOp(..),
     getMd,
@@ -491,3 +492,31 @@ bamFlagAuxillary = 0x100
 bamFlagFailsQC = 0x200
 bamFlagDuplicate = 0x400
 
+-- | Compares two sequence names the way samtools does.
+-- samtools sorts by "strnum_cmp":
+-- . if both strings start with a digit, parse the initial
+--   sequence of digits and compare numerically, if equal,
+--   continue behind the numbers
+-- . else compare the first characters (possibly NUL), if equal
+--   continue behind them
+-- . else both strings ended and the shorter one counts as
+--   smaller (and that part is stupid)
+
+compareNames :: L.ByteString -> L.ByteString -> Ordering
+compareNames n m = case (L.uncons n, L.uncons m) of
+        ( Nothing, Nothing ) -> EQ
+        ( Just  _, Nothing ) -> GT
+        ( Nothing, Just  _ ) -> LT
+        ( Just (c,n'), Just (d,m') )
+            | isDigit c && isDigit d -> 
+                let Just (u,n'') = L.readInt n
+                    Just (v,m'') = L.readInt m
+                in case u `compare` v of 
+                    LT -> LT
+                    GT -> GT
+                    EQ -> n'' `compareNames` m''
+            | otherwise -> case c `compare` d of 
+                    LT -> LT
+                    GT -> GT
+                    EQ -> n' `compareNames` m'
+                                         
