@@ -11,6 +11,7 @@ module Bio.File.Bam (
 
     CodedSeq(..),
     CodedCigar(..),
+    Bam(..),
     BamRec(..),
     Refs,
     noRefs,
@@ -239,10 +240,10 @@ compressBgzfSingle s = hdr `L.append` rest `L.append` cont
                                 if f `testBit` 2 then 0 else 2
 
 
-readBam :: L.ByteString -> ( Refs, [ BamRec ] )
-readBam s0 = ( refs, go s1 p1 )
+readBam :: L.ByteString -> Bam
+readBam s0 = Bam hdr refs (go s1 p1)
   where
-    (refs, s1, p1) = runGetState getBamHeader (decompressBgzf s0) 0
+    ((hdr,refs), s1, p1) = runGetState getBamHeader (decompressBgzf s0) 0
 
     go s p = case runGetState getBamEntry' s p of
             _ | L.null s      -> []
@@ -254,15 +255,23 @@ readBam s0 = ( refs, go s1 p1 )
 -- note: first reference sequence must have index 0
 type Refs = Array Int (Seqid, Int)
 
+data Bam = Bam { bam_header :: L.ByteString
+               , bam_refs   :: Refs
+               , bam_recs   :: [ BamRec ] } deriving Show
+
 noRefs :: Refs
 noRefs = listArray (1,0) []
 
-getBamHeader :: Get Refs
+getBamHeader :: Get (L.ByteString,Refs)
 getBamHeader = do "BAM\SOH" <- L.unpack <$> getLazyByteString 4
-                  get_int_32 >>= skip
+                  hdr <- get_int_32 >>= getLazyByteString
                   nref <- get_int_32
-                  listArray (0,nref-1) <$> 
-                    replicateM nref ((,) <$> (get_int_32 >>= (fmap S.init . getByteString)) <*> get_int_32)
+                  let loop acc 0 = return $! array (0,nref-1) $ zip [nref-1, nref-2 ..] acc
+                      loop acc n = do nm <- get_int_32 >>= fmap S.init . getByteString
+                                      ln <- get_int_32
+                                      loop ((nm,ln):acc) $! n-1
+                  (,) hdr <$> loop [] nref                                  
+
 
 get_int_32, get_int_16, get_int_8 :: Integral a => Get a
 get_int_32 = fromIntegral <$> getWord32le
