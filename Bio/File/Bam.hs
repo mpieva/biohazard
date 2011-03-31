@@ -108,7 +108,18 @@ cigarToAlnLen (CodedCigar cig) = sum $ map l $ elems cig
 -- | Reference sequence in Bam
 -- Bam enumerates the reference sequences and then sorts by index.  We
 -- need to track that index if we want to reproduce the sorting order.
-newtype Refseq = Refseq { unRefseq :: Word32 } deriving (Show, Eq, Ord)
+newtype Refseq = Refseq { unRefseq :: Word32 } deriving (Show, Eq, Ord, Ix)
+
+instance Enum Refseq where
+    succ = Refseq . succ . unRefseq
+    pred = Refseq . pred . unRefseq
+    toEnum = Refseq . toEnum
+    fromEnum = fromEnum . unRefseq
+    enumFrom = map Refseq . enumFrom . unRefseq
+    enumFromThen (Refseq a) (Refseq b) = map Refseq $ enumFromThen a b
+    enumFromTo (Refseq a) (Refseq b) = map Refseq $ enumFromTo a b
+    enumFromThenTo (Refseq a) (Refseq b) (Refseq c) = map Refseq $ enumFromThenTo a b c
+
 
 -- | tests whether a reference sequence is valid
 -- Returns true unless the the argument equals 'invalidRefseq'.
@@ -253,24 +264,25 @@ readBam s0 = Bam hdr refs (go s1 p1)
     getBamEntry' = isEmpty >>= \e -> if e then return Nothing else Just <$> getBamEntry
 
 -- note: first reference sequence must have index 0
-type Refs = Array Int (Seqid, Int)
+type Refs = Array Refseq (Seqid, Int)
 
 data Bam = Bam { bam_header :: L.ByteString
                , bam_refs   :: Refs
                , bam_recs   :: [ BamRec ] } deriving Show
 
 noRefs :: Refs
-noRefs = listArray (1,0) []
+noRefs = listArray (toEnum 1, toEnum 0) []
 
 getBamHeader :: Get (L.ByteString,Refs)
 getBamHeader = do "BAM\SOH" <- L.unpack <$> getLazyByteString 4
                   hdr <- get_int_32 >>= getLazyByteString
                   nref <- get_int_32
-                  let loop acc 0 = return $! array (0,nref-1) $ zip [nref-1, nref-2 ..] acc
+                  let loop :: [(S.ByteString,Int)] -> Int -> Get Refs
+                      loop acc 0 = return $! array (toEnum 0,toEnum (nref-1)) $ zip [toEnum (nref-1), toEnum (nref-2) ..] acc
                       loop acc n = do nm <- get_int_32 >>= fmap S.init . getByteString
                                       ln <- get_int_32
                                       loop ((nm,ln):acc) $! n-1
-                  (,) hdr <$> loop [] nref                                  
+                  (,) hdr <$> loop [] (nref::Int)
 
 
 get_int_32, get_int_16, get_int_8 :: Integral a => Get a
@@ -343,8 +355,7 @@ encodeBam refs xs = compressBgzfSingle (runPut putHeader) :
   where 
     putHeader = do putByteString $ S.pack "BAM\SOH"
                    putWord32le 0
-                   let (l,r) = bounds refs 
-                   put_int_32 (r-l+1)
+                   put_int_32 . rangeSize $ bounds refs
                    mapM_ putRef $ elems refs
 
     putRef (n,l) = do put_int_32 $ S.length n + 1

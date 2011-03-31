@@ -133,13 +133,13 @@ repM 0 _ = return []
 repM n m = m >>= \x -> seq x (repM (n-1) m >>= return . (x:))
 
 do_frag :: Int -> Int -> Sense -> I.IntMap Int -> (Integer -> IO L.ByteString) -> Int -> IO [Nucleotide]
-do_frag start len revcomplp s_blocks raw ofs0 = do
+do_frag start0 len revcomplp s_blocks raw ofs0 = do
     dna <- get_dna (case revcomplp of Forward -> fwd_nt ; Reverse -> cmp_nt) 
-                   (case revcomplp of Forward -> start ; Reverse -> start - len)
-                   len final_blocks raw ofs0
+                   start len final_blocks raw ofs0
     return $ case revcomplp of { Forward -> dna ; Reverse -> reverse dna }
 
   where
+    start = case revcomplp of Forward -> start0 ; Reverse -> start0 - len
     (left_junk, mfirst, left_clipped) = I.splitLookup start s_blocks
 
     left_fragment = case I.maxViewWithKey left_junk of
