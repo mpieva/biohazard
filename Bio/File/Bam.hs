@@ -15,6 +15,7 @@ module Bio.File.Bam (
     BamRec(..),
     Refs,
     noRefs,
+    (!),
     Ext(..),
     Refseq(..),
     invalidRefseq,
@@ -58,13 +59,17 @@ module Bio.File.Bam (
     isFirstMate,
     isSecondMate,
     isMerged,
-    isAdapterTrimmed
+    isAdapterTrimmed,
+
+    BamIndex,
+    readBamIndex,
+    readBamSequence
 ) where
 
 import Bio.Base
 
 import Codec.Compression.GZip
-import Control.Monad ( replicateM )
+import Control.Monad ( replicateM, forM, forM_ )
 import Control.Applicative ((<$>), (<*>), (*>) )
 import Data.Array.Unboxed
 import Data.Binary.Get
@@ -73,8 +78,8 @@ import Data.Bits ( testBit, shiftL, shiftR, (.&.), (.|.) )
 import Data.Char ( chr, ord, isDigit )
 import Data.Int  ( Int64 )
 import Data.List ( genericTake, genericLength )
-import Data.Word ( Word32, Word8 )
-import System.IO ( withBinaryFile, IOMode(WriteMode) )
+import Data.Word ( Word64, Word32, Word8 )
+import System.IO -- ( withBinaryFile, IOMode(WriteMode) )
 
 import qualified Data.ByteString.Lazy.Char8 as L
 import qualified Data.ByteString.Lazy as LB
@@ -262,6 +267,30 @@ readBam s0 = Bam hdr refs (go s1 p1)
             (Nothing, s', p') -> go s' p'
 
     getBamEntry' = isEmpty >>= \e -> if e then return Nothing else Just <$> getBamEntry
+
+-- Seek to a given sequence in a Bam file, read records.  Opens a new
+-- handle, making this all very, very ugly.
+readBamSequence :: FilePath -> BamIndex -> Refseq -> IO [ BamRec ]
+readBamSequence fp idx refseq = do
+    case idx ! refseq of
+        0 -> return []
+        virtoff -> do
+            let uoffset = virtoff .&. 0xffff
+                coffset = virtoff `shiftR` 16
+            hdl <- openFile fp ReadMode
+            hSeek hdl AbsoluteSeek (fromIntegral coffset)
+            go . L.drop (fromIntegral uoffset) . decompressBgzf <$> L.hGetContents hdl
+  where
+    go s = case runGetState getBamEntry' s 0 of
+            _ | L.null s                           -> []
+            (Just a, s',  _) | b_rname a == refseq -> a : go s'
+                             | otherwise           -> []
+            (Nothing, s', _)                       -> go s'
+
+    getBamEntry' = isEmpty >>= \e -> if e then return Nothing else Just <$> getBamEntry
+
+
+
 
 -- note: first reference sequence must have index 0
 type Refs = Array Refseq (Seqid, Int)
@@ -594,4 +623,31 @@ isAdapterTrimmed :: BamRec -> Bool
 isAdapterTrimmed = (== good) . (.&. mask) . b_flag
   where good = bamFlagSecondMate
         mask = bamFlagFirstMate .|. bamFlagPaired .|. good
+
+
+-- Stop gap solution.  we only get the first offset from the linear
+-- index, which allows us to navigate to a target sequence.  Will do the
+-- rest when I need it.
+type BamIndex = Array Refseq Word64
+
+readBamIndex :: L.ByteString -> BamIndex
+readBamIndex = runGet getBamIndex
+  where
+    getBamIndex = do
+        "BAI\1" <- S.unpack <$> getByteString 4
+        nref <- get_int_32
+        offs <- forM [1..nref] $ \_ -> do
+                    nbins <- get_int_32
+                    forM [1..nbins] $ \_ -> do
+                        bin <- get_int_32 -- "distinct bin", whatever that means
+                        nchunks <- get_int_32
+                        forM_ [1..nchunks] $ \_ -> getWord64le >> getWord64le
+                    nintv <- get_int_32
+                    if nintv >= 1 then do
+                        off <- getWord64le
+                        forM_ [2..nintv] $ \_ -> getWord64le
+                        return off
+                      else
+                        return 0
+        return $! listArray (toEnum 0, toEnum (nref-1)) offs
 
