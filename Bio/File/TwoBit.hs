@@ -72,11 +72,11 @@ openTwoBit fp = do
                 getWord32 <- case sig of
                         0x1A412743 -> return $ fromIntegral `fmap` getWord32be
                         0x4327411A -> return $ fromIntegral `fmap` getWord32le
-                        _          -> fail $ "invalid signature " ++ showHex sig []
+                        _          -> fail $ "invalid .2bit signature " ++ showHex sig []
 
                 
                 version <- getWord32
-                unless (version == 0) $ fail $ "wrong version " ++ show version
+                unless (version == 0) $ fail $ "wrong .2bit version " ++ show version
 
                 nseqs <- getWord32
                 getWord32

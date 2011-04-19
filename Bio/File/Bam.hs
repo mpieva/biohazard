@@ -1,3 +1,4 @@
+{-# LANGUAGE OverloadedStrings #-}
 module Bio.File.Bam (
     module Bio.Base,
 
@@ -69,7 +70,7 @@ module Bio.File.Bam (
 import Bio.Base
 
 import Codec.Compression.GZip
-import Control.Monad ( replicateM, forM, forM_ )
+import Control.Monad ( replicateM, replicateM_, when )
 import Control.Applicative ((<$>), (<*>), (*>) )
 import Data.Array.Unboxed
 import Data.Binary.Get
@@ -79,7 +80,7 @@ import Data.Char ( chr, ord, isDigit )
 import Data.Int  ( Int64 )
 import Data.List ( genericTake, genericLength )
 import Data.Word ( Word64, Word32, Word8 )
-import System.IO -- ( withBinaryFile, IOMode(WriteMode) )
+import System.IO
 
 import qualified Data.ByteString.Lazy.Char8 as L
 import qualified Data.ByteString.Lazy as LB
@@ -303,7 +304,8 @@ noRefs :: Refs
 noRefs = listArray (toEnum 1, toEnum 0) []
 
 getBamHeader :: Get (L.ByteString,Refs)
-getBamHeader = do "BAM\SOH" <- L.unpack <$> getLazyByteString 4
+getBamHeader = do magic <- getByteString 4
+                  when (magic /= "BAM\SOH") $ fail "BAM signature not found"
                   hdr <- get_int_32 >>= getLazyByteString
                   nref <- get_int_32
                   let loop :: [(S.ByteString,Int)] -> Int -> Get Refs
@@ -634,20 +636,17 @@ readBamIndex :: L.ByteString -> BamIndex
 readBamIndex = runGet getBamIndex
   where
     getBamIndex = do
-        "BAI\1" <- S.unpack <$> getByteString 4
+        magic <- getByteString 4
+        when (magic /= "BAI\1" ) $ fail "BAI signature not found"
         nref <- get_int_32
-        offs <- forM [1..nref] $ \_ -> do
+        offs <- replicateM nref $ do
                     nbins <- get_int_32
-                    forM [1..nbins] $ \_ -> do
+                    replicateM nbins $ do
                         bin <- get_int_32 -- "distinct bin", whatever that means
                         nchunks <- get_int_32
-                        forM_ [1..nchunks] $ \_ -> getWord64le >> getWord64le
+                        replicateM_ nchunks $ getWord64le >> getWord64le
                     nintv <- get_int_32
-                    if nintv >= 1 then do
-                        off <- getWord64le
-                        forM_ [2..nintv] $ \_ -> getWord64le
-                        return off
-                      else
-                        return 0
+                    os <- filter (/= 0) <$> replicateM nintv getWord64le
+                    return $ if null os then 0 else minimum os
         return $! listArray (toEnum 0, toEnum (nref-1)) offs
 
