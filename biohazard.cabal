@@ -55,7 +55,7 @@ Library
   
   -- Packages needed in order to build this package.
   Build-depends:       bytestring, containers, base >= 3, binary, array,
-                       zlib
+                       zlib, attoparsec
   
   -- Modules not exported by this package.
   -- Other-modules:       

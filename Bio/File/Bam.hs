@@ -71,7 +71,7 @@ import Bio.Base
 
 import Codec.Compression.GZip
 import Control.Monad ( replicateM, replicateM_, when )
-import Control.Applicative ((<$>), (<*>), (*>) )
+import Control.Applicative ((<$>), (<$), (<*>), (*>), (<*) )
 import Data.Array.Unboxed
 import Data.Binary.Get
 import Data.Binary.Put
@@ -81,6 +81,8 @@ import Data.Int  ( Int64 )
 import Data.List ( genericTake, genericLength )
 import Data.Word ( Word64, Word32, Word8 )
 import System.IO
+
+import qualified Data.Attoparsec.Char8 as P
 
 import qualified Data.ByteString.Lazy.Char8 as L
 import qualified Data.ByteString.Lazy as LB
@@ -258,7 +260,7 @@ compressBgzfSingle s = hdr `L.append` rest `L.append` cont
 
 
 readBam :: L.ByteString -> Bam
-readBam s0 = Bam hdr refs (go s1 p1)
+readBam s0 = Bam (parse_bam_meta hdr) refs (go s1 p1)
   where
     ((hdr,refs), s1, p1) = runGetState getBamHeader (decompressBgzf s0) 0
 
@@ -296,7 +298,7 @@ readBamSequence fp idx refseq = do
 -- note: first reference sequence must have index 0
 type Refs = Array Refseq (Seqid, Int)
 
-data Bam = Bam { bam_header :: L.ByteString
+data Bam = Bam { bam_meta   :: BamMeta
                , bam_refs   :: Refs
                , bam_recs   :: [ BamRec ] } deriving Show
 
@@ -379,13 +381,15 @@ mkExtKey x y = ord x .|. (ord y `shiftL` 8)
 -- We start new BGZF blocks at sensible places, then return them
 -- individually.  Concatening the result gives a valid file, but the
 -- chunks can be turned into an index, too.
-encodeBam :: Refs -> [ BamRec ] -> [ L.ByteString ]
-encodeBam refs xs = compressBgzfSingle (runPut putHeader) :
-                    compressBgzfDynamic (map (runPut . putEntry) xs) ++ 
-                    [ bgzfEofMarker ]
+encodeBam :: Bam -> [ L.ByteString ]
+encodeBam (Bam meta refs xs) = compressBgzfSingle (runPut putHeader) :
+                               compressBgzfDynamic (map (runPut . putEntry) xs) ++ 
+                               [ bgzfEofMarker ]
   where 
     putHeader = do putByteString $ S.pack "BAM\SOH"
-                   putWord32le 0
+                   let hdr = show_bam_meta meta L.empty
+                   putWord32le $ fromIntegral $ L.length hdr
+                   putLazyByteString hdr
                    put_int_32 . rangeSize $ bounds refs
                    mapM_ putRef $ elems refs
 
@@ -424,8 +428,8 @@ encodeBam refs xs = compressBgzfSingle (runPut putHeader) :
 -- binary index (for Sector).
 -- Note: The index format of Sector is underspecified.  We write the
 -- offset as little endian, but it's probably platform dependent.
-writeBamFile :: FilePath -> Refs -> [ BamRec ] -> IO ()
-writeBamFile fp refs alns =
+writeBamFile :: FilePath -> Bam -> IO ()
+writeBamFile fp bam =
     withBinaryFile fp WriteMode                 $ \h_bam ->
     withBinaryFile (fp ++ ".idx") WriteMode     $ \h_idx ->
     let go _ [    ] = return ()                                     -- done
@@ -433,7 +437,7 @@ writeBamFile fp refs alns =
             L.hPut h_bam b                                          -- write block
             L.hPut h_idx $ runPut $ putWord64le (fromIntegral p)    -- to index, too
             go (p+L.length b) bs                                    -- recurse
-    in case encodeBam refs alns of
+    in case encodeBam bam of
         []     -> return ()                 -- can't actually happen
         (b:bs) -> do L.hPut h_bam b         -- write header, not part of index
                      go (L.length b) bs     -- recurse
@@ -650,3 +654,90 @@ readBamIndex = runGet getBamIndex
                     return $ if null os then 0 else minimum os
         return $! listArray (toEnum 0, toEnum (nref-1)) offs
 
+
+data BamMeta = BamMeta {
+        meta_hdr :: BamHeader,
+        meta_other_shit :: [(Char, Char, BamOtherShit)],
+        meta_comment :: [S.ByteString]
+    } deriving Show
+
+data BamHeader = BamHeader {
+        hdr_version :: (Int, Int),
+        hdr_sorting :: BamSorting,
+        hdr_other_shit :: BamOtherShit
+    } deriving Show
+
+data BamSorting = Unsorted | Grouped | Queryname | Coordinate | GroupSorted 
+    deriving Show
+
+type BamOtherShit = [(Char, Char, S.ByteString)]
+
+do_parse :: P.Parser a -> L.ByteString -> a
+do_parse p s = case L.toChunks s of
+    [] -> check $ P.parse p S.empty 
+    (c:cs) -> check $ foldl P.feed (P.parse p c) cs `P.feed` S.empty
+  where
+    check (P.Fail _rest _ctxs err) = error err
+    check (P.Partial  _k) = error $ "premature end of header"
+    check (P.Done rest r) | S.null rest = r
+                          | otherwise = error $ "incomplete parse at " ++ show rest
+
+parse_bam_meta :: L.ByteString -> BamMeta
+parse_bam_meta = do_parse pMeta
+  where
+    nullMeta = BamMeta (BamHeader (0,0) Unsorted []) [] []
+    pMeta = foldr ($) nullMeta <$> P.many pLine 
+    pLine = P.char '@' >> P.choice [hdLine, coLine, otherLine] <* P.char '\n'
+    hdLine = P.string "HD\t" >> 
+             (\fns meta -> meta { meta_hdr = foldr ($) (meta_hdr meta) fns })
+               <$> P.sepBy1 (P.choice [hdvn, hdso, hdother]) (P.char '\t')
+    
+    hdvn = P.string "VN:" >>
+           (\a b hdr -> hdr { hdr_version = (a,b) })
+             <$> P.decimal <*> (P.char '.' >> P.decimal)
+
+    hdso = P.string "SO:" >>
+           (\s hdr -> hdr { hdr_sorting = s })
+             <$> P.choice [ Grouped  <$ P.string "grouped"
+                          , Queryname <$ P.string "queryname"
+                          , Coordinate <$ P.string "coordinate"
+                          , GroupSorted <$ P.string "groupsort"
+                          , Unsorted <$ P.skipWhile (\c -> c/='\t' && c/='\n') ]
+
+    hdother = (\t hdr -> hdr { hdr_other_shit = t : hdr_other_shit hdr }) <$> tagother
+    
+    coLine = P.string "CO\t" >>
+             (\s meta -> meta { meta_comment = s : meta_comment meta })
+               <$> P.takeWhile (/= 'n')
+
+    otherLine = (\a b ts meta -> meta { meta_other_shit = (a,b,ts) : meta_other_shit meta })
+                  <$> P.anyChar <*> P.anyChar <*> (P.char '\t' >> P.sepBy1 tagother (P.char '\t'))
+
+    tagother :: P.Parser (Char,Char,S.ByteString)
+    tagother = (,,) <$> P.anyChar <*> P.anyChar <*> (P.char ':' >> P.takeWhile (\c -> c/='\t' && c/='\n'))
+
+
+show_bam_meta :: BamMeta -> L.ByteString -> L.ByteString
+show_bam_meta (BamMeta h o c) = 
+    show_bam_meta_hdr h .
+    foldr ((.) . show_bam_meta_other) id o .
+    foldr ((.) . show_bam_meta_comment) id c
+  where
+    show_bam_meta_hdr (BamHeader (maj,min) so o) = 
+        L.append "@HD\tVN:" . L.append (L.pack (show maj ++ ':' : show min)) .
+        L.append (case so of Unsorted -> L.empty
+                             Grouped  -> "\tSO:grouped"
+                             Queryname  -> "\tSO:queryname"
+                             Coordinate  -> "\tSO:coordinate"
+                             GroupSorted  -> "\tSO:groupsort") .
+        foldr ((.) . show_bam_other) id o .
+        L.cons '\n'
+
+    show_bam_meta_comment c = L.append "@CO\t" . L.append (L.fromChunks [c]) . L.cons '\n'
+
+    show_bam_meta_other (a,b,ts) = 
+        L.cons '@' . L.cons a . L.cons b . 
+        foldr ((.) . show_bam_other) id ts . L.cons '\n'
+
+    show_bam_other (a,b,v) = 
+        L.cons '\t' . L.cons a . L.cons b . L.cons ':' . L.append (L.fromChunks [v])
