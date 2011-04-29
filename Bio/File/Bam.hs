@@ -1,4 +1,4 @@
-{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE OverloadedStrings, PatternGuards #-}
 module Bio.File.Bam (
     module Bio.Base,
 
@@ -82,10 +82,15 @@ import Data.Binary.Get
 import Data.Binary.Put
 import Data.Bits ( testBit, shiftL, shiftR, (.&.), (.|.) )
 import Data.Char ( chr, ord, isDigit )
-import Data.Int  ( Int64 )
+import Data.Int  ( Int64, Int32 )
 import Data.List ( genericTake, genericLength )
 import Data.Word ( Word64, Word32, Word8 )
 import System.IO
+
+import System.IO.Unsafe ( unsafePerformIO )
+import Foreign.Storable ( peek, poke )
+import Foreign.Marshal.Alloc ( alloca )
+import Foreign.Ptr ( castPtr )
 
 import qualified Data.Attoparsec.Char8 as P
 
@@ -355,7 +360,9 @@ getBamEntry = do
                     mate_rid mate_pos ins_size (CodedSeq read_len qry_seq) qual exts start_offs
         
 
-data Ext = Int Int | Text L.ByteString | Char Word8 deriving Show
+data Ext = Int Int | Float Float | Text L.ByteString | Char Word8
+         | IntArr (UArray Int Int) | FloatArr (UArray Int Float)
+    deriving Show
 
 getExtensions :: Int64 -> M.Map Int Ext -> Get (M.Map Int Ext)
 getExtensions p m = do p' <- bytesRead
@@ -368,16 +375,26 @@ getExt :: Get (Int, Ext)
 getExt = do key <- get_int_16
             typ <- getWord8
             res <- case chr . fromIntegral $ typ of
-                    'c' -> Int <$> get_int_8
-                    'C' -> Int <$> get_int_8
-                    's' -> Int <$> get_int_16
-                    'S' -> Int <$> get_int_16
-                    'i' -> Int <$> get_int_32
-                    'I' -> Int <$> get_int_32
                     'Z' -> Text <$> getLazyByteStringNul
                     'A' -> Char <$> getWord8
-                    x   -> error $ "cannot handle optional field type " ++ [x]
+                    'f' -> Float . to_float <$> get_int_32
+                    'B' -> get_arr
+                    x | Just get <- M.lookup x get_some_int -> Int <$> get
+                      | otherwise                           -> error $ "cannot handle optional field type " ++ [x]
             return (key,res)
+  where
+    to_float :: Int32 -> Float
+    to_float word = unsafePerformIO $ alloca $ \buf ->
+                    poke (castPtr buf) word >> peek buf
+
+    get_arr = do tp <- chr . fromIntegral <$> getWord8
+                 n <- get_int_32
+                 case tp of
+                    'f' -> FloatArr . listArray (0,n-1) . map to_float <$> replicateM n get_int_32
+                    _ | Just get <- M.lookup tp get_some_int -> IntArr . listArray (0,n-1) <$> replicateM n get
+                      | otherwise                            -> error $ "cannot handle optional array field type " ++ [tp]
+
+    get_some_int = M.fromList $ zip "cCsSiI" [ get_int_8, get_int_8, get_int_16, get_int_16, get_int_32, get_int_32 ]
 
 mkExtKey :: Char -> Char -> Int
 mkExtKey x y = ord x .|. (ord y `shiftL` 8)
@@ -463,14 +480,32 @@ bin beg end = mkbin 14 $ mkbin 17 $ mkbin 20 $ mkbin 23 $ mkbin 16 $ 0
 
 
 putValue :: Ext -> Put
-putValue (Text t) = putChr 'Z' >> putLazyByteString t >> putWord8 0
-putValue (Char c) = putChr 'A' >> putWord8 c
-putValue (Int i) | i < -0xffff = putChr 'i' >> put_int_32 i
-                 | i < -0xff   = putChr 's' >> put_int_16 i
-                 | i < 0       = putChr 'c' >> put_int_8  i
-                 | i > -0xffff = putChr 'I' >> put_int_32 i
-                 | i > -0xff   = putChr 'S' >> put_int_16 i
-                 | otherwise   = putChr 'C' >> put_int_8  i
+putValue v = case v of
+    Text t      -> putChr 'Z' >> putLazyByteString t >> putWord8 0
+    Char c      -> putChr 'A' >> putWord8 c
+    Float f     -> putChr 'f' >> put_int_32 (fromFloat f)
+    Int i       -> case put_some_int [i] of (c,op) -> putChr c >> op i
+    FloatArr fa -> putChr 'B' >> putChr 'f' >> put_int_32 (rangeSize (bounds fa))
+                   >> mapM_ (put_int_32 . fromFloat) (elems fa)
+    IntArr   ia -> case put_some_int (elems ia) of
+                    (c,op) -> putChr 'B' >> putChr c >> put_int_32 (rangeSize (bounds ia))
+                              >> mapM_ op (elems ia)
+  where 
+    put_some_int :: [Int] -> (Char, Int -> Put)
+    put_some_int is
+        | all (between        0    0xff) is = ('C', put_int_8)
+        | all (between   (-0x80)   0x7f) is = ('c', put_int_8)
+        | all (between        0  0xffff) is = ('S', put_int_16)
+        | all (between (-0x8000) 0x7fff) is = ('s', put_int_16)
+        | all                      (> 0) is = ('I', put_int_32)
+        | otherwise                         = ('i', put_int_32)
+
+    between :: Int -> Int -> Int -> Bool
+    between l r x = l <= x && x <= r
+
+    fromFloat :: Float -> Int32
+    fromFloat float = unsafePerformIO $ alloca $ \buf ->
+                      poke (castPtr buf) float >> peek buf
 
 data CigOp = Mat | Ins | Del | Nop | SMa | HMa | Pad 
     deriving ( Eq, Ord, Enum, Show, Bounded, Ix )
