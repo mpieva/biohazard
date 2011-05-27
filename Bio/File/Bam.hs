@@ -360,7 +360,7 @@ getBamEntry = do
                     mate_rid mate_pos ins_size (CodedSeq read_len qry_seq) qual exts start_offs
         
 
-data Ext = Int Int | Float Float | Text L.ByteString | Char Word8
+data Ext = Int Int | Float Float | Text L.ByteString | Bin L.ByteString | Char Word8
          | IntArr (UArray Int Int) | FloatArr (UArray Int Float)
     deriving Show
 
@@ -376,6 +376,7 @@ getExt = do key <- get_int_16
             typ <- getWord8
             res <- case chr . fromIntegral $ typ of
                     'Z' -> Text <$> getLazyByteStringNul
+                    'H' -> Bin <$> getLazyByteStringNul
                     'A' -> Char <$> getWord8
                     'f' -> Float . to_float <$> get_int_32
                     'B' -> get_arr
@@ -390,8 +391,8 @@ getExt = do key <- get_int_16
     get_arr = do tp <- chr . fromIntegral <$> getWord8
                  n <- get_int_32
                  case tp of
-                    'f' -> FloatArr . listArray (0,n-1) . map to_float <$> replicateM n get_int_32
-                    _ | Just get <- M.lookup tp get_some_int -> IntArr . listArray (0,n-1) <$> replicateM n get
+                    'f' -> FloatArr . listArray (0,n) . map to_float <$> replicateM (n+1) get_int_32
+                    _ | Just get <- M.lookup tp get_some_int -> IntArr . listArray (0,n) <$> replicateM (n+1) get
                       | otherwise                            -> error $ "cannot handle optional array field type " ++ [tp]
 
     get_some_int = M.fromList $ zip "cCsSiI" [ get_int_8, get_int_8, get_int_16, get_int_16, get_int_32, get_int_32 ]
@@ -482,13 +483,14 @@ bin beg end = mkbin 14 $ mkbin 17 $ mkbin 20 $ mkbin 23 $ mkbin 16 $ 0
 putValue :: Ext -> Put
 putValue v = case v of
     Text t      -> putChr 'Z' >> putLazyByteString t >> putWord8 0
+    Bin b       -> putChr 'H' >> putLazyByteString b >> putWord8 0
     Char c      -> putChr 'A' >> putWord8 c
     Float f     -> putChr 'f' >> put_int_32 (fromFloat f)
     Int i       -> case put_some_int [i] of (c,op) -> putChr c >> op i
     FloatArr fa -> putChr 'B' >> putChr 'f' >> put_int_32 (rangeSize (bounds fa))
                    >> mapM_ (put_int_32 . fromFloat) (elems fa)
     IntArr   ia -> case put_some_int (elems ia) of
-                    (c,op) -> putChr 'B' >> putChr c >> put_int_32 (rangeSize (bounds ia))
+                    (c,op) -> putChr 'B' >> putChr c >> put_int_32 (rangeSize (bounds ia)-1)
                               >> mapM_ op (elems ia)
   where 
     put_some_int :: [Int] -> (Char, Int -> Put)
