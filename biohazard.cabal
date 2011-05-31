@@ -51,11 +51,13 @@ Cabal-version:       >=1.2
 Library
   -- Modules exported by the library.
   Exposed-modules:     Bio.Base, Bio.File.Bam, Bio.File.Bam.Trim,
-                       Bio.File.Bam.Fastq, Bio.File.TwoBit
+                       Bio.File.Bam.Fastq, Bio.File.TwoBit,
+                       Bio.File.Bgzf
   
   -- Packages needed in order to build this package.
   Build-depends:       bytestring, containers, base >= 3, binary, array,
-                       zlib, attoparsec
+                       zlib, attoparsec-iteratee, attoparsec, iteratee,
+                       transformers
   
   -- Modules not exported by this package.
   -- Other-modules:       
