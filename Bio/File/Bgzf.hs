@@ -16,33 +16,36 @@ import Data.Iteratee.Char                   ( printLinesUnterminated )
 import Data.Iteratee.IO
 import Data.Monoid
 import Data.Word                            ( Word16 )
-import Codec.Compression.GZip
 
+import qualified Codec.Compression.GZip     as Z
 import qualified Data.ByteString            as B
 import qualified Data.ByteString.Lazy       as L
 -- import qualified Data.ByteString.Unsafe     as B
 import qualified Data.Iteratee.ListLike     as I
 
-
-test = enumFile 16300 "/mnt/454/Altaiensis/bwa/catalog/EPO/combined_SNC_anno.tsv.bgz" $
-       decompressBgzf printLinesUnterminated
+import Control.Exception.Base
 
 -- one BGZF block: offset and contents
 data Block = Block {-# UNPACK #-} !Int64 {-# UNPACK #-} !B.ByteString
 
-decompressBgzf' :: MonadIO m => (I.Iteratee Block m a) -> I.Iteratee B.ByteString m a
-decompressBgzf' = decompressBgzfWith Block 0
+instance I.NullPoint Block where empty = Block 0 B.empty
+instance I.Nullable Block where nullC (Block _ s) = B.null s
 
-decompressBgzf :: MonadIO m => (I.Iteratee B.ByteString m a) -> I.Iteratee B.ByteString m a
-decompressBgzf = decompressBgzfWith (\_ s -> s) 0
+decompress' :: MonadIO m => (I.Iteratee Block m a) -> I.Iteratee B.ByteString m a
+decompress' = decompressWith Block 0
 
-decompressBgzfWith :: MonadIO m => (Int64 -> B.ByteString -> s) -> Int64 -> (I.Iteratee s m a) -> I.Iteratee B.ByteString m a
-decompressBgzfWith block !off inner =
-    collectI get_bgzf_header $ \csize -> do
-    comp <- get_block $ fromIntegral csize +1
-    -- this is ugly and very roundabout, but works for the time being...
-    let c = B.concat . L.toChunks . decompress $ L.fromChunks [comp]
-    lift (I.enumPure1Chunk (block off c) inner) >>= decompressBgzfWith block (off + fromIntegral csize + 1)
+decompress :: MonadIO m => (I.Iteratee B.ByteString m a) -> I.Iteratee B.ByteString m a
+decompress = decompressWith (\_ s -> s) 0
+
+decompressWith :: MonadIO m => (Int64 -> B.ByteString -> s) -> Int64 -> (I.Iteratee s m a) -> I.Iteratee B.ByteString m a
+decompressWith block !off inner = I.isFinished >>= go
+  where
+    go True = lift $ I.run =<< I.enumEof inner
+    go False = collectI get_bgzf_header $ \csize -> do
+               comp <- get_block $ fromIntegral csize +1
+               -- this is ugly and very roundabout, but works for the time being...
+               let c = B.concat . L.toChunks . Z.decompress $ L.fromChunks [comp]
+               lift (I.enumPure1Chunk (block off c) inner) >>= decompressWith block (off + fromIntegral csize + 1)
 
    -- Doesn't work.  Maybe because 'uncompress'
    -- gets confused by the headers?
@@ -59,18 +62,31 @@ decompressBgzfWith block !off inner =
 
 -- Run an Iteratee, collect the input.  When it finishes, apply the
 -- continuation and run the result on all input.
-collectI :: (Monad m, Monoid s, I.Nullable s) => I.Iteratee s m a -> (a -> I.Iteratee s m b) -> I.Iteratee s m b
+collectI :: (MonadIO m, Monoid s, I.Nullable s) => I.Iteratee s m a -> (a -> I.Iteratee s m b) -> I.Iteratee s m b
 collectI it0 k0 = go mempty it0
   where 
     go acc it = I.Iteratee $ \od oc -> I.runIter it (onDone od oc) (onCont od oc)
       where
         onDone od oc x _ = do it2 <- I.enumPure1Chunk acc (k0 x)
                               I.runIter it2 od oc
-        onCont od oc k mErr = I.runIter (I.icont (step k) mErr) od oc
-        step k c@(I.EOF _) = go acc (k c)
-        step k c@(I.Chunk str)
-          | I.nullC str          = I.liftI (step k)
-          | otherwise            = go (acc `mappend` str) (k c)
+
+        onCont od oc k mErr = oc (step k) mErr
+
+        step k c@(I.Chunk str) | I.nullC str = I.liftI (step k)
+                               | otherwise   = go (acc `mappend` str) (k c)
+
+        step k c@(I.EOF me) = I.Iteratee $ \od1 oc1 -> I.runIter (k c) (onDone1 me od1 oc1) (onCont1 (step k) oc1)
+                                      
+        onDone1 me od1 oc1 x _ = do it2 <- I.enumPure1Chunk acc (k0 x)
+                                    it2' <- I.enumChunk (I.EOF me) it2
+                                    I.runIter it2' od1 oc1
+
+        -- XXX Smells fishy.  If my first Iteratee didn't
+        -- produce anything after being passed EOF, what
+        -- continuation do I return?  And can it ever be called?
+        onCont1 step oc1 k Nothing = oc1 step (Just (SomeException I.DivergentException))
+        onCont1 step oc1 k e = oc1 step e
+
 
 get_bgzf_header :: Monad m => I.Iteratee B.ByteString m Word16
 get_bgzf_header = do 31 <- I.head
@@ -108,6 +124,17 @@ get_block sz = I.liftI $ \s -> case s of
               | otherwise       -> I.idone (B.take sz c) (I.Chunk (B.drop sz c))
 
 
--- int uncompress (Bytef *dest, uLongf *destLen, const Bytef *source, uLong sourceLen)
--- foreign import ccall unsafe "zlib.h uncompress" zlib_uncompress
-    -- :: Ptr CChar -> Ptr CULong -> Ptr CChar -> CULong -> IO CInt
+test = enumFile 16300 "/mnt/ngs_data/101203_SOLEXA-GA04_00007_PEDi_MM_QF_SR/Ibis/BWA/s_5_L3280_sequence_mq_hg19_nohap.bam" $
+       decompress' print_block
+
+print_block :: I.Iteratee Block IO ()
+print_block = I.liftI step
+  where
+    step (I.Chunk (Block p s)) = do liftIO $ print $ (p, B.length s)
+                                    I.liftI step
+    step e@(I.EOF mx) = do liftIO $ putStrLn $ "EOF " ++ show mx
+                           I.idone () e
+
+test' = enumFile 16300 "/mnt/454/Altaiensis/bwa/catalog/EPO/combined_SNC_anno.tsv.bgz" $
+        decompress printLinesUnterminated
+
