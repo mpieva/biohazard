@@ -1,27 +1,26 @@
 {-# LANGUAGE OverloadedStrings, PatternGuards, BangPatterns #-}
-module Bio.File.Bam {- (
+module Bio.File.Bam (
     module Bio.Base,
 
-    decompressBgzf,
-    compressBgzfDynamic,
-    compressBgzfSingle,
-    isBam,
-    readBam,
-    encodeBam,
-    writeBamFile,
+    -- isBam,
 
-    CodedSeq(..),
-    CodedCigar(..),
-    Bam(..),
+    decodeBam,
+    decodeBamEntry,
+    encodeBam,
+    encodeBamEntry,
+
+    -- writeBamFile,
+
     BamRec(..),
     Refs,
     noRefs,
     (!),
-    Ext(..),
+
     Refseq(..),
     invalidRefseq,
-    invalidPos,
     isValidRefseq,
+    invalidPos,
+    isValidPos,
     compareNames,
 
     MdOp(..),
@@ -29,112 +28,98 @@ module Bio.File.Bam {- (
     readMd,
 
     CigOp(..),
-    cigOp,
-    cigLen,
-    mkCigOp,
     cigarToAlnLen,
-    mkExtKey,
 
-    decodeSeq,
-    encodeSeq,
-    inflateSeq,
-    deflateSeq,
-    packCigar,
-    unpackCigar,
+    Ext(..),
 
-    bamFlagPaired,
-    bamFlagProperlyPaired,
-    bamFlagUnmapped,
-    bamFlagMateUnmapped,
-    bamFlagStrand,
-    bamFlagMateStrand,
-    bamFlagFirstMate,
-    bamFlagSecondMate,
-    bamFlagAuxillary,
-    bamFlagFailsQC,
-    bamFlagDuplicate,
-    bamFlagQualityFiltered,
-    bamFlagComplexityFiltered,
+    flagPaired,         isPaired,
+    flagProperlyPaired, isProperlyPaired,
+    flagUnmapped,       isUnmapped,
+    flagMateUnmapped,   isMateUnmapped,
+    flagReversed,       isReversed,
+    flagMateReversed,   isMateReversed,
+    flagFirstMate,      isFirstMate,
+    flagSecondMate,     isSecondMate,
+    flagAuxillary,      isAuxillary,
+    flagFailsQC,        isFailsQC,
+    flagDuplicate,      isDuplicate,
+    flagLowQuality,     isLowQuality,
+    flagLowComplexity,  isLowComplexity,
 
-    bamFilterFlags,
-    isFirstMate,
-    isSecondMate,
+    filterFlags,
     isMerged,
     isAdapterTrimmed,
 
-    BamIndex,
-    readBamIndex,
-    readBamSequence,
+    -- BamIndex,
+    -- readBamIndex,
+    -- readBamSequence,
 
-    BamMeta(..), nullMeta,
+    BamMeta(..),
+    nullMeta,
+    parseBamMeta,
+    showBamMeta,
+
     BamHeader(..),
     BamSorting(..),
     BamOtherShit
-) -} where
+) where
 
 import Bio.Base
 import qualified Bio.File.Bgzf as Bgzf
 
 import Codec.Compression.GZip
-import Control.Monad ( replicateM, replicateM_, when, forM_, liftM )
+import Control.Monad                ( replicateM, replicateM_, when, forM_, liftM, (>=>) )
+import Control.Monad.IO.Class
 import Control.Monad.Trans.Class
-import Control.Applicative ((<$>), (<$), (<*>), (*>), (<*) )
+import Control.Applicative          ( (<$>), (<$), (<*>), (*>), (<*) )
 import Data.Array.IO
+import Data.Array.MArray
 import Data.Array.Unboxed
+import Data.Attoparsec.Iteratee
 import Data.Binary.Get
 import Data.Binary.Put
-import Data.Bits ( testBit, shiftL, shiftR, (.&.), (.|.) )
-import Data.Char ( chr, ord, isDigit )
-import Data.Int  ( Int64, Int32 )
-import Data.List ( genericTake, genericLength )
-import Data.Word ( Word64, Word32, Word8 )
-import System.IO
-
-import System.IO.Unsafe ( unsafePerformIO )
-import Foreign.Storable ( peek, poke )
-import Foreign.Marshal.Alloc ( alloca )
-import Foreign.Ptr ( castPtr )
-
-import qualified Data.Attoparsec.Char8 as P
-
-import qualified Data.ByteString.Lazy.Char8 as L
-import qualified Data.ByteString.Lazy as LB
-import qualified Data.ByteString as S
-import qualified Data.Map as M
-
-import qualified Data.Binary.Strict.Get as G
-
-import Data.Array.MArray
-import Control.Monad.IO.Class
-import qualified Data.Iteratee as I
-import qualified Data.Iteratee.IO as I
--- import Data.Iteratee hiding ( take, drop, head, filter, peek, length, fold )
+import Data.Bits                    ( testBit, shiftL, shiftR, (.&.), (.|.) )
+import Data.Char                    ( chr, ord, isDigit )
+import Data.Int                     ( Int64, Int32 )
 import Data.Iteratee.Base
 import Data.Iteratee.Binary
-import Data.Attoparsec.Iteratee
+import Data.List                    ( genericTake, genericLength )
+import Data.Word                    ( Word64, Word32, Word8 )
+import Foreign.Marshal.Alloc        ( alloca )
+import Foreign.Ptr                  ( castPtr )
+import Foreign.Storable             ( peek, poke )
+import System.IO
+import System.IO.Unsafe             ( unsafePerformIO )
 
--- | Sequence in BAM coding
--- Bam encodes two bases per byte, we store the length separately to
--- allow reconstruction without trailing junk.
-data CodedSeq = CodedSeq { coded_seq_length :: !Int, coded_seq_bases :: S.ByteString }
+import qualified Data.Attoparsec.Char8          as P
+import qualified Data.Binary.Strict.Get         as G
+import qualified Data.ByteString                as S
+import qualified Data.ByteString.Char8          as B
+import qualified Data.ByteString.Lazy.Char8     as L
+import qualified Data.Iteratee                  as I
+import qualified Data.Iteratee.IO               as I
+import qualified Data.Map                       as M
 
-instance Show CodedSeq where show = show . coded_seq_bases
 
 -- | Cigar line in BAM coding
 -- Bam encodes an operation and a length into a single integer, we keep
 -- those integers in an array.
-data CodedCigar = CodedCigar { unCodedCigar :: UArray Int Int }
+newtype Cigar = Cigar { unCigar :: [(CigOp, Int)] }
 
-instance Show CodedCigar where show = show . elems . unCodedCigar
+data CigOp = Mat | Ins | Del | Nop | SMa | HMa | Pad 
+    deriving ( Eq, Ord, Enum, Show, Bounded, Ix )
+
+instance Show Cigar where
+    show (Cigar cs) = concat [ shows l (toChr op) | (op,l) <- cs ]
+      where toChr = (:[]) . B.index "MIDNSHP" . fromEnum
 
 -- | extracts the aligned length from a cigar line
 -- This gives the length of an alignment as measured on the reference,
 -- which is different from the length on the query or the length of the
 -- alignment.
-cigarToAlnLen :: CodedCigar -> Int
-cigarToAlnLen (CodedCigar cig) = sum $ map l $ elems cig
-  where l c = let op = c .&. 0xf
-              in if op == 0 || op == 2 || op == 3 then c `shiftR` 4 else 0
+cigarToAlnLen :: Cigar -> Int
+cigarToAlnLen (Cigar cig) = sum $ map l cig
+  where l (op,n) = if op == Mat || op == Del || op == Nop then n else 0
     
 
 -- | Reference sequence in Bam
@@ -153,37 +138,44 @@ instance Enum Refseq where
     enumFromThenTo (Refseq a) (Refseq b) (Refseq c) = map Refseq $ enumFromThenTo a b c
 
 
--- | tests whether a reference sequence is valid
--- Returns true unless the the argument equals 'invalidRefseq'.
+-- | Tests whether a reference sequence is valid.
+-- Returns true unless the the argument equals @invalidRefseq@.
 isValidRefseq :: Refseq -> Bool
 isValidRefseq = (/=) invalidRefseq
 
--- | the invalid Refseq
--- Bam uses this value to encode an invalid reference sequence.
+-- | The invalid Refseq.
+-- Bam uses this value to encode a missing reference sequence.
 invalidRefseq :: Refseq
 invalidRefseq = Refseq 0xffffffff
 
+-- | The invalid Refseq.
+-- Bam uses this value to encode a missing position.
 invalidPos :: Int
 invalidPos = -1
 
+-- | Tests whether a position is valid.
+-- Returns true unless the the argument equals @invalidPos@.
+isValidPos :: Int -> Bool
+isValidPos = (/=) invalidPos
+
 -- | internal representation of a BAM record
 data BamRec = BamRec {
-    b_qname :: S.ByteString,
-    b_flag  :: Int,
-    b_rname :: Refseq,
-    b_pos   :: Int,
-    b_mapq  :: Int,
-    b_cigar :: CodedCigar,
-    b_mrnm  :: Refseq,
-    b_mpos  :: Int,
-    b_isize :: Int,
-    b_seq   :: CodedSeq,
-    b_qual  :: S.ByteString,       -- ^ quality, may be empty
-    b_exts  :: M.Map Int Ext,
-    b_virtual_offset :: Int64      -- ^ virtual offset for indexing purposes
-} deriving Show
+        b_qname :: S.ByteString,
+        b_flag  :: Int,
+        b_rname :: Refseq,
+        b_pos   :: Int,
+        b_mapq  :: Int,
+        b_cigar :: Cigar,
+        b_mrnm  :: Refseq,
+        b_mpos  :: Int,
+        b_isize :: Int,
+        b_seq   :: [Nucleotide],
+        b_qual  :: S.ByteString,       -- ^ quality, may be empty
+        b_exts  :: Extensions,
+        b_virtual_offset :: Int64      -- ^ virtual offset for indexing purposes
+    } deriving Show
 
-
+{-
 -- | Tests if a data stream is a Bam file.
 -- Recognizes plain Bam, gzipped Bam and bgzf'd Bam.
 isBam :: L.ByteString -> Bool
@@ -195,107 +187,8 @@ isBam s = L.pack "BAM\SOH" `L.isPrefixOf` s ||
 -- GZip with added conventions, these files also return true.
 isGzip :: L.ByteString -> Bool
 isGzip s = not (L.null (L.drop 26 s)) && L.pack "\31\139" `L.isPrefixOf` s
-
--- | decompresses Bgzf or Gzip
--- This checks for the Bgzf header, and if present, decompresses Bgzf
--- chunks.  Else it decompresses GZip.
-decompressBgzf :: L.ByteString -> L.ByteString
-decompressBgzf = go
-  where
-    go s | L.null s = L.empty 
-    go s = case runGet get_bgzf_hdr s of 
-                Nothing -> if isGzip s then decompress s else s
-                Just l  -> case L.splitAt (fromIntegral l + 1) s of 
-                                (u,v) -> decompress u `L.append` go v
-                     
-    get_bgzf_hdr = do id1 <- getWord8
-                      id2 <- getWord8
-                      skip 1
-                      flg <- getWord8
-                      if id1 == 31 && id2 == 139 && flg `testBit` 2 
-                        then do skip 6
-                                xdata <- getWord16le >>= getLazyByteString . fromIntegral
-                                return $ runGet get_bsize xdata
-                        else return Nothing
-
-    get_bsize = isEmpty >>= \e -> if e then return Nothing else do
-                    i1 <- getWord8
-                    i2 <- getWord8
-                    len <- getWord16le
-                    if i1 == 66 && i2 == 67 && len == 2 
-                      then Just <$> getWord16le
-                      else skip (fromIntegral len) >> get_bsize
-
-maxBlockSize :: Int64
-maxBlockSize = 65450 -- 64k with some room for headers and uncompressible stuff
-
--- | The EOF marker for BGZF files.
--- This is just an empty string compressed as BGZF.  Append to BAM files
--- to indicate their end.
-bgzfEofMarker :: L.ByteString
-bgzfEofMarker = compressBgzfSingle L.empty
-
--- | Compresses a list of strings into a dynamic BGZF stream.
--- We try to create large blocks (no more than 64k, of course), but if
--- we have to start a new block, we try to do it at the start of a new
--- input element.  Inputs are compressed using 'compressBgzfSingle',
--- possibly resulting in new blocks.  The output can be concatenated
--- into a BGZF stream, output elements correspond to block boundaries
--- that coincide with input block boundaries.
-compressBgzfDynamic :: [ L.ByteString ] -> [ L.ByteString ]
-compressBgzfDynamic = go 0 []
-  where go len acc [    ]                                    = [ compressBgzfSingle $ L.concat $ reverse acc ]
-        go len acc (s:ss) | len + L.length s <= maxBlockSize = go (len + L.length s) (s:acc) ss
-                          | null acc                         = go (L.length s) [s] ss
-                          | otherwise                        = (compressBgzfSingle $ L.concat $ reverse acc) : go (L.length s) [s] ss
-    
--- | Compress a single string into a BGZF stream.
--- The resulting stream has arbitrary blocks, as the maximum size
--- dictates, and no EOF marker.  Technically the result is a valid file,
--- but this more valuable as a building block.
-compressBgzfSingle :: L.ByteString -> L.ByteString
-compressBgzfSingle s = hdr `L.append` rest `L.append` cont
-  where
-    (l,r) = L.splitAt maxBlockSize s
-    cont  = if L.null r then L.empty else compressBgzfSingle r
-    z = compress l
-    (hdr, rest, _) = runGetState patch_header z 0
-    patch_header = do k <- getWord16le
-                      m <- getWord8
-                      f <- getWord8
-                      t <- getWord32le
-                      xf <- getWord8
-                      getWord8 -- OS
-                      xlen <- if f `testBit` 2 then getWord16le else return 0
-
-                      return $ runPut $ do 
-                            putWord16le k
-                            putWord8 m
-                            putWord8 $ f .|. 4
-                            putWord32le t
-                            putWord8 xf
-                            putWord8 0xff
-                            putWord16le $ xlen + 6
-                            putWord8 66
-                            putWord8 67
-                            putWord16le 2
-                            putWord16le . fromIntegral $ L.length z + 5 + 
-                                if f `testBit` 2 then 0 else 2
-
-
-{-
-readBam :: L.ByteString -> Bam
-readBam s0 = Bam (do_parse pMeta hdr) refs (go s1 p1)
-  where
-    ((hdr,refs), s1, p1) = runGetState getBamHeader (decompressBgzf s0) 0
-
-    go s p = case runGetState getBamEntry' s p of
-            _ | L.null s      -> []
-            (Just a, s',  p') -> a : go s' p'
-            (Nothing, s', p') -> go s' p'
-
-    getBamEntry' = isEmpty >>= \e -> if e then return Nothing else Just <$> getBamEntry
 -}
+
 
 {-
 -- Seek to a given sequence in a Bam file, read records.  Opens a new
@@ -322,107 +215,69 @@ readBamSequence fp idx refseq = do
 
 
 
-
--- note: first reference sequence must have index 0
+-- | A list of reference sequences.  Note that the first reference sequence must have index 0
 type Refs = Array Refseq (Seqid, Int)
 type MRefs = IOArray Refseq (Seqid, Int)
 
-data Bam = Bam { bam_meta   :: BamMeta
-               , bam_refs   :: Refs
-               , bam_recs   :: [ BamRec ] } deriving Show
-
+-- | The empty list of references.  Needed for BAM files that don't really store alignments.
 noRefs :: Refs
 noRefs = listArray (toEnum 1, toEnum 0) []
 
-getBamHeader :: Get (L.ByteString,Refs)
-getBamHeader = do magic <- getByteString 4
-                  when (magic /= "BAM\SOH") $ fail "BAM signature not found"
-                  hdr <- get_int_32 >>= getLazyByteString
-                  nref <- get_int_32
-                  let loop :: [(S.ByteString,Int)] -> Int -> Get Refs
-                      loop acc 0 = return $! array (toEnum 0,toEnum (nref-1)) $ zip [toEnum (nref-1), toEnum (nref-2) ..] acc
-                      loop acc n = do nm <- get_int_32 >>= fmap S.init . getByteString
-                                      ln <- get_int_32
-                                      loop ((nm,ln):acc) $! n-1
-                  (,) hdr <$> loop [] (nref::Int)
 
 
-get_int_32, get_int_16, get_int_8 :: Integral a => Get a
-get_int_32 = fromIntegral <$> getWord32le
-get_int_16 = fromIntegral <$> getWord16le
-get_int_8  = fromIntegral <$> getWord8
-
-
+-- | Decodes a raw block into a @BamRec@.
 decodeBamEntry :: BamRaw -> BamRec
 decodeBamEntry (BamRaw s) = case G.runGet go s of
+    (Left  e,  _)             -> error e
     (Right r, s') | S.null s' -> r
                   | otherwise -> error "incomplete BAM record"
-    (Left e, _) -> error e
   where
-    go = do !rid       <- Refseq <$> G.getWord32le
+    go = do !rid       <- Refseq       <$> G.getWord32le
             !start     <- fromIntegral <$> G.getWord32le
             !namelen   <- fromIntegral <$> G.getWord8
             !mapq      <- fromIntegral <$> G.getWord8
-            G.skip 2  -- bin number
+            !_bin      <-                  G.getWord16le
             !cigar_len <- fromIntegral <$> G.getWord16le
             !flag      <- fromIntegral <$> G.getWord16le
             !read_len  <- fromIntegral <$> G.getWord32le
-            !mate_rid  <- Refseq <$> G.getWord32le
+            !mate_rid  <- Refseq       <$> G.getWord32le
             !mate_pos  <- fromIntegral <$> G.getWord32le
             !ins_size  <- fromIntegral <$> G.getWord32le
-
-            !read_name <- G.getByteString (namelen-1)
-            G.skip 1 -- NUL terminator
-            !cigar <- listArray (1,cigar_len) . map fromIntegral <$> replicateM cigar_len G.getWord32le
-            !qry_seq <- G.getByteString ((read_len+1) `div` 2)
+            !read_name <- S.init       <$> G.getByteString namelen
+            !cigar     <- Cigar . map decodeCigar <$> replicateM cigar_len G.getWord32le
+            !qry_seq   <- G.getByteString $ (read_len+1) `div` 2
             !qual <- (\qs -> if S.all (0xff ==) qs then S.empty else qs) <$> G.getByteString read_len
             !exts <- getExtensions M.empty
 
-            return $ BamRec read_name flag rid start mapq (CodedCigar cigar)
-                            mate_rid mate_pos ins_size (CodedSeq read_len qry_seq) qual exts 0 -- start_offs
+            return $ BamRec read_name flag rid start mapq cigar
+                            mate_rid mate_pos ins_size (take read_len $ expand qry_seq) qual exts 0 -- start_offs
+  
+    bases = listArray (0,15) (map toNucleotide "NACNGNNNTNNNNNNN") :: Array Word8 Nucleotide
+    expand s = if S.null s then [] else let x = S.head s in bases ! (x `shiftR` 4) : bases ! (x .&. 0xf) : expand (S.tail s)
 
-{-
-getBamEntry :: Get BamRec
-getBamEntry = do
-    start_offs <- bytesRead
-    end_pos <- (+) <$> (get_int_32 :: Get Int64) <*> bytesRead 
-    rid <- Refseq <$> getWord32le
-    start <- get_int_32
-    skip 1  -- name length
-    mapq <- get_int_8
-    skip 2  -- bin number
-    cigar_len <- get_int_16
-    flag <- get_int_16
-    read_len <- get_int_32
-    mate_rid <- Refseq <$> getWord32le
-    mate_pos <- get_int_32
-    ins_size <- get_int_32
+    decodeCigar c | cc <= fromEnum (maxBound :: CigOp) = (toEnum cc, cl)
+                  | otherwise = error "unknown Cigar operation"
+      where cc = fromIntegral c .&. 0xf; cl = fromIntegral c `shiftR` 4
 
-    read_name <- getLazyByteStringNul
-    cigar <- listArray (1,cigar_len) <$> replicateM cigar_len get_int_32
-    qry_seq <- getLazyByteString ((read_len+1) `div` 2)
-    qual <- (\qs -> if LB.all (0xff ==) qs then L.empty else qs) <$> getLazyByteString read_len
-    exts <- getExtensions end_pos M.empty
 
-    return $ BamRec read_name flag rid start mapq (CodedCigar cigar)
-                    mate_rid mate_pos ins_size (CodedSeq read_len qry_seq) qual exts start_offs
--}        
+-- | A collection of extension fields.  The key is actually only two @Char@s, but that proved impractical.
+type Extensions = M.Map String Ext
 
-data Ext = Int Int | Float Float | Text L.ByteString | Bin L.ByteString | Char Word8
+data Ext = Int Int | Float Float | Text S.ByteString | Bin S.ByteString | Char Word8
          | IntArr (UArray Int Int) | FloatArr (UArray Int Float)
     deriving Show
 
-getExtensions :: M.Map Int Ext -> G.Get (M.Map Int Ext)
+getExtensions :: Extensions -> G.Get Extensions
 getExtensions m = G.isEmpty >>= \e -> case e of
     True  -> return m
     False -> getExt >>= \(!k,!a) -> getExtensions $! M.insert k a m
 
-getExt :: G.Get (Int, Ext)
-getExt = do key <- fromIntegral <$> G.getWord16le
+getExt :: G.Get (String, Ext)
+getExt = do key <- (\a b -> [w2c a, w2c b]) <$> G.getWord8 <*> G.getWord8
             typ <- G.getWord8
-            res <- case chr . fromIntegral $ typ of
+            res <- case w2c typ of
                     'Z' -> Text <$> getByteStringNul
-                    'H' -> Bin <$> getByteStringNul
+                    'H' -> Bin  <$> getByteStringNul
                     'A' -> Char <$> G.getWord8
                     'f' -> Float . to_float <$> G.getWord32le
                     'B' -> get_arr
@@ -430,6 +285,9 @@ getExt = do key <- fromIntegral <$> G.getWord16le
                       | otherwise                           -> error $ "cannot handle optional field type " ++ [x]
             return (key,res)
   where
+    w2c :: Word8 -> Char
+    w2c = chr . fromIntegral
+
     to_float :: Word32 -> Float
     to_float word = unsafePerformIO $ alloca $ \buf ->
                     poke (castPtr buf) word >> peek buf
@@ -448,32 +306,25 @@ getExt = do key <- fromIntegral <$> G.getWord16le
                         fromIntegral <$> G.getWord16le,
                         fromIntegral <$> G.getWord32le,
                         fromIntegral <$> G.getWord32le ]
-                        
-                        -- get_int_8, get_int_8, get_int_16, get_int_16, get_int_32, get_int_32 ]
 
-getByteStringNul :: G.Get L.ByteString
-getByteStringNul = do l <- G.lookAhead (get_len 0)
-                      s <- G.getByteString l
-                      G.skip 1
-                      return (L.fromChunks [s])
+
+getByteStringNul :: G.Get S.ByteString
+getByteStringNul = S.init <$> (G.lookAhead (get_len 1) >>= G.getByteString)
   where 
     get_len l = G.getWord8 >>= \w -> if w == 0 then return l else get_len $! l+1
 
-mkExtKey :: Char -> Char -> Int
-mkExtKey x y = ord x .|. (ord y `shiftL` 8)
 
-{-
 -- | Encode stuff into a BAM stream.
 -- We start new BGZF blocks at sensible places, then return them
 -- individually.  Concatening the result gives a valid file, but the
 -- chunks can be turned into an index, too.
-encodeBam :: Bam -> [ L.ByteString ]
-encodeBam (Bam meta refs xs) = compressBgzfSingle (runPut putHeader) :
-                               compressBgzfDynamic (map (runPut . putEntry) xs) ++ 
-                               [ bgzfEofMarker ]
+encodeBam :: Monad m => BamMeta -> Refs -> Iteratee S.ByteString m a -> Iteratee S.ByteString m a
+encodeBam meta refs i = lift (I.enumPure1Chunk header i >>= I.enumPure1Chunk S.empty) >>= Bgzf.compress
   where 
-    putHeader = do putByteString $ S.pack "BAM\SOH"
-                   let hdr = show_bam_meta meta L.empty
+    header = S.concat . L.toChunks $ runPut putHeader
+
+    putHeader = do putWord32le 0x42414D01 -- "BAM\1"
+                   let hdr = showBamMeta meta L.empty
                    putWord32le $ fromIntegral $ L.length hdr
                    putLazyByteString hdr
                    put_int_32 . rangeSize $ bounds refs
@@ -484,36 +335,51 @@ encodeBam (Bam meta refs xs) = compressBgzfSingle (runPut putHeader) :
                       putWord8 0
                       put_int_32 l
 
+
+encodeBamEntry :: BamRec -> S.ByteString
+encodeBamEntry = S.concat . L.toChunks . runPut . putEntry    
+  where
     putEntry e = do let c = runPut $ putEntry' e
                     put_int_32 $ L.length c
                     putLazyByteString c
 
-    putEntry' b = do putWord32le $ unRefseq $ b_rname b
-                     put_int_32 $ b_pos b
-                     put_int_8 $ L.length (b_qname b) + 1
-                     put_int_8 $ b_mapq b
-                     put_int_16 $ bin (b_pos b) (b_pos b + cigarToAlnLen (b_cigar b) - 1)
-                     let (l,r) = bounds $ unCodedCigar $ b_cigar b
-                     put_int_16 (r-l+1)
-                     put_int_16 $ b_flag b
-                     put_int_32 $ coded_seq_length $ b_seq b
-                     putWord32le $ unRefseq $ b_mrnm b
-                     put_int_32 $ b_mpos b
-                     put_int_32 $ b_isize b
-                     putLazyByteString $ b_qname b
+    putEntry' b = do putWord32le   $ unRefseq $ b_rname b
+                     put_int_32    $ b_pos b
+                     put_int_8     $ S.length (b_qname b) + 1
+                     put_int_8     $ b_mapq b
+                     put_int_16    $ distinctBin b
+                     put_int_16    $ length $ unCigar $ b_cigar b
+                     put_int_16    $ b_flag b
+                     put_int_32    $ length $ b_seq b
+                     putWord32le   $ unRefseq $ b_mrnm b
+                     put_int_32    $ b_mpos b
+                     put_int_32    $ b_isize b
+                     putByteString $ b_qname b
                      putWord8 0
-                     mapM_ put_int_32 $ elems $ unCodedCigar $ b_cigar b
-                     putLazyByteString $ coded_seq_bases $ b_seq b
-                     putLazyByteString $ if not (L.null (b_qual b)) then b_qual b
-                                         else LB.replicate (coded_seq_length $ b_seq b) 0xff
-                     mapM_ (\(k,v) -> put_int_16 k >> putValue v) $ M.toList $ b_exts b
-                     
+                     mapM_ (put_int_32 . encodeCigar) $ unCigar $ b_cigar b
+                     putSeq $ b_seq b
+                     putByteString $ if not (S.null (b_qual b)) then b_qual b
+                                     else S.replicate (length $ b_seq b) 0xff
+                     mapM_ (\([a,b],v) -> putChr a >> putChr b >> putValue v) $ M.toList $ b_exts b
+
+    encodeCigar :: (CigOp,Int) -> Int
+    encodeCigar (op,l) = fromEnum op .|. l `shiftL` 4
+
+    putSeq :: [Nucleotide] -> Put
+    putSeq (a:b:ns) = putWord8 (num a `shiftL` 4 .|. num b) >> putSeq ns
+    putSeq [a]      = putWord8 (num a `shiftL` 4)
+    putSeq [ ]      = return ()
+  
+    num :: Nucleotide -> Word8
+    num A = 1 ; num C = 2 ; num G = 4 ; num T = 8 ; num N = 15 ; num _ = 0
+
 -- | writes stuff to a BAM file                     
 -- We generate BAM with dynamic blocks, then stream them out to the
 -- file.  We also keep the offsets of those blocks and write a separate
 -- binary index (for Sector).
 -- Note: The index format of Sector is underspecified.  We write the
 -- offset as little endian, but it's probably platform dependent.
+{-
 writeBamFile :: FilePath -> Bam -> IO ()
 writeBamFile fp bam =
     withBinaryFile fp WriteMode                 $ \h_bam ->
@@ -527,27 +393,27 @@ writeBamFile fp bam =
         []     -> return ()                 -- can't actually happen
         (b:bs) -> do L.hPut h_bam b         -- write header, not part of index
                      go (L.length b) bs     -- recurse
-
+-}
 
 put_int_32, put_int_16, put_int_8 :: Integral a => a -> Put
 put_int_32 = putWord32le . fromIntegral
 put_int_16 = putWord16le . fromIntegral
 put_int_8  = putWord8 . fromIntegral
--}
 
 putChr :: Char -> Put
 putChr = putWord8 . fromIntegral . ord
 
-bin :: Int -> Int -> Int
-bin beg end = mkbin 14 $ mkbin 17 $ mkbin 20 $ mkbin 23 $ mkbin 16 $ 0
-  where mkbin n x = if beg `shiftR` n /= end `shiftR` n then x
+distinctBin :: BamRec -> Int
+distinctBin b = mkbin 14 $ mkbin 17 $ mkbin 20 $ mkbin 23 $ mkbin 16 $ 0
+  where beg = b_pos b
+        end = beg + cigarToAlnLen (b_cigar b) - 1
+        mkbin n x = if beg `shiftR` n /= end `shiftR` n then x
                     else ((1 `shiftL` (29-n))-1) `div` 7 + (beg `shiftR` n)
 
-{-
 putValue :: Ext -> Put
 putValue v = case v of
-    Text t      -> putChr 'Z' >> putLazyByteString t >> putWord8 0
-    Bin b       -> putChr 'H' >> putLazyByteString b >> putWord8 0
+    Text t      -> putChr 'Z' >> putByteString t >> putWord8 0
+    Bin b       -> putChr 'H' >> putByteString b >> putWord8 0
     Char c      -> putChr 'A' >> putWord8 c
     Float f     -> putChr 'f' >> put_int_32 (fromFloat f)
     Int i       -> case put_some_int [i] of (c,op) -> putChr c >> op i
@@ -572,96 +438,94 @@ putValue v = case v of
     fromFloat :: Float -> Int32
     fromFloat float = unsafePerformIO $ alloca $ \buf ->
                       poke (castPtr buf) float >> peek buf
--}
-
-data CigOp = Mat | Ins | Del | Nop | SMa | HMa | Pad 
-    deriving ( Eq, Ord, Enum, Show, Bounded, Ix )
-
-cigOp :: Int -> CigOp
-cigOp c | cc <= fromEnum (maxBound :: CigOp) = toEnum cc
-        | otherwise = error "unknown Cigar operation"
-  where cc = c .&. 0xf
-
-cigLen :: Int -> Int
-cigLen c = c `shiftR` 4
-
-mkCigOp :: CigOp -> Int -> Int
-mkCigOp op len = (fromIntegral len `shiftL` 4) .|. fromEnum op
-
-{-
--- | unpack a two-bases-per-byte sequence
-inflateSeq :: CodedSeq -> [Word8]
-inflateSeq (CodedSeq l s) = genericTake l $ go s
-  where
-    go s | L.null s = []
-         | otherwise = let x = LB.head s in x `shiftR` 4 : x .&. 0xf : go (L.tail s)
-
--- | repeatedly packs two bases into one byte
-deflateSeq :: [Word8] -> CodedSeq
-deflateSeq ws = CodedSeq (genericLength ws) (LB.pack $ go ws)
-  where
-    go (x:y:zs) = ((x `shiftL` 4) .|. y) : go zs
-    go [x] = [x `shiftL` 4]
-    go [] = []
-
--- | converts a Bam sequence into Nucleotides
--- Everything that isn't representable maps to N.
-decodeSeq :: CodedSeq -> [Nucleotide]
-decodeSeq = map (bases !) . inflateSeq
-  where bases = listArray (0,15) (map toNucleotide "NACNGNNNTNNNNNNN") :: Array Word8 Nucleotide
-
--- | converts a sequence of Nucleotides into the Bam representaion
-encodeSeq :: [Nucleotide] -> CodedSeq
-encodeSeq = deflateSeq . map num
-  where
-    num A = 1
-    num C = 2
-    num G = 4
-    num T = 8
-    num N = 15
-    num _ = 0
--}
-
-
-packCigar :: [Int] -> CodedCigar
-packCigar cs = CodedCigar $ listArray (1, length cs) cs
-
-unpackCigar :: CodedCigar -> [Int]
-unpackCigar = elems . unCodedCigar
 
 
 data MdOp = MdNum Int | MdRep Nucleotide | MdDel [Nucleotide] deriving Show
 
 getMd :: BamRec -> Maybe [MdOp]
-getMd r = case M.lookup (mkExtKey 'M' 'D') $ b_exts r of
+getMd r = case M.lookup "MD" $ b_exts r of
     Just (Text mdfield) -> readMd mdfield
     _                   -> Nothing
 
-readMd :: L.ByteString -> Maybe [MdOp]
-readMd s | L.null s           = return []
-         | isDigit (L.head s) = do (n,t) <- L.readInt s
+readMd :: B.ByteString -> Maybe [MdOp]
+readMd s | B.null s           = return []
+         | isDigit (B.head s) = do (n,t) <- B.readInt s
                                    (MdNum n :) <$> readMd t
-         | L.head s == '^'    = let (a,b) = L.break isDigit (L.tail s)
-                                in (MdDel (map toNucleotide $ L.unpack a) :) <$> readMd b
-         | otherwise          = (MdRep (toNucleotide $ L.head s) :) <$> readMd (L.tail s)
+         | B.head s == '^'    = let (a,b) = B.break isDigit (B.tail s)
+                                in (MdDel (map toNucleotide $ B.unpack a) :) <$> readMd b
+         | otherwise          = (MdRep (toNucleotide $ B.head s) :) <$> readMd (B.tail s)
 
 
-bamFlagPaired, bamFlagProperlyPaired, bamFlagUnmapped,
- bamFlagMateUnmapped, bamFlagStrand, bamFlagMateStrand,
- bamFlagFirstMate, bamFlagSecondMate, bamFlagAuxillary,
- bamFlagFailsQC, bamFlagDuplicate :: Int
+flagPaired, flagProperlyPaired, flagUnmapped, flagMateUnmapped, flagReversed, flagMateReversed, flagFirstMate, flagSecondMate,
+ flagAuxillary, flagFailsQC, flagDuplicate, flagLowQuality, flagLowComplexity :: Int
 
-bamFlagPaired = 0x1
-bamFlagProperlyPaired = 0x2
-bamFlagUnmapped = 0x4
-bamFlagMateUnmapped = 0x8
-bamFlagStrand = 0x10
-bamFlagMateStrand = 0x20
-bamFlagFirstMate = 0x40
-bamFlagSecondMate = 0x80
-bamFlagAuxillary = 0x100
-bamFlagFailsQC = 0x200
-bamFlagDuplicate = 0x400
+flagPaired = 0x1
+flagProperlyPaired = 0x2
+flagUnmapped = 0x4
+flagMateUnmapped = 0x8
+flagReversed = 0x10
+flagMateReversed = 0x20
+flagFirstMate = 0x40
+flagSecondMate = 0x80
+flagAuxillary = 0x100
+flagFailsQC = 0x200
+flagDuplicate = 0x400
+flagLowQuality = 0x800
+flagLowComplexity = 0x1000
+
+
+isPaired, isProperlyPaired, isUnmapped, isMateUnmapped, isReversed, isMateReversed, isAuxillary, isFailsQC, isDuplicate,
+ isLowQuality, isLowComplexity :: BamRec -> Bool
+
+isPaired         = flip testBit  0 . b_flag
+isProperlyPaired = flip testBit  1 . b_flag
+isUnmapped       = flip testBit  2 . b_flag
+isMateUnmapped   = flip testBit  3 . b_flag
+isReversed       = flip testBit  4 . b_flag
+isMateReversed   = flip testBit  5 . b_flag
+isAuxillary      = flip testBit  8 . b_flag
+isFailsQC        = flip testBit  9 . b_flag
+isDuplicate      = flip testBit 10 . b_flag
+isLowQuality     = flip testBit 11 . b_flag
+isLowComplexity  = flip testBit 12 . b_flag
+
+ 
+-- | tests if a record is a "first mate"
+-- Returns true if the read is flagged as "paired" and "first mate".
+-- Does not return true for single reads.
+isFirstMate :: BamRec -> Bool
+isFirstMate = (==) good . (.&.) type_mask . b_flag
+  where good = flagPaired .|. flagFirstMate
+
+-- | Tests if a record is a "second mate".
+-- Returns true if the read is flagged as "paired" and "second mate".
+-- Does not return true for single reads, even if they are adapter
+-- trimmed or merged.
+isSecondMate :: BamRec -> Bool
+isSecondMate = (==) good . (.&.) type_mask . b_flag
+  where good = flagPaired .|. flagSecondMate
+
+-- | Tests if a read is merged.
+-- Returns true for merged single reads (not flagged as "paired", but
+-- flagged as both "first mate" and "second mate"), does not get
+-- confused by true singles (not flagged as "first mate" and "second
+-- mate").
+isMerged :: BamRec -> Bool
+isMerged = (==) good . (.&.) type_mask . b_flag
+  where good = flagFirstMate .|. flagSecondMate
+
+-- | Tests if a read is adapter trimmed.
+-- Returns true for adapter trimmed single reads (not flagged as
+-- "paired", but flagged as "second mate"), does not get confused by
+-- paired reads (also flagged as "paired") or merged reads (also flagged
+-- as "first mate").
+isAdapterTrimmed :: BamRec -> Bool
+isAdapterTrimmed = (==) flagSecondMate . (.&.) type_mask . b_flag
+
+
+type_mask :: Int
+type_mask = flagFirstMate .|. flagSecondMate .|. flagPaired
+
 
 -- | Compares two sequence names the way samtools does.
 -- samtools sorts by "strnum_cmp":
@@ -692,52 +556,12 @@ compareNames n m = case (L.uncons n, L.uncons m) of
                     EQ -> n' `compareNames` m'
                                          
 
--- * Bam functions depending on MPI conventions
-
-bamFlagQualityFiltered, bamFlagComplexityFiltered :: Int
-bamFlagQualityFiltered = 0x800
-bamFlagComplexityFiltered = 0x1000
-
--- | get all the filter flags
+-- | Gets all the filter flags.
 -- Filter flags are the standard "fails QC", "is duplicate" and our
 -- extensions "fails quality" and "fails complexity".
-bamFilterFlags :: BamRec -> Int
-bamFilterFlags = (.&. mask) . b_flag  
-  where mask = bamFlagQualityFiltered .|. bamFlagComplexityFiltered .|. bamFlagFailsQC
-
--- | tests if a record is a "first mate"
--- Returns true if the read is flagged as "paired" and "first mate".
--- Does not return true for single reads.
-isFirstMate :: BamRec -> Bool
-isFirstMate = (== good) . (.&. mask) . b_flag
-  where good = bamFlagPaired .|. bamFlagFirstMate
-        mask = good .|. bamFlagSecondMate
-
--- | tests if a record is a "second mate"
--- Returns true if the read is flagged as "paired" and "second mate".
--- Does not return true for single reads, even if they are adapter
--- trimmed.
-isSecondMate :: BamRec -> Bool
-isSecondMate = (== good) . (.&. mask) . b_flag
-  where good = bamFlagPaired .|. bamFlagSecondMate
-        mask = good .|. bamFlagFirstMate
-
--- | tests if a read is merged
--- Returns true for merged single reads, does not get confused by true
--- singles.
-isMerged :: BamRec -> Bool
-isMerged = (== good) . (.&. mask) . b_flag
-  where good = bamFlagFirstMate .|. bamFlagSecondMate
-        mask = good
-
--- | tests if a read is adapter trimmed
--- Returns true for adapter trimmed single reads, does not get confused
--- by paired reads.
-isAdapterTrimmed :: BamRec -> Bool
-isAdapterTrimmed = (== good) . (.&. mask) . b_flag
-  where good = bamFlagSecondMate
-        mask = bamFlagFirstMate .|. bamFlagPaired .|. good
-
+filterFlags :: BamRec -> Int
+filterFlags = (.&.) mask . b_flag  
+  where mask = flagLowQuality .|. flagLowComplexity .|. flagFailsQC .|. flagDuplicate
 
 -- Stop gap solution.  we only get the first offset from the linear
 -- index, which allows us to navigate to a target sequence.  Will do the
@@ -761,6 +585,8 @@ readBamIndex = runGet getBamIndex
                     os <- filter (/= 0) <$> replicateM nintv getWord64le
                     return $ if null os then 0 else minimum os
         return $! listArray (toEnum 0, toEnum (nref-1)) offs
+
+    get_int_32 = fromIntegral <$> getWord32le
 
 
 data BamMeta = BamMeta {
@@ -790,8 +616,8 @@ do_parse p s = case L.toChunks s of
     check (P.Done rest r) | S.null rest = r
                           | otherwise = error $ "incomplete parse at " ++ show rest
 
-pMeta :: P.Parser BamMeta
-pMeta = foldr ($) nullMeta <$> P.many pLine 
+parseBamMeta :: P.Parser BamMeta
+parseBamMeta = foldr ($) nullMeta <$> P.many pLine 
   where
     pLine = P.char '@' >> P.choice [hdLine, coLine, otherLine] <* P.char '\n'
     hdLine = P.string "HD\t" >> 
@@ -825,8 +651,8 @@ pMeta = foldr ($) nullMeta <$> P.many pLine
 nullMeta :: BamMeta
 nullMeta = BamMeta (BamHeader (0,0) Unsorted []) [] []
 
-show_bam_meta :: BamMeta -> L.ByteString -> L.ByteString
-show_bam_meta (BamMeta h o c) = 
+showBamMeta :: BamMeta -> L.ByteString -> L.ByteString
+showBamMeta (BamMeta h o c) = 
     show_bam_meta_hdr h .
     foldr ((.) . show_bam_meta_other) id o .
     foldr ((.) . show_bam_meta_comment) id c
@@ -859,19 +685,24 @@ show_bam_meta (BamMeta h o c) =
 -- | Bam record in its native encoding.
 newtype BamRaw = BamRaw S.ByteString
 
-scanBam :: MonadIO m => (BamMeta -> Refs -> Iteratee BamRaw m a) -> Iteratee S.ByteString m a
-scanBam inner = do magic <- I.heads "BAM\SOH"
-                   when (magic /= 4) $ fail "BAM signature not found"
-                   hdr_len <- endianRead4 LSB
-                   meta <- I.joinI $ I.take (fromIntegral hdr_len) $ parserToIteratee pMeta
-                   refs <- get_ref_array
+instance NullPoint BamRaw where empty            = BamRaw S.empty
+instance Nullable  BamRaw where nullC (BamRaw s) = S.null s
 
-                   let loop it = I.isFinished >>= loop' it
-                       loop' it True = lift $ run =<< I.enumEof it
-                       loop' it False = do bsize <- endianRead4 LSB
-                                           raw <- getString (fromIntegral bsize)
-                                           lift (I.enumPure1Chunk (BamRaw raw) it) >>= loop
-                   loop (inner meta refs)
+-- | Decode a BAM stream into raw entries.  Note that the entries can be
+-- unpacked using @decodeBamEntry@.
+decodeBam :: MonadIO m => (BamMeta -> Refs -> Iteratee BamRaw m a) -> Iteratee S.ByteString m a
+decodeBam inner = do magic <- I.heads "BAM\SOH"
+                     when (magic /= 4) $ fail "BAM signature not found"
+                     hdr_len <- endianRead4 LSB
+                     meta <- I.joinI $ I.take (fromIntegral hdr_len) $ parserToIteratee parseBamMeta
+                     refs <- get_ref_array
+
+                     let loop it = I.isFinished >>= loop' it
+                         loop' it True = lift $ run =<< I.enumEof it
+                         loop' it False = do bsize <- endianRead4 LSB
+                                             raw <- getString (fromIntegral bsize)
+                                             lift (I.enumPure1Chunk (BamRaw raw) it) >>= loop
+                     loop (inner meta refs)
 
 get_ref_array :: MonadIO m => Iteratee S.ByteString m Refs
 get_ref_array = do nref <- endianRead4 LSB
@@ -893,7 +724,10 @@ getString n = liftI step
                    | otherwise       = S.append c `liftM` getString (n - S.length c)
 
 
-test = I.fileDriver (Bgzf.decompress (scanBam (\_ _ -> print_names))) 
+
+-- ------------------------------------------------------------------- Tests
+
+test = I.fileDriver (Bgzf.decompress (decodeBam (\_ _ -> print_names))) 
                     "/mnt/ngs_data/101203_SOLEXA-GA04_00007_PEDi_MM_QF_SR/Ibis/BWA/s_5_L3280_sequence_mq_hg19_nohap.bam"
 
 print_names :: Iteratee BamRaw IO ()
@@ -903,5 +737,3 @@ print_names = liftI step
                         liftI step
     step e@(EOF _) = idone () e
     
-instance NullPoint BamRaw where empty = BamRaw S.empty
-instance Nullable BamRaw where nullC (BamRaw s) = S.null s
