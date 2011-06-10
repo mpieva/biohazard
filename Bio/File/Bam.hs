@@ -121,8 +121,8 @@ newtype Refseq = Refseq { unRefseq :: Word32 } deriving (Show, Eq, Ord, Ix)
 instance Enum Refseq where
     succ = Refseq . succ . unRefseq
     pred = Refseq . pred . unRefseq
-    toEnum = Refseq . toEnum
-    fromEnum = fromEnum . unRefseq
+    toEnum = Refseq . fromIntegral
+    fromEnum = fromIntegral . unRefseq
     enumFrom = map Refseq . enumFrom . unRefseq
     enumFromThen (Refseq a) (Refseq b) = map Refseq $ enumFromThen a b
     enumFromTo (Refseq a) (Refseq b) = map Refseq $ enumFromTo a b
