@@ -28,6 +28,9 @@ module Bio.Base(
 
 import Data.Char            ( isAlpha, isSpace )
 import Data.Ix              ( Ix )
+import Data.Word            ( Word8 )
+import Foreign.Storable     ( Storable(..) )
+import Foreign.Ptr          ( Ptr, castPtr )
 
 import qualified Data.ByteString.Char8 as S
 import qualified Data.ByteString.Lazy as L
@@ -40,6 +43,12 @@ import qualified Data.ByteString.Lazy as L
 -- Experience says we're dealing with Ns and gaps all the type, so
 -- purity be damned, they are included as if they were real bases.
 data Nucleotide = Gap | A | C | G | T | N deriving (Eq, Ord, Enum, Ix, Bounded)
+
+instance Storable Nucleotide where
+    sizeOf _ = 1
+    alignment _ = 1
+    peek p = peek (castPtr p :: Ptr Word8) >>= \w -> return $! toEnum (fromIntegral w)
+    poke p x = poke (castPtr p :: Ptr Word8) (fromIntegral $ fromEnum x)
 
 -- | Sense of a strand.
 -- Avoids the confusion inherent in using a simple bool.

@@ -1,21 +1,24 @@
 {-# LANGUAGE Rank2Types #-}
 module Bio.File.Bam.Fastq where
 
+{- Parser for FastA/FastQ.  Screams out to be turned into an Iteratee.
+ - Also, the flags, despite being documented, aren't in fact handled. -}
+
 import Bio.File.Bam
 import Control.Applicative
-import Data.Char ( toUpper, ord )
-import Data.Word ( Word8 )
+import Data.Char ( toUpper, ord, chr )
 
 import qualified Data.ByteString.Lazy.Char8 as L
-import qualified Data.ByteString.Lazy       as LB
+import qualified Data.ByteString.Char8      as S
 import qualified Data.Map as M
 
 -- | Reader for DNA (not protein) sequences in FastA and FastQ.  We read
 -- everything vaguely looking like FastA or FastQ, then shoehorn it into
--- a BAM record.  We strive to extract information following established
--- conventions from the header, but we won't support everything under
--- the sun.  Only the canonical variant of FastQ is supported (qualities
--- stored as raw bytes with base 33).  Input can be gzipped.
+-- a BAM record.  We strive to extract information following
+-- more-or-less-established conventions from the header, but we won't
+-- support everything under the sun.  Only the canonical variant of
+-- FastQ is supported (qualities stored as raw bytes with base 33).
+-- Input can be gzipped.
 --
 -- Supported conventions:
 -- * A name suffix of /1 or /2 is turned into the first mate or second
@@ -38,19 +41,15 @@ import qualified Data.Map as M
 -- exactly as many Q-scores as there are bases, followed immediately by
 -- a header or end-of-file.  Whitespace is ignored.
 
-parseFastq :: L.ByteString -> [ BamRec ]
-parseFastq = parseFastq' skipDescr
-  where skipDescr = many (pTest ('\n' /=)) *> pure id
-
 parseFastq' :: Parser (BamRec->BamRec) -> L.ByteString -> [ BamRec ]
 parseFastq' pDescr = run pFasta
   where
-    run (P p) = p just1 fail fail
-    just1 x y = if L.all isSpace y then x else fail y
-    fail s = error $ "parse error near " ++ show (L.take 16 s)
+    run (P p) = p just1 err err
+    just1 x y = if L.all isSpace y then x else err y
+    err s = error $ "parse error near " ++ show (L.take 16 s)
 
     isHdr c = c == '@' || c == '>'
-    isBase c = toUpper c `elem` "ACGTUBDHVSWMKRYN"
+    isCBase c = toUpper c `elem` "ACGTUBDHVSWMKRYN"
     isSpace c = c == '\n' || c == '\r' || c == ' ' || c == '\t'
     canSkip c = isSpace c || c == '.' || c == '-'
 
@@ -59,28 +58,32 @@ parseFastq' pDescr = run pFasta
     pRec :: Parser BamRec
     pRec = pTest isHdr *> (makeRecord <$> pName <*> pDescr <*> (pSeq >>= pQual))
     pName = many (pTest (not . isSpace))
-    pSeq = (:) <$> pTest isBase <*> pSeq <|> pTest canSkip *> pSeq <|> pure []
+    pSeq = (:) <$> pTest isCBase <*> pSeq <|> pTest canSkip *> pSeq <|> pure []
     pQual sq = (,) sq <$> (pSym '+' *> many (pTest ('\n' /=)) *> pQual' (length sq) <|> return [])
     pQual' n = pTest isSpace *> pQual' n <|>
                (if n == 0 then pure [] else cons <$> pGet <*> pQual' (n-1))
-                    where cons c qs = (fromIntegral (ord c) - 33) : qs
+                    where cons c qs = (chr $ ord c - 33) : qs
     unfold p = ((:) <$> p <!> unfold p) <|> pure []
 
     makeRecord name extra (sq,qual) = extra $ BamRec {
-            b_qname = L.pack name,              -- XXX flags?
+            b_qname = S.pack name,              -- XXX flags?
             b_flag  = 0,                        -- XXX flags?
             b_rname = invalidRefseq,
             b_pos   = invalidPos,
             b_mapq  = 0,
-            b_cigar = packCigar [],
+            b_cigar = Cigar [],
             b_mrnm  = invalidRefseq,
             b_mpos  = invalidPos,
             b_isize = 0,
-            b_seq   = encodeSeq $ read sq,
-            b_qual  = LB.pack qual,
+            b_seq   = read sq,
+            b_qual  = S.pack qual,
             b_exts  = M.empty,
             b_virtual_offset = 0 }
 
+
+parseFastq :: L.ByteString -> [ BamRec ]
+parseFastq = parseFastq' skipDescr
+  where skipDescr = many (pTest ('\n' /=)) *> pure id
 
 ----------------------------------------------------------------------------
 --
@@ -93,13 +96,6 @@ parseFastq' pDescr = run pFasta
 -- Simple, non-backtracking, no-lookahead parser combinators.
 -- Use with caution!  "Borrowed" and adapted to ByteString input.
 
-
-{- module LLParsing
-    ( pTest , pCheck , pSym ,
-    ,(<^>),(<?>)
-    , pFoldr , pChainr , pChainl, pTry
-    , pRun
-    ) where -}
 
 newtype Parser res = P (forall a .
        (res -> L.ByteString -> a)   -- ok continuation
@@ -116,7 +112,7 @@ pGet = P pget
                    | otherwise = ok (L.head i) (L.tail i)
 
 pTest :: (Char -> Bool) -> Parser Char
-pTest pred = P (ptest pred)
+pTest pr = P (ptest pr)
   where
     ptest p ok f _e l | L.null l     = f L.empty
                       | p (L.head l) = ok (L.head l) (L.tail l)
@@ -154,9 +150,9 @@ instance Monad Parser where
 
 infixr 3 <!>
 (<!>) :: Parser (a->b) -> Parser a -> Parser b                      -- eager sequence (contains a thinko?)
-P pa <!> P pb = P (\ok -> pa (\a i -> ok (a (pb at_eof fail fail i)) L.empty))
-  where fail s = error $ "parse error before " ++ show (L.take 16 s)
-        at_eof r s = if L.null s then r else fail s
+P pa <!> P pb = P (\ok -> pa (\a i -> ok (a (pb at_eof err err i)) L.empty))
+  where err s = error $ "parse error before " ++ show (L.take 16 s)
+        at_eof r s = if L.null s then r else err s
 
 infixl 4 <^>, <?> 
 

@@ -11,6 +11,8 @@ module Bio.File.Bam (
 
     -- writeBamFile,
 
+    BamRaw(..),
+
     BamRec(..),
     Refs,
     noRefs,
@@ -27,6 +29,7 @@ module Bio.File.Bam (
     getMd,
     readMd,
 
+    Cigar(..),
     CigOp(..),
     cigarToAlnLen,
 
@@ -67,13 +70,12 @@ module Bio.File.Bam (
 import Bio.Base
 import qualified Bio.File.Bgzf as Bgzf
 
-import Codec.Compression.GZip
-import Control.Monad                ( replicateM, replicateM_, when, forM_, liftM, (>=>) )
+-- import Codec.Compression.GZip
+import Control.Monad                ( replicateM, replicateM_, when, forM_, liftM )
 import Control.Monad.IO.Class
 import Control.Monad.Trans.Class
-import Control.Applicative          ( (<$>), (<$), (<*>), (*>), (<*) )
+import Control.Applicative          ( (<$>), (<$), (<*>), (<*) )
 import Data.Array.IO
-import Data.Array.MArray
 import Data.Array.Unboxed
 import Data.Attoparsec.Iteratee
 import Data.Binary.Get
@@ -83,12 +85,10 @@ import Data.Char                    ( chr, ord, isDigit )
 import Data.Int                     ( Int64, Int32 )
 import Data.Iteratee.Base
 import Data.Iteratee.Binary
-import Data.List                    ( genericTake, genericLength )
 import Data.Word                    ( Word64, Word32, Word8 )
 import Foreign.Marshal.Alloc        ( alloca )
 import Foreign.Ptr                  ( castPtr )
 import Foreign.Storable             ( peek, poke )
-import System.IO
 import System.IO.Unsafe             ( unsafePerformIO )
 
 import qualified Data.Attoparsec.Char8          as P
@@ -97,7 +97,6 @@ import qualified Data.ByteString                as S
 import qualified Data.ByteString.Char8          as B
 import qualified Data.ByteString.Lazy.Char8     as L
 import qualified Data.Iteratee                  as I
-import qualified Data.Iteratee.IO               as I
 import qualified Data.Map                       as M
 
 
@@ -130,8 +129,8 @@ newtype Refseq = Refseq { unRefseq :: Word32 } deriving (Show, Eq, Ord, Ix)
 instance Enum Refseq where
     succ = Refseq . succ . unRefseq
     pred = Refseq . pred . unRefseq
-    toEnum = Refseq . toEnum
-    fromEnum = fromEnum . unRefseq
+    toEnum = Refseq . fromIntegral
+    fromEnum = fromIntegral . unRefseq
     enumFrom = map Refseq . enumFrom . unRefseq
     enumFromThen (Refseq a) (Refseq b) = map Refseq $ enumFromThen a b
     enumFromTo (Refseq a) (Refseq b) = map Refseq $ enumFromTo a b
@@ -227,7 +226,7 @@ noRefs = listArray (toEnum 1, toEnum 0) []
 
 -- | Decodes a raw block into a @BamRec@.
 decodeBamEntry :: BamRaw -> BamRec
-decodeBamEntry (BamRaw s) = case G.runGet go s of
+decodeBamEntry (BamRaw offs s) = case G.runGet go s of
     (Left  e,  _)             -> error e
     (Right r, s') | S.null s' -> r
                   | otherwise -> error "incomplete BAM record"
@@ -250,10 +249,10 @@ decodeBamEntry (BamRaw s) = case G.runGet go s of
             !exts <- getExtensions M.empty
 
             return $ BamRec read_name flag rid start mapq cigar
-                            mate_rid mate_pos ins_size (take read_len $ expand qry_seq) qual exts 0 -- start_offs
+                            mate_rid mate_pos ins_size (take read_len $ expand qry_seq) qual exts offs
   
     bases = listArray (0,15) (map toNucleotide "NACNGNNNTNNNNNNN") :: Array Word8 Nucleotide
-    expand s = if S.null s then [] else let x = S.head s in bases ! (x `shiftR` 4) : bases ! (x .&. 0xf) : expand (S.tail s)
+    expand t = if S.null t then [] else let x = S.head t in bases ! (x `shiftR` 4) : bases ! (x .&. 0xf) : expand (S.tail t)
 
     decodeCigar c | cc <= fromEnum (maxBound :: CigOp) = (toEnum cc, cl)
                   | otherwise = error "unknown Cigar operation"
@@ -360,7 +359,9 @@ encodeBamEntry = S.concat . L.toChunks . runPut . putEntry
                      putSeq $ b_seq b
                      putByteString $ if not (S.null (b_qual b)) then b_qual b
                                      else S.replicate (length $ b_seq b) 0xff
-                     mapM_ (\([a,b],v) -> putChr a >> putChr b >> putValue v) $ M.toList $ b_exts b
+                     forM_ (M.toList $ b_exts b) $ \(k,v) -> 
+                        case k of [c,d] -> putChr c >> putChr d >> putValue v
+                                  _     -> error $ "invalid field key " ++ show k
 
     encodeCigar :: (CigOp,Int) -> Int
     encodeCigar (op,l) = fromEnum op .|. l `shiftL` 4
@@ -377,6 +378,7 @@ encodeBamEntry = S.concat . L.toChunks . runPut . putEntry
 -- We generate BAM with dynamic blocks, then stream them out to the
 -- file.  We also keep the offsets of those blocks and write a separate
 -- binary index (for Sector).
+-- XXX Do we need this?  Do we want it?
 -- Note: The index format of Sector is underspecified.  We write the
 -- offset as little endian, but it's probably platform dependent.
 {-
@@ -577,8 +579,8 @@ readBamIndex = runGet getBamIndex
         nref <- get_int_32
         offs <- replicateM nref $ do
                     nbins <- get_int_32
-                    replicateM nbins $ do
-                        bin <- get_int_32 -- "distinct bin", whatever that means
+                    replicateM_ nbins $ do
+                        _bin <- get_int_32 -- "distinct bin", whatever that means
                         nchunks <- get_int_32
                         replicateM_ nchunks $ getWord64le >> getWord64le
                     nintv <- get_int_32
@@ -605,16 +607,6 @@ data BamSorting = Unsorted | Grouped | Queryname | Coordinate | GroupSorted
     deriving Show
 
 type BamOtherShit = [(Char, Char, S.ByteString)]
-
-do_parse :: P.Parser a -> L.ByteString -> a
-do_parse p s = case L.toChunks s of
-    [] -> check $ P.parse p S.empty 
-    (c:cs) -> check $ foldl P.feed (P.parse p c) cs `P.feed` S.empty
-  where
-    check (P.Fail _rest _ctxs err) = error err
-    check (P.Partial  _k) = error $ "premature end of header"
-    check (P.Done rest r) | S.null rest = r
-                          | otherwise = error $ "incomplete parse at " ++ show rest
 
 parseBamMeta :: P.Parser BamMeta
 parseBamMeta = foldr ($) nullMeta <$> P.many pLine 
@@ -657,17 +649,17 @@ showBamMeta (BamMeta h o c) =
     foldr ((.) . show_bam_meta_other) id o .
     foldr ((.) . show_bam_meta_comment) id c
   where
-    show_bam_meta_hdr (BamHeader (maj,min) so o) = 
-        L.append "@HD\tVN:" . L.append (L.pack (show maj ++ ':' : show min)) .
+    show_bam_meta_hdr (BamHeader (major,minor) so os) = 
+        L.append "@HD\tVN:" . L.append (L.pack (show major ++ ':' : show minor)) .
         L.append (case so of Unsorted -> L.empty
                              Grouped  -> "\tSO:grouped"
                              Queryname  -> "\tSO:queryname"
                              Coordinate  -> "\tSO:coordinate"
                              GroupSorted  -> "\tSO:groupsort") .
-        foldr ((.) . show_bam_other) id o .
+        foldr ((.) . show_bam_other) id os .
         L.cons '\n'
 
-    show_bam_meta_comment c = L.append "@CO\t" . L.append (L.fromChunks [c]) . L.cons '\n'
+    show_bam_meta_comment cm = L.append "@CO\t" . L.append (L.fromChunks [cm]) . L.cons '\n'
 
     show_bam_meta_other (a,b,ts) = 
         L.cons '@' . L.cons a . L.cons b . 
@@ -677,43 +669,60 @@ showBamMeta (BamMeta h o c) =
         L.cons '\t' . L.cons a . L.cons b . L.cons ':' . L.append (L.fromChunks [v])
 
 
--- need to add this as soon as I figure out a good way to pass the
--- information
--- data RawBam = RawBam { virt_offset :: {-# UNPACK #-} !Int64
-                     -- , raw_data :: !S.ByteString }
+-- | Bam record in its native encoding along with virtual address.
+data BamRaw = BamRaw { virt_offset :: {-# UNPACK #-} !Int64
+                     , raw_data :: !S.ByteString }
 
--- | Bam record in its native encoding.
-newtype BamRaw = BamRaw S.ByteString
-
-instance NullPoint BamRaw where empty            = BamRaw S.empty
-instance Nullable  BamRaw where nullC (BamRaw s) = S.null s
+instance NullPoint BamRaw where empty              = BamRaw 0 S.empty
+instance Nullable  BamRaw where nullC (BamRaw _ s) = S.null s
 
 -- | Decode a BAM stream into raw entries.  Note that the entries can be
 -- unpacked using @decodeBamEntry@.
-decodeBam :: MonadIO m => (BamMeta -> Refs -> Iteratee BamRaw m a) -> Iteratee S.ByteString m a
-decodeBam inner = do magic <- I.heads "BAM\SOH"
-                     when (magic /= 4) $ fail "BAM signature not found"
-                     hdr_len <- endianRead4 LSB
-                     meta <- I.joinI $ I.take (fromIntegral hdr_len) $ parserToIteratee parseBamMeta
-                     refs <- get_ref_array
+decodeBam :: MonadIO m => (BamMeta -> Refs -> Iteratee BamRaw m a) -> Iteratee Bgzf.Block m a
+decodeBam inner = do meta <- liftBlock get_bam_header
+                     refs <- liftBlock get_ref_array
+                     loop $ inner meta refs
+  where
+    loop it = I.isFinished >>= loop' it
+    loop' it True = I.joinI $ lift $ I.enumEof it
+    loop' it False = do off <- getOffset
+                        it' <- liftBlock $ do bsize <- endianRead4 LSB
+                                              raw <- getString (fromIntegral bsize)
+                                              lift $ I.enumPure1Chunk (BamRaw off raw) it
+                        loop it'
 
-                     let loop it = I.isFinished >>= loop' it
-                         loop' it True = lift $ run =<< I.enumEof it
-                         loop' it False = do bsize <- endianRead4 LSB
-                                             raw <- getString (fromIntegral bsize)
-                                             lift (I.enumPure1Chunk (BamRaw raw) it) >>= loop
-                     loop (inner meta refs)
+    get_bam_header  = do magic <- I.heads "BAM\SOH"
+                         when (magic /= 4) $ fail "BAM signature not found"
+                         hdr_len <- endianRead4 LSB
+                         I.joinI $ I.take (fromIntegral hdr_len) $ parserToIteratee parseBamMeta
 
-get_ref_array :: MonadIO m => Iteratee S.ByteString m Refs
-get_ref_array = do nref <- endianRead4 LSB
-                   let lr = (toEnum 0,toEnum (fromIntegral nref-1))
-                   arr <- liftIO $ newArray_ lr
-                   forM_ (range lr) $ \i -> do namelength <- endianRead4 LSB
-                                               nm <- getString (fromIntegral namelength)
-                                               ln <- endianRead4 LSB
-                                               liftIO $ writeArray arr i (nm,fromIntegral ln)
-                   liftIO $ unsafeFreeze (arr :: MRefs)
+    get_ref_array = do nref <- endianRead4 LSB
+                       let lr = (toEnum 0,toEnum (fromIntegral nref-1))
+                       arr <- liftIO $ newArray_ lr
+                       forM_ (range lr) $ \i -> do namelength <- endianRead4 LSB
+                                                   nm <- getString (fromIntegral namelength)
+                                                   ln <- endianRead4 LSB
+                                                   liftIO $ writeArray arr i (S.init nm,fromIntegral ln)
+                       liftIO $ unsafeFreeze (arr :: MRefs)
 
+getOffset :: Monad m => Iteratee Bgzf.Block m Int64
+getOffset = liftI step
+  where
+    step s@(EOF _) = icont step (Just (setEOF s))
+    step s@(Chunk (Bgzf.Block o _)) = idone o s
+
+liftBlock :: MonadIO m => Iteratee S.ByteString m a -> Iteratee Bgzf.Block m a
+liftBlock = I.liftI . step 
+  where
+    step it (I.EOF ex) = I.joinI $ lift $ I.enumChunk (I.EOF ex) it
+                            
+    step it (I.Chunk (Bgzf.Block l s)) = Iteratee $ \od oc ->
+            I.enumPure1Chunk s it >>= \it' -> I.runIter it' (onDone od) (oc . step . liftI)
+      where
+        onDone od hdr (I.Chunk rest) = od hdr (Chunk $ Bgzf.Block (l + fromIntegral (S.length s-S.length rest)) rest)
+        onDone od hdr (I.EOF     ex) = od hdr (EOF ex)
+
+                                       
 
 getString :: Monad m => Int -> Iteratee S.ByteString m S.ByteString
 getString 0 = idone S.empty (Chunk S.empty)
@@ -727,7 +736,8 @@ getString n = liftI step
 
 -- ------------------------------------------------------------------- Tests
 
-test = I.fileDriver (Bgzf.decompress (decodeBam (\_ _ -> print_names))) 
+test :: IO ()
+test = I.fileDriver (Bgzf.decompress' (decodeBam (\_ _ -> print_names))) 
                     "/mnt/ngs_data/101203_SOLEXA-GA04_00007_PEDi_MM_QF_SR/Ibis/BWA/s_5_L3280_sequence_mq_hg19_nohap.bam"
 
 print_names :: Iteratee BamRaw IO ()

@@ -30,6 +30,9 @@ The sensible way to treat these is probably to just say there are two
 kinds of implied annotation (repeats and large gaps for a typical
 genome), which can be interpreted in whatever way fits.  All of this
 isn't really supported right now.
+
+Note to self:  use Judy for the Int->Int mappings?  Or (gasp!) sorted
+arrays with binary search?
 -}
 
 import Bio.Base
@@ -41,7 +44,6 @@ import           Data.Bits
 import           Data.Binary.Get
 import qualified Data.ByteString.Char8 as S
 import qualified Data.ByteString.Lazy as L
-import qualified Data.ByteString.Lazy.Char8 as LC
 import qualified Data.IntMap as I
 import           Data.IORef
 import qualified Data.Map as M
@@ -57,9 +59,9 @@ data TwoBitFile = TBF {
     tbf_seqs :: !(M.Map Seqid (IORef TwoBitSequence))
 }
 
-data TwoBitSequence = Untouched { tbs_offset     :: {-# UNPACK #-} !Int }
-                    | Indexed   { tbs_s_blocks   :: {-# UNPACK #-} !( I.IntMap Int )
-                                , tbs_m_blocks   :: {-# UNPACK #-} !( I.IntMap Int )
+data TwoBitSequence = Untouched { _tbs_offset    :: {-# UNPACK #-} !Int }
+                    | Indexed   { tbs_s_blocks   :: I.IntMap Int
+                                , tbs_m_blocks   :: I.IntMap Int
                                 , tbs_dna_offset :: {-# UNPACK #-} !Int
                                 , tbs_dna_size   :: {-# UNPACK #-} !Int }
 
@@ -79,7 +81,7 @@ openTwoBit fp = do
                 unless (version == 0) $ fail $ "wrong .2bit version " ++ show version
 
                 nseqs <- getWord32
-                getWord32
+                _reserved <- getWord32
 
                 (,) getWord32 `fmap` replicateM nseqs ( liftM2 (,)
                         ( getWord8 >>= getLazyByteString . fromIntegral )
@@ -222,8 +224,7 @@ clampPosition g (Range (Pos n Forward start) len) = do
         end' = min size (start + len)
     return $ Range (Pos n Forward start') (end' - start')
 
-clampPosition g (Range (Pos n Reverse start) len) = do
-    size <- getSeqLength g n
+clampPosition _ (Range (Pos n Reverse start) len) = do
     let start' = min start len
         end'   = max 0 (start - len)
     return $ Range (Pos n Reverse start') (start' - end')

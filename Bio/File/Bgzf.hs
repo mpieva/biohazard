@@ -25,7 +25,6 @@ a sequence of blocks and an Iteratee transformer to compress a sequence
 of blocks into BGZF format.
 -} 
 
-import Control.Exception.Base
 import Control.Monad
 import Control.Monad.IO.Class
 import Control.Monad.Trans.Class
@@ -50,7 +49,7 @@ import qualified Data.ByteString.Lazy       as L
 -- import qualified Data.ByteString.Unsafe     as B
 import qualified Data.Iteratee.ListLike     as I
 
--- one BGZF block: offset and contents
+-- one BGZF block: virtual offset and contents
 data Block = Block {-# UNPACK #-} !Int64 {-# UNPACK #-} !B.ByteString
 
 instance I.NullPoint Block where empty = Block 0 B.empty
@@ -74,7 +73,8 @@ decompressWith block !off inner = I.isFinished >>= go
                   comp <- get_block $ fromIntegral csize +1
                   -- this is ugly and very roundabout, but works for the time being...
                   let c = B.concat . L.toChunks . Z.decompress $ L.fromChunks [comp]
-                  lift (I.enumPure1Chunk (block off c) inner) >>= decompressWith block (off + fromIntegral csize + 1)
+                  lift (I.enumPure1Chunk (block (off `shiftL` 16) c) inner)
+                        >>= decompressWith block (off + fromIntegral csize + 1)
 
    -- Doesn't work.  Maybe because 'uncompress'
    -- gets confused by the headers?
@@ -163,7 +163,7 @@ bgzfEofMarker = compress1 L.empty
 compress :: Monad m => I.Iteratee B.ByteString m a -> I.Iteratee B.ByteString m a
 compress it0 = I.icont (step it0 L.empty) Nothing
   where
-    step it acc c@(I.EOF x) = I.joinIM $ I.enumPure1Chunk (compress1 acc) it >>= \it' ->       -- XXX index?
+    step it acc c@(I.EOF _) = I.joinIM $ I.enumPure1Chunk (compress1 acc) it >>= \it' ->       -- XXX index?
                                          I.enumPure1Chunk bgzfEofMarker it' >>= \it'' ->
                                          I.enumChunk c it''
     step it acc (I.Chunk c) 
@@ -222,6 +222,7 @@ print_block = I.liftI step
     step e@(I.EOF mx) = do liftIO $ putStrLn $ "EOF " ++ show mx
                            I.idone () e
 
+test, test' :: IO ()
 test = fileDriver (decompress' print_block)
        "/mnt/ngs_data/101203_SOLEXA-GA04_00007_PEDi_MM_QF_SR/Ibis/BWA/s_5_L3280_sequence_mq_hg19_nohap.bam" 
 
