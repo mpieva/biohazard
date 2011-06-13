@@ -64,7 +64,13 @@ module Bio.File.Bam (
 
     BamIndex,
     readBamIndex,
-    readBamSequence
+    readBamSequence,
+
+    BamMeta(..),
+    nullMeta,
+    BamHeader(..),
+    BamSorting(..),
+    BamOtherShit
 ) where
 
 import Bio.Base
@@ -682,10 +688,12 @@ do_parse p s = case L.toChunks s of
     check (P.Done rest r) | S.null rest = r
                           | otherwise = error $ "incomplete parse at " ++ show rest
 
+nullMeta :: BamMeta
+nullMeta = BamMeta (BamHeader (0,0) Unsorted []) [] []
+
 parse_bam_meta :: L.ByteString -> BamMeta
 parse_bam_meta = do_parse pMeta
   where
-    nullMeta = BamMeta (BamHeader (0,0) Unsorted []) [] []
     pMeta = foldr ($) nullMeta <$> P.many pLine 
     pLine = P.char '@' >> P.choice [hdLine, coLine, otherLine] <* P.char '\n'
     hdLine = P.string "HD\t" >> 

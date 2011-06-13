@@ -1,3 +1,4 @@
+set -e
 version=$( awk '/Version:/ { print $2 }' biohazard.cabal )
 echo "Building and installing biohazard-${version}"
 
