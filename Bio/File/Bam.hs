@@ -611,6 +611,21 @@ type BamOtherShit = [(Char, Char, S.ByteString)]
 parseBamMeta :: P.Parser BamMeta
 parseBamMeta = foldr ($) nullMeta <$> P.many pLine 
   where
+<<<<<<< .working
+=======
+    check (P.Fail _rest _ctxs err) = error err
+    check (P.Partial  _k) = error $ "premature end of header"
+    check (P.Done rest r) | S.null rest = r
+                          | otherwise = error $ "incomplete parse at " ++ show rest
+
+nullMeta :: BamMeta
+nullMeta = BamMeta (BamHeader (0,0) Unsorted []) [] []
+
+parse_bam_meta :: L.ByteString -> BamMeta
+parse_bam_meta = do_parse pMeta
+  where
+    pMeta = foldr ($) nullMeta <$> P.many pLine 
+>>>>>>> .merge-right.r2783
     pLine = P.char '@' >> P.choice [hdLine, coLine, otherLine] <* P.char '\n'
     hdLine = P.string "HD\t" >> 
              (\fns meta -> meta { meta_hdr = foldr ($) (meta_hdr meta) fns })
