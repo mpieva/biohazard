@@ -33,6 +33,7 @@ module Bio.File.Bam (
     CigOp(..),
     cigarToAlnLen,
 
+    Extensions,
     Ext(..),
 
     flagPaired,         isPaired,
@@ -68,10 +69,9 @@ module Bio.File.Bam (
 ) where
 
 import Bio.Base
-import qualified Bio.File.Bgzf as Bgzf
+import Bio.File.Bgzf
 
--- import Codec.Compression.GZip
-import Control.Monad                ( replicateM, replicateM_, when, forM_, liftM )
+import Control.Monad                ( replicateM, replicateM_, when, forM_ )
 import Control.Monad.IO.Class
 import Control.Monad.Trans.Class
 import Control.Applicative          ( (<$>), (<$), (<*>), (<*) )
@@ -318,7 +318,7 @@ getByteStringNul = S.init <$> (G.lookAhead (get_len 1) >>= G.getByteString)
 -- individually.  Concatening the result gives a valid file, but the
 -- chunks can be turned into an index, too.
 encodeBam :: Monad m => BamMeta -> Refs -> Iteratee S.ByteString m a -> Iteratee S.ByteString m a
-encodeBam meta refs i = lift (I.enumPure1Chunk header i >>= I.enumPure1Chunk S.empty) >>= Bgzf.compress
+encodeBam meta refs i = lift (I.enumPure1Chunk header i >>= I.enumPure1Chunk S.empty) >>= compress
   where 
     header = S.concat . L.toChunks $ runPut putHeader
 
@@ -611,21 +611,6 @@ type BamOtherShit = [(Char, Char, S.ByteString)]
 parseBamMeta :: P.Parser BamMeta
 parseBamMeta = foldr ($) nullMeta <$> P.many pLine 
   where
-<<<<<<< .working
-=======
-    check (P.Fail _rest _ctxs err) = error err
-    check (P.Partial  _k) = error $ "premature end of header"
-    check (P.Done rest r) | S.null rest = r
-                          | otherwise = error $ "incomplete parse at " ++ show rest
-
-nullMeta :: BamMeta
-nullMeta = BamMeta (BamHeader (0,0) Unsorted []) [] []
-
-parse_bam_meta :: L.ByteString -> BamMeta
-parse_bam_meta = do_parse pMeta
-  where
-    pMeta = foldr ($) nullMeta <$> P.many pLine 
->>>>>>> .merge-right.r2783
     pLine = P.char '@' >> P.choice [hdLine, coLine, otherLine] <* P.char '\n'
     hdLine = P.string "HD\t" >> 
              (\fns meta -> meta { meta_hdr = foldr ($) (meta_hdr meta) fns })
@@ -688,22 +673,20 @@ showBamMeta (BamMeta h o c) =
 data BamRaw = BamRaw { virt_offset :: {-# UNPACK #-} !Int64
                      , raw_data :: !S.ByteString }
 
-instance NullPoint BamRaw where empty              = BamRaw 0 S.empty
-instance Nullable  BamRaw where nullC (BamRaw _ s) = S.null s
 
 -- | Decode a BAM stream into raw entries.  Note that the entries can be
 -- unpacked using @decodeBamEntry@.
-decodeBam :: MonadIO m => (BamMeta -> Refs -> Iteratee BamRaw m a) -> Iteratee Bgzf.Block m a
+decodeBam :: MonadIO m => (BamMeta -> Refs -> Iteratee [BamRaw] m a) -> Iteratee Block m a
 decodeBam inner = do meta <- liftBlock get_bam_header
                      refs <- liftBlock get_ref_array
                      loop $ inner meta refs
   where
     loop it = I.isFinished >>= loop' it
-    loop' it True = I.joinI $ lift $ I.enumEof it
+    loop' it True = lift $ run it
     loop' it False = do off <- getOffset
                         it' <- liftBlock $ do bsize <- endianRead4 LSB
                                               raw <- getString (fromIntegral bsize)
-                                              lift $ I.enumPure1Chunk (BamRaw off raw) it
+                                              lift $ I.enumPure1Chunk [BamRaw off raw] it
                         loop it'
 
     get_bam_header  = do magic <- I.heads "BAM\SOH"
@@ -720,45 +703,13 @@ decodeBam inner = do meta <- liftBlock get_bam_header
                                                    liftIO $ writeArray arr i (S.init nm,fromIntegral ln)
                        liftIO $ unsafeFreeze (arr :: MRefs)
 
-getOffset :: Monad m => Iteratee Bgzf.Block m Int64
-getOffset = liftI step
-  where
-    step s@(EOF _) = icont step (Just (setEOF s))
-    step s@(Chunk (Bgzf.Block o _)) = idone o s
-
-liftBlock :: MonadIO m => Iteratee S.ByteString m a -> Iteratee Bgzf.Block m a
-liftBlock = I.liftI . step 
-  where
-    step it (I.EOF ex) = I.joinI $ lift $ I.enumChunk (I.EOF ex) it
-                            
-    step it (I.Chunk (Bgzf.Block l s)) = Iteratee $ \od oc ->
-            I.enumPure1Chunk s it >>= \it' -> I.runIter it' (onDone od) (oc . step . liftI)
-      where
-        onDone od hdr (I.Chunk rest) = od hdr (Chunk $ Bgzf.Block (l + fromIntegral (S.length s-S.length rest)) rest)
-        onDone od hdr (I.EOF     ex) = od hdr (EOF ex)
-
-                                       
-
-getString :: Monad m => Int -> Iteratee S.ByteString m S.ByteString
-getString 0 = idone S.empty (Chunk S.empty)
-getString n = liftI step
-  where
-    step c@(EOF _) = icont step (Just $ setEOF c)
-    step (Chunk c) | S.length c >= n = idone (S.take n c) (Chunk $ S.drop n c)
-                   | otherwise       = S.append c `liftM` getString (n - S.length c)
-
-
 
 -- ------------------------------------------------------------------- Tests
 
 test :: IO ()
-test = I.fileDriver (Bgzf.decompress' (decodeBam (\_ _ -> print_names))) 
+test = I.fileDriver (decompress' (decodeBam (\_ _ -> print_names))) 
                     "/mnt/ngs_data/101203_SOLEXA-GA04_00007_PEDi_MM_QF_SR/Ibis/BWA/s_5_L3280_sequence_mq_hg19_nohap.bam"
 
-print_names :: Iteratee BamRaw IO ()
-print_names = liftI step
-  where
-    step (Chunk c) = do liftIO $ S.putStrLn $ b_qname $ decodeBamEntry c
-                        liftI step
-    step e@(EOF _) = idone () e
+print_names :: Iteratee [BamRaw] IO ()
+print_names = I.mapM_ $ S.putStrLn . b_qname . decodeBamEntry 
     

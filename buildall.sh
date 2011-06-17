@@ -3,7 +3,7 @@ version=$( awk '/Version:/ { print $2 }' biohazard.cabal )
 echo "Building and installing biohazard-${version}"
 
 cabal clean
-cabal configure
+cabal configure --ghc-options=-Wall
 cabal build
 cabal install
 cabal sdist

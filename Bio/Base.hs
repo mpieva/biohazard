@@ -80,7 +80,7 @@ shelve s = case L.toChunks s of
 -- you see the complement of the first base to the left.  
 data Position = Pos {
         p_seq   :: {-# UNPACK #-} !Seqid,
-        p_sense :: {-# UNPACK #-} !Sense,
+        p_sense ::                !Sense,
         p_start :: {-# UNPACK #-} !Int
     } deriving (Show, Eq, Ord)
 
