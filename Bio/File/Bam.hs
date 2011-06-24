@@ -64,24 +64,29 @@ module Bio.File.Bam (
     showBamMeta,
 
     BamHeader(..),
+    BamSQ(..),
     BamSorting(..),
     BamOtherShit
 ) where
 
+-- | Note: We strive to support everything possible in BAM.  So far,
+-- the implementation of the nucleotides is somewhat lacking:  we do not
+-- have support for ambiguity codes, and the = symbol is not understood.
+
 import Bio.Base
 import Bio.File.Bgzf
 
-import Control.Monad                ( replicateM, replicateM_, when, forM_ )
-import Control.Monad.IO.Class
+import Control.Monad
 import Control.Monad.Trans.Class
-import Control.Applicative          ( (<$>), (<$), (<*>), (<*) )
-import Data.Array.IO
+import Control.Applicative
+import Data.Array.IArray
 import Data.Array.Unboxed
+import Data.Attoparsec              ( anyWord8 )
 import Data.Attoparsec.Iteratee
 import Data.Binary.Get
 import Data.Binary.Put
 import Data.Bits                    ( testBit, shiftL, shiftR, (.&.), (.|.) )
-import Data.Char                    ( chr, ord, isDigit )
+import Data.Char                    ( chr, ord, isDigit, digitToInt )
 import Data.Int                     ( Int64, Int32 )
 import Data.Iteratee.Base
 import Data.Iteratee.Binary
@@ -216,7 +221,6 @@ readBamSequence fp idx refseq = do
 
 -- | A list of reference sequences.  Note that the first reference sequence must have index 0
 type Refs = Array Refseq (Seqid, Int)
-type MRefs = IOArray Refseq (Seqid, Int)
 
 -- | The empty list of references.  Needed for BAM files that don't really store alignments.
 noRefs :: Refs
@@ -317,8 +321,8 @@ getByteStringNul = S.init <$> (G.lookAhead (get_len 1) >>= G.getByteString)
 -- We start new BGZF blocks at sensible places, then return them
 -- individually.  Concatening the result gives a valid file, but the
 -- chunks can be turned into an index, too.
-encodeBam :: Monad m => BamMeta -> Refs -> Iteratee S.ByteString m a -> Iteratee S.ByteString m a
-encodeBam meta refs i = lift (I.enumPure1Chunk header i >>= I.enumPure1Chunk S.empty) >>= compress
+encodeBam :: Monad m => BamMeta -> Refs -> Iteratee S.ByteString m a -> m a
+encodeBam meta refs = (I.enumPure1Chunk header >=> I.enumPure1Chunk S.empty >=> run) . compress
   where 
     header = S.concat . L.toChunks $ runPut putHeader
 
@@ -593,6 +597,7 @@ readBamIndex = runGet getBamIndex
 
 data BamMeta = BamMeta {
         meta_hdr :: BamHeader,
+        meta_seqs :: [BamSQ],
         meta_other_shit :: [(Char, Char, BamOtherShit)],
         meta_comment :: [S.ByteString]
     } deriving Show
@@ -603,6 +608,15 @@ data BamHeader = BamHeader {
         hdr_other_shit :: BamOtherShit
     } deriving Show
 
+data BamSQ = BamSQ {
+        sq_name :: Seqid,
+        sq_length :: Int,
+        sq_other_shit :: BamOtherShit
+    } deriving Show
+
+bad_seq :: BamSQ
+bad_seq = BamSQ (error "no SN field") (error "no LN field") []
+
 data BamSorting = Unsorted | Grouped | Queryname | Coordinate | GroupSorted 
     deriving Show
 
@@ -611,10 +625,14 @@ type BamOtherShit = [(Char, Char, S.ByteString)]
 parseBamMeta :: P.Parser BamMeta
 parseBamMeta = foldr ($) nullMeta <$> P.many pLine 
   where
-    pLine = P.char '@' >> P.choice [hdLine, coLine, otherLine] <* P.char '\n'
+    pLine = P.char '@' >> P.choice [hdLine, sqLine, coLine, otherLine] <* P.char '\n'
     hdLine = P.string "HD\t" >> 
              (\fns meta -> meta { meta_hdr = foldr ($) (meta_hdr meta) fns })
                <$> P.sepBy1 (P.choice [hdvn, hdso, hdother]) (P.char '\t')
+    
+    sqLine = P.string "SQ\t" >> 
+             (\fns meta -> meta { meta_seqs = foldr ($) bad_seq fns : meta_seqs meta })
+               <$> P.sepBy1 (P.choice [sqnm, sqln, sqother]) (P.char '\t')
     
     hdvn = P.string "VN:" >>
            (\a b hdr -> hdr { hdr_version = (a,b) })
@@ -628,7 +646,11 @@ parseBamMeta = foldr ($) nullMeta <$> P.many pLine
                           , GroupSorted <$ P.string "groupsort"
                           , Unsorted <$ P.skipWhile (\c -> c/='\t' && c/='\n') ]
 
+    sqnm = P.string "SN:" >> (\s sq -> sq { sq_name = s }) <$> pall
+    sqln = P.string "LN:" >> (\i sq -> sq { sq_length = i }) <$> P.decimal
+
     hdother = (\t hdr -> hdr { hdr_other_shit = t : hdr_other_shit hdr }) <$> tagother
+    sqother = (\t sq  -> sq  { sq_other_shit = t : sq_other_shit sq }) <$> tagother
     
     coLine = P.string "CO\t" >>
              (\s meta -> meta { meta_comment = s : meta_comment meta })
@@ -638,16 +660,20 @@ parseBamMeta = foldr ($) nullMeta <$> P.many pLine
                   <$> P.anyChar <*> P.anyChar <*> (P.char '\t' >> P.sepBy1 tagother (P.char '\t'))
 
     tagother :: P.Parser (Char,Char,S.ByteString)
-    tagother = (,,) <$> P.anyChar <*> P.anyChar <*> (P.char ':' >> P.takeWhile (\c -> c/='\t' && c/='\n'))
+    tagother = (,,) <$> P.anyChar <*> P.anyChar <*> (P.char ':' >> pall)
+    
+    pall :: P.Parser S.ByteString
+    pall = P.takeWhile (\c -> c/='\t' && c/='\n')
 
 nullMeta :: BamMeta
-nullMeta = BamMeta (BamHeader (0,0) Unsorted []) [] []
+nullMeta = BamMeta (BamHeader (0,0) Unsorted []) [] [] []
 
 showBamMeta :: BamMeta -> L.ByteString -> L.ByteString
-showBamMeta (BamMeta h o c) = 
+showBamMeta (BamMeta h ss os cs) = 
     show_bam_meta_hdr h .
-    foldr ((.) . show_bam_meta_other) id o .
-    foldr ((.) . show_bam_meta_comment) id c
+    foldr ((.) . show_bam_meta_seq) id ss .
+    foldr ((.) . show_bam_meta_other) id os .
+    foldr ((.) . show_bam_meta_comment) id cs
   where
     show_bam_meta_hdr (BamHeader (major,minor) so os) = 
         L.append "@HD\tVN:" . L.append (L.pack (show major ++ ':' : show minor)) .
@@ -656,13 +682,18 @@ showBamMeta (BamMeta h o c) =
                              Queryname  -> "\tSO:queryname"
                              Coordinate  -> "\tSO:coordinate"
                              GroupSorted  -> "\tSO:groupsort") .
-        foldr ((.) . show_bam_other) id os .
-        L.cons '\n'
+        show_bam_others os 
+
+    show_bam_meta_seq (BamSQ nm ln ts) =
+        L.append "@CO\tSN:" . L.append (L.fromChunks [nm]) . L.append "\tLN:" .
+        L.append (L.pack (shows ln "\t")) . show_bam_others ts
 
     show_bam_meta_comment cm = L.append "@CO\t" . L.append (L.fromChunks [cm]) . L.cons '\n'
 
     show_bam_meta_other (a,b,ts) = 
-        L.cons '@' . L.cons a . L.cons b . 
+        L.cons '@' . L.cons a . L.cons b . show_bam_others ts
+
+    show_bam_others ts =         
         foldr ((.) . show_bam_other) id ts . L.cons '\n'
 
     show_bam_other (a,b,v) = 
@@ -676,7 +707,7 @@ data BamRaw = BamRaw { virt_offset :: {-# UNPACK #-} !Int64
 
 -- | Decode a BAM stream into raw entries.  Note that the entries can be
 -- unpacked using @decodeBamEntry@.
-decodeBam :: MonadIO m => (BamMeta -> Refs -> Iteratee [BamRaw] m a) -> Iteratee Block m a
+decodeBam :: Monad m => (BamMeta -> Refs -> Iteratee [BamRaw] m a) -> Iteratee Block m a
 decodeBam inner = do meta <- liftBlock get_bam_header
                      refs <- liftBlock get_ref_array
                      loop $ inner meta refs
@@ -696,13 +727,60 @@ decodeBam inner = do meta <- liftBlock get_bam_header
 
     get_ref_array = do nref <- endianRead4 LSB
                        let lr = (toEnum 0,toEnum (fromIntegral nref-1))
-                       arr <- liftIO $ newArray_ lr
-                       forM_ (range lr) $ \i -> do namelength <- endianRead4 LSB
-                                                   nm <- getString (fromIntegral namelength)
-                                                   ln <- endianRead4 LSB
-                                                   liftIO $ writeArray arr i (S.init nm,fromIntegral ln)
-                       liftIO $ unsafeFreeze (arr :: MRefs)
+                       refs <- foldM (\acc _ -> do 
+                                        nm <- endianRead4 LSB >>= getString . fromIntegral
+                                        ln <- endianRead4 LSB
+                                        return $! (S.init nm,fromIntegral ln) : acc
+                                     ) [] $ range lr
+                       return $! listArray lr $ reverse refs
 
+
+-- | Iteratee-style parser for SAM files, designed to be compatible with
+-- the BAM parsers.  Parses plain uncompressed SAM, nothing else.  Since
+-- it is supposed to work the same way as the BAM parser, it requires
+-- the presense of the SQ header lines.  These are stripped from the
+-- header text and turned into the symbol table.
+decodeSam :: Monad m => (BamMeta -> Refs -> Iteratee [BamRec] m a) -> Iteratee S.ByteString m a
+decodeSam inner = do
+    meta <- parserToIteratee parseBamMeta 
+    let refs = listArray (toEnum 0, toEnum (length (meta_seqs meta) -1)) 
+               [ (nm,ln) | BamSQ { sq_name = nm, sq_length = ln } <- meta_seqs meta ]
+        refs' = M.fromList $ zip [ nm | BamSQ { sq_name = nm } <- meta_seqs meta ] [toEnum 0..]
+        ref x = M.findWithDefault invalidRefseq x refs'
+    I.joinI $ I.convStream (iterRec ref) $ inner meta refs
+  where
+    iterRec ref = parserToIteratee . fmap (:[]) $ BamRec 
+        <$> word <*> num <*> (ref <$> word) <*> num <*> num <*> (Cigar <$> cigar)
+        <*> (ref <$> word) <*> num <*> num <*> sequence <*> quals <*> exts <*> pure 0
+
+    sep      = P.endOfInput <|> () <$ P.char '\t'
+    word     = P.takeTill ((==) '\t') <* sep
+    num      = P.decimal <* sep
+    sequence = ([] <$ P.char '*' <|>
+                map toNucleotide . B.unpack <$> P.takeWhile (P.inClass "acgtnACGTN")) <* sep
+    quals    = (S.empty <$ P.char '*' <|> word) <* sep
+    cigar    = [] <$ P.char '*' <* sep <|>
+               P.manyTill (flip (,) <$> P.decimal <*> cigop) sep
+    cigop    = P.choice $ zipWith (\c r -> r <$ P.char c) "MIDNSHP" [Mat,Ins,Del,Nop,SMa,HMa,Pad]
+    exts     = M.fromList <$> ext `P.sepBy` sep
+    ext      = (\a b v -> ([a,b],v)) <$> P.anyChar <*> P.anyChar <*> (P.char ':' *> value)
+    value    = P.char 'A' *> P.char ':' *> (Char <$>             anyWord8) <|>
+               P.char 'i' *> P.char ':' *> (Int  <$>       P.signed P.decimal) <|>
+               P.char 'Z' *> P.char ':' *> (Text <$> P.takeTill ((==) '\t')) <|>
+               P.char 'H' *> P.char ':' *> (Bin  <$>             hexarray) <|>
+               P.char 'f' *> P.char ':' *> (Float . realToFrac <$> P.double) <|>
+               P.char 'B' *> P.char ':' *> (
+                    P.satisfy (P.inClass "cCsSiI") *> (intArr   <$> P.many (P.char ',' *> P.signed P.decimal)) <|>
+                    P.char 'f'                   *> (floatArr <$> P.many (P.char ',' *> P.double)))
+
+    intArr   is = IntArr   $ listArray (0, length is -1) is
+    floatArr fs = FloatArr $ listArray (0, length fs -1) $ map realToFrac fs
+    hexarray    = S.pack . repack . B.unpack <$> P.takeWhile (P.inClass "0-9A-Fa-f")
+    repack (a:b:cs) = fromIntegral (digitToInt a * 16 + digitToInt b) : repack cs ; repack [] = []
+
+
+encodeSam :: Monad m => BamMeta -> Refs -> I.Enumerator S.ByteString m a
+encodeSam meta refs i = undefined
 
 -- ------------------------------------------------------------------- Tests
 
