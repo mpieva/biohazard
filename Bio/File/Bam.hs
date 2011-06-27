@@ -69,10 +69,6 @@ module Bio.File.Bam (
     BamOtherShit
 ) where
 
--- | Note: We strive to support everything possible in BAM.  So far,
--- the implementation of the nucleotides is somewhat lacking:  we do not
--- have support for ambiguity codes, and the = symbol is not understood.
-
 import Bio.Base
 import Bio.File.Bgzf
 
@@ -103,6 +99,12 @@ import qualified Data.ByteString.Char8          as B
 import qualified Data.ByteString.Lazy.Char8     as L
 import qualified Data.Iteratee                  as I
 import qualified Data.Map                       as M
+
+-- ^ Parsers and Printers for BAM and SAM.  We employ an @Iteratee@
+-- interface, and we strive to support everything possible in BAM.  So
+-- far, the implementation of the nucleotides is somewhat lacking:  we
+-- do not have support for ambiguity codes, and the "=" symbol is not
+-- understood.
 
 
 -- | Cigar line in BAM coding
