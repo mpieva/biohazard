@@ -8,6 +8,7 @@ module Bio.File.Bam (
     decodeBamEntry,
     encodeBam,
     encodeBamEntry,
+    decodeSam,
 
     -- writeBamFile,
 
@@ -85,11 +86,14 @@ import Data.Bits                    ( testBit, shiftL, shiftR, (.&.), (.|.) )
 import Data.Char                    ( chr, ord, isDigit, digitToInt )
 import Data.Int                     ( Int64, Int32 )
 import Data.Iteratee.Base
+import Data.Iteratee.Char
 import Data.Iteratee.Binary
+import Data.List                    ( intercalate )
 import Data.Word                    ( Word64, Word32, Word8 )
 import Foreign.Marshal.Alloc        ( alloca )
 import Foreign.Ptr                  ( castPtr )
 import Foreign.Storable             ( peek, poke )
+import System.IO
 import System.IO.Unsafe             ( unsafePerformIO )
 
 import qualified Data.Attoparsec.Char8          as P
@@ -320,15 +324,20 @@ getByteStringNul = S.init <$> (G.lookAhead (get_len 1) >>= G.getByteString)
 
 
 -- | Encode stuff into a BAM stream.
--- We start new BGZF blocks at sensible places, then return them
--- individually.  Concatening the result gives a valid file, but the
--- chunks can be turned into an index, too.
-encodeBam :: Monad m => BamMeta -> Refs -> Iteratee S.ByteString m a -> m a
-encodeBam meta refs = (I.enumPure1Chunk header >=> I.enumPure1Chunk S.empty >=> run) . compress
+-- We send the encoded header and reference list to output through the
+-- Bgzf compressor, then receive a list of records, which we concatenate
+-- and send to output, too.
+--
+-- It would be nice if we were able to write an index on the side.  That
+-- hasn't been designed in, yet.
+encodeBam :: Monad m => BamMeta -> Refs -> Iteratee S.ByteString m a -> Iteratee [S.ByteString] m a
+encodeBam meta refs =
+    lift . (I.enumPure1Chunk header >=> I.enumPure1Chunk S.empty) . compress 
+    >=> I.joinI . I.foldM put
   where 
     header = S.concat . L.toChunks $ runPut putHeader
 
-    putHeader = do putWord32le 0x42414D01 -- "BAM\1"
+    putHeader = do putByteString "BAM\1"
                    let hdr = showBamMeta meta L.empty
                    putWord32le $ fromIntegral $ L.length hdr
                    putLazyByteString hdr
@@ -340,15 +349,13 @@ encodeBam meta refs = (I.enumPure1Chunk header >=> I.enumPure1Chunk S.empty >=> 
                       putWord8 0
                       put_int_32 l
 
+    put it rec = I.enumPure1Chunk (S.concat . L.toChunks . runPut . putWord32le . fromIntegral $ S.length rec) it
+                 >>= I.enumPure1Chunk rec
 
 encodeBamEntry :: BamRec -> S.ByteString
-encodeBamEntry = S.concat . L.toChunks . runPut . putEntry    
+encodeBamEntry = S.concat . L.toChunks . runPut . putEntry
   where
-    putEntry e = do let c = runPut $ putEntry' e
-                    put_int_32 $ L.length c
-                    putLazyByteString c
-
-    putEntry' b = do putWord32le   $ unRefseq $ b_rname b
+    putEntry  b = do putWord32le   $ unRefseq $ b_rname b
                      put_int_32    $ b_pos b
                      put_int_8     $ S.length (b_qname b) + 1
                      put_int_8     $ b_mapq b
@@ -625,9 +632,11 @@ data BamSorting = Unsorted | Grouped | Queryname | Coordinate | GroupSorted
 type BamOtherShit = [(Char, Char, S.ByteString)]
 
 parseBamMeta :: P.Parser BamMeta
-parseBamMeta = foldr ($) nullMeta <$> P.many pLine 
+parseBamMeta = foldr ($) nullMeta <$> P.sepBy parseBamMetaLine (P.char '\n')
+
+parseBamMetaLine :: P.Parser (BamMeta -> BamMeta)
+parseBamMetaLine = P.char '@' >> P.choice [hdLine, sqLine, coLine, otherLine]
   where
-    pLine = P.char '@' >> P.choice [hdLine, sqLine, coLine, otherLine] <* P.char '\n'
     hdLine = P.string "HD\t" >> 
              (\fns meta -> meta { meta_hdr = foldr ($) (meta_hdr meta) fns })
                <$> P.sepBy1 (P.choice [hdvn, hdso, hdother]) (P.char '\t')
@@ -638,7 +647,7 @@ parseBamMeta = foldr ($) nullMeta <$> P.many pLine
     
     hdvn = P.string "VN:" >>
            (\a b hdr -> hdr { hdr_version = (a,b) })
-             <$> P.decimal <*> (P.char '.' >> P.decimal)
+             <$> P.decimal <*> ((P.char '.' <|> P.char ':') >> P.decimal)
 
     hdso = P.string "SO:" >>
            (\s hdr -> hdr { hdr_sorting = s })
@@ -743,37 +752,55 @@ decodeBam inner = do meta <- liftBlock get_bam_header
 -- the presense of the SQ header lines.  These are stripped from the
 -- header text and turned into the symbol table.
 decodeSam :: Monad m => (BamMeta -> Refs -> Iteratee [BamRec] m a) -> Iteratee S.ByteString m a
-decodeSam inner = do
-    meta <- parserToIteratee parseBamMeta 
-    let refs = listArray (toEnum 0, toEnum (length (meta_seqs meta) -1)) 
-               [ (nm,ln) | BamSQ { sq_name = nm, sq_length = ln } <- meta_seqs meta ]
+decodeSam inner = I.joinI $ enumLinesBS $ do
+    let pHeaderLine acc str = case P.parseOnly parseBamMetaLine str of Right f -> return $ f : acc
+                                                                       Left e  -> fail $ e ++ ", " ++ show str
+    meta <- liftM (foldr ($) nullMeta . reverse) (I.joinI $ takeWhileI (S.isPrefixOf "@") $ I.foldM pHeaderLine [])
+
+    let refs | null (meta_seqs meta) = noRefs
+             | otherwise             = 
+                    listArray (toEnum 0, toEnum (length (meta_seqs meta) -1)) 
+                        [ (nm,ln) | BamSQ { sq_name = nm, sq_length = ln } <- meta_seqs meta ]
         refs' = M.fromList $ zip [ nm | BamSQ { sq_name = nm } <- meta_seqs meta ] [toEnum 0..]
         ref x = M.findWithDefault invalidRefseq x refs'
-    I.joinI $ I.convStream (iterRec ref) $ inner meta refs
-  where
-    iterRec ref = parserToIteratee . fmap (:[]) $ BamRec 
-        <$> word <*> num <*> (ref <$> word) <*> num <*> num <*> (Cigar <$> cigar)
-        <*> (ref <$> word) <*> num <*> num <*> sequence <*> quals <*> exts <*> pure 0
 
+        parse_record (EOF x) = icont parse_record x
+        parse_record (Chunk []) = liftI parse_record
+        parse_record (Chunk (l:ls)) = case P.parseOnly (parseSamRec ref) l of 
+            Right  r -> idone [r] (Chunk ls)
+            Left err -> icont parse_record (Just $ iterStrExc $ err ++ ", " ++ show l)
+
+    I.joinI $ I.convStream (liftI parse_record) $ inner meta refs
+
+
+parseSamRec :: (B.ByteString -> Refseq) -> P.Parser BamRec
+parseSamRec ref = (\nm fl rn po mq cg rn' -> BamRec nm fl rn po mq cg (rn' rn))
+                  <$> word <*> num <*> (ref <$> word) <*> (subtract 1 <$> num)
+                  <*> num <*> (Cigar <$> cigar) <*> rnext <*> (subtract 1 <$> num)
+                  <*> snum <*> sequence <*> quals <*> exts <*> pure 0
+  where
     sep      = P.endOfInput <|> () <$ P.char '\t'
     word     = P.takeTill ((==) '\t') <* sep
     num      = P.decimal <* sep
+    snum     = P.signed P.decimal <* sep
+
+    rnext    = id <$ P.char '=' <* sep <|> const . ref <$> word
     sequence = ([] <$ P.char '*' <|>
                 map toNucleotide . B.unpack <$> P.takeWhile (P.inClass "acgtnACGTN")) <* sep
-    quals    = (S.empty <$ P.char '*' <|> word) <* sep
+    quals    = S.empty <$ P.char '*' <* sep <|> S.map (subtract 33) <$> word
     cigar    = [] <$ P.char '*' <* sep <|>
                P.manyTill (flip (,) <$> P.decimal <*> cigop) sep
     cigop    = P.choice $ zipWith (\c r -> r <$ P.char c) "MIDNSHP" [Mat,Ins,Del,Nop,SMa,HMa,Pad]
     exts     = M.fromList <$> ext `P.sepBy` sep
     ext      = (\a b v -> ([a,b],v)) <$> P.anyChar <*> P.anyChar <*> (P.char ':' *> value)
-    value    = P.char 'A' *> P.char ':' *> (Char <$>             anyWord8) <|>
-               P.char 'i' *> P.char ':' *> (Int  <$>       P.signed P.decimal) <|>
+    value    = P.char 'A' *> P.char ':' *> (Char <$>               anyWord8) <|>
+               P.char 'i' *> P.char ':' *> (Int  <$>     P.signed P.decimal) <|>
                P.char 'Z' *> P.char ':' *> (Text <$> P.takeTill ((==) '\t')) <|>
-               P.char 'H' *> P.char ':' *> (Bin  <$>             hexarray) <|>
+               P.char 'H' *> P.char ':' *> (Bin  <$>               hexarray) <|>
                P.char 'f' *> P.char ':' *> (Float . realToFrac <$> P.double) <|>
                P.char 'B' *> P.char ':' *> (
                     P.satisfy (P.inClass "cCsSiI") *> (intArr   <$> P.many (P.char ',' *> P.signed P.decimal)) <|>
-                    P.char 'f'                   *> (floatArr <$> P.many (P.char ',' *> P.double)))
+                    P.char 'f'                     *> (floatArr <$> P.many (P.char ',' *> P.double)))
 
     intArr   is = IntArr   $ listArray (0, length is -1) is
     floatArr fs = FloatArr $ listArray (0, length fs -1) $ map realToFrac fs
@@ -781,15 +808,54 @@ decodeSam inner = do
     repack (a:b:cs) = fromIntegral (digitToInt a * 16 + digitToInt b) : repack cs ; repack [] = []
 
 
-encodeSam :: Monad m => BamMeta -> Refs -> I.Enumerator S.ByteString m a
-encodeSam meta refs i = undefined
+takeWhileI :: Monad m => (a -> Bool) -> I.Enumeratee [a] [a] m b
+takeWhileI pred = liftI . step
+  where
+    step it (EOF x) = lift $ I.enumChunk (EOF x) it
+    step it (Chunk xs) = case span pred xs of
+        (l,[]) -> lift (I.enumPure1Chunk l it) >>= I.liftI . step
+        (l, r) -> lift (I.enumPure1Chunk l it) >>= flip idone (I.Chunk r)
+
 
 -- ------------------------------------------------------------------- Tests
 
-test :: IO ()
-test = I.fileDriver (decompress' (decodeBam (\_ _ -> print_names))) 
-                    "/mnt/ngs_data/101203_SOLEXA-GA04_00007_PEDi_MM_QF_SR/Ibis/BWA/s_5_L3280_sequence_mq_hg19_nohap.bam"
+bam_test :: IO ()
+bam_test = bam_test' "/mnt/ngs_data/101203_SOLEXA-GA04_00007_PEDi_MM_QF_SR/Ibis/BWA/s_5_L3280_sequence_mq_hg19_nohap.bam"
+
+bam_test' :: FilePath -> IO ()
+bam_test' = I.fileDriver $ 
+            decompress'  $
+            decodeBam    $ \meta refs ->
+            lift (print (meta,refs)) >>= \_ -> 
+            print_names
+
+sam_test :: IO ()
+sam_test = I.fileDriver (decodeSam (\_ _ -> print_names')) "foo.sam"
 
 print_names :: Iteratee [BamRaw] IO ()
 print_names = I.mapM_ $ S.putStrLn . b_qname . decodeBamEntry 
-    
+
+print_names' :: Iteratee [BamRec] IO ()
+print_names' = I.mapM_ $ S.putStrLn . b_qname
+
+
+bam2bam_test :: IO ()
+bam2bam_test = withFile "foo.bam" WriteMode $ \hdl ->
+               I.fileDriver (decompress' $ 
+                             decodeBam   $ \meta refs ->
+                             I.mapStream raw_data $
+                             encodeBam meta refs $
+                             I.mapChunksM_ (S.hPut hdl))
+                            "/mnt/ngs_data/101203_SOLEXA-GA04_00007_PEDi_MM_QF_SR/Ibis/BWA/s_5_L3280_sequence_mq_hg19_nohap.bam"
+               >>= I.run                    
+
+sam2bam_test :: IO ()               
+sam2bam_test = withFile "bar.bam" WriteMode $ \hdl ->
+               I.fileDriver (decodeSam   $ \meta refs ->
+                             I.mapStream encodeBamEntry $
+                             lift (print (meta,refs)) >>= \_ -> 
+                             encodeBam meta refs $
+                             I.mapChunksM_ (S.hPut hdl))
+                            "foo.sam"
+               >>= I.run
+
