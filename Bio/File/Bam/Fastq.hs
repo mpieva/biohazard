@@ -1,11 +1,11 @@
-{-# LANGUAGE Rank2Types #-}
+{-# LANGUAGE Rank2Types, OverloadedStrings #-}
 module Bio.File.Bam.Fastq where
 
-{- Parser for FastA/FastQ.  Screams out to be turned into an Iteratee.
- - Also, the flags, despite being documented, aren't in fact handled. -}
+-- Parser for FastA/FastQ.  Screams out to be turned into an Iteratee.
 
 import Bio.File.Bam
 import Control.Applicative
+import Data.Bits
 import Data.Char ( toUpper, ord, chr )
 
 import qualified Data.ByteString.Lazy.Char8 as L
@@ -23,10 +23,13 @@ import qualified Data.Map as M
 -- Supported conventions:
 -- * A name suffix of /1 or /2 is turned into the first mate or second
 --   mate flag and the read is flagged as paired.
--- * Same for name prefixes of F_ or R_.
+-- * Same for name prefixes of F_ or R_, respectively.
 -- * A name prefix of M_ flags the sequence as unpaired and both first
 --   and second mate (a merged read).
--- * A prefix of C_ is turned into the extra flag XD:i:0 (result of
+-- * A name prefix of T_ flags the sequence as unpaired and second mate
+--   (an adapter trimmed read).
+-- * A name prefix of C_, either before or after any of the other
+--   prefixes, is turned into the extra flag XD:i:-1 (result of
 --   duplicate removal with unknown depth).
 --
 -- Everything before the first sequence header is ignored.  Headers can
@@ -65,9 +68,9 @@ parseFastq' pDescr = run pFasta
                     where cons c qs = (chr $ ord c - 33) : qs
     unfold p = ((:) <$> p <!> unfold p) <|> pure []
 
-    makeRecord name extra (sq,qual) = extra $ BamRec {
-            b_qname = S.pack name,              -- XXX flags?
-            b_flag  = 0,                        -- XXX flags?
+    makeRecord name0 extra (sq,qual) = extra $ BamRec {
+            b_qname = name,
+            b_flag  = flags,
             b_rname = invalidRefseq,
             b_pos   = invalidPos,
             b_mapq  = 0,
@@ -77,8 +80,23 @@ parseFastq' pDescr = run pFasta
             b_isize = 0,
             b_seq   = read sq,
             b_qual  = S.pack qual,
-            b_exts  = M.empty,
+            b_exts  = tags,
             b_virtual_offset = 0 }
+      where
+        (name, flags, tags) = checkFR $ checkC (S.pack name0, 0, M.empty)
+
+        checkFR (n,f,t) | "F_" `S.isPrefixOf` name = checkC (S.drop 2 name, f .|. flagFirstMate  .|. flagPaired,     t)
+                        | "R_" `S.isPrefixOf` name = checkC (S.drop 2 name, f .|. flagSecondMate .|. flagPaired,     t)
+                        | "M_" `S.isPrefixOf` name = checkC (S.drop 2 name, f .|. flagFirstMate  .|. flagSecondMate, t)
+                        | "T_" `S.isPrefixOf` name = checkC (S.drop 2 name, f .|.                    flagSecondMate, t)
+                        | "/1" `S.isSuffixOf` name =        ( rdrop 2 name, f .|. flagFirstMate  .|. flagPaired,     t)
+                        | "/2" `S.isSuffixOf` name =        ( rdrop 2 name, f .|. flagSecondMate .|. flagPaired,     t)
+                        | otherwise                =        (         name, f,                                       t)
+
+        checkC (n,f,t) | "C_" `S.isPrefixOf` name = (S.drop 2 name, f, M.insert "XD" (Int (-1)) t)
+                       | otherwise                = (         name, f,                          t)
+
+        rdrop n s = S.take (S.length s - n) s
 
 
 parseFastq :: L.ByteString -> [ BamRec ]
