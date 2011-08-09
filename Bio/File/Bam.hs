@@ -86,8 +86,10 @@ import Data.Bits                    ( testBit, shiftL, shiftR, (.&.), (.|.) )
 import Data.Char                    ( chr, ord, isDigit, digitToInt )
 import Data.Int                     ( Int64, Int32 )
 import Data.Iteratee.Base
-import Data.Iteratee.Char
 import Data.Iteratee.Binary
+import Data.Iteratee.Char
+import Data.Iteratee.IO
+import Data.Iteratee.Iteratee
 import Data.List                    ( intercalate )
 import Data.Word                    ( Word64, Word32, Word8 )
 import Foreign.Marshal.Alloc        ( alloca )
@@ -330,11 +332,13 @@ getByteStringNul = S.init <$> (G.lookAhead (get_len 1) >>= G.getByteString)
 --
 -- It would be nice if we were able to write an index on the side.  That
 -- hasn't been designed in, yet.
-encodeBam :: Monad m => BamMeta -> Refs -> Iteratee S.ByteString m a -> Iteratee [S.ByteString] m a
-encodeBam meta refs =
-    lift . (I.enumPure1Chunk header >=> I.enumPure1Chunk S.empty) . compress 
-    >=> I.joinI . I.foldM put
-  where 
+encodeBam :: Monad m => BamMeta -> Refs -> Enumeratee [S.ByteString] S.ByteString m a
+encodeBam meta refs = eneeBam ><> compress
+  where
+    eneeBam = lift . I.enumPure1Chunk header >=>
+              lift . I.enumPure1Chunk S.empty >=>
+              I.foldM (flip put)
+
     header = S.concat . L.toChunks $ runPut putHeader
 
     putHeader = do putByteString "BAM\1"
@@ -349,8 +353,7 @@ encodeBam meta refs =
                       putWord8 0
                       put_int_32 l
 
-    put it rec = I.enumPure1Chunk (S.concat . L.toChunks . runPut . putWord32le . fromIntegral $ S.length rec) it
-                 >>= I.enumPure1Chunk rec
+    put rec = I.enumPure1Chunk (S.concat . L.toChunks . runPut . putWord32le . fromIntegral $ S.length rec) >=> I.enumPure1Chunk rec
 
 encodeBamEntry :: BamRec -> S.ByteString
 encodeBamEntry = S.concat . L.toChunks . runPut . putEntry
@@ -717,14 +720,16 @@ data BamRaw = BamRaw { virt_offset :: {-# UNPACK #-} !Int64
 
 
 -- | Decode a BAM stream into raw entries.  Note that the entries can be
--- unpacked using @decodeBamEntry@.
-decodeBam :: Monad m => (BamMeta -> Refs -> Iteratee [BamRaw] m a) -> Iteratee Block m a
+-- unpacked using @decodeBamEntry@.  Also note that this is an
+-- Enumeratee in spirit, only the @BamMeta@ and @Refs@ need to get
+-- passed separately.
+decodeBam :: Monad m => (BamMeta -> Refs -> Iteratee [BamRaw] m a) -> Iteratee Block m (Iteratee [BamRaw] m a)
 decodeBam inner = do meta <- liftBlock get_bam_header
                      refs <- liftBlock get_ref_array
                      loop $ inner meta refs
   where
     loop it = I.isFinished >>= loop' it
-    loop' it True = lift $ run it
+    loop' it True = return it
     loop' it False = do off <- getOffset
                         it' <- liftBlock $ do bsize <- endianRead4 LSB
                                               raw <- getString (fromIntegral bsize)
@@ -751,7 +756,7 @@ decodeBam inner = do meta <- liftBlock get_bam_header
 -- it is supposed to work the same way as the BAM parser, it requires
 -- the presense of the SQ header lines.  These are stripped from the
 -- header text and turned into the symbol table.
-decodeSam :: Monad m => (BamMeta -> Refs -> Iteratee [BamRec] m a) -> Iteratee S.ByteString m a
+decodeSam :: Monad m => (BamMeta -> Refs -> Iteratee [BamRec] m a) -> Iteratee S.ByteString m (Iteratee [BamRec] m a)
 decodeSam inner = I.joinI $ enumLinesBS $ do
     let pHeaderLine acc str = case P.parseOnly parseBamMetaLine str of Right f -> return $ f : acc
                                                                        Left e  -> fail $ e ++ ", " ++ show str
@@ -770,7 +775,7 @@ decodeSam inner = I.joinI $ enumLinesBS $ do
             Right  r -> idone [r] (Chunk ls)
             Left err -> icont parse_record (Just $ iterStrExc $ err ++ ", " ++ show l)
 
-    I.joinI $ I.convStream (liftI parse_record) $ inner meta refs
+    I.convStream (liftI parse_record) $ inner meta refs
 
 
 parseSamRec :: (B.ByteString -> Refseq) -> P.Parser BamRec
@@ -823,14 +828,14 @@ bam_test :: IO ()
 bam_test = bam_test' "/mnt/ngs_data/101203_SOLEXA-GA04_00007_PEDi_MM_QF_SR/Ibis/BWA/s_5_L3280_sequence_mq_hg19_nohap.bam"
 
 bam_test' :: FilePath -> IO ()
-bam_test' = I.fileDriver $ 
-            decompress'  $
-            decodeBam    $ \meta refs ->
-            lift (print (meta,refs)) >>= \_ -> 
+bam_test' = fileDriver $
+            joinI $ decompress'  $
+            joinI $ decodeBam    $          \meta refs ->
+            lift (print (meta,refs)) >>
             print_names
 
 sam_test :: IO ()
-sam_test = I.fileDriver (decodeSam (\_ _ -> print_names')) "foo.sam"
+sam_test = I.fileDriver (joinI $ decodeSam (\_ _ -> print_names')) "foo.sam"
 
 print_names :: Iteratee [BamRaw] IO ()
 print_names = I.mapM_ $ S.putStrLn . b_qname . decodeBamEntry 
@@ -840,22 +845,20 @@ print_names' = I.mapM_ $ S.putStrLn . b_qname
 
 
 bam2bam_test :: IO ()
-bam2bam_test = withFile "foo.bam" WriteMode $ \hdl ->
-               I.fileDriver (decompress' $ 
-                             decodeBam   $ \meta refs ->
-                             I.mapStream raw_data $
-                             encodeBam meta refs $
-                             I.mapChunksM_ (S.hPut hdl))
-                            "/mnt/ngs_data/101203_SOLEXA-GA04_00007_PEDi_MM_QF_SR/Ibis/BWA/s_5_L3280_sequence_mq_hg19_nohap.bam"
-               >>= I.run                    
+bam2bam_test = withFile "foo.bam" WriteMode $       \hdl ->
+               flip fileDriver "/mnt/ngs_data/101203_SOLEXA-GA04_00007_PEDi_MM_QF_SR/Ibis/BWA/s_5_L3280_sequence_mq_hg19_nohap.bam" $
+               joinI $ decompress' $ 
+               joinI $ decodeBam   $                \meta refs ->
+               joinI $ I.mapStream raw_data $
+               joinI $ encodeBam meta refs $
+               I.mapChunksM_ (S.hPut hdl)
 
 sam2bam_test :: IO ()               
-sam2bam_test = withFile "bar.bam" WriteMode $ \hdl ->
-               I.fileDriver (decodeSam   $ \meta refs ->
-                             I.mapStream encodeBamEntry $
-                             lift (print (meta,refs)) >>= \_ -> 
-                             encodeBam meta refs $
-                             I.mapChunksM_ (S.hPut hdl))
-                            "foo.sam"
-               >>= I.run
+sam2bam_test = withFile "bar.bam" WriteMode $                   \hdl ->
+               flip fileDriver "foo.sam" $
+               joinI $ decodeSam $                              \meta refs ->
+               joinI $ I.mapStream encodeBamEntry $
+               lift (print (meta,refs)) >>=                     \_ -> 
+               joinI $ encodeBam meta refs $
+               I.mapChunksM_ (S.hPut hdl)
 

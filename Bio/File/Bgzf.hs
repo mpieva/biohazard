@@ -66,18 +66,18 @@ instance Monoid Block where
 
 -- | Decompresses BGZF into @Block@s.  Each block has a starting offset
 -- and is otherwise just a @ByteString@.
-decompress' :: Monad m => Iteratee Block m a -> Iteratee S.ByteString m a
+decompress' :: Monad m => Enumeratee S.ByteString Block m a
 decompress' = decompressWith Block 0
 
 -- | Decompresses BGZF.  The blocks become just @ByteString@s, for
 -- consumers who don't want to seek.
-decompress :: Monad m => Iteratee S.ByteString m a -> Iteratee S.ByteString m a
+decompress :: Monad m => Enumeratee S.ByteString S.ByteString m a
 decompress = decompressWith (\_ s -> s) 0
 
-decompressWith :: (Monad m, Monoid s) => (Int64 -> S.ByteString -> s) -> Int64 -> Iteratee s m a -> Iteratee S.ByteString m a
+decompressWith :: (Monad m, Monoid s) => (Int64 -> S.ByteString -> s) -> Int64 -> Enumeratee S.ByteString s m a
 decompressWith block !off inner = I.isFinished >>= go
   where
-    go True = lift $ run inner
+    go True = return inner
     go False = do csize <- lookAheadI get_bgzf_header
                   comp <- get_block $ fromIntegral csize +1
                   -- this is ugly and very roundabout, but works for the time being...
@@ -157,12 +157,12 @@ bgzfEofMarker = compress1 L.empty
 --
 -- XXX Need a way to write an index "on the side".  Additional output
 -- streams?
-compress :: Monad m => Iteratee S.ByteString m a -> Iteratee S.ByteString m a
+compress :: Monad m => Enumeratee S.ByteString S.ByteString m a
 compress it0 = icont (step it0 L.empty) Nothing
   where
-    step it acc c@(EOF _) = joinIM $ enumPure1Chunk (compress1 acc) it >>= \it' ->       -- XXX index?
-                                     enumPure1Chunk bgzfEofMarker it' >>= \it'' ->
-                                     enumChunk c it''
+    step it acc c@(EOF _) = lift $ enumPure1Chunk (compress1 acc) it >>= \it' ->       -- XXX index?
+                                   enumPure1Chunk bgzfEofMarker it' >>= \it'' ->
+                                   enumChunk c it''
     step it acc (Chunk c) 
         | L.length acc + fromIntegral (S.length c) < maxBlockSize
             = icont (step it (acc `L.append` L.fromChunks [c])) Nothing
@@ -268,9 +268,9 @@ print_block = liftI step
                          idone () e
 
 test, test' :: IO ()
-test = fileDriver (decompress' print_block)
+test = fileDriver (joinI $ decompress' print_block)
        "/mnt/ngs_data/101203_SOLEXA-GA04_00007_PEDi_MM_QF_SR/Ibis/BWA/s_5_L3280_sequence_mq_hg19_nohap.bam" 
 
-test' = fileDriver (decompress printLinesUnterminated)
+test' = fileDriver (joinI $ decompress printLinesUnterminated)
         "/mnt/454/Altaiensis/bwa/catalog/EPO/combined_SNC_anno.tsv.bgz" 
 

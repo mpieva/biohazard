@@ -183,29 +183,38 @@ shiftPosition a p = case p_sense p of Forward -> p { p_start = p_start p + a }
 shiftRange :: Int -> Range -> Range
 shiftRange a r = r { r_pos = shiftPosition a (r_pos r) }
 
--- | reverse-complements a 'Range'
+-- | reverses a 'Range'
 -- Gives the same 'Range' on the opposite strand.
 reverseRange :: Range -> Range
 reverseRange (Range (Pos sq Forward pos) len) = Range (Pos sq Reverse (pos+len)) len
 reverseRange (Range (Pos sq Reverse pos) len) = Range (Pos sq Forward (pos-len)) len
 
--- | extends a range
--- The length of the range is simply increased.
+-- | Extends a range.  The length of the range is simply increased.
 extendRange :: Int -> Range -> Range
 extendRange a r = r { r_length = r_length r + a }
 
 
--- | expands a subrange
--- (range1 `inside` range2) interprets range1 as a subrange of range2
--- and computes its absolute coordinates.  The sequence name of range1 is
--- ignored.
+-- | Expands a subrange.
+-- @(range1 `insideRange` range2)@ interprets @range1@ as a subrange of
+-- @range2@ and computes its absolute coordinates.  The sequence name of
+-- @range1@ is ignored.
 insideRange :: Range -> Range -> Range
-insideRange (Range (Pos  _ dir2 start2) length2) (Range (Pos sq dir1 start1) length1) =
-    Range (Pos sq dir' pos') length2
-  where
-    dir' = if dir1 == dir2 then Forward else Reverse
-    pos' = case dir1 of Forward -> start1 + start2
-                        Reverse -> start1 - start2
+insideRange (Range (Pos _ Forward start1) length1) (Range (Pos sq Forward start2) length2)
+    | start1 <= length2 = Range (Pos sq Forward (start2 + start1)) (min length1 (length2 - start1))
+    | otherwise         = Range (Pos sq Forward (start2 + length2)) 0
+
+insideRange (Range (Pos _ Reverse start1) length1) (Range (Pos sq Forward start2) length2)
+    | start1 <= length2 = Range (Pos sq Reverse (start2 + start1)) (min length1 start1)
+    | otherwise         = Range (Pos sq Reverse (start2 + length2)) (max 0 (length2 - (start1 - length1)))
+
+insideRange (Range (Pos _ Forward start1) length1) (Range (Pos sq Reverse start2) length2)
+    | start1 <= length2 = Range (Pos sq Reverse (start2 - start1)) (min length1 (length2 - start1))
+    | otherwise         = Range (Pos sq Reverse (start2 - length2)) 0
+
+insideRange (Range (Pos _ Reverse start1) length1) (Range (Pos sq Reverse start2) length2)
+    | start1 <= length2 = Range (Pos sq Forward (start2 - start1)) (min length1 start1)
+    | otherwise         = Range (Pos sq Forward (start2 - length2)) (max 0 (length2 - (start1 - length1)))
+
 
 -- | wraps a range to a region
 -- This simply normalizes the start position to be in the interval [0,n).
