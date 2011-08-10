@@ -13,11 +13,9 @@ module Bio.File.TwoBit (
     clampPosition
 ) where
 
--- TODO: proper masking is unsupported right now (Binary.Get doesn't
--- react too kindly to this kind of data, for whatever reason)
+-- TODO: proper masking is unsupported right now 
 
 {-
-
 Would you believe it?  The 2bit format stores blocks of Ns in a table at
 the beginning of a sequence, then packs four bases into a byte.  So it
 is neither possible nor necessary to store Ns in the main sequence, and
@@ -107,18 +105,16 @@ read_block_index tbf r = do
                                    let sq' = flip runGet c $ do
                                                 ds <- getWord32
                                                 nb <- read_block_list
-                                                -- mb <- read_block_list
-                                                skip_block_list
+                                                mb <- read_block_list
                                                 len <- getWord32 >> bytesRead
 
                                                 return $! Indexed (I.fromList $ to_good_blocks ds nb)
-                                                                  (I.empty {-I.fromList mb-})
+                                                                  (I.fromList mb)
                                                                   (ofs + fromIntegral len) ds
                                    writeIORef r $! sq'
                                    return sq'
   where
     getWord32 = tbf_get_word32 tbf
-    skip_block_list = getWord32 >>= skip . (*) 8
     read_block_list = getWord32 >>= \n -> liftM2 zip (read_word_list n) (read_word_list n)
     read_word_list n = listArray (0,n-1) `fmap` repM n getWord32 >>= \arr ->
                        (arr :: UArray Int Int) `seq` return (elems arr)

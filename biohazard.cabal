@@ -59,6 +59,8 @@ Library
                        zlib, attoparsec-iteratee, attoparsec, iteratee,
                        transformers, binary-strict
   
+  Ghc-options:         -Wall -auto-all
+
   -- Modules not exported by this package.
   -- Other-modules:       
   

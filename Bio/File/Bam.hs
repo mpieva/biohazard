@@ -90,10 +90,9 @@ import Data.Iteratee.Binary
 import Data.Iteratee.Char
 import Data.Iteratee.IO
 import Data.Iteratee.Iteratee
-import Data.List                    ( intercalate )
 import Data.Word                    ( Word64, Word32, Word8 )
 import Foreign.Marshal.Alloc        ( alloca )
-import Foreign.Ptr                  ( castPtr )
+import Foreign.Ptr                  ( castPtr, plusPtr )
 import Foreign.Storable             ( peek, poke )
 import System.IO
 import System.IO.Unsafe             ( unsafePerformIO )
@@ -105,6 +104,9 @@ import qualified Data.ByteString.Char8          as B
 import qualified Data.ByteString.Lazy.Char8     as L
 import qualified Data.Iteratee                  as I
 import qualified Data.Map                       as M
+
+import Data.ByteString.Unsafe
+import Data.ByteString.Internal
 
 -- ^ Parsers and Printers for BAM and SAM.  We employ an @Iteratee@
 -- interface, and we strive to support everything possible in BAM.  So
@@ -296,9 +298,6 @@ getExt = do key <- (\a b -> [w2c a, w2c b]) <$> G.getWord8 <*> G.getWord8
                       | otherwise                           -> error $ "cannot handle optional field type " ++ [x]
             return (key,res)
   where
-    w2c :: Word8 -> Char
-    w2c = chr . fromIntegral
-
     to_float :: Word32 -> Float
     to_float word = unsafePerformIO $ alloca $ \buf ->
                     poke (castPtr buf) word >> peek buf
@@ -689,14 +688,14 @@ showBamMeta (BamMeta h ss os cs) =
     foldr ((.) . show_bam_meta_other) id os .
     foldr ((.) . show_bam_meta_comment) id cs
   where
-    show_bam_meta_hdr (BamHeader (major,minor) so os) = 
+    show_bam_meta_hdr (BamHeader (major,minor) so os') = 
         L.append "@HD\tVN:" . L.append (L.pack (show major ++ ':' : show minor)) .
         L.append (case so of Unsorted -> L.empty
                              Grouped  -> "\tSO:grouped"
                              Queryname  -> "\tSO:queryname"
                              Coordinate  -> "\tSO:coordinate"
                              GroupSorted  -> "\tSO:groupsort") .
-        show_bam_others os 
+        show_bam_others os'
 
     show_bam_meta_seq (BamSQ nm ln ts) =
         L.append "@CO\tSN:" . L.append (L.fromChunks [nm]) . L.append "\tLN:" .
@@ -732,6 +731,7 @@ decodeBam inner = do meta <- liftBlock get_bam_header
     loop' it True = return it
     loop' it False = do off <- getOffset
                         it' <- liftBlock $ do bsize <- endianRead4 LSB
+                                              when (bsize < 32) $ fail "short BAM record"
                                               raw <- getString (fromIntegral bsize)
                                               lift $ I.enumPure1Chunk [BamRaw off raw] it
                         loop it'
@@ -766,8 +766,8 @@ decodeSam inner = I.joinI $ enumLinesBS $ do
              | otherwise             = 
                     listArray (toEnum 0, toEnum (length (meta_seqs meta) -1)) 
                         [ (nm,ln) | BamSQ { sq_name = nm, sq_length = ln } <- meta_seqs meta ]
-        refs' = M.fromList $ zip [ nm | BamSQ { sq_name = nm } <- meta_seqs meta ] [toEnum 0..]
-        ref x = M.findWithDefault invalidRefseq x refs'
+        refs' = M.fromList $ zip [ R nm | BamSQ { sq_name = nm } <- meta_seqs meta ] [toEnum 0..]
+        ref x = M.findWithDefault invalidRefseq (R x) refs'
 
         parse_record (EOF x) = icont parse_record x
         parse_record (Chunk []) = liftI parse_record
@@ -782,7 +782,7 @@ parseSamRec :: (B.ByteString -> Refseq) -> P.Parser BamRec
 parseSamRec ref = (\nm fl rn po mq cg rn' -> BamRec nm fl rn po mq cg (rn' rn))
                   <$> word <*> num <*> (ref <$> word) <*> (subtract 1 <$> num)
                   <*> num <*> (Cigar <$> cigar) <*> rnext <*> (subtract 1 <$> num)
-                  <*> snum <*> sequence <*> quals <*> exts <*> pure 0
+                  <*> snum <*> sequ <*> quals <*> exts <*> pure 0
   where
     sep      = P.endOfInput <|> () <$ P.char '\t'
     word     = P.takeTill ((==) '\t') <* sep
@@ -790,14 +790,19 @@ parseSamRec ref = (\nm fl rn po mq cg rn' -> BamRec nm fl rn po mq cg (rn' rn))
     snum     = P.signed P.decimal <* sep
 
     rnext    = id <$ P.char '=' <* sep <|> const . ref <$> word
-    sequence = ([] <$ P.char '*' <|>
-                map toNucleotide . B.unpack <$> P.takeWhile (P.inClass "acgtnACGTN")) <* sep
-    quals    = S.empty <$ P.char '*' <* sep <|> S.map (subtract 33) <$> word
+    sequ     = {-# SCC "parseSamRec/sequ" #-}
+               ([] <$ P.char '*' <|>
+               map toNucleotide . B.unpack <$> P.takeWhile (P.inClass "acgtnACGTN")) <* sep
+    
+    quals    = {-# SCC "parseSamRec/quals" #-} S.empty <$ P.char '*' <* sep <|> S.map (subtract 33) <$> word
+
     cigar    = [] <$ P.char '*' <* sep <|>
                P.manyTill (flip (,) <$> P.decimal <*> cigop) sep
+
     cigop    = P.choice $ zipWith (\c r -> r <$ P.char c) "MIDNSHP" [Mat,Ins,Del,Nop,SMa,HMa,Pad]
     exts     = M.fromList <$> ext `P.sepBy` sep
     ext      = (\a b v -> ([a,b],v)) <$> P.anyChar <*> P.anyChar <*> (P.char ':' *> value)
+    
     value    = P.char 'A' *> P.char ':' *> (Char <$>               anyWord8) <|>
                P.char 'i' *> P.char ':' *> (Int  <$>     P.signed P.decimal) <|>
                P.char 'Z' *> P.char ':' *> (Text <$> P.takeTill ((==) '\t')) <|>
@@ -810,14 +815,14 @@ parseSamRec ref = (\nm fl rn po mq cg rn' -> BamRec nm fl rn po mq cg (rn' rn))
     intArr   is = IntArr   $ listArray (0, length is -1) is
     floatArr fs = FloatArr $ listArray (0, length fs -1) $ map realToFrac fs
     hexarray    = S.pack . repack . B.unpack <$> P.takeWhile (P.inClass "0-9A-Fa-f")
-    repack (a:b:cs) = fromIntegral (digitToInt a * 16 + digitToInt b) : repack cs ; repack [] = []
+    repack (a:b:cs) = fromIntegral (digitToInt a * 16 + digitToInt b) : repack cs ; repack _ = []
 
 
 takeWhileI :: Monad m => (a -> Bool) -> I.Enumeratee [a] [a] m b
-takeWhileI pred = liftI . step
+takeWhileI pr = liftI . step
   where
     step it (EOF x) = lift $ I.enumChunk (EOF x) it
-    step it (Chunk xs) = case span pred xs of
+    step it (Chunk xs) = case span pr xs of
         (l,[]) -> lift (I.enumPure1Chunk l it) >>= I.liftI . step
         (l, r) -> lift (I.enumPure1Chunk l it) >>= flip idone (I.Chunk r)
 
@@ -861,4 +866,29 @@ sam2bam_test = withFile "bar.bam" WriteMode $                   \hdl ->
                lift (print (meta,refs)) >>=                     \_ -> 
                joinI $ encodeBam meta refs $
                I.mapChunksM_ (S.hPut hdl)
+
+
+-- Fast method to compare byte strings, by starting at the end.  This
+-- makes sense because people tend to name their reference sequences
+-- like "contig_xxx", so comparing the beginning isn't really helpful.
+newtype R = R S.ByteString
+
+instance Ord R where compare = compare_R
+instance Eq  R where a == b = case compare_R a b of EQ -> True ; _ -> False
+
+compare_R :: R -> R -> Ordering
+compare_R (R a) (R b) = inlinePerformIO $
+                        unsafeUseAsCStringLen a $ \(pa,la) -> 
+                        unsafeUseAsCStringLen b $ \(pb,lb) ->
+                        case compare la lb of LT -> return LT
+                                              GT -> return GT
+                                              EQ -> go (pa `plusPtr` (la-1)) (pb `plusPtr` (lb-1)) la
+    where
+        go !_ !_ 0 = return EQ
+        go  p  q n = do x <- peek p :: IO Word8
+                        y <- peek q :: IO Word8
+                        case compare x y of
+                              LT -> return LT
+                              GT -> return GT
+                              EQ -> go (p `plusPtr` 1) (q `plusPtr` 1) (n-1)
 

@@ -85,16 +85,16 @@ parseFastq' pDescr = run pFasta
       where
         (name, flags, tags) = checkFR $ checkC (S.pack name0, 0, M.empty)
 
-        checkFR (n,f,t) | "F_" `S.isPrefixOf` name = checkC (S.drop 2 name, f .|. flagFirstMate  .|. flagPaired,     t)
-                        | "R_" `S.isPrefixOf` name = checkC (S.drop 2 name, f .|. flagSecondMate .|. flagPaired,     t)
-                        | "M_" `S.isPrefixOf` name = checkC (S.drop 2 name, f .|. flagFirstMate  .|. flagSecondMate, t)
-                        | "T_" `S.isPrefixOf` name = checkC (S.drop 2 name, f .|.                    flagSecondMate, t)
-                        | "/1" `S.isSuffixOf` name =        ( rdrop 2 name, f .|. flagFirstMate  .|. flagPaired,     t)
-                        | "/2" `S.isSuffixOf` name =        ( rdrop 2 name, f .|. flagSecondMate .|. flagPaired,     t)
-                        | otherwise                =        (         name, f,                                       t)
+        checkFR (n,f,t) | "F_" `S.isPrefixOf` name = checkC (S.drop 2 n, f .|. flagFirstMate  .|. flagPaired,     t)
+                        | "R_" `S.isPrefixOf` name = checkC (S.drop 2 n, f .|. flagSecondMate .|. flagPaired,     t)
+                        | "M_" `S.isPrefixOf` name = checkC (S.drop 2 n, f .|. flagFirstMate  .|. flagSecondMate, t)
+                        | "T_" `S.isPrefixOf` name = checkC (S.drop 2 n, f .|.                    flagSecondMate, t)
+                        | "/1" `S.isSuffixOf` name =        ( rdrop 2 n, f .|. flagFirstMate  .|. flagPaired,     t)
+                        | "/2" `S.isSuffixOf` name =        ( rdrop 2 n, f .|. flagSecondMate .|. flagPaired,     t)
+                        | otherwise                =        (         n, f,                                       t)
 
-        checkC (n,f,t) | "C_" `S.isPrefixOf` name = (S.drop 2 name, f, M.insert "XD" (Int (-1)) t)
-                       | otherwise                = (         name, f,                          t)
+        checkC (n,f,t) | "C_" `S.isPrefixOf` name = (S.drop 2 n, f, M.insert "XD" (Int (-1)) t)
+                       | otherwise                = (         n, f,                          t)
 
         rdrop n s = S.take (S.length s - n) s
 

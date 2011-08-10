@@ -137,7 +137,7 @@ get_block sz = liftI $ \s -> case s of
 
 -- | Maximum block size for Bgzf: 64k with some room for headers and
 -- uncompressible stuff
-maxBlockSize :: Int64
+maxBlockSize :: Int
 maxBlockSize = 65450
 
 
@@ -145,7 +145,7 @@ maxBlockSize = 65450
 -- This is just an empty string compressed as BGZF.  Appended to BAM
 -- files to indicate their end.
 bgzfEofMarker :: S.ByteString
-bgzfEofMarker = compress1 L.empty
+bgzfEofMarker = compress1 []
 
 
 -- | Compress a stream of @ByteString@s into a stream of Bgzf blocks.
@@ -158,34 +158,34 @@ bgzfEofMarker = compress1 L.empty
 -- XXX Need a way to write an index "on the side".  Additional output
 -- streams?
 compress :: Monad m => Enumeratee S.ByteString S.ByteString m a
-compress it0 = icont (step it0 L.empty) Nothing
+compress it0 = icont (step it0 0 []) Nothing
   where
-    step it acc c@(EOF _) = lift $ enumPure1Chunk (compress1 acc) it >>= \it' ->       -- XXX index?
-                                   enumPure1Chunk bgzfEofMarker it' >>= \it'' ->
-                                   enumChunk c it''
-    step it acc (Chunk c) 
-        | L.length acc + fromIntegral (S.length c) < maxBlockSize
-            = icont (step it (acc `L.append` L.fromChunks [c])) Nothing
+    step it    _ acc c@(EOF _) = lift $ enumPure1Chunk (compress1 acc) it >>= \it' ->       -- XXX index?
+                                        enumPure1Chunk bgzfEofMarker it' >>= \it'' ->
+                                        enumChunk c it''
+    step it alen acc (Chunk c) 
+        | alen + S.length c < maxBlockSize
+            = icont (step it (alen + S.length c) (c:acc)) Nothing
 
-        | fromIntegral (S.length c) < maxBlockSize
+        | S.length c < maxBlockSize
             = do it' <- lift $ enumPure1Chunk (compress1 acc) it -- XXX index?
-                 icont (step it' (L.fromChunks [c])) Nothing
+                 icont (step it' (S.length c) [c]) Nothing
 
         | otherwise 
-            = do let loop i s | L.null s = return i
-                     loop i s = do i' <- lift $ enumPure1Chunk (compress1 $ L.take maxBlockSize s) i
-                                   loop i' (L.drop maxBlockSize s)
+            = do let loop i s | S.null s = return i
+                     loop i s = do i' <- lift $ enumPure1Chunk (compress1 [S.take maxBlockSize s]) i
+                                   loop i' (S.drop maxBlockSize s)
                  -- XXX index?
-                 it' <- loop it (L.fromChunks [c])
-                 icont (step it' L.empty) Nothing
+                 it' <- loop it c
+                 icont (step it' 0 []) Nothing
 
 
 -- | Compress a single string into a BGZF block.
-compress1 :: L.ByteString -> S.ByteString
-compress1 s | L.length s > maxBlockSize = error "Don't do that!"
-compress1 l = S.concat (L.toChunks hdr) `S.append` rest
+compress1 :: [S.ByteString] -> S.ByteString
+compress1 ss | sum (map S.length ss) > maxBlockSize = error "Don't do that!"
+compress1 ss = S.concat (L.toChunks hdr) `S.append` rest
   where
-    z = S.concat $ L.toChunks $ Z.compress l
+    z = S.concat $ L.toChunks $ Z.compress (L.fromChunks (reverse ss))
     (Right hdr, rest) = runGet patch_header z
     patch_header = do k <- getWord16le
                       m <- getWord8
