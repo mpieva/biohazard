@@ -5,27 +5,13 @@ module Bio.File.Bgzf (
     lookAheadI, liftBlock, getString, getOffset
                      ) where
 
-{-
-Handling of BGZF files.  For input, we want:
- - an Iteratee transformer interface (actually this is a special case of
-   an Enumeratee?)
- - decompression of BGZF, GZip and no compression
-   (in that case: what virtual adresses do we assign?  Do we even try?)
- - support for seeking.  How?
+-- ^ Handling of BGZF files.  Right now, we have an Enumeratee each for
+-- input and output.  The input iteratee can optionally supply virtual
+-- file offsets, so that seeking is possible.
+--
+-- Note:  The Zlib bindings are awfully inconvenient for this style.
 
-For output, we want:
- - also an Iteratee transformer
- - writing of uncompressed, GZipped, BGZF'ed files
- - maybe automatic creation of some kind of index?
-
-Other things:
- - the Zlib bindings are awfully inconvenient for this style
-
-Right now, there's just the Iteratee transformer to decompress BGZF into
-a sequence of blocks and an Iteratee transformer to compress a sequence
-of blocks into BGZF format.
--} 
-
+import Bio.Util
 import Control.Monad
 import Control.Monad.IO.Class
 import Control.Monad.Trans.Class
@@ -52,7 +38,9 @@ import qualified Data.ByteString.Lazy       as L
 -- import qualified Data.ByteString.Unsafe     as S
 import qualified Data.Iteratee.ListLike     as I
 
--- one BGZF block: virtual offset and contents
+-- | One BGZF block: virtual offset and contents.  Could also be a block
+-- of an uncompressed file, if we want to support indexing of
+-- uncompressed BAM or some silliness like that.
 data Block = Block {-# UNPACK #-} !Int64 {-# UNPACK #-} !S.ByteString
 
 instance I.NullPoint Block where empty = Block 0 S.empty
@@ -156,7 +144,7 @@ bgzfEofMarker = compress1 []
 -- size.  On EOF, we flush and write the end marker.
 --
 -- XXX Need a way to write an index "on the side".  Additional output
--- streams?
+-- streams?  (Implicitly) pair two @Iteratee@s, similar to @I.pair@?
 compress :: Monad m => Enumeratee S.ByteString S.ByteString m a
 compress it0 = icont (step it0 0 []) Nothing
   where
@@ -187,15 +175,15 @@ compress1 ss = S.concat (L.toChunks hdr) `S.append` rest
   where
     z = S.concat $ L.toChunks $ Z.compress (L.fromChunks (reverse ss))
     (Right hdr, rest) = runGet patch_header z
-    patch_header = do k <- getWord16le
-                      m <- getWord8
-                      f <- getWord8
-                      t <- getWord32le
-                      xf <- getWord8
-                      _os <- getWord8
-                      xlen <- if f `testBit` 2 then getWord16le else return 0
+    patch_header = do !k <- getWord16le
+                      !m <- getWord8
+                      !f <- getWord8
+                      !t <- getWord32le
+                      !xf <- getWord8
+                      !_os <- getWord8
+                      !xlen <- if f `testBit` 2 then getWord16le else return 0
 
-                      return $ runPut $ do 
+                      return $! runPut $ do 
                             putWord16le k
                             putWord8 m
                             putWord8 $ f .|. 4
@@ -210,19 +198,6 @@ compress1 ss = S.concat (L.toChunks hdr) `S.append` rest
                                 if f `testBit` 2 then 0 else 2
 
 -- ------------------------------------------------------------------------------------------------- utils
-
--- | Run an Iteratee, collect the input.  When it finishes, return the
--- result along with *all* input.  Effectively allows lookahead.  Be
--- careful, this will eat memory if the @Iteratee@ doesn't return
--- speedily.
-lookAheadI :: Monoid s => Iteratee s m a -> Iteratee s m a
-lookAheadI = go mempty
-  where 
-    go acc it = Iteratee $ \od oc -> runIter it (\x _ -> od x (Chunk acc)) (oc . step acc)
-    
-    step acc k c@(Chunk str) = go (acc `mappend` str) (k c)
-    step acc k c@(EOF     _) = Iteratee $ \od1 -> runIter (k c) (\x _ -> od1 x (Chunk acc))
-                                      
 
 -- | Get the current virtual offset.  The virtual address in a BGZF
 -- stream contains the offset of the current block in the upper 48 bits
@@ -246,16 +221,6 @@ liftBlock = liftI . step
       where
         onDone od hdr (Chunk rest) = od hdr (Chunk $ Block (l + fromIntegral (S.length s-S.length rest)) rest)
         onDone od hdr (EOF     ex) = od hdr (EOF ex)
-
--- | Collects a string of a given length.  Don't use this for long
--- strings, use @Data.Iteratee.ListLike.take@ instead.
-getString :: Monad m => Int -> Iteratee S.ByteString m S.ByteString
-getString 0 = idone S.empty (Chunk S.empty)
-getString n = liftI step
-  where
-    step c@(EOF _) = icont step (Just $ setEOF c)
-    step (Chunk c) | S.length c >= n = idone (S.take n c) (Chunk $ S.drop n c)
-                   | otherwise       = S.append c `liftM` getString (n - S.length c)
 
 -- ------------------------------------------------------------------------------------------------- tests
 

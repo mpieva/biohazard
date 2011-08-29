@@ -19,7 +19,7 @@ import qualified Data.Map        as M
 -- information, notably the "mate" information of the mate and many
 -- optional fields.
 --
--- Todo: The MD field is currently removed.  It could be repaired
+-- TODO: The MD field is currently removed.  It should be repaired
 -- instead.  Many other fields should be trimmed if present.
 
 trim_3' :: ([Nucleotide] -> [Word8] -> Bool) -> BamRec -> BamRec

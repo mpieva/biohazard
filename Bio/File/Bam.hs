@@ -1,4 +1,20 @@
 {-# LANGUAGE OverloadedStrings, PatternGuards, BangPatterns #-}
+
+-- TODO:  
+-- - Index reader and writer
+-- - Seeking.  Seeking is implemented as a recoverable error(!!)
+--   containing the seek function.  So we must catch the error somewhere
+--   in Bgzf, rethrow it to effect seeking in the compressed stream,
+--   then seek within the current block, then resume.  Hm...
+-- - Reading of GZip and plain BAM.  More interesting with automatic
+--   detection.  Also, seeking on GZipped streams must throw an error.
+-- - Writing of GZip and plain BAM.  More interesting as configurable
+--   wrapper.
+-- - Automatic creation of some kind of index.  If possible, the
+--   standard index for sorted BAM.  Optionally a block index for
+--   slicing of large files.  Maybe an index by name and an index for
+--   group-sorted files.
+
 module Bio.File.Bam (
     module Bio.Base,
 
@@ -55,8 +71,9 @@ module Bio.File.Bam (
     isMerged,
     isAdapterTrimmed,
 
-    -- BamIndex,
-    -- readBamIndex,
+    BamIndex,
+    readBamIndex,
+    readBamIndex',
     -- readBamSequence,
 
     BamMeta(..),
@@ -74,9 +91,11 @@ import Bio.Base
 import Bio.File.Bgzf
 
 import Control.Monad
+import Control.Monad.IO.Class
 import Control.Monad.Trans.Class
 import Control.Applicative
 import Data.Array.IArray
+import Data.Array.IO
 import Data.Array.Unboxed
 import Data.Attoparsec              ( anyWord8 )
 import Data.Attoparsec.Iteratee
@@ -580,31 +599,38 @@ filterFlags :: BamRec -> Int
 filterFlags = (.&.) mask . b_flag  
   where mask = flagLowQuality .|. flagLowComplexity .|. flagFailsQC .|. flagDuplicate
 
--- Stop gap solution.  we only get the first offset from the linear
--- index, which allows us to navigate to a target sequence.  Will do the
--- rest when I need it.
-type BamIndex = Array Refseq Word64
+-- | Stop gap solution for a cheap index.  We only get the first offset
+-- from the linear index, which allows us to navigate to a target
+-- sequence.  Will do the rest when I need it.
+type BamIndex = UArray Refseq Word64
 
-readBamIndex :: L.ByteString -> BamIndex
-readBamIndex = runGet getBamIndex
+readBamIndex :: FilePath -> IO BamIndex
+readBamIndex = I.fileDriver readBamIndex'
+
+readBamIndex' :: MonadIO m => I.Iteratee S.ByteString m BamIndex
+readBamIndex' = do magic <- I.heads "BAI\1"
+                   when (magic /= 4) $ fail "BAI signature not found"
+                   nref <- fromIntegral `liftM` I.endianRead4 LSB
+                   if nref < 1 then return (array (toEnum 1, toEnum 0) [])
+                               else get_array nref
   where
-    getBamIndex = do
-        magic <- getByteString 4
-        when (magic /= "BAI\1" ) $ fail "BAI signature not found"
-        nref <- get_int_32
-        offs <- replicateM nref $ do
-                    nbins <- get_int_32
-                    replicateM_ nbins $ do
-                        _bin <- get_int_32 -- "distinct bin", whatever that means
-                        nchunks <- get_int_32
-                        replicateM_ nchunks $ getWord64le >> getWord64le
-                    nintv <- get_int_32
-                    os <- filter (/= 0) <$> replicateM nintv getWord64le
-                    return $ if null os then 0 else minimum os
-        return $! listArray (toEnum 0, toEnum (nref-1)) offs
+    get_array nref = do 
+        arr <- liftIO $ ( newArray_ (toEnum 0, toEnum (nref-1)) :: IO (IOUArray Refseq Word64) )
+        forM_ [toEnum 0 .. toEnum (nref-1)] $ \r -> do
+            nbins <- fromIntegral `liftM` I.endianRead4 I.LSB
+            replicateM_ nbins $ do
+                _bin <- I.endianRead4 I.LSB -- "distinct bin", whatever that means
+                nchunks <- fromIntegral `liftM` I.endianRead4 I.LSB
+                replicateM_ nchunks $ I.endianRead8 I.LSB >> I.endianRead8 I.LSB
 
-    get_int_32 = fromIntegral <$> getWord32le
-
+            nintv <- I.endianRead4 I.LSB
+            o <- let loop acc 0 = return acc
+                     loop acc n = do oo <- I.endianRead8 I.LSB
+                                     let !acc' = if oo == 0 then acc else min acc oo
+                                     loop acc (n-1)
+                 in loop maxBound nintv                    
+            liftIO $ writeArray arr r o 
+        liftIO $ unsafeFreeze arr
 
 data BamMeta = BamMeta {
         meta_hdr :: BamHeader,
@@ -821,7 +847,7 @@ parseSamRec ref = (\nm fl rn po mq cg rn' -> BamRec nm fl rn po mq cg (rn' rn))
 takeWhileI :: Monad m => (a -> Bool) -> I.Enumeratee [a] [a] m b
 takeWhileI pr = liftI . step
   where
-    step it (EOF x) = lift $ I.enumChunk (EOF x) it
+    step it (EOF x) = idone it (EOF x)
     step it (Chunk xs) = case span pr xs of
         (l,[]) -> lift (I.enumPure1Chunk l it) >>= I.liftI . step
         (l, r) -> lift (I.enumPure1Chunk l it) >>= flip idone (I.Chunk r)

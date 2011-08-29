@@ -2,6 +2,8 @@
 module Bio.File.Bam.Fastq where
 
 -- Parser for FastA/FastQ.  Screams out to be turned into an Iteratee.
+-- Also uses weird LL parser combinators; could use either Iteratee or
+-- Attoparsec.
 
 import Bio.File.Bam
 import Control.Applicative
