@@ -1,15 +1,16 @@
 {-# LANGUAGE ForeignFunctionInterface, BangPatterns #-}
+
+-- | Handling of BGZF files.  Right now, we have an Enumeratee each for
+-- input and output.  The input iteratee can optionally supply virtual
+-- file offsets, so that seeking is possible.
+--
+-- Note:  The Zlib bindings are awfully inconvenient for this style.
+
 module Bio.File.Bgzf (
     decompress, decompress', decompressWith, Block(..),
     compress, maxBlockSize, bgzfEofMarker,
     lookAheadI, liftBlock, getString, getOffset
                      ) where
-
--- ^ Handling of BGZF files.  Right now, we have an Enumeratee each for
--- input and output.  The input iteratee can optionally supply virtual
--- file offsets, so that seeking is possible.
---
--- Note:  The Zlib bindings are awfully inconvenient for this style.
 
 import Bio.Util
 import Control.Monad
