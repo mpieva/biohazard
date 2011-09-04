@@ -89,6 +89,7 @@ module Bio.File.Bam (
 
 import Bio.Base
 import Bio.File.Bgzf
+import Bio.Util
 
 import Control.Monad
 import Control.Monad.IO.Class
@@ -99,7 +100,6 @@ import Data.Array.IO
 import Data.Array.Unboxed
 import Data.Attoparsec              ( anyWord8 )
 import Data.Attoparsec.Iteratee
-import Data.Binary.Get
 import Data.Binary.Put
 import Data.Bits                    ( testBit, shiftL, shiftR, (.&.), (.|.) )
 import Data.Char                    ( chr, ord, isDigit, digitToInt )
@@ -627,7 +627,7 @@ readBamIndex' = do magic <- I.heads "BAI\1"
             o <- let loop acc 0 = return acc
                      loop acc n = do oo <- I.endianRead8 I.LSB
                                      let !acc' = if oo == 0 then acc else min acc oo
-                                     loop acc (n-1)
+                                     loop acc' (n-1)
                  in loop maxBound nintv                    
             liftIO $ writeArray arr r o 
         liftIO $ unsafeFreeze arr
@@ -776,7 +776,6 @@ decodeBam inner = do meta <- liftBlock get_bam_header
                                      ) [] $ range lr
                        return $! listArray lr $ reverse refs
 
-
 -- | Iteratee-style parser for SAM files, designed to be compatible with
 -- the BAM parsers.  Parses plain uncompressed SAM, nothing else.  Since
 -- it is supposed to work the same way as the BAM parser, it requires
@@ -855,15 +854,24 @@ takeWhileI pr = liftI . step
 
 -- ------------------------------------------------------------------- Tests
 
-bam_test :: IO ()
-bam_test = bam_test' "/mnt/ngs_data/101203_SOLEXA-GA04_00007_PEDi_MM_QF_SR/Ibis/BWA/s_5_L3280_sequence_mq_hg19_nohap.bam"
+some_file :: FilePath
+some_file = "/mnt/ngs_data/101203_SOLEXA-GA04_00007_PEDi_MM_QF_SR/Ibis/BWA/s_5_L3280_sequence_mq_hg19_nohap.bam"
 
 bam_test' :: FilePath -> IO ()
 bam_test' = fileDriver $
             joinI $ decompress'  $
-            joinI $ decodeBam    $          \meta refs ->
-            lift (print (meta,refs)) >>
-            print_names
+            joinI $ decodeBam    $
+            dump_bam
+            
+bam_test :: FilePath -> IO ()
+bam_test = fileDriverRandom $
+           joinI $ decompress'  $
+           joinI $ do virtualSeek 0
+                      decodeBam dump_bam 
+
+dump_bam :: BamMeta -> Refs -> Iteratee [BamRaw] IO ()
+dump_bam meta refs = lift (print meta >> mapM_ print (elems refs)) >> print_names
+
 
 sam_test :: IO ()
 sam_test = I.fileDriver (joinI $ decodeSam (\_ _ -> print_names')) "foo.sam"

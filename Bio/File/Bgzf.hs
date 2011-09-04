@@ -1,4 +1,4 @@
-{-# LANGUAGE ForeignFunctionInterface, BangPatterns #-}
+{-# LANGUAGE ForeignFunctionInterface, BangPatterns, DeriveDataTypeable, MultiParamTypeClasses #-}
 
 -- | Handling of BGZF files.  Right now, we have an Enumeratee each for
 -- input and output.  The input iteratee can optionally supply virtual
@@ -8,11 +8,12 @@
 
 module Bio.File.Bgzf (
     decompress, decompress', decompressWith, Block(..),
-    compress, maxBlockSize, bgzfEofMarker,
-    lookAheadI, liftBlock, getString, getOffset
+    compress, maxBlockSize, bgzfEofMarker, virtualSeek,
+    lookAheadI, liftBlock, getOffset
                      ) where
 
 import Bio.Util
+import Control.Exception
 import Control.Monad
 import Control.Monad.IO.Class
 import Control.Monad.Trans.Class
@@ -31,13 +32,15 @@ import Data.Iteratee.Char                   ( printLinesUnterminated )
 import Data.Iteratee.IO
 import Data.Iteratee.Iteratee
 import Data.Monoid
-import Data.Word                            ( Word16 )
+import Data.Typeable
+import Data.Word                            ( Word16, Word8 )
 
 import qualified Codec.Compression.GZip     as Z
 import qualified Data.ByteString            as S
 import qualified Data.ByteString.Lazy       as L
 -- import qualified Data.ByteString.Unsafe     as S
 import qualified Data.Iteratee.ListLike     as I
+import qualified Data.ListLike              as LL
 
 -- | One BGZF block: virtual offset and contents.  Could also be a block
 -- of an uncompressed file, if we want to support indexing of
@@ -53,6 +56,23 @@ instance Monoid Block where
     mconcat [] = I.empty
     mconcat bs@(Block x _:_) = Block x $ S.concat [s|Block _ s <- bs]
 
+-- Minimum definition, only needed because @drop@ depends on it
+-- indirectly.
+instance LL.FoldableLL Block Word8 where
+    foldl' f e (Block _ s) = S.foldl' f e s
+    foldl f e (Block _ s) = S.foldl f e s
+    foldr f e (Block _ s) = S.foldr f e s
+
+-- Minimum defintion so it works, plus support for @drop@, which was all
+-- we really needed...
+instance LL.ListLike Block Word8 where
+    singleton = Block 0 . S.singleton
+    head (Block _ s) = S.head s
+    tail (Block o s) = Block (o+1) (S.tail s)
+    drop n (Block o s) = Block (o + fromIntegral n) (S.drop n s)
+    genericLength (Block _ s) = fromIntegral $ S.length s
+
+
 -- | Decompresses BGZF into @Block@s.  Each block has a starting offset
 -- and is otherwise just a @ByteString@.
 decompress' :: Monad m => Enumeratee S.ByteString Block m a
@@ -63,16 +83,40 @@ decompress' = decompressWith Block 0
 decompress :: Monad m => Enumeratee S.ByteString S.ByteString m a
 decompress = decompressWith (\_ s -> s) 0
 
-decompressWith :: (Monad m, Monoid s) => (Int64 -> S.ByteString -> s) -> Int64 -> Enumeratee S.ByteString s m a
-decompressWith block !off inner = I.isFinished >>= go
+decompressWith :: (Monad m, Monoid s, Nullable s, LL.ListLike s e) => (Int64 -> S.ByteString -> s) -> Int64 -> Enumeratee S.ByteString s m a
+decompressWith blk !off inner = I.isFinished >>= go
   where
     go True = return inner
-    go False = do csize <- lookAheadI get_bgzf_header
-                  comp <- get_block $ fromIntegral csize +1
+    go False = do !csize <- lookAheadI get_bgzf_header
+                  !comp <- get_block $ fromIntegral csize +1
                   -- this is ugly and very roundabout, but works for the time being...
-                  let c = S.concat . L.toChunks . Z.decompress $ L.fromChunks [comp]
-                  lift (enumPure1Chunk (block (off `shiftL` 16) c) inner)
-                        >>= decompressWith block (off + fromIntegral csize + 1)
+                  let !c = S.concat . L.toChunks . Z.decompress $ L.fromChunks [comp]
+                      !off' = off + fromIntegral csize + 1
+                  Iteratee $ \od oc -> do
+                      it' <- enumPure1Chunk (blk (off `shiftL` 16) c) inner
+                      runIter it' (onDone od) (onCont oc od off')
+
+    -- inner Iteratee is done, so we reconstruct the inner Iteratee and
+    -- are done, too.
+    onDone od a str = od (idone a str) (Chunk S.empty)
+
+    onCont oc od off' k mx = case mx >>= fromException of
+        -- Inner Iteratee continues and either everything is fine or we
+        -- don't understand the exception, so we just continue with the
+        -- reconstructed inner @Iteratee@.  XXX: Should we propagate the
+        -- exception?  How?
+        Nothing -> runIter (decompressWith blk off' (icont k mx)) od oc
+
+        -- inner Iteratee continues and we got a @VirtSeekException@.
+        -- This means we issue a seek request, then reenter the
+        -- decompression loop.  To seek within the decompressed stream,
+        -- we pass a new inner Iteratee that first drops a few bytes,
+        -- then calls the original Iteratee.
+        Just (VirtSeekException o) -> runIter cont od oc
+          where cont = do seek . fromIntegral $ o `shiftR` 16
+                          decompressWith blk (o .&. complement 0xffff) $
+                              I.drop (fromIntegral $ o .&. 0xffff) >> liftI k
+    
 
    -- Doesn't work.  Maybe because 'uncompress'
    -- gets confused by the headers?
@@ -198,6 +242,15 @@ compress1 ss = S.concat (L.toChunks hdr) `S.append` rest
                             putWord16le . fromIntegral $ S.length z + 5 + 
                                 if f `testBit` 2 then 0 else 2
 
+newtype VirtSeekException = VirtSeekException Int64 deriving (Typeable, Show)
+
+instance Exception VirtSeekException where
+  toException   = iterExceptionToException
+  fromException = iterExceptionFromException
+
+virtualSeek :: ( NullPoint s, Monad m ) => Int64 -> Iteratee s m ()
+virtualSeek o = throwRecoverableErr (toException $ VirtSeekException o) (idone ())
+
 -- ------------------------------------------------------------------------------------------------- utils
 
 -- | Get the current virtual offset.  The virtual address in a BGZF
@@ -234,9 +287,9 @@ print_block = liftI step
                          idone () e
 
 test, test' :: IO ()
-test = fileDriver (joinI $ decompress' print_block)
+test = fileDriverRandom (joinI $ decompress' (virtualSeek 0 >> print_block))
        "/mnt/ngs_data/101203_SOLEXA-GA04_00007_PEDi_MM_QF_SR/Ibis/BWA/s_5_L3280_sequence_mq_hg19_nohap.bam" 
 
-test' = fileDriver (joinI $ decompress printLinesUnterminated)
+test' = fileDriverRandom (joinI $ decompress (virtualSeek 0 >> printLinesUnterminated))
         "/mnt/454/Altaiensis/bwa/catalog/EPO/combined_SNC_anno.tsv.bgz" 
 
