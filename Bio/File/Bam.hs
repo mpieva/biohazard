@@ -1,19 +1,18 @@
 {-# LANGUAGE OverloadedStrings, PatternGuards, BangPatterns #-}
 
 -- TODO:  
--- - Index reader and writer
--- - Seeking.  Seeking is implemented as a recoverable error(!!)
---   containing the seek function.  So we must catch the error somewhere
---   in Bgzf, rethrow it to effect seeking in the compressed stream,
---   then seek within the current block, then resume.  Hm...
--- - Reading of GZip and plain BAM.  More interesting with automatic
---   detection.  Also, seeking on GZipped streams must throw an error.
--- - Writing of GZip and plain BAM.  More interesting as configurable
+-- - Index writer
+-- - Seeking, partially.  We cannot seek in plain files yet, and we can
+--   only seek to the beginning of the range of some RNAME.  Most of the
+--   functionality available from the index is not yet supported.
+-- - Writing of GZip and plain BAM.  More interesting as a configurable
 --   wrapper.
--- - Automatic creation of some kind of index.  If possible, the
---   standard index for sorted BAM.  Optionally a block index for
+-- - Automatic creation of some kind of index.  If possible, this should
+--   be the standard index for sorted BAM.  Optionally a block index for
 --   slicing of large files.  Maybe an index by name and an index for
 --   group-sorted files.
+-- - SAM writer.  Unless we simply declare that writing SAM is a bad
+--   idea.
 
 module Bio.File.Bam (
     module Bio.Base,
@@ -22,9 +21,11 @@ module Bio.File.Bam (
 
     decodeBam,
     decodeBamEntry,
+    decodeBamSequence,
+    decodeSam,
+
     encodeBam,
     encodeBamEntry,
-    decodeSam,
 
     -- writeBamFile,
 
@@ -33,7 +34,7 @@ module Bio.File.Bam (
     BamRec(..),
     Refs,
     noRefs,
-    (!),
+    getRef,
 
     Refseq(..),
     invalidRefseq,
@@ -74,7 +75,6 @@ module Bio.File.Bam (
     BamIndex,
     readBamIndex,
     readBamIndex',
-    -- readBamSequence,
 
     BamMeta(..),
     nullMeta,
@@ -109,7 +109,8 @@ import Data.Iteratee.Binary
 import Data.Iteratee.Char
 import Data.Iteratee.IO
 import Data.Iteratee.Iteratee
-import Data.Word                    ( Word64, Word32, Word8 )
+import Data.Sequence                ( (<|), (|>) )
+import Data.Word                    ( Word32, Word8 )
 import Foreign.Marshal.Alloc        ( alloca )
 import Foreign.Ptr                  ( castPtr, plusPtr )
 import Foreign.Storable             ( peek, poke )
@@ -121,8 +122,10 @@ import qualified Data.Binary.Strict.Get         as G
 import qualified Data.ByteString                as S
 import qualified Data.ByteString.Char8          as B
 import qualified Data.ByteString.Lazy.Char8     as L
+import qualified Data.Foldable                  as F
 import qualified Data.Iteratee                  as I
 import qualified Data.Map                       as M
+import qualified Data.Sequence                  as Z
 
 import Data.ByteString.Unsafe
 import Data.ByteString.Internal
@@ -223,38 +226,37 @@ isGzip s = not (L.null (L.drop 26 s)) && L.pack "\31\139" `L.isPrefixOf` s
 -}
 
 
-{-
--- Seek to a given sequence in a Bam file, read records.  Opens a new
--- handle, making this all very, very ugly.
-readBamSequence :: FilePath -> BamIndex -> Refseq -> IO [ BamRec ]
-readBamSequence fp idx refseq = do
-    case idx ! refseq of
-        0 -> return []
-        virtoff -> do
-            let uoffset = virtoff .&. 0xffff
-                coffset = virtoff `shiftR` 16
-            hdl <- openFile fp ReadMode
-            hSeek hdl AbsoluteSeek (fromIntegral coffset)
-            go . L.drop (fromIntegral uoffset) . decompressBgzf <$> L.hGetContents hdl
+-- Seek to a given sequence in a Bam file, read those records.  This
+-- requires an appropriate index (read separately), and the file must
+-- have been opened in such a way as to allow seeking.  Enumerates over
+-- the @BamRaw@ records of the correct sequence only, doesn't enumerate
+-- at all if the sequence isn't found.
+
+decodeBamSequence :: Monad m => BamIndex -> Refseq -> Enumeratee Block [BamRaw] m a
+decodeBamSequence idx refseq iter = case idx ! refseq of
+        _ | not (bounds idx `inRange` refseq) -> return iter
+        0                                     -> return iter
+        virtoff -> do virtualSeek virtoff
+                      decodeBamLoop (joinI $ I.breakE wrong_ref iter)
   where
-    go s = case runGetState getBamEntry' s 0 of
-            _ | L.null s                           -> []
-            (Just a, s',  _) | b_rname a == refseq -> a : go s'
-                             | otherwise           -> []
-            (Nothing, s', _)                       -> go s'
+    wrong_ref br = let a = fromIntegral $ raw_data br `S.index` 0
+                       b = fromIntegral $ raw_data br `S.index` 1
+                       c = fromIntegral $ raw_data br `S.index` 2
+                       d = fromIntegral $ raw_data br `S.index` 3
+                       r = a `shiftL`  0 .|.  b `shiftL`  8 .|. 
+                           c `shiftL` 16 .|.  d `shiftL` 24
+                   in r /= unRefseq refseq
+    
 
-    getBamEntry' = isEmpty >>= \e -> if e then return Nothing else Just <$> getBamEntry
--}
-
-
-
--- | A list of reference sequences.  Note that the first reference sequence must have index 0
-type Refs = Array Refseq (Seqid, Int)
+-- | A list of reference sequences.
+type Refs = Z.Seq BamSQ
 
 -- | The empty list of references.  Needed for BAM files that don't really store alignments.
 noRefs :: Refs
-noRefs = listArray (toEnum 1, toEnum 0) []
+noRefs = Z.empty
 
+getRef :: Refs -> Refseq -> BamSQ
+getRef refs (Refseq i) = Z.index refs (fromIntegral i)
 
 
 -- | Decodes a raw block into a @BamRec@.
@@ -350,8 +352,8 @@ getByteStringNul = S.init <$> (G.lookAhead (get_len 1) >>= G.getByteString)
 --
 -- It would be nice if we were able to write an index on the side.  That
 -- hasn't been designed in, yet.
-encodeBam :: Monad m => BamMeta -> Refs -> Enumeratee [S.ByteString] S.ByteString m a
-encodeBam meta refs = eneeBam ><> compress
+encodeBam :: Monad m => BamMeta -> Enumeratee [S.ByteString] S.ByteString m a
+encodeBam meta = eneeBam ><> compress
   where
     eneeBam = lift . I.enumPure1Chunk header >=>
               lift . I.enumPure1Chunk S.empty >=>
@@ -363,13 +365,13 @@ encodeBam meta refs = eneeBam ><> compress
                    let hdr = showBamMeta meta L.empty
                    putWord32le $ fromIntegral $ L.length hdr
                    putLazyByteString hdr
-                   put_int_32 . rangeSize $ bounds refs
-                   mapM_ putRef $ elems refs
+                   put_int_32 . Z.length $ meta_refs meta
+                   F.mapM_ putRef $ meta_refs meta
 
-    putRef (n,l) = do put_int_32 $ S.length n + 1
-                      putByteString n
-                      putWord8 0
-                      put_int_32 l
+    putRef bs = do put_int_32 $ S.length (sq_name bs) + 1
+                   putByteString $ sq_name bs
+                   putWord8 0
+                   put_int_32 $ sq_length bs
 
     put rec = I.enumPure1Chunk (S.concat . L.toChunks . runPut . putWord32le . fromIntegral $ S.length rec) >=> I.enumPure1Chunk rec
 
@@ -602,7 +604,7 @@ filterFlags = (.&.) mask . b_flag
 -- | Stop gap solution for a cheap index.  We only get the first offset
 -- from the linear index, which allows us to navigate to a target
 -- sequence.  Will do the rest when I need it.
-type BamIndex = UArray Refseq Word64
+type BamIndex = UArray Refseq Int64
 
 readBamIndex :: FilePath -> IO BamIndex
 readBamIndex = I.fileDriver readBamIndex'
@@ -615,7 +617,7 @@ readBamIndex' = do magic <- I.heads "BAI\1"
                                else get_array nref
   where
     get_array nref = do 
-        arr <- liftIO $ ( newArray_ (toEnum 0, toEnum (nref-1)) :: IO (IOUArray Refseq Word64) )
+        arr <- liftIO $ ( newArray_ (toEnum 0, toEnum (nref-1)) :: IO (IOUArray Refseq Int64) )
         forM_ [toEnum 0 .. toEnum (nref-1)] $ \r -> do
             nbins <- fromIntegral `liftM` I.endianRead4 I.LSB
             replicateM_ nbins $ do
@@ -625,7 +627,7 @@ readBamIndex' = do magic <- I.heads "BAI\1"
 
             nintv <- I.endianRead4 I.LSB
             o <- let loop acc 0 = return acc
-                     loop acc n = do oo <- I.endianRead8 I.LSB
+                     loop acc n = do oo <- fromIntegral `liftM` I.endianRead8 I.LSB
                                      let !acc' = if oo == 0 then acc else min acc oo
                                      loop acc' (n-1)
                  in loop maxBound nintv                    
@@ -634,7 +636,7 @@ readBamIndex' = do magic <- I.heads "BAI\1"
 
 data BamMeta = BamMeta {
         meta_hdr :: BamHeader,
-        meta_seqs :: [BamSQ],
+        meta_refs :: Refs,
         meta_other_shit :: [(Char, Char, BamOtherShit)],
         meta_comment :: [S.ByteString]
     } deriving Show
@@ -670,7 +672,7 @@ parseBamMetaLine = P.char '@' >> P.choice [hdLine, sqLine, coLine, otherLine]
                <$> P.sepBy1 (P.choice [hdvn, hdso, hdother]) (P.char '\t')
     
     sqLine = P.string "SQ\t" >> 
-             (\fns meta -> meta { meta_seqs = foldr ($) bad_seq fns : meta_seqs meta })
+             (\fns meta -> meta { meta_refs = foldr ($) bad_seq fns <| meta_refs meta })
                <$> P.sepBy1 (P.choice [sqnm, sqln, sqother]) (P.char '\t')
     
     hdvn = P.string "VN:" >>
@@ -705,12 +707,12 @@ parseBamMetaLine = P.char '@' >> P.choice [hdLine, sqLine, coLine, otherLine]
     pall = P.takeWhile (\c -> c/='\t' && c/='\n')
 
 nullMeta :: BamMeta
-nullMeta = BamMeta (BamHeader (0,0) Unsorted []) [] [] []
+nullMeta = BamMeta (BamHeader (0,0) Unsorted []) noRefs [] []
 
 showBamMeta :: BamMeta -> L.ByteString -> L.ByteString
 showBamMeta (BamMeta h ss os cs) = 
     show_bam_meta_hdr h .
-    foldr ((.) . show_bam_meta_seq) id ss .
+    F.foldr ((.) . show_bam_meta_seq) id ss .
     foldr ((.) . show_bam_meta_other) id os .
     foldr ((.) . show_bam_meta_comment) id cs
   where
@@ -748,51 +750,59 @@ data BamRaw = BamRaw { virt_offset :: {-# UNPACK #-} !Int64
 -- unpacked using @decodeBamEntry@.  Also note that this is an
 -- Enumeratee in spirit, only the @BamMeta@ and @Refs@ need to get
 -- passed separately.
-decodeBam :: Monad m => (BamMeta -> Refs -> Iteratee [BamRaw] m a) -> Iteratee Block m (Iteratee [BamRaw] m a)
+decodeBam :: Monad m => (BamMeta -> Iteratee [BamRaw] m a) -> Iteratee Block m (Iteratee [BamRaw] m a)
 decodeBam inner = do meta <- liftBlock get_bam_header
                      refs <- liftBlock get_ref_array
-                     loop $ inner meta refs
+                     decodeBamLoop $ inner $! merge meta refs
   where
-    loop it = I.isFinished >>= loop' it
-    loop' it True = return it
-    loop' it False = do off <- getOffset
-                        it' <- liftBlock $ do bsize <- endianRead4 LSB
-                                              when (bsize < 32) $ fail "short BAM record"
-                                              raw <- getString (fromIntegral bsize)
-                                              lift $ I.enumPure1Chunk [BamRaw off raw] it
-                        loop it'
-
     get_bam_header  = do magic <- I.heads "BAM\SOH"
                          when (magic /= 4) $ fail "BAM signature not found"
                          hdr_len <- endianRead4 LSB
                          I.joinI $ I.take (fromIntegral hdr_len) $ parserToIteratee parseBamMeta
 
     get_ref_array = do nref <- endianRead4 LSB
-                       let lr = (toEnum 0,toEnum (fromIntegral nref-1))
-                       refs <- foldM (\acc _ -> do 
-                                        nm <- endianRead4 LSB >>= getString . fromIntegral
-                                        ln <- endianRead4 LSB
-                                        return $! (S.init nm,fromIntegral ln) : acc
-                                     ) [] $ range lr
-                       return $! listArray lr $ reverse refs
+                       foldM (\acc _ -> do 
+                           nm <- endianRead4 LSB >>= getString . fromIntegral
+                           ln <- endianRead4 LSB
+                           return $! acc |> BamSQ (S.init nm) (fromIntegral ln) []
+                             ) Z.empty $ [1..nref]
+
+    -- Need to merge information from header into actual reference list.
+    -- The latter is the authoritative source for the *order* of the
+    -- sequences, so leftovers from the header are discarded.  Merging
+    -- is by name.  So we merge information from the header into the
+    -- list, then replace the header information.
+    merge meta refs = 
+        let tbl = M.fromList [ (sq_name sq, sq) | sq <- F.toList (meta_refs meta) ]
+        in meta { meta_refs = fmap (\s -> maybe s (merge' s) (M.lookup (sq_name s) tbl)) refs }
+
+    merge' l r | sq_length l == sq_length r = l { sq_other_shit = sq_other_shit l ++ sq_other_shit r }
+               | otherwise                  = l -- contradiction in header, we'll just ignore it
+
+decodeBamLoop it = I.isFinished >>= loop' it
+  where
+    loop' it True = return it
+    loop' it False = do off <- getOffset
+                        decodeBamLoop <=< liftBlock $ do
+                            bsize <- endianRead4 LSB
+                            when (bsize < 32) $ fail "short BAM record"
+                            raw <- getString (fromIntegral bsize)
+                            lift $ I.enumPure1Chunk [BamRaw off raw] it
+
 
 -- | Iteratee-style parser for SAM files, designed to be compatible with
 -- the BAM parsers.  Parses plain uncompressed SAM, nothing else.  Since
 -- it is supposed to work the same way as the BAM parser, it requires
 -- the presense of the SQ header lines.  These are stripped from the
 -- header text and turned into the symbol table.
-decodeSam :: Monad m => (BamMeta -> Refs -> Iteratee [BamRec] m a) -> Iteratee S.ByteString m (Iteratee [BamRec] m a)
+decodeSam :: Monad m => (BamMeta -> Iteratee [BamRec] m a) -> Iteratee S.ByteString m (Iteratee [BamRec] m a)
 decodeSam inner = I.joinI $ enumLinesBS $ do
     let pHeaderLine acc str = case P.parseOnly parseBamMetaLine str of Right f -> return $ f : acc
                                                                        Left e  -> fail $ e ++ ", " ++ show str
-    meta <- liftM (foldr ($) nullMeta . reverse) (I.joinI $ takeWhileI (S.isPrefixOf "@") $ I.foldM pHeaderLine [])
+    meta <- liftM (foldr ($) nullMeta . reverse) (I.joinI $ I.breakE (not . S.isPrefixOf "@") $ I.foldM pHeaderLine [])
 
-    let refs | null (meta_seqs meta) = noRefs
-             | otherwise             = 
-                    listArray (toEnum 0, toEnum (length (meta_seqs meta) -1)) 
-                        [ (nm,ln) | BamSQ { sq_name = nm, sq_length = ln } <- meta_seqs meta ]
-        refs' = M.fromList $ zip [ R nm | BamSQ { sq_name = nm } <- meta_seqs meta ] [toEnum 0..]
-        ref x = M.findWithDefault invalidRefseq (R x) refs'
+    let !refs = M.fromList $ zip [ R nm | BamSQ { sq_name = nm } <- F.toList $ meta_refs meta ] [toEnum 0..]
+        ref x = M.findWithDefault invalidRefseq (R x) refs
 
         parse_record (EOF x) = icont parse_record x
         parse_record (Chunk []) = liftI parse_record
@@ -800,7 +810,7 @@ decodeSam inner = I.joinI $ enumLinesBS $ do
             Right  r -> idone [r] (Chunk ls)
             Left err -> icont parse_record (Just $ iterStrExc $ err ++ ", " ++ show l)
 
-    I.convStream (liftI parse_record) $ inner meta refs
+    I.convStream (liftI parse_record) $ inner meta
 
 
 parseSamRec :: (B.ByteString -> Refseq) -> P.Parser BamRec
@@ -843,65 +853,6 @@ parseSamRec ref = (\nm fl rn po mq cg rn' -> BamRec nm fl rn po mq cg (rn' rn))
     repack (a:b:cs) = fromIntegral (digitToInt a * 16 + digitToInt b) : repack cs ; repack _ = []
 
 
-takeWhileI :: Monad m => (a -> Bool) -> I.Enumeratee [a] [a] m b
-takeWhileI pr = liftI . step
-  where
-    step it (EOF x) = idone it (EOF x)
-    step it (Chunk xs) = case span pr xs of
-        (l,[]) -> lift (I.enumPure1Chunk l it) >>= I.liftI . step
-        (l, r) -> lift (I.enumPure1Chunk l it) >>= flip idone (I.Chunk r)
-
-
--- ------------------------------------------------------------------- Tests
-
-some_file :: FilePath
-some_file = "/mnt/ngs_data/101203_SOLEXA-GA04_00007_PEDi_MM_QF_SR/Ibis/BWA/s_5_L3280_sequence_mq_hg19_nohap.bam"
-
-bam_test' :: FilePath -> IO ()
-bam_test' = fileDriver $
-            joinI $ decompress'  $
-            joinI $ decodeBam    $
-            dump_bam
-            
-bam_test :: FilePath -> IO ()
-bam_test = fileDriverRandom $
-           joinI $ decompress'  $
-           joinI $ do virtualSeek 0
-                      decodeBam dump_bam 
-
-dump_bam :: BamMeta -> Refs -> Iteratee [BamRaw] IO ()
-dump_bam meta refs = lift (print meta >> mapM_ print (elems refs)) >> print_names
-
-
-sam_test :: IO ()
-sam_test = I.fileDriver (joinI $ decodeSam (\_ _ -> print_names')) "foo.sam"
-
-print_names :: Iteratee [BamRaw] IO ()
-print_names = I.mapM_ $ S.putStrLn . b_qname . decodeBamEntry 
-
-print_names' :: Iteratee [BamRec] IO ()
-print_names' = I.mapM_ $ S.putStrLn . b_qname
-
-
-bam2bam_test :: IO ()
-bam2bam_test = withFile "foo.bam" WriteMode $       \hdl ->
-               flip fileDriver "/mnt/ngs_data/101203_SOLEXA-GA04_00007_PEDi_MM_QF_SR/Ibis/BWA/s_5_L3280_sequence_mq_hg19_nohap.bam" $
-               joinI $ decompress' $ 
-               joinI $ decodeBam   $                \meta refs ->
-               joinI $ I.mapStream raw_data $
-               joinI $ encodeBam meta refs $
-               I.mapChunksM_ (S.hPut hdl)
-
-sam2bam_test :: IO ()               
-sam2bam_test = withFile "bar.bam" WriteMode $                   \hdl ->
-               flip fileDriver "foo.sam" $
-               joinI $ decodeSam $                              \meta refs ->
-               joinI $ I.mapStream encodeBamEntry $
-               lift (print (meta,refs)) >>=                     \_ -> 
-               joinI $ encodeBam meta refs $
-               I.mapChunksM_ (S.hPut hdl)
-
-
 -- Fast method to compare byte strings, by starting at the end.  This
 -- makes sense because people tend to name their reference sequences
 -- like "contig_xxx", so comparing the beginning isn't really helpful.
@@ -925,4 +876,64 @@ compare_R (R a) (R b) = inlinePerformIO $
                               LT -> return LT
                               GT -> return GT
                               EQ -> go (p `plusPtr` 1) (q `plusPtr` 1) (n-1)
+
+-- ------------------------------------------------------------------- Tests
+
+some_file :: FilePath
+some_file = "/mnt/ngs_data/101203_SOLEXA-GA04_00007_PEDi_MM_QF_SR/Ibis/BWA/s_5_L3280_sequence_mq_hg19_nohap.bam"
+
+bam_test' :: FilePath -> IO ()
+bam_test' = fileDriver $
+            joinI $ decompress'  $
+            joinI $ decodeBam    $
+            dump_bam
+            
+bam_test :: FilePath -> IO ()
+bam_test = fileDriverRandom $
+           joinI $ decompress'  $
+           joinI $ do virtualSeek 0
+                      decodeBam dump_bam 
+
+dump_bam :: BamMeta -> Iteratee [BamRaw] IO ()
+dump_bam meta = lift (print meta) >> print_names
+
+
+seek_test fp i = do
+    idx <- readBamIndex $ fp ++ ".bai"
+    flip fileDriverRandom fp $
+           joinI $ decompress'  $
+           joinI $ decodeBamSequence idx (Refseq i) print_names_and_refs
+
+sam_test :: IO ()
+sam_test = I.fileDriver (joinI $ decodeSam (const print_names')) "foo.sam"
+
+print_names :: Iteratee [BamRaw] IO ()
+print_names = I.mapM_ $ S.putStrLn . b_qname . decodeBamEntry 
+
+print_names_and_refs :: Iteratee [BamRaw] IO ()
+print_names_and_refs = I.mapM_ $ pr . decodeBamEntry
+  where pr b = putStrLn $ shows (b_qname b) " " ++ show (b_rname b)
+
+print_names' :: Iteratee [BamRec] IO ()
+print_names' = I.mapM_ $ S.putStrLn . b_qname
+
+
+bam2bam_test :: IO ()
+bam2bam_test = withFile "foo.bam" WriteMode $       \hdl ->
+               flip fileDriver some_file $
+               joinI $ decompress' $ 
+               joinI $ decodeBam   $                \meta ->
+               joinI $ I.mapStream raw_data $
+               joinI $ encodeBam meta $
+               I.mapChunksM_ (S.hPut hdl)
+
+sam2bam_test :: IO ()               
+sam2bam_test = withFile "bar.bam" WriteMode $                   \hdl ->
+               flip fileDriver "foo.sam" $
+               joinI $ decodeSam $                              \meta ->
+               joinI $ I.mapStream encodeBamEntry $
+               lift (print meta) >>=                            \_ -> 
+               joinI $ encodeBam meta $
+               I.mapChunksM_ (S.hPut hdl)
+
 
