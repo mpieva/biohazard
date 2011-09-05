@@ -10,8 +10,9 @@
 --   be the standard index for sorted BAM.  Optionally a block index for
 --   slicing of large files.  Maybe an index by name and an index for
 --   group-sorted files.
--- - SAM writer.  Unless we simply declare that writing SAM is a bad
---   idea.
+
+-- TONOTDO:  
+-- - SAM writer.  Writing SAM is a bad idea.
 
 module Bio.File.Bam (
     module Bio.Base,
@@ -21,7 +22,9 @@ module Bio.File.Bam (
     decodeBam,
     decodeBamEntry,
     decodeBamSequence,
+
     decodeSam,
+    decodeSam',
 
     encodeBam,
     encodeBamEntry,
@@ -800,18 +803,27 @@ decodeSam inner = I.joinI $ enumLinesBS $ do
     let pHeaderLine acc str = case P.parseOnly parseBamMetaLine str of Right f -> return $ f : acc
                                                                        Left e  -> fail $ e ++ ", " ++ show str
     meta <- liftM (foldr ($) nullMeta . reverse) (I.joinI $ I.breakE (not . S.isPrefixOf "@") $ I.foldM pHeaderLine [])
+    decodeSamLoop (meta_refs meta) (inner meta)
 
-    let !refs = M.fromList $ zip [ R nm | BamSQ { sq_name = nm } <- F.toList $ meta_refs meta ] [toEnum 0..]
-        ref x = M.findWithDefault invalidRefseq (R x) refs
+
+decodeSamLoop :: Monad m => Refs -> Enumeratee [S.ByteString] [BamRec] m a
+decodeSamLoop refs inner = I.convStream (liftI parse_record) inner
+  where !refs' = M.fromList $ zip [ R nm | BamSQ { sq_name = nm } <- F.toList refs ] [toEnum 0..]
+        ref x = M.findWithDefault invalidRefseq (R x) refs'
 
         parse_record (EOF x) = icont parse_record x
         parse_record (Chunk []) = liftI parse_record
+        parse_record (Chunk (l:ls)) | "@" `S.isPrefixOf` l = parse_record (Chunk ls)
         parse_record (Chunk (l:ls)) = case P.parseOnly (parseSamRec ref) l of 
             Right  r -> idone [r] (Chunk ls)
             Left err -> icont parse_record (Just $ iterStrExc $ err ++ ", " ++ show l)
 
-    I.convStream (liftI parse_record) $ inner meta
-
+-- | Parser for SAM that doesn't look for a header.  Has the advantage
+-- that it doesn't stall on a pipe that never delivers data.  Has the
+-- disadvantage that it never reads the header and therefore needs a
+-- list of allowed RNAMEs.
+decodeSam' :: Monad m => Refs -> Enumeratee S.ByteString [BamRec] m a
+decodeSam' refs inner = I.joinI $ enumLinesBS $ decodeSamLoop refs inner
 
 parseSamRec :: (B.ByteString -> Refseq) -> P.Parser BamRec
 parseSamRec ref = (\nm fl rn po mq cg rn' -> BamRec nm fl rn po mq cg (rn' rn))
