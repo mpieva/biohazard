@@ -1,4 +1,4 @@
-{-# LANGUAGE ForeignFunctionInterface, BangPatterns, DeriveDataTypeable, MultiParamTypeClasses #-}
+{-# LANGUAGE ForeignFunctionInterface, BangPatterns, MultiParamTypeClasses #-}
 
 -- | Handling of BGZF files.  Right now, we have an Enumeratee each for
 -- input and output.  The input iteratee can optionally supply virtual
@@ -7,9 +7,9 @@
 -- Note:  The Zlib bindings are awfully inconvenient for this style.
 
 module Bio.File.Bgzf (
-    decompress, decompress', decompressWith, Block(..),
-    compress, maxBlockSize, bgzfEofMarker, virtualSeek,
-    lookAheadI, liftBlock, getOffset
+    decompress, decompress', decompressWith, decompressPlain,
+    Block(..), compress, maxBlockSize, bgzfEofMarker, 
+    lookAheadI, liftBlock, getOffset, virtualSeek
                      ) where
 
 import Bio.Util
@@ -25,14 +25,12 @@ import Control.Monad.Trans.Class
 import Data.Binary.Put
 import Data.Binary.Strict.Get
 import Data.Bits
-import Data.Int                             ( Int64 )
 import Data.Iteratee.Base
 import Data.Iteratee.Binary
 import Data.Iteratee.Char                   ( printLinesUnterminated )
 import Data.Iteratee.IO
 import Data.Iteratee.Iteratee
 import Data.Monoid
-import Data.Typeable
 import Data.Word                            ( Word16, Word8 )
 
 import qualified Codec.Compression.GZip     as Z
@@ -45,7 +43,7 @@ import qualified Data.ListLike              as LL
 -- | One BGZF block: virtual offset and contents.  Could also be a block
 -- of an uncompressed file, if we want to support indexing of
 -- uncompressed BAM or some silliness like that.
-data Block = Block {-# UNPACK #-} !Int64 {-# UNPACK #-} !S.ByteString
+data Block = Block {-# UNPACK #-} !FileOffset {-# UNPACK #-} !S.ByteString
 
 instance I.NullPoint Block where empty = Block 0 S.empty
 instance I.Nullable Block where nullC (Block _ s) = S.null s
@@ -74,16 +72,29 @@ instance LL.ListLike Block Word8 where
 
 
 -- | Decompresses BGZF into @Block@s.  Each block has a starting offset
--- and is otherwise just a @ByteString@.
+-- and is otherwise just a @ByteString@.  Seeking to virtual offsets is
+-- supporting iff the underlying stream supports seeking.
 decompress' :: Monad m => Enumeratee S.ByteString Block m a
 decompress' = decompressWith Block 0
 
 -- | Decompresses BGZF.  The blocks become just @ByteString@s, for
--- consumers who don't want to seek.
+-- consumers who don't want to seek.  Seeking to virtual offsets is
+-- supporting iff the underlying stream supports seeking.
 decompress :: Monad m => Enumeratee S.ByteString S.ByteString m a
 decompress = decompressWith (\_ s -> s) 0
 
-decompressWith :: (Monad m, Monoid s, Nullable s, LL.ListLike s e) => (Int64 -> S.ByteString -> s) -> Int64 -> Enumeratee S.ByteString s m a
+-- | "Decompresses" a plain file.  Whats actually happening is that the
+-- offset in the input stream is tracked and added to the @ByteString@s
+-- giving @Block@s.  This results in the same interface as decompressing
+-- Bgzf.
+decompressPlain :: Monad m => Enumeratee S.ByteString Block m a
+decompressPlain = liftI . step 0
+  where
+    step !o it (Chunk s) = lift (enumPure1Chunk (Block o s) it)
+                           >>= liftI . step (o + fromIntegral (S.length s))
+    step  _ it (EOF  mx) = idone it (EOF mx)
+
+decompressWith :: (Monad m, Monoid s, Nullable s, LL.ListLike s e) => (FileOffset -> S.ByteString -> s) -> FileOffset -> Enumeratee S.ByteString s m a
 decompressWith blk !off inner = I.isFinished >>= go
   where
     go True = return inner
@@ -107,13 +118,13 @@ decompressWith blk !off inner = I.isFinished >>= go
         -- exception?  How?
         Nothing -> runIter (decompressWith blk off' (icont k mx)) od oc
 
-        -- inner Iteratee continues and we got a @VirtSeekException@.
+        -- inner Iteratee continues and we got a @SeekException@.
         -- This means we issue a seek request, then reenter the
         -- decompression loop.  To seek within the decompressed stream,
         -- we pass a new inner Iteratee that first drops a few bytes,
         -- then calls the original Iteratee.
-        Just (VirtSeekException o) -> runIter cont od oc
-          where cont = do seek . fromIntegral $ o `shiftR` 16
+        Just (SeekException o) -> runIter cont od oc
+          where cont = do virtualSeek $ o `shiftR` 16
                           decompressWith blk (o .&. complement 0xffff) $
                               I.drop (fromIntegral $ o .&. 0xffff) >> liftI k
     
@@ -165,6 +176,8 @@ get_block sz = liftI $ \s -> case s of
     Chunk c | S.length c < sz -> S.append c `liftM` get_block (sz - S.length c)
             | otherwise       -> idone (S.take sz c) (Chunk (S.drop sz c))
 
+virtualSeek :: Monad m => FileOffset -> Iteratee s m ()
+virtualSeek o = icont (idone ()) $ Just $ toException $ SeekException o
 
 -- ------------------------------------------------------------------------- Output
 
@@ -242,22 +255,13 @@ compress1 ss = S.concat (L.toChunks hdr) `S.append` rest
                             putWord16le . fromIntegral $ S.length z + 5 + 
                                 if f `testBit` 2 then 0 else 2
 
-newtype VirtSeekException = VirtSeekException Int64 deriving (Typeable, Show)
-
-instance Exception VirtSeekException where
-  toException   = iterExceptionToException
-  fromException = iterExceptionFromException
-
-virtualSeek :: ( NullPoint s, Monad m ) => Int64 -> Iteratee s m ()
-virtualSeek o = throwRecoverableErr (toException $ VirtSeekException o) (idone ())
-
 -- ------------------------------------------------------------------------------------------------- utils
 
 -- | Get the current virtual offset.  The virtual address in a BGZF
 -- stream contains the offset of the current block in the upper 48 bits
 -- and the current offset into that block in the lower 16 bits.  This
 -- scheme is compatible with the way BAM files are indexed.
-getOffset :: Monad m => Iteratee Block m Int64
+getOffset :: Monad m => Iteratee Block m FileOffset
 getOffset = liftI step
   where
     step s@(EOF _) = icont step (Just (setEOF s))

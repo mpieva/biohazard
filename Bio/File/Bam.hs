@@ -2,11 +2,10 @@
 
 -- TODO:  
 -- - Index writer
--- - Seeking, partially.  We cannot seek in plain files yet, and we can
---   only seek to the beginning of the range of some RNAME.  Most of the
---   functionality available from the index is not yet supported.
--- - Writing of GZip and plain BAM.  More interesting as a configurable
---   wrapper.
+-- - Seeking, partially.  So far, we can only seek to the beginning of
+--   the range of some RNAME.  Most of the functionality available from
+--   the index is not yet supported.  - Writing of GZip and plain BAM.
+--   More interesting as a configurable wrapper.
 -- - Automatic creation of some kind of index.  If possible, this should
 --   be the standard index for sorted BAM.  Optionally a block index for
 --   slicing of large files.  Maybe an index by name and an index for
@@ -208,7 +207,7 @@ data BamRec = BamRec {
         b_seq   :: [Nucleotide],
         b_qual  :: S.ByteString,       -- ^ quality, may be empty
         b_exts  :: Extensions,
-        b_virtual_offset :: Int64      -- ^ virtual offset for indexing purposes
+        b_virtual_offset :: FileOffset -- ^ virtual offset for indexing purposes
     } deriving Show
 
 {-
@@ -236,7 +235,7 @@ decodeBamSequence :: Monad m => BamIndex -> Refseq -> Enumeratee Block [BamRaw] 
 decodeBamSequence idx refseq iter = case idx ! refseq of
         _ | not (bounds idx `inRange` refseq) -> return iter
         0                                     -> return iter
-        virtoff -> do virtualSeek virtoff
+        virtoff -> do virtualSeek $ fromIntegral virtoff
                       decodeBamLoop (joinI $ I.breakE wrong_ref iter)
   where
     wrong_ref br = let a = fromIntegral $ raw_data br `S.index` 0
@@ -742,8 +741,8 @@ showBamMeta (BamMeta h ss os cs) =
 
 
 -- | Bam record in its native encoding along with virtual address.
-data BamRaw = BamRaw { virt_offset :: {-# UNPACK #-} !Int64
-                     , raw_data :: !S.ByteString }
+data BamRaw = BamRaw { virt_offset :: {-# UNPACK #-} !FileOffset
+                     , raw_data :: {-# UNPACK #-} !S.ByteString }
 
 
 -- | Decode a BAM stream into raw entries.  Note that the entries can be
@@ -779,7 +778,8 @@ decodeBam inner = do meta <- liftBlock get_bam_header
     merge' l r | sq_length l == sq_length r = l { sq_other_shit = sq_other_shit l ++ sq_other_shit r }
                | otherwise                  = l -- contradiction in header, we'll just ignore it
 
-decodeBamLoop it = I.isFinished >>= loop' it
+decodeBamLoop :: Monad m => Enumeratee Block [BamRaw] m a
+decodeBamLoop iter = I.isFinished >>= loop' iter
   where
     loop' it True = return it
     loop' it False = do off <- getOffset
@@ -897,7 +897,7 @@ bam_test = fileDriverRandom $
 dump_bam :: BamMeta -> Iteratee [BamRaw] IO ()
 dump_bam meta = lift (print meta) >> print_names
 
-
+seek_test :: [Char] -> Word32 -> IO ()
 seek_test fp i = do
     idx <- readBamIndex $ fp ++ ".bai"
     flip fileDriverRandom fp $
