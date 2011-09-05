@@ -1,18 +1,22 @@
-{-# LANGUAGE Rank2Types, OverloadedStrings #-}
-module Bio.File.Bam.Fastq where
+{-# LANGUAGE OverloadedStrings #-}
+module Bio.File.Bam.Fastq (
+    parseFastq, parseFastq'
+                          ) where
 
--- Parser for FastA/FastQ.  Screams out to be turned into an Iteratee.
--- Also uses weird LL parser combinators; could use either Iteratee or
--- Attoparsec.
+-- Parser for FastA/FastQ, @Iteratee@ style, based on Attoparsec.
 
 import Bio.File.Bam
-import Control.Applicative
+import Control.Applicative       hiding ( many )
+import Data.Attoparsec.Char8
+import Data.Attoparsec.Iteratee
 import Data.Bits
-import Data.Char ( toUpper, ord, chr )
+import Data.Char                        ( ord )
+import Data.Iteratee             hiding ( length )
 
-import qualified Data.ByteString.Lazy.Char8 as L
-import qualified Data.ByteString.Char8      as S
-import qualified Data.Map as M
+import qualified Data.Attoparsec.Char8  as P
+import qualified Data.ByteString        as S
+import qualified Data.Iteratee.ListLike as I
+import qualified Data.Map               as M
 
 -- | Reader for DNA (not protein) sequences in FastA and FastQ.  We read
 -- everything vaguely looking like FastA or FastQ, then shoehorn it into
@@ -31,8 +35,10 @@ import qualified Data.Map as M
 -- * A name prefix of T_ flags the sequence as unpaired and second mate
 --   (an adapter trimmed read).
 -- * A name prefix of C_, either before or after any of the other
---   prefixes, is turned into the extra flag XD:i:-1 (result of
+--   prefixes, is turned into the extra flag XP:i:-1 (result of
 --   duplicate removal with unknown depth).
+-- * A collection of tags separated from the name by an octothorpe is
+--   removed and but into the field ZT (provisional: tags) as text.
 --
 -- Everything before the first sequence header is ignored.  Headers can
 -- start with '>' or '@', we treat both equally.  The first word of the
@@ -46,146 +52,84 @@ import qualified Data.Map as M
 -- exactly as many Q-scores as there are bases, followed immediately by
 -- a header or end-of-file.  Whitespace is ignored.
 
-parseFastq' :: Parser (BamRec->BamRec) -> L.ByteString -> [ BamRec ]
-parseFastq' pDescr = run pFasta
+parseFastq :: Monad m => Enumeratee S.ByteString [ BamRec ] m a
+parseFastq = parseFastq' (const id)
+  where skipDescr = skipWhile ('\n' /=) *> pure id
+
+-- | Same as @parseFastq@, but a custom function can be applied to the
+-- description string and the parsed record.
+
+parseFastq' :: Monad m => (S.ByteString->BamRec->BamRec) -> Enumeratee S.ByteString [ BamRec ] m a
+parseFastq' descr it = do skipJunk ; convStream (parserToIteratee $ (:[]) <$> pRec) it
   where
-    run (P p) = p just1 err err
-    just1 x y = if L.all isSpace y then x else err y
-    err s = error $ "parse error near " ++ show (L.take 16 s)
-
-    isHdr c = c == '@' || c == '>'
-    isCBase c = toUpper c `elem` "ACGTUBDHVSWMKRYN"
-    isSpace c = c == '\n' || c == '\r' || c == ' ' || c == '\t'
+    isCBase   = inClass "ACGTUBDHVSWMKRYNacgtubdhvswmkryn"
     canSkip c = isSpace c || c == '.' || c == '-'
+    isHdr   c = c == '@' || c == '>'
 
-    pFasta = many pJunk *> unfold pRec
-    pJunk  = pTest (not . isHdr) *> many (pTest ('\n' /=)) *> pTest ('\n' ==)
-    pRec :: Parser BamRec
-    pRec = pTest isHdr *> (makeRecord <$> pName <*> pDescr <*> (pSeq >>= pQual))
-    pName = many (pTest (not . isSpace))
-    pSeq = (:) <$> pTest isCBase <*> pSeq <|> pTest canSkip *> pSeq <|> pure []
-    pQual sq = (,) sq <$> (pSym '+' *> many (pTest ('\n' /=)) *> pQual' (length sq) <|> return [])
-    pQual' n = pTest isSpace *> pQual' n <|>
-               (if n == 0 then pure [] else cons <$> pGet <*> pQual' (n-1))
-                    where cons c qs = (chr $ ord c - 33) : qs
-    unfold p = ((:) <$> p <!> unfold p) <|> pure []
+    pJunk  = satisfy (not . isHdr) *> skipWhile ('\n' /=) *> char '\n'
+    pRec   = (satisfy isHdr <?> "start marker") *> (makeRecord <$> pName <*> (descr <$> P.takeWhile ('\n' /=)) <*> (pSeq >>= pQual))
 
-    makeRecord name0 extra (sq,qual) = extra $ BamRec {
-            b_qname = name,
-            b_flag  = flags,
-            b_rname = invalidRefseq,
-            b_pos   = invalidPos,
-            b_mapq  = 0,
-            b_cigar = Cigar [],
-            b_mrnm  = invalidRefseq,
-            b_mpos  = invalidPos,
-            b_isize = 0,
-            b_seq   = read sq,
-            b_qual  = S.pack qual,
-            b_exts  = tags,
-            b_virtual_offset = 0 }
-      where
-        (name, flags, tags) = checkFR $ checkC (S.pack name0, 0, M.empty)
+    pName  = takeTill isSpace <* skipWhile (\c -> c /= '\n' && isSpace c)  <?> "read name"
+    pSeq   =     (:) <$> satisfy isCBase <*> pSeq
+             <|> satisfy canSkip *> pSeq 
+             <|> pure []                                                   <?> "sequence" 
 
-        checkFR (n,f,t) | "F_" `S.isPrefixOf` name = checkC (S.drop 2 n, f .|. flagFirstMate  .|. flagPaired,     t)
-                        | "R_" `S.isPrefixOf` name = checkC (S.drop 2 n, f .|. flagSecondMate .|. flagPaired,     t)
-                        | "M_" `S.isPrefixOf` name = checkC (S.drop 2 n, f .|. flagFirstMate  .|. flagSecondMate, t)
-                        | "T_" `S.isPrefixOf` name = checkC (S.drop 2 n, f .|.                    flagSecondMate, t)
-                        | "/1" `S.isSuffixOf` name =        ( rdrop 2 n, f .|. flagFirstMate  .|. flagPaired,     t)
-                        | "/2" `S.isSuffixOf` name =        ( rdrop 2 n, f .|. flagSecondMate .|. flagPaired,     t)
-                        | otherwise                =        (         n, f,                                       t)
+    pQual sq = (,) sq <$> (char '+' *> skipWhile ('\n' /=) *> pQual' (length sq) <* skipSpace <|> return S.empty)  <?> "qualities"
+    pQual' n = S.map (subtract 33) . S.filter (not . isSpace_w8) <$> scan n step
+    step 0 _ = Nothing
+    step i c | isSpace c = Just i
+             | otherwise = Just (i-1)
 
-        checkC (n,f,t) | "C_" `S.isPrefixOf` name = (S.drop 2 n, f, M.insert "XD" (Int (-1)) t)
-                       | otherwise                = (         n, f,                          t)
+skipJunk :: Monad m => Iteratee S.ByteString m ()
+skipJunk = peek >>= check
+  where
+    check (Just c) | bad c = I.dropWhile (fromIntegral (ord '\n') /=) >> I.drop 1 >> skipJunk
+    check _                = return ()
+    bad c = fromIntegral c /= ord '>' && fromIntegral c /= ord '@'
 
-        rdrop n s = S.take (S.length s - n) s
+makeRecord :: Seqid -> (BamRec->BamRec) -> (String, S.ByteString) -> BamRec
+makeRecord name0 extra (sq,qual) = extra $ BamRec {
+        b_qname = name,
+        b_flag  = flags,
+        b_rname = invalidRefseq,
+        b_pos   = invalidPos,
+        b_mapq  = 0,
+        b_cigar = Cigar [],
+        b_mrnm  = invalidRefseq,
+        b_mpos  = invalidPos,
+        b_isize = 0,
+        b_seq   = read sq,
+        b_qual  = qual,
+        b_exts  = tags,
+        b_virtual_offset = 0 }
+  where
+    (name, flags, tags) = checkFR $ checkC $ checkSharp (name0, 0, M.empty)
 
+    checkFR (n,f,t) | "F_" `S.isPrefixOf` n = checkC (S.drop 2 n, f .|. flagFirstMate  .|. flagPaired,     t)
+                    | "R_" `S.isPrefixOf` n = checkC (S.drop 2 n, f .|. flagSecondMate .|. flagPaired,     t)
+                    | "M_" `S.isPrefixOf` n = checkC (S.drop 2 n, f .|. flagFirstMate  .|. flagSecondMate, t)
+                    | "T_" `S.isPrefixOf` n = checkC (S.drop 2 n, f .|.                    flagSecondMate, t)
+                    | "/1" `S.isSuffixOf` n =        ( rdrop 2 n, f .|. flagFirstMate  .|. flagPaired,     t)
+                    | "/2" `S.isSuffixOf` n =        ( rdrop 2 n, f .|. flagSecondMate .|. flagPaired,     t)
+                    | otherwise             =        (         n, f,                                       t)
 
-parseFastq :: L.ByteString -> [ BamRec ]
-parseFastq = parseFastq' skipDescr
-  where skipDescr = many (pTest ('\n' /=)) *> pure id
+    checkC (n,f,t) | "C_" `S.isPrefixOf` n  = (S.drop 2 n, f, M.insert "XP" (Int (-1)) t)
+                   | otherwise              = (         n, f,                          t)
+
+    rdrop n s = S.take (S.length s - n) s
+
+    sharp = fromIntegral $ ord '#'
+    checkSharp (n,f,t) = case S.split sharp n of [n',ts] -> (n', f, M.insert "ZT" (Text ts) t)
+                                                 _       -> ( n, f,                         t)
 
 ----------------------------------------------------------------------------
---
--- Module	: HXML.LLParsing
--- Copyright	: (C) 2000-2002 Joe English.  Freely redistributable.
--- License	: "MIT-style"
---
--- Author	: Joe English <jenglish@flightlab.com>
---
--- Simple, non-backtracking, no-lookahead parser combinators.
--- Use with caution!  "Borrowed" and adapted to ByteString input.
 
+some_file :: FilePath
+some_file = "/mnt/ngs_data/101203_SOLEXA-GA04_00007_PEDi_MM_QF_SR/Ibis/Final_Sequences/s_5_L3280_sequence_merged.txt"
 
-newtype Parser res = P (forall a .
-       (res -> L.ByteString -> a)   -- ok continuation
-    -> (L.ByteString -> a)          -- failure continuation
-    -> (L.ByteString -> a)          -- error continuation
-    -> L.ByteString                 -- input
-    -> a)                           -- result
-
-
-pGet :: Parser Char
-pGet = P pget
-  where
-    pget ok f _e i | L.null i = f L.empty
-                   | otherwise = ok (L.head i) (L.tail i)
-
-pTest :: (Char -> Bool) -> Parser Char
-pTest pr = P (ptest pr)
-  where
-    ptest p ok f _e l | L.null l     = f L.empty
-                      | p (L.head l) = ok (L.head l) (L.tail l)
-                      | otherwise    = f l
-
-pSym :: Char -> Parser Char
-pSym a = pTest (a==)
-
-pCheck	:: (Char -> Maybe b) -> Parser b
-pCheck cmf = P (pcheck cmf)
-  where
-    pcheck mf ok f _e cs
-        | L.null cs = f L.empty
-        | otherwise = case mf (L.head cs) of
-            Just x	-> ok x (L.tail cs)
-            Nothing	-> f cs
-
-pTry :: Parser a -> Parser a
-pTry (P pa) = P (\ok f _e i -> pa ok f (\ _i' -> f i) i)
-
-instance Functor Parser where
-    fmap f (P pb)	= P (\ok -> pb (ok . f))
-
-instance Applicative Parser where
-    pure a = P (\ok _f _e  -> ok a)
-    P pa <*> P pb = P (\ok f e -> pa (\a -> pb (ok . a) e e) f e)
-
-instance Alternative Parser where
-    empty = P (\_ok f _e -> f)
-    (P pa) <|> (P pb) = P (\ok f e -> pa ok (pb ok f e) e)
-
-instance Monad Parser where
-    return a = P (\ok _f _e  -> ok a)
-    P pa >>= k = P (\ok f e -> pa (\a -> case k a of P pb -> pb ok e e) f e)
-
-infixr 3 <!>
-(<!>) :: Parser (a->b) -> Parser a -> Parser b                      -- eager sequence (contains a thinko?)
-P pa <!> P pb = P (\ok -> pa (\a i -> ok (a (pb at_eof err err i)) L.empty))
-  where err s = error $ "parse error before " ++ show (L.take 16 s)
-        at_eof r s = if L.null s then r else err s
-
-infixl 4 <^>, <?> 
-
-(<?>) :: Parser b -> b -> Parser b                                  -- optional
-P pa <?> a = P (\ok _f -> pa ok (ok a))
-
-(<^>) :: Parser b -> Parser c -> Parser (b,c)                       -- sequence
-P pa <^> P pb = P (\ok f e -> pa (\a->pb(\b->ok (a,b)) e e) f e)
-
-pFoldr :: (a->b->b) -> b -> Parser a -> Parser b
-pFoldr op e p = loop where loop = (op <$> p <*> loop) <?> e
-
-pChainr :: Parser (b -> b -> b) -> Parser b -> Parser b
-pChainr op p = loop
-  where loop = p <**> ((flip <$> op <*> loop) <?> id)
+fastq_test :: FilePath -> IO ()
+fastq_test = fileDriver $ joinI $ parseFastq $ print_names
+            
+print_names :: Iteratee [BamRec] IO ()
+print_names = I.mapM_ $ S.putStrLn . b_qname
 
