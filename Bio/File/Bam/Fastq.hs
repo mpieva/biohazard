@@ -54,7 +54,6 @@ import qualified Data.Map               as M
 
 parseFastq :: Monad m => Enumeratee S.ByteString [ BamRec ] m a
 parseFastq = parseFastq' (const id)
-  where skipDescr = skipWhile ('\n' /=) *> pure id
 
 -- | Same as @parseFastq@, but a custom function can be applied to the
 -- description string and the parsed record.
@@ -66,9 +65,7 @@ parseFastq' descr it = do skipJunk ; convStream (parserToIteratee $ (:[]) <$> pR
     canSkip c = isSpace c || c == '.' || c == '-'
     isHdr   c = c == '@' || c == '>'
 
-    pJunk  = satisfy (not . isHdr) *> skipWhile ('\n' /=) *> char '\n'
     pRec   = (satisfy isHdr <?> "start marker") *> (makeRecord <$> pName <*> (descr <$> P.takeWhile ('\n' /=)) <*> (pSeq >>= pQual))
-
     pName  = takeTill isSpace <* skipWhile (\c -> c /= '\n' && isSpace c)  <?> "read name"
     pSeq   =     (:) <$> satisfy isCBase <*> pSeq
              <|> satisfy canSkip *> pSeq 

@@ -3,15 +3,22 @@ module Bio.Util (
     groupBy,
     groupOn,
     getString,
-    lookAheadI
+    lookAheadI,
+    R(..)
                 ) where
 
 import Control.Monad.Trans.Class
-import Data.Iteratee hiding ( groupBy )
+import Data.Iteratee hiding ( groupBy, peek )
 import Data.Monoid
+import Data.Word ( Word8 )
+import Foreign.Ptr ( plusPtr )
+import Foreign.Storable ( peek )
 
 import qualified Data.ListLike as LL
 import qualified Data.ByteString as S
+
+import Data.ByteString.Unsafe
+import Data.ByteString.Internal
 
 -- ^ Stuff that didn't quite fit anywhere else.
 
@@ -94,4 +101,31 @@ getString n = liftI $ step [] 0
     step acc l (Chunk c) | l + S.length c >= n = let r = S.concat . reverse $ S.take (n-l) c : acc
                                                  in idone r (Chunk $ S.drop (n-l) c)
                          | otherwise           = liftI $ step (c:acc) (l + S.length c)
+
+
+-- Occasionally faster method to compare @Seqid@s, by starting at the
+-- end.  This makes sense because people tend to name their reference
+-- sequences like "contig_xxx", so comparing the beginning isn't really
+-- helpful.  Same goes for query sequences, which tend to start will
+-- longish runnames.
+newtype R = R S.ByteString
+
+instance Ord R where compare = compare_R
+instance Eq  R where a == b = case compare_R a b of EQ -> True ; _ -> False
+
+compare_R :: R -> R -> Ordering
+compare_R (R a) (R b) = inlinePerformIO $
+                        unsafeUseAsCStringLen a $ \(pa,la) -> 
+                        unsafeUseAsCStringLen b $ \(pb,lb) ->
+                        case compare la lb of LT -> return LT
+                                              GT -> return GT
+                                              EQ -> go (pa `plusPtr` (la-1)) (pb `plusPtr` (lb-1)) la
+    where
+        go !_ !_ 0 = return EQ
+        go  p  q n = do x <- peek p :: IO Word8
+                        y <- peek q :: IO Word8
+                        case compare x y of
+                              LT -> return LT
+                              GT -> return GT
+                              EQ -> go (p `plusPtr` 1) (q `plusPtr` 1) (n-1)
 

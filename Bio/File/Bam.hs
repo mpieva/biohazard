@@ -864,31 +864,6 @@ parseSamRec ref = (\nm fl rn po mq cg rn' -> BamRec nm fl rn po mq cg (rn' rn))
     hexarray    = S.pack . repack . B.unpack <$> P.takeWhile (P.inClass "0-9A-Fa-f")
     repack (a:b:cs) = fromIntegral (digitToInt a * 16 + digitToInt b) : repack cs ; repack _ = []
 
-
--- Fast method to compare byte strings, by starting at the end.  This
--- makes sense because people tend to name their reference sequences
--- like "contig_xxx", so comparing the beginning isn't really helpful.
-newtype R = R S.ByteString
-
-instance Ord R where compare = compare_R
-instance Eq  R where a == b = case compare_R a b of EQ -> True ; _ -> False
-
-compare_R :: R -> R -> Ordering
-compare_R (R a) (R b) = inlinePerformIO $
-                        unsafeUseAsCStringLen a $ \(pa,la) -> 
-                        unsafeUseAsCStringLen b $ \(pb,lb) ->
-                        case compare la lb of LT -> return LT
-                                              GT -> return GT
-                                              EQ -> go (pa `plusPtr` (la-1)) (pb `plusPtr` (lb-1)) la
-    where
-        go !_ !_ 0 = return EQ
-        go  p  q n = do x <- peek p :: IO Word8
-                        y <- peek q :: IO Word8
-                        case compare x y of
-                              LT -> return LT
-                              GT -> return GT
-                              EQ -> go (p `plusPtr` 1) (q `plusPtr` 1) (n-1)
-
 -- ------------------------------------------------------------------- Tests
 
 some_file :: FilePath
