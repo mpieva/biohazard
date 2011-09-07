@@ -114,7 +114,7 @@ import Data.Iteratee.Iteratee
 import Data.Sequence                ( (<|), (|>) )
 import Data.Word                    ( Word32, Word8 )
 import Foreign.Marshal.Alloc        ( alloca )
-import Foreign.Ptr                  ( castPtr, plusPtr )
+import Foreign.Ptr                  ( castPtr )
 import Foreign.Storable             ( peek, poke )
 import System.IO
 import System.IO.Unsafe             ( unsafePerformIO )
@@ -128,9 +128,6 @@ import qualified Data.Foldable                  as F
 import qualified Data.Iteratee                  as I
 import qualified Data.Map                       as M
 import qualified Data.Sequence                  as Z
-
-import Data.ByteString.Unsafe
-import Data.ByteString.Internal
 
 -- ^ Parsers and Printers for BAM and SAM.  We employ an @Iteratee@
 -- interface, and we strive to support everything possible in BAM.  So

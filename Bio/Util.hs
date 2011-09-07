@@ -4,7 +4,8 @@ module Bio.Util (
     groupOn,
     getString,
     lookAheadI,
-    R(..)
+    R(..),
+    w2c, c2w
                 ) where
 
 import Control.Monad.Trans.Class
@@ -38,8 +39,8 @@ groupOn proj inner = liftI . step
     step outer   (EOF   mx) = idone outer (EOF mx)
     step outer c@(Chunk as)
         | LL.null as = liftI $ step outer
-        | otherwise  = lift (inner x) >>= \i -> step' x i outer c
-            where !x = proj (LL.head as)
+        | otherwise  = let x = proj (LL.head as) 
+                       in lift (inner x) >>= \i -> step' x i outer c
 
     step' c it outer (Chunk as)
         | LL.null as = liftI $ step' c it outer

@@ -6,11 +6,11 @@ module Bio.File.Bam.Fastq (
 -- Parser for FastA/FastQ, @Iteratee@ style, based on Attoparsec.
 
 import Bio.File.Bam
+import Bio.Util
 import Control.Applicative       hiding ( many )
 import Data.Attoparsec.Char8
 import Data.Attoparsec.Iteratee
 import Data.Bits
-import Data.Char                        ( ord )
 import Data.Iteratee             hiding ( length )
 
 import qualified Data.Attoparsec.Char8  as P
@@ -80,9 +80,9 @@ parseFastq' descr it = do skipJunk ; convStream (parserToIteratee $ (:[]) <$> pR
 skipJunk :: Monad m => Iteratee S.ByteString m ()
 skipJunk = peek >>= check
   where
-    check (Just c) | bad c = I.dropWhile (fromIntegral (ord '\n') /=) >> I.drop 1 >> skipJunk
+    check (Just c) | bad c = I.dropWhile (c2w '\n' /=) >> I.drop 1 >> skipJunk
     check _                = return ()
-    bad c = fromIntegral c /= ord '>' && fromIntegral c /= ord '@'
+    bad c = c /= c2w '>' && c /= c2w '@'
 
 makeRecord :: Seqid -> (BamRec->BamRec) -> (String, S.ByteString) -> BamRec
 makeRecord name0 extra (sq,qual) = extra $ BamRec {
@@ -115,9 +115,8 @@ makeRecord name0 extra (sq,qual) = extra $ BamRec {
 
     rdrop n s = S.take (S.length s - n) s
 
-    sharp = fromIntegral $ ord '#'
-    checkSharp (n,f,t) = case S.split sharp n of [n',ts] -> (n', f, M.insert "ZT" (Text ts) t)
-                                                 _       -> ( n, f,                         t)
+    checkSharp (n,f,t) = case S.split (c2w '#') n of [n',ts] -> (n', f, M.insert "ZT" (Text ts) t)
+                                                     _       -> ( n, f,                         t)
 
 ----------------------------------------------------------------------------
 

@@ -1,7 +1,8 @@
 {-# LANGUAGE BangPatterns #-}
 module Bio.File.Bam.Filter (
-    QualFilter, qualityFilterWith',
-    complexSimple
+    QualFilter, qualityFilterWith, qualityFilterWith',
+    complexSimple, complexEntropy,
+    qualityAverage, qualityMinimum
                            ) where
 
 -- Quality filters adapted from old pipeline.
