@@ -10,7 +10,8 @@ module Bio.File.TwoBit (
     getSeqnames,
     hasSequence,
     getSeqLength,
-    clampPosition
+    clampPosition,
+    getRandomSeq
 ) where
 
 -- TODO: proper masking is unsupported right now 
@@ -50,6 +51,7 @@ import           Data.Word
 import           Numeric
 import           System.IO
 import           System.IO.Unsafe
+import           System.Random
 
 data TwoBitFile = TBF {
     tbf_handle :: !Handle,
@@ -220,9 +222,27 @@ clampPosition g (Range (Pos n Forward start) len) = do
         end' = min size (start + len)
     return $ Range (Pos n Forward start') (end' - start')
 
-clampPosition _ (Range (Pos n Reverse start) len) = do
-    let start' = min start len
+clampPosition g (Range (Pos n Reverse start) len) = do
+    size <- getSeqLength g n
+    let start' = min start size
         end'   = max 0 (start - len)
     return $ Range (Pos n Reverse start') (start' - end')
 
 
+getRandomSeq :: TwoBitFile -> IO (([Nucleotide] -> Bool) -> Int -> IO (Range, [Nucleotide]))
+getRandomSeq tbf = do
+    let names = getSeqnames tbf
+    lengths <- mapM (getSeqLength tbf) names
+    let total = sum lengths
+    let frags = I.fromList $ zip (scanl (+) 0 lengths) names
+
+    let draw good l = do p <- randomRIO (1,total)
+                         d <- (!!) [Forward,Reverse] `liftM` randomRIO (0,1)
+                         let Just ((o,s),_) = I.maxViewWithKey $ fst $ I.split p frags
+                         r' <- clampPosition tbf $ Range (Pos s d (p-o)) l
+                         sq <- getSubseq tbf r'
+                         if r_length r' == l && good sq
+                           then return (r', sq)
+                           else draw good l
+    return draw                        
+                         

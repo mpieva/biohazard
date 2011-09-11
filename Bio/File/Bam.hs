@@ -34,6 +34,7 @@ module Bio.File.Bam (
     BamRaw(..),
 
     BamRec(..),
+    nullBamRec,
     Refs,
     noRefs,
     getRef,
@@ -43,6 +44,7 @@ module Bio.File.Bam (
     isValidRefseq,
     invalidPos,
     isValidPos,
+    unknownMapq,
     compareNames,
 
     MdOp(..),
@@ -193,6 +195,9 @@ invalidPos = -1
 isValidPos :: Int -> Bool
 isValidPos = (/=) invalidPos
 
+unknownMapq :: Int
+unknownMapq = 255
+
 -- | internal representation of a BAM record
 data BamRec = BamRec {
         b_qname :: S.ByteString,
@@ -209,6 +214,23 @@ data BamRec = BamRec {
         b_exts  :: Extensions,
         b_virtual_offset :: FileOffset -- ^ virtual offset for indexing purposes
     } deriving Show
+
+nullBamRec :: BamRec
+nullBamRec = BamRec {
+        b_qname = S.empty,
+        b_flag  = 0,
+        b_rname = invalidRefseq,
+        b_pos   = invalidPos,
+        b_mapq  = unknownMapq,
+        b_cigar = Cigar [],
+        b_mrnm  = invalidRefseq,
+        b_mpos  = invalidPos,
+        b_isize = 0,
+        b_seq   = [],
+        b_qual  = S.empty,
+        b_exts  = M.empty,
+        b_virtual_offset = 0
+    }
 
 {-
 -- | Tests if a data stream is a Bam file.
