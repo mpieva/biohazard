@@ -58,7 +58,8 @@ Library
   Build-depends:       bytestring, containers, base >= 4, binary, array,
                        zlib, attoparsec-iteratee, attoparsec, iteratee,
                        transformers, binary-strict, ListLike,
-                       MonadCatchIO-transformers, random
+                       MonadCatchIO-transformers, random,
+                       iteratee-compress
   
   Ghc-options:         -Wall -auto-all
 

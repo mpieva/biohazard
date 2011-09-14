@@ -9,7 +9,8 @@
 module Bio.File.Bgzf (
     decompress, decompress', decompressWith, decompressPlain,
     Block(..), compress, maxBlockSize, bgzfEofMarker, 
-    lookAheadI, liftBlock, getOffset, virtualSeek
+    lookAheadI, liftBlock, getOffset, virtualSeek,
+    isBgzf, isGzip
                      ) where
 
 import Bio.Util
@@ -98,7 +99,7 @@ decompressWith :: (Monad m, Monoid s, Nullable s, LL.ListLike s e) => (FileOffse
 decompressWith blk !off inner = I.isFinished >>= go
   where
     go True = return inner
-    go False = do !csize <- lookAheadI get_bgzf_header
+    go False = do !csize <- maybe (fail "no BGZF") return =<< lookAheadI get_bgzf_header
                   !comp <- get_block $ fromIntegral csize +1
                   -- this is ugly and very roundabout, but works for the time being...
                   let !c = S.concat . L.toChunks . Z.decompress $ L.fromChunks [comp]
@@ -153,14 +154,18 @@ decompressWith blk !off inner = I.isFinished >>= go
 -}
 
 
-get_bgzf_header :: Monad m => Iteratee S.ByteString m Word16
+get_bgzf_header :: Monad m => Iteratee S.ByteString m (Maybe Word16)
 get_bgzf_header = do 31 <- I.head
                      139 <- I.head
                      _cm <- I.head
                      flg <- I.head
-                     if flg `testBit` 2 then I.drop 6 else fail "no BGZF"
-                     xlen <- endianRead2 LSB 
-                     joinI $ I.take (fromIntegral xlen) get_bsize
+                     if flg `testBit` 2 then do
+                         I.drop 6
+                         xlen <- endianRead2 LSB 
+                         it <- I.take (fromIntegral xlen) get_bsize >>= lift . tryRun
+                         case it of Left e -> throwErr e
+                                    Right s -> return $! Just s
+                      else return Nothing
 
 get_bsize :: Monad m => Iteratee S.ByteString m Word16
 get_bsize = do i1 <- I.head
@@ -178,6 +183,20 @@ get_block sz = liftI $ \s -> case s of
 
 virtualSeek :: Monad m => FileOffset -> Iteratee s m ()
 virtualSeek o = icont (idone ()) $ Just $ toException $ SeekException o
+
+-- | Tests whether a stream is in BGZF format.  Does not consume any
+-- input.
+isBgzf :: Monad m => Iteratee S.ByteString m Bool
+isBgzf = maybe False (const True) `liftM` lookAheadI get_bgzf_header
+
+-- | Tests whether a stream is in GZip format.  Also returns @True@ on a
+-- Bgzf stream, which is technically a special case of GZip.
+isGzip :: Monad m => Iteratee S.ByteString m Bool
+isGzip = either (\(SomeException _) -> False) not `liftM` tryRun test
+  where
+    test = do 2 <- I.heads [31,139::Word8]
+              I.drop 24
+              I.isFinished
 
 -- ------------------------------------------------------------------------- Output
 

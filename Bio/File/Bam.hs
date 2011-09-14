@@ -9,15 +9,21 @@
 -- - Automatic creation of some kind of index.  If possible, this should
 --   be the standard index for sorted BAM.  Optionally a block index for
 --   slicing of large files.  Maybe an index by name and an index for
---   group-sorted files.
+--   group-sorted files.  All sensible indices should be generated
+--   whenever a file is written
+-- - Same for statistics.  Something like "flagstats" could always be
+--   written.  Actually, having @writeBamHandle@ return enhanced
+--   flagstats as result might be even better.
 
 -- TONOTDO:  
 -- - SAM writer.  Writing SAM is a bad idea.
+-- - Reader for gzipped/bzipped/bgzf'ed SAM.  Storing SAM is a bad idea,
+--   so why would anyone ever want to compress, much less index it?
 
 module Bio.File.Bam (
     module Bio.Base,
 
-    -- isBam,
+    isBam,
 
     decodeBam,
     decodeBamEntry,
@@ -26,10 +32,14 @@ module Bio.File.Bam (
     decodeSam,
     decodeSam',
 
+    decodeAnyBam,
+    decodeAnyBamOrSam,
+
     encodeBam,
     encodeBamEntry,
 
-    -- writeBamFile,
+    writeBamFile,
+    writeBamHandle,
 
     BamRaw(..),
 
@@ -111,6 +121,7 @@ import Data.Int                     ( Int64, Int32 )
 import Data.Iteratee.Base
 import Data.Iteratee.Binary
 import Data.Iteratee.Char
+import Data.Iteratee.ZLib
 import Data.Iteratee.IO
 import Data.Iteratee.Iteratee
 import Data.Sequence                ( (<|), (|>) )
@@ -121,6 +132,7 @@ import Foreign.Storable             ( peek, poke )
 import System.IO
 import System.IO.Unsafe             ( unsafePerformIO )
 
+import qualified Control.Monad.CatchIO          as CIO
 import qualified Data.Attoparsec.Char8          as P
 import qualified Data.Binary.Strict.Get         as G
 import qualified Data.ByteString                as S
@@ -232,20 +244,30 @@ nullBamRec = BamRec {
         b_virtual_offset = 0
     }
 
-{-
 -- | Tests if a data stream is a Bam file.
 -- Recognizes plain Bam, gzipped Bam and bgzf'd Bam.
-isBam :: L.ByteString -> Bool
-isBam s = L.pack "BAM\SOH" `L.isPrefixOf` s ||
-           ( isGzip s && isBam (decompressBgzf s))
+isBam :: MonadIO m => Iteratee S.ByteString m Bool
+isBam = or `liftM` sequence [ isPlainBam, isBgzfBam, isGzipBam ]
+  where
+    isPlainBam = (==) 4 `liftM` lookAheadI (I.heads "BAM\SOH")
+    isBgzfBam  = do b <- isBgzf
+                    if b then lookAheadI $ joinI $ decompress $ isBam
+                         else return False
+    isGzipBam  = do b <- isGzip
+                    if b then lookAheadI $ joinI $ lift $ enumInflate GZip defaultDecompressParams isBam
+                         else return False                         
 
--- | Tests if a stream is a GZip stream.
--- This only tests the magic number.  Since Bgzf (and therefore Bam) is
--- GZip with added conventions, these files also return true.
-isGzip :: L.ByteString -> Bool
-isGzip s = not (L.null (L.drop 26 s)) && L.pack "\31\139" `L.isPrefixOf` s
--}
+-- | Checks if a file contains BAM in any of the common forms, then
+-- decompresses it appropriately.  We support plain BAM, Bgzf'd BAM,
+-- Gzip'ed BAM and Bzip2'ed BAM.
+decodeAnyBam :: Monad m => (BamMeta -> Iteratee [BamRaw] m a) -> Iteratee S.ByteString m (Iteratee [BamRaw] m a)
+decodeAnyBam = undefined
 
+-- | Checks if a file contains BAM in any of the common forms,
+-- then decompresses it appropriately.  If the stream doesn't contain
+-- BAM at all, it is instead decoded as SAM.
+decodeAnyBamOrSam :: Monad m => (BamMeta -> Iteratee [BamRaw] m a) -> Iteratee S.ByteString m (Iteratee [BamRaw] m a)
+decodeAnyBamOrSam = undefined
 
 -- Seek to a given sequence in a Bam file, read those records.  This
 -- requires an appropriate index (read separately), and the file must
@@ -433,26 +455,23 @@ encodeBamEntry = S.concat . L.toChunks . runPut . putEntry
 
 -- | writes stuff to a BAM file                     
 -- We generate BAM with dynamic blocks, then stream them out to the
--- file.  We also keep the offsets of those blocks and write a separate
--- binary index (for Sector).
--- XXX Do we need this?  Do we want it?
--- Note: The index format of Sector is underspecified.  We write the
--- offset as little endian, but it's probably platform dependent.
-{-
-writeBamFile :: FilePath -> Bam -> IO ()
-writeBamFile fp bam =
-    withBinaryFile fp WriteMode                 $ \h_bam ->
-    withBinaryFile (fp ++ ".idx") WriteMode     $ \h_idx ->
-    let go _ [    ] = return ()                                     -- done
-        go p (b:bs) = do
-            L.hPut h_bam b                                          -- write block
-            L.hPut h_idx $ runPut $ putWord64le (fromIntegral p)    -- to index, too
-            go (p+L.length b) bs                                    -- recurse
-    in case encodeBam bam of
-        []     -> return ()                 -- can't actually happen
-        (b:bs) -> do L.hPut h_bam b         -- write header, not part of index
-                     go (L.length b) bs     -- recurse
--}
+-- file.
+--
+-- XXX This could write indexes on the side---a simple block index
+-- for MapReduce style slicing, a standard BAM index or a name index
+-- would be possible.
+writeBamFile :: CIO.MonadCatchIO m => FilePath -> BamMeta -> Iteratee [BamRec] m ()
+writeBamFile fp meta =
+    CIO.bracket (liftIO $ openBinaryFile fp WriteMode)
+                (liftIO . hClose)
+                (flip writeBamHandle meta) 
+
+writeBamHandle :: MonadIO m => Handle -> BamMeta -> Iteratee [BamRec] m ()
+writeBamHandle hdl meta = 
+    joinI $ I.mapStream encodeBamEntry $
+    joinI $ encodeBam meta $
+    mapChunksM_ (liftIO . S.hPut hdl)
+
 
 put_int_32, put_int_16, put_int_8 :: Integral a => a -> Put
 put_int_32 = putWord32le . fromIntegral
