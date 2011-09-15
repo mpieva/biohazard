@@ -1,4 +1,6 @@
 {-# LANGUAGE PatternGuards, BangPatterns #-}
+
+-- | Stuff that didn't quite fit anywhere else.
 module Bio.Util (
     groupBy,
     groupOn,
@@ -21,15 +23,12 @@ import qualified Data.ByteString as S
 import Data.ByteString.Unsafe
 import Data.ByteString.Internal
 
--- ^ Stuff that didn't quite fit anywhere else.
-
 -- | Grouping on @Iteratee@s.  @groupOn proj inner outer@ executes
 -- @inner (proj e)@, where @e@ is the first input element, to obtain an
 -- @Iteratee i@, then passes elements @e@ to @i@ as long as @proj e@
 -- produces the same result.  If @proj e@ changes or the input ends, the
 -- pair of @proj e@ and the result of @run i@ is passed to @outer@.  At
 -- end of input, the resulting @outer@ is returned.
-
 groupOn :: (Monad m, LL.ListLike l e, Eq t1, NullPoint l, Nullable l)
         => (e -> t1)
         -> (t1 -> m (Iteratee l m t2))
@@ -57,7 +56,6 @@ groupOn proj inner = liftI . step
 -- long as @cmp e' e@, where @e'@ is some preceeding element, is true.
 -- Else, the result of @run i@ is passed to @outer@ and @groupBy@
 -- restarts.  At end of input, the resulting @outer@ is returned.
-
 groupBy :: (Monad m, LL.ListLike l t, NullPoint l, Nullable l)
         => (t -> t -> Bool)
         -> m (Iteratee l m t2)
@@ -104,23 +102,24 @@ getString n = liftI $ step [] 0
                          | otherwise           = liftI $ step (c:acc) (l + S.length c)
 
 
--- Occasionally faster method to compare @Seqid@s, by starting at the
--- end.  This makes sense because people tend to name their reference
+-- | A string compared from the end.  This is a somewhat faster method
+-- to compare @Seqid@s, because people tend to name their reference
 -- sequences like "contig_xxx", so comparing the beginning isn't really
--- helpful.  Same goes for query sequences, which tend to start will
+-- helpful.  Same goes for query sequences, which tend to start with
 -- longish runnames.
 newtype R = R S.ByteString
 
-instance Ord R where compare = compare_R
-instance Eq  R where a == b = case compare_R a b of EQ -> True ; _ -> False
+instance Ord R where compare (R a) (R b) = compare_R a b
+instance Eq  R where R a == R b = case compare_R a b of EQ -> True ; _ -> False
 
-compare_R :: R -> R -> Ordering
-compare_R (R a) (R b) = inlinePerformIO $
-                        unsafeUseAsCStringLen a $ \(pa,la) -> 
-                        unsafeUseAsCStringLen b $ \(pb,lb) ->
-                        case compare la lb of LT -> return LT
-                                              GT -> return GT
-                                              EQ -> go (pa `plusPtr` (la-1)) (pb `plusPtr` (lb-1)) la
+-- | Compares two @ByteString@s beginning from the end.
+compare_R :: S.ByteString -> S.ByteString -> Ordering
+compare_R a b = inlinePerformIO $
+                unsafeUseAsCStringLen a $ \(pa,la) -> 
+                unsafeUseAsCStringLen b $ \(pb,lb) ->
+                case compare la lb of LT -> return LT
+                                      GT -> return GT
+                                      EQ -> go (pa `plusPtr` (la-1)) (pb `plusPtr` (lb-1)) la
     where
         go !_ !_ 0 = return EQ
         go  p  q n = do x <- peek p :: IO Word8

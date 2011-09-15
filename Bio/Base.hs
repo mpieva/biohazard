@@ -1,3 +1,7 @@
+-- | Common data types used everywhere.  This module is a collection of
+-- very basic "bioinformatics" data types that are simple, but don't
+-- make sense to define over and over.
+
 module Bio.Base(
     Nucleotide(..),
     toNucleotide,
@@ -13,6 +17,7 @@ module Bio.Base(
 
     Seqid,
     unpackSeqid,
+    packSeqid,
     shelve,
 
     Position(..),
@@ -35,13 +40,13 @@ import Foreign.Ptr          ( Ptr, castPtr )
 import qualified Data.ByteString.Char8 as S
 import qualified Data.ByteString.Lazy as L
 
--- | Common data types used everywhere
--- This module is a collection of very basic "bioinformatics" data types
--- that are simple, but don't make sense to define over and over.
-
 -- | A nucleotide base in an alignment.
 -- Experience says we're dealing with Ns and gaps all the type, so
 -- purity be damned, they are included as if they were real bases.
+--
+-- Todo: This representation may be quite inefficient, a wrapper wround
+-- a @Word8@ or something might be better.  Also, some alternative
+-- alphabets could be supported, e.g. masked bases.
 data Nucleotide = Gap | A | C | G | T | N deriving (Eq, Ord, Enum, Ix, Bounded)
 
 instance Storable Nucleotide where
@@ -54,16 +59,22 @@ instance Storable Nucleotide where
 -- Avoids the confusion inherent in using a simple bool.
 data Sense = Forward | Reverse deriving (Show, Eq, Ord)
 
--- | Sequence identifiers are ACSII strings
+-- | Sequence identifiers are ASCII strings
 -- Since we tend to store them for a while, we use strict byte strings.
 -- If you get a lazy bytestring from somewhere, use 'shelve' to convert
--- it for storage.
+-- it for storage.  Use @unpackSeqid@ and @packSeqid@ to avoid the
+-- import of @Data.ByteString@.
 type Seqid = S.ByteString
 
+-- | Unpacks a @Seqid@ into a @String@
 unpackSeqid :: Seqid -> String
 unpackSeqid = S.unpack
 
--- | copies a lazy bytestring into a strict one
+-- | Packs a @String@ into a @Seqid@.  Only works for ASCII subset.
+packSeqid :: String -> Seqid
+packSeqid = S.pack
+
+-- | Copies a lazy @L.ByteString@ into a strict @S.ByteString@.
 -- A copy is forced, even if the lazy bytestring is a single chunk.
 -- This makes sure bytestrings in long term storage don't hold onto
 -- larger strings.
@@ -79,9 +90,9 @@ shelve s = case L.toChunks s of
 -- you see the next base to the right, looking in the reverse direction
 -- you see the complement of the first base to the left.  
 data Position = Pos {
-        p_seq   :: {-# UNPACK #-} !Seqid,
-        p_sense ::                !Sense,
-        p_start :: {-# UNPACK #-} !Int
+        p_seq   :: {-# UNPACK #-} !Seqid,   -- ^ sequence (e.g. some chromosome)
+        p_sense ::                !Sense,   -- ^ strand
+        p_start :: {-# UNPACK #-} !Int      -- ^ offset, zero-based
     } deriving (Show, Eq, Ord)
 
 -- | Ranges in genomes
@@ -96,7 +107,7 @@ data Range = Range {
     } deriving (Show, Eq, Ord)
 
 
--- | converts a character into a 'Nucleotide'
+-- | Converts a character into a 'Nucleotide'.
 -- The usual codes for A,C,G,T and U are understood, '-' and '.' become
 -- gaps and everything else is an N.
 toNucleotide :: Char -> Nucleotide
@@ -148,23 +159,21 @@ instance Read Nucleotide where
     readList s = let (hd,tl) = span (\c -> isAlpha c || isSpace c || '-' == c) s
                  in [(map toNucleotide $ filter (not . isSpace) hd, tl)]
     
--- | returns the smallest base
--- This returns the smallest 'Nucleotide' according to the 'Ord'
--- instance that is not a gap.
+-- | Returns the smallest base.  This returns the smallest 'Nucleotide'
+-- according to the 'Ord' instance that is not a gap.
 minBase :: Nucleotide
 minBase = A
 
--- | returns the largest base
--- This returns the largest 'Nucleotide' according to the 'Ord' instance
--- that is not a gap.
+-- | Returns the largest base.  This returns the largest 'Nucleotide'
+-- according to the 'Ord' instance that is not a gap.
 maxBase :: Nucleotide
 maxBase = N
 
--- | reverse-complements a stretch of Nucleotides
+-- | Reverse-complements a stretch of Nucleotides
 revcompl :: [Nucleotide] -> [Nucleotide]
 revcompl = reverse . map compl
 
--- | complements a Nucleotide
+-- | Complements a Nucleotide.
 compl :: Nucleotide -> Nucleotide
 compl A = T
 compl C = G
@@ -173,18 +182,17 @@ compl T = A
 compl x = x
 
 
--- | moves a position
--- The position is moved forward according to the strand, negative
--- indexes move backward accordingly.
+-- | Moves a @Position@.  The position is moved forward according to the
+-- strand, negative indexes move backward accordingly.
 shiftPosition :: Int -> Position -> Position
 shiftPosition a p = case p_sense p of Forward -> p { p_start = p_start p + a }
                                       Reverse -> p { p_start = p_start p - a }
 
+-- | Moves a @Range@.  This is just @shiftPosition@ lifted.
 shiftRange :: Int -> Range -> Range
 shiftRange a r = r { r_pos = shiftPosition a (r_pos r) }
 
--- | reverses a 'Range'
--- Gives the same 'Range' on the opposite strand.
+-- | Reverses a 'Range' to give the same @Range@ on the opposite strand.
 reverseRange :: Range -> Range
 reverseRange (Range (Pos sq Forward pos) len) = Range (Pos sq Reverse (pos+len)) len
 reverseRange (Range (Pos sq Reverse pos) len) = Range (Pos sq Forward (pos-len)) len
@@ -192,7 +200,6 @@ reverseRange (Range (Pos sq Reverse pos) len) = Range (Pos sq Forward (pos-len))
 -- | Extends a range.  The length of the range is simply increased.
 extendRange :: Int -> Range -> Range
 extendRange a r = r { r_length = r_length r + a }
-
 
 -- | Expands a subrange.
 -- @(range1 `insideRange` range2)@ interprets @range1@ as a subrange of
@@ -216,8 +223,9 @@ insideRange (Range (Pos _ Reverse start1) length1) (Range (Pos sq Reverse start2
     | otherwise         = Range (Pos sq Forward (start2 - length2)) (max 0 (length2 - (start1 - length1)))
 
 
--- | wraps a range to a region
--- This simply normalizes the start position to be in the interval [0,n).
+-- | Wraps a range to a region.  This simply normalizes the start
+-- position to be in the interval '[0,n)', which only makes sense if the
+-- @Range@ is to be mapped onto a circular genome.
 wrapRange :: Int -> Range -> Range
 wrapRange n (Range (Pos sq str s) l) = Range (Pos sq str (s `mod` n)) l
 

@@ -45,7 +45,7 @@ Build-type:          Simple
 -- Extra-source-files:  
 
 -- Constraint on the version of Cabal needed to build this package.
-Cabal-version:       >=1.2
+Cabal-version:       >=1.9.2
 
 
 Library
@@ -55,7 +55,7 @@ Library
                        Bio.File.Bgzf, Bio.Util
   
   -- Packages needed in order to build this package.
-  Build-depends:       bytestring, containers, base >= 4, binary, array,
+  Build-depends:       bytestring, containers, base >=4, binary, array,
                        zlib, attoparsec-iteratee, attoparsec, iteratee,
                        transformers, binary-strict, ListLike,
                        MonadCatchIO-transformers, random,
@@ -69,3 +69,14 @@ Library
   -- Extra tools (e.g. alex, hsc2hs, ...) needed to build the source.
   -- Build-tools:         
   
+
+Test-Suite test-biohazard
+  Type:                exitcode-stdio-1.0
+  Main-is:             test-biohazard.hs
+  Build-depends:       bytestring, containers, base >=4, binary, array,
+                       zlib, attoparsec-iteratee, attoparsec, iteratee,
+                       transformers, binary-strict, ListLike,
+                       MonadCatchIO-transformers, random, HUnit,
+                       iteratee-compress
+
+

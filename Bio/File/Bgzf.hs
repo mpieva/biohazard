@@ -16,7 +16,6 @@ module Bio.File.Bgzf (
 import Bio.Util
 import Control.Exception
 import Control.Monad
-import Control.Monad.IO.Class
 import Control.Monad.Trans.Class
 -- import Foreign.Marshal.Alloc
 -- import Foreign.Marshal.Utils
@@ -28,8 +27,6 @@ import Data.Binary.Strict.Get
 import Data.Bits
 import Data.Iteratee.Base
 import Data.Iteratee.Binary
-import Data.Iteratee.Char                   ( printLinesUnterminated )
-import Data.Iteratee.IO
 import Data.Iteratee.Iteratee
 import Data.Monoid
 import Data.Word                            ( Word16, Word8 )
@@ -55,15 +52,15 @@ instance Monoid Block where
     mconcat [] = I.empty
     mconcat bs@(Block x _:_) = Block x $ S.concat [s|Block _ s <- bs]
 
--- Minimum definition, only needed because @drop@ depends on it
+-- | Minimum definition, only needed because @drop@ depends on it
 -- indirectly.
 instance LL.FoldableLL Block Word8 where
     foldl' f e (Block _ s) = S.foldl' f e s
     foldl f e (Block _ s) = S.foldl f e s
     foldr f e (Block _ s) = S.foldr f e s
 
--- Minimum defintion so it works, plus support for @drop@, which was all
--- we really needed...
+-- | Minimum defintion so it works, plus support for @drop@, which was
+-- all we really needed...
 instance LL.ListLike Block Word8 where
     singleton = Block 0 . S.singleton
     head (Block _ s) = S.head s
@@ -84,10 +81,10 @@ decompress' = decompressWith Block 0
 decompress :: Monad m => Enumeratee S.ByteString S.ByteString m a
 decompress = decompressWith (\_ s -> s) 0
 
--- | "Decompresses" a plain file.  Whats actually happening is that the
+-- | "Decompresses" a plain file.  What's actually happening is that the
 -- offset in the input stream is tracked and added to the @ByteString@s
 -- giving @Block@s.  This results in the same interface as decompressing
--- Bgzf.
+-- actual Bgzf.
 decompressPlain :: Monad m => Enumeratee S.ByteString Block m a
 decompressPlain = liftI . step 0
   where
@@ -95,7 +92,11 @@ decompressPlain = liftI . step 0
                            >>= liftI . step (o + fromIntegral (S.length s))
     step  _ it (EOF  mx) = idone it (EOF mx)
 
-decompressWith :: (Monad m, Monoid s, Nullable s, LL.ListLike s e) => (FileOffset -> S.ByteString -> s) -> FileOffset -> Enumeratee S.ByteString s m a
+-- | Generic decompression where a function determines how to assemble
+-- blocks.
+decompressWith :: (Monad m, Monoid s, Nullable s, LL.ListLike s e)
+               => ( FileOffset -> S.ByteString -> s )
+               -> FileOffset -> Enumeratee S.ByteString s m a
 decompressWith blk !off inner = I.isFinished >>= go
   where
     go True = return inner
@@ -108,7 +109,7 @@ decompressWith blk !off inner = I.isFinished >>= go
                       it' <- enumPure1Chunk (blk (off `shiftL` 16) c) inner
                       runIter it' (onDone od) (onCont oc od off')
 
-    -- inner Iteratee is done, so we reconstruct the inner Iteratee and
+    -- inner Iteratee was done, so we reconstruct the inner Iteratee and
     -- are done, too.
     onDone od a str = od (idone a str) (Chunk S.empty)
 
@@ -128,6 +129,12 @@ decompressWith blk !off inner = I.isFinished >>= go
           where cont = do virtualSeek $ o `shiftR` 16
                           decompressWith blk (o .&. complement 0xffff) $
                               I.drop (fromIntegral $ o .&. 0xffff) >> liftI k
+
+    get_block sz = liftI $ \s -> case s of
+        EOF _ -> throwErr $ setEOF s 
+        Chunk c | S.length c < sz -> S.append c `liftM` get_block (sz - S.length c)
+                | otherwise       -> idone (S.take sz c) (Chunk (S.drop sz c))
+
     
 
    -- Doesn't work.  Maybe because 'uncompress'
@@ -154,6 +161,8 @@ decompressWith blk !off inner = I.isFinished >>= go
 -}
 
 
+-- | Decodes a BGZF block header and returns the block size if
+-- successful.
 get_bgzf_header :: Monad m => Iteratee S.ByteString m (Maybe Word16)
 get_bgzf_header = do 31 <- I.head
                      139 <- I.head
@@ -166,21 +175,15 @@ get_bgzf_header = do 31 <- I.head
                          case it of Left e -> throwErr e
                                     Right s -> return $! Just s
                       else return Nothing
+  where
+    get_bsize = do i1 <- I.head
+                   i2 <- I.head
+                   len <- endianRead2 LSB
+                   if i1 == 66 && i2 == 67 && len == 2 
+                      then endianRead2 LSB
+                      else I.drop (fromIntegral len) >> get_bsize
 
-get_bsize :: Monad m => Iteratee S.ByteString m Word16
-get_bsize = do i1 <- I.head
-               i2 <- I.head
-               len <- endianRead2 LSB
-               if i1 == 66 && i2 == 67 && len == 2 
-                  then endianRead2 LSB
-                  else I.drop (fromIntegral len) >> get_bsize
-
-get_block :: Monad m => Int -> Iteratee S.ByteString m S.ByteString
-get_block sz = liftI $ \s -> case s of
-    EOF _ -> throwErr $ setEOF s 
-    Chunk c | S.length c < sz -> S.append c `liftM` get_block (sz - S.length c)
-            | otherwise       -> idone (S.take sz c) (Chunk (S.drop sz c))
-
+-- | Seeks in a file that supports it (either plain or BGZF).  
 virtualSeek :: Monad m => FileOffset -> Iteratee s m ()
 virtualSeek o = icont (idone ()) $ Just $ toException $ SeekException o
 
@@ -213,7 +216,7 @@ bgzfEofMarker :: S.ByteString
 bgzfEofMarker = compress1 []
 
 
--- | Compress a stream of @ByteString@s into a stream of Bgzf blocks.
+-- | Compresses a stream of @ByteString@s into a stream of Bgzf blocks.
 -- We accumulate an uncompressed block as long as adding a new chunk to
 -- it doesn't exceed the max. block size.  If we receive an empty chunk
 -- (used as a flush signal), or if we would exceed the block size, we
@@ -245,9 +248,9 @@ compress it0 = icont (step it0 0 []) Nothing
                  icont (step it' 0 []) Nothing
 
 
--- | Compress a single string into a BGZF block.
+-- | Compress a collection of strings into a single BGZF block.
 compress1 :: [S.ByteString] -> S.ByteString
-compress1 ss | sum (map S.length ss) > maxBlockSize = error "Don't do that!"
+compress1 ss | sum (map S.length ss) > maxBlockSize = error "Trying to create too big a BGZF block."
 compress1 ss = S.concat (L.toChunks hdr) `S.append` rest
   where
     z = S.concat $ L.toChunks $ Z.compress (L.fromChunks (reverse ss))
@@ -298,21 +301,4 @@ liftBlock = liftI . step
       where
         onDone od hdr (Chunk rest) = od hdr (Chunk $ Block (l + fromIntegral (S.length s-S.length rest)) rest)
         onDone od hdr (EOF     ex) = od hdr (EOF ex)
-
--- ------------------------------------------------------------------------------------------------- tests
-
-print_block :: Iteratee Block IO ()
-print_block = liftI step
-  where
-    step (Chunk (Block p s)) = do liftIO $ putStrLn $ "--> " ++ show (p, S.length s)
-                                  print_block
-    step e@(EOF mx) = do liftIO $ putStrLn $ "EOF " ++ show mx
-                         idone () e
-
-test, test' :: IO ()
-test = fileDriverRandom (joinI $ decompress' (virtualSeek 0 >> print_block))
-       "/mnt/ngs_data/101203_SOLEXA-GA04_00007_PEDi_MM_QF_SR/Ibis/BWA/s_5_L3280_sequence_mq_hg19_nohap.bam" 
-
-test' = fileDriverRandom (joinI $ decompress (virtualSeek 0 >> printLinesUnterminated))
-        "/mnt/454/Altaiensis/bwa/catalog/EPO/combined_SNC_anno.tsv.bgz" 
 
