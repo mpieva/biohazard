@@ -52,7 +52,7 @@ Library
   -- Modules exported by the library.
   Exposed-modules:     Bio.Base, Bio.File.Bam, Bio.File.Bam.Filter, Bio.File.Bam.Trim,
                        Bio.File.Bam.Fastq, Bio.File.Glf, Bio.File.TwoBit,
-                       Bio.File.Bgzf, Bio.Util
+                       Bio.File.Bgzf, Bio.Iteratee
   
   -- Packages needed in order to build this package.
   Build-depends:       bytestring, containers, base >=4, binary, array,

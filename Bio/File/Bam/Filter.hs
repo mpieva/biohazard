@@ -11,7 +11,7 @@ module Bio.File.Bam.Filter (
 --       - quality conversion (old Solexa to Phred scale)?
 
 import Bio.File.Bam
-import Bio.Util
+import Bio.Iteratee
 import Control.Monad.Trans.Class
 import Data.Bits
 import Data.Word ( Word8 )
@@ -30,10 +30,10 @@ import qualified Data.ByteString  as S
 -- number of reads that were not marked @isFailsQC@ before, and @it@ is
 -- the transformed output @Iteratee@.
 
-qualityFilterWith :: Monad m => QualFilter -> I.Iteratee [BamRec] m a
-                  -> I.Iteratee [BamRec] m (Int, Int, I.Iteratee [BamRec] m a)
-qualityFilterWith (p,f) = I.joinI . I.groupBy same_qname . I.liftI . stepQF p f 0 0
-  where same_qname a b = R (b_qname a) == R (b_qname b)
+qualityFilterWith :: Monad m => QualFilter -> Iteratee [BamRec] m a
+                  -> Iteratee [BamRec] m (Int, Int, Iteratee [BamRec] m a)
+qualityFilterWith (p,f) = joinI . I.groupBy same_qname . liftI . stepQF p f 0 0
+  where same_qname a b = b_qname a == b_qname b
 
 -- | Same as @qualityFilterWith@, but reads are not grouped before
 -- testing.  This will result in mate pairs with inconsistent flags,
@@ -41,22 +41,22 @@ qualityFilterWith (p,f) = I.joinI . I.groupBy same_qname . I.liftI . stepQF p f 
 -- programs that expect non-broken BAM files.  Present merely for
 -- completeness, not because it's useful.
 {-# DEPRECATED qualityFilterWith' "You are strongly urged to consider qualityFilterWith instead" #-}
-qualityFilterWith' :: Monad m => QualFilter -> I.Iteratee [BamRec] m a
-                   -> I.Iteratee [BamRec] m (Int, Int, I.Iteratee [BamRec] m a)
-qualityFilterWith' (p,f) = I.joinI . I.mapStream (:[]) . I.liftI . stepQF p f 0 0
+qualityFilterWith' :: Monad m => QualFilter -> Iteratee [BamRec] m a
+                   -> Iteratee [BamRec] m (Int, Int, Iteratee [BamRec] m a)
+qualityFilterWith' (p,f) = joinI . I.mapStream (:[]) . liftI . stepQF p f 0 0
 
 stepQF :: (Monad m) => (BamRec -> Bool) -> (BamRec -> BamRec)
-     -> Int -> Int -> I.Iteratee [BamRec] m a
-     -> I.Stream [[BamRec]] -> I.Iteratee [[BamRec]] m (Int, Int, I.Iteratee [BamRec] m a)
+     -> Int -> Int -> Iteratee [BamRec] m a
+     -> Stream [[BamRec]] -> Iteratee [[BamRec]] m (Int, Int, Iteratee [BamRec] m a)
 stepQF p f = step    
   where
-    step !u !v it (I.EOF       mx) = I.idone (u,v,it) (I.EOF mx)
-    step !u !v it (I.Chunk [    ]) = I.liftI $ step u v it
-    step !u !v it (I.Chunk (r:rs)) 
-        | all p r   = lift (I.enumPure1Chunk r it) >>= \it' ->
-                      step (u+c) (v+c) it' (I.Chunk rs)
-        | otherwise = lift (I.enumPure1Chunk (map f r) it) >>= \it' ->
-                      step u (v+c) it' (I.Chunk rs)
+    step !u !v it (EOF       mx) = idone (u,v,it) (EOF mx)
+    step !u !v it (Chunk [    ]) = liftI $ step u v it
+    step !u !v it (Chunk (r:rs)) 
+        | all p r   = lift (enumPure1Chunk r it) >>= \it' ->
+                      step (u+c) (v+c) it' (Chunk rs)
+        | otherwise = lift (enumPure1Chunk (map f r) it) >>= \it' ->
+                      step u (v+c) it' (Chunk rs)
       where !c = length $ filter (not . isFailsQC) r
 
 type QualFilter = (BamRec->Bool, BamRec->BamRec)

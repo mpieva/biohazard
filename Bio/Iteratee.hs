@@ -1,39 +1,47 @@
 {-# LANGUAGE PatternGuards, BangPatterns #-}
 
--- | Stuff that didn't quite fit anywhere else.
-module Bio.Util (
-    groupBy,
-    groupOn,
-    getString,
-    lookAheadI,
-    R(..),
-    w2c, c2w
-                ) where
+-- | Basically a reexport of @Data.Iteratee@ less the names that clash
+-- with @Prelude@ plus a handful of utilities.
+module Bio.Iteratee (
+    i'groupBy,
+    i'groupOn,
+    i'getString,
+    i'lookAhead,
+    i'filterM,
+    ($^),
+    ListLike,
 
+    module Data.Iteratee.Binary,
+    module Data.Iteratee.Char,
+    module Data.Iteratee.IO,
+    module Data.Iteratee.Iteratee,
+    module Data.Iteratee.Parallel
+                    ) where
+
+import Control.Monad
 import Control.Monad.Trans.Class
-import Data.Iteratee hiding ( groupBy, peek )
+import Data.Iteratee.Binary
+import Data.Iteratee.Char
+import Data.Iteratee.IO
+import Data.Iteratee.Iteratee
+import Data.Iteratee.Parallel
 import Data.Monoid
-import Data.Word ( Word8 )
-import Foreign.Ptr ( plusPtr )
-import Foreign.Storable ( peek )
+import Data.ListLike ( ListLike )
 
 import qualified Data.ListLike as LL
 import qualified Data.ByteString as S
 
-import Data.ByteString.Unsafe
-import Data.ByteString.Internal
-
--- | Grouping on @Iteratee@s.  @groupOn proj inner outer@ executes
+-- | Grouping on @Iteratee@s.  @i'groupOn proj inner outer@ executes
 -- @inner (proj e)@, where @e@ is the first input element, to obtain an
 -- @Iteratee i@, then passes elements @e@ to @i@ as long as @proj e@
 -- produces the same result.  If @proj e@ changes or the input ends, the
 -- pair of @proj e@ and the result of @run i@ is passed to @outer@.  At
 -- end of input, the resulting @outer@ is returned.
-groupOn :: (Monad m, LL.ListLike l e, Eq t1, NullPoint l, Nullable l)
-        => (e -> t1)
-        -> (t1 -> m (Iteratee l m t2))
-        -> Enumeratee l [(t1, t2)] m a
-groupOn proj inner = liftI . step
+i'groupOn :: (Monad m, LL.ListLike l e, Eq t1, NullPoint l, Nullable l)
+          => (e -> t1)
+          -> (t1 -> m (Iteratee l m t2))
+          -> Enumeratee l [(t1, t2)] m a
+i'groupOn proj inner = liftI . step
   where
     step outer   (EOF   mx) = idone outer (EOF mx)
     step outer c@(Chunk as)
@@ -51,16 +59,16 @@ groupOn proj inner = liftI . step
         \outer' -> step outer' str
 
 
--- | Grouping on @Iteratee@s.  @groupBy cmp inner outer@ executes
+-- | Grouping on @Iteratee@s.  @i'groupBy cmp inner outer@ executes
 -- @inner@ to obtain an @Iteratee i@, then passes elements @e@ to @i@ as
 -- long as @cmp e' e@, where @e'@ is some preceeding element, is true.
--- Else, the result of @run i@ is passed to @outer@ and @groupBy@
+-- Else, the result of @run i@ is passed to @outer@ and @i'groupBy@
 -- restarts.  At end of input, the resulting @outer@ is returned.
-groupBy :: (Monad m, LL.ListLike l t, NullPoint l, Nullable l)
-        => (t -> t -> Bool)
-        -> m (Iteratee l m t2)
-        -> Enumeratee l [t2] m a
-groupBy cmp inner = liftI . step
+i'groupBy :: (Monad m, LL.ListLike l t, NullPoint l, Nullable l)
+          => (t -> t -> Bool)
+          -> m (Iteratee l m t2)
+          -> Enumeratee l [t2] m a
+i'groupBy cmp inner = liftI . step
   where
     step outer    (EOF   mx) = idone outer (EOF mx)
     step outer  c@(Chunk as)
@@ -81,8 +89,8 @@ groupBy cmp inner = liftI . step
 -- result along with *all* input.  Effectively allows lookahead.  Be
 -- careful, this will eat memory if the @Iteratee@ doesn't return
 -- speedily.
-lookAheadI :: Monoid s => Iteratee s m a -> Iteratee s m a
-lookAheadI = go mempty
+i'lookAhead :: Monoid s => Iteratee s m a -> Iteratee s m a
+i'lookAhead = go mempty
   where 
     go acc it = Iteratee $ \od oc -> runIter it (\x _ -> od x (Chunk acc)) (oc . step acc)
     
@@ -92,40 +100,28 @@ lookAheadI = go mempty
 
 -- | Collects a string of a given length.  Don't use this for long
 -- strings, use @Data.Iteratee.ListLike.take@ instead.
-getString :: Monad m => Int -> Iteratee S.ByteString m S.ByteString
-getString 0 = idone S.empty (Chunk S.empty)
-getString n = liftI $ step [] 0
+i'getString :: Monad m => Int -> Iteratee S.ByteString m S.ByteString
+i'getString 0 = idone S.empty (Chunk S.empty)
+i'getString n = liftI $ step [] 0
   where
     step acc l c@(EOF _) = icont (step acc l) (Just $ setEOF c)
     step acc l (Chunk c) | l + S.length c >= n = let r = S.concat . reverse $ S.take (n-l) c : acc
                                                  in idone r (Chunk $ S.drop (n-l) c)
                          | otherwise           = liftI $ step (c:acc) (l + S.length c)
 
+infixl 2 $^
+-- | Compose an @Enumertator@ with an @Enumeratee@, giving a new
+-- @Enumerator@.
+($^) :: Monad m => Enumerator input m (Iteratee output m result)
+                -> Enumeratee input output m result 
+                -> Enumerator output m result
+($^) enum enee iter = run =<< enum (enee iter)
 
--- | A string compared from the end.  This is a somewhat faster method
--- to compare @Seqid@s, because people tend to name their reference
--- sequences like "contig_xxx", so comparing the beginning isn't really
--- helpful.  Same goes for query sequences, which tend to start with
--- longish runnames.
-newtype R = R S.ByteString
-
-instance Ord R where compare (R a) (R b) = compare_R a b
-instance Eq  R where R a == R b = case compare_R a b of EQ -> True ; _ -> False
-
--- | Compares two @ByteString@s beginning from the end.
-compare_R :: S.ByteString -> S.ByteString -> Ordering
-compare_R a b = inlinePerformIO $
-                unsafeUseAsCStringLen a $ \(pa,la) -> 
-                unsafeUseAsCStringLen b $ \(pb,lb) ->
-                case compare la lb of LT -> return LT
-                                      GT -> return GT
-                                      EQ -> go (pa `plusPtr` (la-1)) (pb `plusPtr` (lb-1)) la
-    where
-        go !_ !_ 0 = return EQ
-        go  p  q n = do x <- peek p :: IO Word8
-                        y <- peek q :: IO Word8
-                        case compare x y of
-                              LT -> return LT
-                              GT -> return GT
-                              EQ -> go (p `plusPtr` 1) (q `plusPtr` 1) (n-1)
-
+-- | Apply a monadic filter predicate to an @Iteratee@.
+i'filterM :: Monad m => (a -> m Bool) -> Enumeratee [a] [a] m b
+i'filterM k = eneeCheckIfDone (liftI . step)
+  where
+    step it (Chunk xs) = lift (filterM k xs) >>=
+                         eneeCheckIfDone (liftI . step) . it . Chunk
+    step it stream     = idone (it stream) stream
+ 

@@ -9,11 +9,10 @@
 module Bio.File.Bgzf (
     decompress, decompress', decompressWith, decompressPlain,
     Block(..), compress, maxBlockSize, bgzfEofMarker, 
-    lookAheadI, liftBlock, getOffset, virtualSeek,
-    isBgzf, isGzip
+    liftBlock, getOffset, virtualSeek, isBgzf, isGzip
                      ) where
 
-import Bio.Util
+import Bio.Iteratee
 import Control.Exception
 import Control.Monad
 import Control.Monad.Trans.Class
@@ -25,9 +24,6 @@ import Control.Monad.Trans.Class
 import Data.Binary.Put
 import Data.Binary.Strict.Get
 import Data.Bits
-import Data.Iteratee.Base
-import Data.Iteratee.Binary
-import Data.Iteratee.Iteratee
 import Data.Monoid
 import Data.Word                            ( Word16, Word8 )
 
@@ -43,13 +39,13 @@ import qualified Data.ListLike              as LL
 -- uncompressed BAM or some silliness like that.
 data Block = Block {-# UNPACK #-} !FileOffset {-# UNPACK #-} !S.ByteString
 
-instance I.NullPoint Block where empty = Block 0 S.empty
-instance I.Nullable Block where nullC (Block _ s) = S.null s
+instance NullPoint Block where empty = Block 0 S.empty
+instance Nullable Block where nullC (Block _ s) = S.null s
 
 instance Monoid Block where 
-    mempty = I.empty
+    mempty = empty
     mappend (Block x s) (Block _ t) = Block x (s `S.append` t)
-    mconcat [] = I.empty
+    mconcat [] = empty
     mconcat bs@(Block x _:_) = Block x $ S.concat [s|Block _ s <- bs]
 
 -- | Minimum definition, only needed because @drop@ depends on it
@@ -86,11 +82,10 @@ decompress = decompressWith (\_ s -> s) 0
 -- giving @Block@s.  This results in the same interface as decompressing
 -- actual Bgzf.
 decompressPlain :: Monad m => Enumeratee S.ByteString Block m a
-decompressPlain = liftI . step 0
+decompressPlain = eneeCheckIfDone (liftI . step 0)
   where
-    step !o it (Chunk s) = lift (enumPure1Chunk (Block o s) it)
-                           >>= liftI . step (o + fromIntegral (S.length s))
-    step  _ it (EOF  mx) = idone it (EOF mx)
+    step !o it (Chunk s) = eneeCheckIfDone (liftI . step (o + fromIntegral (S.length s))) . it $ Chunk (Block o s)
+    step  _ it (EOF  mx) = idone (it $ Chunk empty) (EOF mx)
 
 -- | Generic decompression where a function determines how to assemble
 -- blocks.
@@ -100,7 +95,7 @@ decompressWith :: (Monad m, Monoid s, Nullable s, LL.ListLike s e)
 decompressWith blk !off inner = I.isFinished >>= go
   where
     go True = return inner
-    go False = do !csize <- maybe (fail "no BGZF") return =<< lookAheadI get_bgzf_header
+    go False = do !csize <- maybe (fail "no BGZF") return =<< i'lookAhead get_bgzf_header
                   !comp <- get_block $ fromIntegral csize +1
                   -- this is ugly and very roundabout, but works for the time being...
                   let !c = S.concat . L.toChunks . Z.decompress $ L.fromChunks [comp]
@@ -190,7 +185,7 @@ virtualSeek o = icont (idone ()) $ Just $ toException $ SeekException o
 -- | Tests whether a stream is in BGZF format.  Does not consume any
 -- input.
 isBgzf :: Monad m => Iteratee S.ByteString m Bool
-isBgzf = maybe False (const True) `liftM` lookAheadI get_bgzf_header
+isBgzf = maybe False (const True) `liftM` i'lookAhead get_bgzf_header
 
 -- | Tests whether a stream is in GZip format.  Also returns @True@ on a
 -- Bgzf stream, which is technically a special case of GZip.
@@ -226,26 +221,25 @@ bgzfEofMarker = compress1 []
 -- XXX Need a way to write an index "on the side".  Additional output
 -- streams?  (Implicitly) pair two @Iteratee@s, similar to @I.pair@?
 compress :: Monad m => Enumeratee S.ByteString S.ByteString m a
-compress it0 = icont (step it0 0 []) Nothing
+compress = eneeCheckIfDone (liftI . step 0 [])  
   where
-    step it    _ acc c@(EOF _) = lift $ enumPure1Chunk (compress1 acc) it >>= \it' ->       -- XXX index?
-                                        enumPure1Chunk bgzfEofMarker it' >>= \it'' ->
-                                        enumChunk c it''
-    step it alen acc (Chunk c) 
+    step    _ acc it c@(EOF _) = step1 it
+      where
+        step1 i = eneeCheckIfDone step2 . i . Chunk $ compress1 acc
+        step2 i = eneeCheckIfDone step3 . i . Chunk $ bgzfEofMarker
+        step3 i = idone (i c) c
+
+    step alen acc it (Chunk c) 
         | alen + S.length c < maxBlockSize
-            = icont (step it (alen + S.length c) (c:acc)) Nothing
+            = liftI $ step (alen + S.length c) (c:acc) it
 
         | S.length c < maxBlockSize
-            = do it' <- lift $ enumPure1Chunk (compress1 acc) it -- XXX index?
-                 icont (step it' (S.length c) [c]) Nothing
+            = eneeCheckIfDone (liftI . step (S.length c) [c]) . it . Chunk $ compress1 acc     -- XXX index?
 
-        | otherwise 
-            = do let loop i s | S.null s = return i
-                     loop i s = do i' <- lift $ enumPure1Chunk (compress1 [S.take maxBlockSize s]) i
-                                   loop i' (S.drop maxBlockSize s)
-                 -- XXX index?
-                 it' <- loop it c
-                 icont (step it' 0 []) Nothing
+        | otherwise = loop c it -- XXX index?
+
+    loop s i | S.null s  = liftI $ step 0 [] i
+             | otherwise = eneeCheckIfDone (loop (S.drop maxBlockSize s)) . i . Chunk $ compress1 [S.take maxBlockSize s]
 
 
 -- | Compress a collection of strings into a single BGZF block.

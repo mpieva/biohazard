@@ -6,12 +6,11 @@ module Bio.File.Bam.Fastq (
 -- Parser for FastA/FastQ, @Iteratee@ style, based on Attoparsec.
 
 import Bio.File.Bam
-import Bio.Util
+import Bio.Iteratee
 import Control.Applicative       hiding ( many )
 import Data.Attoparsec.Char8
 import Data.Attoparsec.Iteratee
 import Data.Bits
-import Data.Iteratee             hiding ( length )
 
 import qualified Data.Attoparsec.Char8  as P
 import qualified Data.ByteString        as S
@@ -78,7 +77,7 @@ parseFastq' descr it = do skipJunk ; convStream (parserToIteratee $ (:[]) <$> pR
              | otherwise = Just (i-1)
 
 skipJunk :: Monad m => Iteratee S.ByteString m ()
-skipJunk = peek >>= check
+skipJunk = I.peek >>= check
   where
     check (Just c) | bad c = I.dropWhile (c2w '\n' /=) >> I.drop 1 >> skipJunk
     check _                = return ()

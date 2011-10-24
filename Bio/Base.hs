@@ -28,7 +28,10 @@ module Bio.Base(
     reverseRange,
     extendRange,
     insideRange,
-    wrapRange
+    wrapRange,
+
+    w2c,
+    c2w
 ) where
 
 import Data.Char            ( isAlpha, isSpace )
@@ -39,6 +42,8 @@ import Foreign.Ptr          ( Ptr, castPtr )
 
 import qualified Data.ByteString.Char8 as S
 import qualified Data.ByteString.Lazy as L
+
+import Data.ByteString.Internal ( c2w, w2c )
 
 -- | A nucleotide base in an alignment.
 -- Experience says we're dealing with Ns and gaps all the type, so
@@ -57,6 +62,9 @@ instance Storable Nucleotide where
 
 -- | Sense of a strand.
 -- Avoids the confusion inherent in using a simple bool.
+--
+-- TODO: This representation isn't unboxable.  Maybe we should use a
+-- newtype for Word8 or something here.
 data Sense = Forward | Reverse deriving (Show, Eq, Ord)
 
 -- | Sequence identifiers are ASCII strings
@@ -110,6 +118,11 @@ data Range = Range {
 -- | Converts a character into a 'Nucleotide'.
 -- The usual codes for A,C,G,T and U are understood, '-' and '.' become
 -- gaps and everything else is an N.
+--
+-- TODO: This representation isn't unboxable.  Maybe we should use a
+-- newtype for Word8 or something here.  The representation should be
+-- chosen so that it coincides with either the 2bit or the BAM
+-- conventions.
 toNucleotide :: Char -> Nucleotide
 toNucleotide 'A' = A
 toNucleotide 'C' = C
