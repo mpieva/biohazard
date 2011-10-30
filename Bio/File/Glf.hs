@@ -43,7 +43,7 @@ data GlfSeq = GlfSeq { glf_seqname :: {-# UNPACK #-} !S.ByteString
     deriving Show
 
 
-enee_glf_recs :: Monad m => {- Enumeratee [GlfRec] a m b -> -} Enumeratee S.ByteString [GlfRec] m b
+enee_glf_recs :: Monad m => Enumeratee S.ByteString [GlfRec] m b
 enee_glf_recs = eneeCheckIfDone step
   where
     step  oit'       = I.isFinished >>= step' oit'

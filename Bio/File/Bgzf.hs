@@ -112,7 +112,8 @@ decompressWith blk !off inner = I.isFinished >>= go
         -- Inner Iteratee continues and either everything is fine or we
         -- don't understand the exception, so we just continue with the
         -- reconstructed inner @Iteratee@.  XXX: Should we propagate the
-        -- exception?  How?
+        -- exception?  How?  (Probably by returning icont and discarding
+        -- the current chunk.)
         Nothing -> runIter (decompressWith blk off' (icont k mx)) od oc
 
         -- inner Iteratee continues and we got a @SeekException@.

@@ -41,22 +41,32 @@ i'groupOn :: (Monad m, LL.ListLike l e, Eq t1, NullPoint l, Nullable l)
           => (e -> t1)
           -> (t1 -> m (Iteratee l m t2))
           -> Enumeratee l [(t1, t2)] m a
-i'groupOn proj inner = liftI . step
+i'groupOn proj inner = eneeCheckIfDone (liftI . step)
   where
-    step outer   (EOF   mx) = idone outer (EOF mx)
+    step outer   (EOF   mx) = idone (outer $ EOF mx) $ EOF mx
     step outer c@(Chunk as)
         | LL.null as = liftI $ step outer
         | otherwise  = let x = proj (LL.head as) 
                        in lift (inner x) >>= \i -> step' x i outer c
 
+    -- We want to feed a @Chunk@ to the inner @Iteratee@, which might be
+    -- finished.  In that case, we would want to abort, but we cannot,
+    -- since the outer iteration is still going on.  So instead we
+    -- discard data we would have fed to the inner @Iteratee@.  (Use of
+    -- @enumPure1Chunk@ is not appropriate, it would accumulate the
+    -- data, just to have it discarded by the @run@ that eventually
+    -- happens.
+    
     step' c it outer (Chunk as)
         | LL.null as = liftI $ step' c it outer
         | (l,r) <- LL.span ((==) c . proj) as, not (LL.null l) =
-            lift (enumPure1Chunk l it) >>= \it' -> step' c it' outer (Chunk r)
+            let od a    _str = idoneM a $ EOF Nothing
+                oc k Nothing = return $ k (Chunk l)
+                oc k       m = icontM k m
+            in lift (runIter it od oc) >>= \it' -> step' c it' outer (Chunk r)
 
     step' c it outer str = 
-        lift (run it >>= \b -> enumPure1Chunk [(c,b)] outer) >>=
-        \outer' -> step outer' str
+        lift (run it) >>= \b -> eneeCheckIfDone (\k -> step k str) . outer $ Chunk [(c,b)]
 
 
 -- | Grouping on @Iteratee@s.  @i'groupBy cmp inner outer@ executes
@@ -68,9 +78,9 @@ i'groupBy :: (Monad m, LL.ListLike l t, NullPoint l, Nullable l)
           => (t -> t -> Bool)
           -> m (Iteratee l m t2)
           -> Enumeratee l [t2] m a
-i'groupBy cmp inner = liftI . step
+i'groupBy cmp inner = eneeCheckIfDone (liftI . step)
   where
-    step outer    (EOF   mx) = idone outer (EOF mx)
+    step outer    (EOF   mx) = idone (outer $ EOF mx) $ EOF mx
     step outer  c@(Chunk as)
         | LL.null as = liftI $ step outer
         | otherwise  = lift inner >>= \i -> step' (LL.head as) i outer c
@@ -78,11 +88,13 @@ i'groupBy cmp inner = liftI . step
     step' c it outer (Chunk as)
         | LL.null as = liftI $ step' c it outer
         | (l,r) <- LL.span (cmp c) as, not (LL.null l) =
-            lift (enumPure1Chunk l it) >>= \it' -> step' (LL.head l) it' outer (Chunk r)
+            let od a    _str = idoneM a $ EOF Nothing
+                oc k Nothing = return $ k (Chunk l)
+                oc k       m = icontM k m
+            in lift (runIter it od oc) >>= \it' -> step' (LL.head l) it' outer (Chunk r)
 
     step' _ it outer str = 
-        lift (run it >>= \b -> enumPure1Chunk [b] outer) >>=
-        \outer' -> step outer' str
+        lift (run it) >>= \b -> eneeCheckIfDone (\k -> step k str) . outer $ Chunk [b]
 
 
 -- | Run an Iteratee, collect the input.  When it finishes, return the
