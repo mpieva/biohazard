@@ -7,8 +7,8 @@ import System.Exit
 import qualified Data.ByteString as S
 
 main :: IO ()
-main = do counts <- runTestTT $ TestList [ TestLabel "BGZF" test_bgzf ]
-          if failures counts == 0 then exitSuccess else exitFailure
+main = do cnts <- runTestTT $ TestList [ TestLabel "BGZF" test_bgzf ]
+          if failures cnts == 0 then exitSuccess else exitFailure
 
 test_bgzf :: Test
 test_bgzf = TestList [ TestCase check_bam_block_list, TestCase check_bam_block_list_seek ]

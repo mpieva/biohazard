@@ -85,7 +85,7 @@ decompressPlain :: Monad m => Enumeratee S.ByteString Block m a
 decompressPlain = eneeCheckIfDone (liftI . step 0)
   where
     step !o it (Chunk s) = eneeCheckIfDone (liftI . step (o + fromIntegral (S.length s))) . it $ Chunk (Block o s)
-    step  _ it (EOF  mx) = idone (it $ Chunk empty) (EOF mx)
+    step  _ it (EOF  mx) = idone (liftI it) (EOF mx)
 
 -- | Generic decompression where a function determines how to assemble
 -- blocks.
@@ -228,7 +228,7 @@ compress = eneeCheckIfDone (liftI . step 0 [])
       where
         step1 i = eneeCheckIfDone step2 . i . Chunk $ compress1 acc
         step2 i = eneeCheckIfDone step3 . i . Chunk $ bgzfEofMarker
-        step3 i = idone (i c) c
+        step3 i = idone (liftI i) c
 
     step alen acc it (Chunk c) 
         | alen + S.length c < maxBlockSize

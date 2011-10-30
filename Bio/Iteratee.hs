@@ -43,7 +43,7 @@ i'groupOn :: (Monad m, LL.ListLike l e, Eq t1, NullPoint l, Nullable l)
           -> Enumeratee l [(t1, t2)] m a
 i'groupOn proj inner = eneeCheckIfDone (liftI . step)
   where
-    step outer   (EOF   mx) = idone (outer $ EOF mx) $ EOF mx
+    step outer   (EOF   mx) = idone (liftI outer) $ EOF mx
     step outer c@(Chunk as)
         | LL.null as = liftI $ step outer
         | otherwise  = let x = proj (LL.head as) 
@@ -80,7 +80,7 @@ i'groupBy :: (Monad m, LL.ListLike l t, NullPoint l, Nullable l)
           -> Enumeratee l [t2] m a
 i'groupBy cmp inner = eneeCheckIfDone (liftI . step)
   where
-    step outer    (EOF   mx) = idone (outer $ EOF mx) $ EOF mx
+    step outer    (EOF   mx) = idone (liftI outer) $ EOF mx
     step outer  c@(Chunk as)
         | LL.null as = liftI $ step outer
         | otherwise  = lift inner >>= \i -> step' (LL.head as) i outer c
@@ -135,5 +135,5 @@ i'filterM k = eneeCheckIfDone (liftI . step)
   where
     step it (Chunk xs) = lift (filterM k xs) >>=
                          eneeCheckIfDone (liftI . step) . it . Chunk
-    step it stream     = idone (it stream) stream
+    step it stream     = idone (liftI it) stream
  

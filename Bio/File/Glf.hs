@@ -48,7 +48,7 @@ enee_glf_recs = eneeCheckIfDone step
   where
     step  oit'       = I.isFinished >>= step' oit'
 
-    step' oit'  True = return $ oit' $ EOF Nothing
+    step' oit'  True = return $ liftI oit'
     step' oit' False = do
         type_ref <- I.head
         let refbase = "XACMGRSVTWYHKDBN" !! fromIntegral (type_ref .&. 0xf)

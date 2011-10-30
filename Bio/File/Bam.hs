@@ -399,7 +399,7 @@ encodeBam meta = eneeBam ><> compress
     eneeBam2 = eneeCheckIfDone (\k -> eneeBam3 . k $ Chunk S.empty)
     eneeBam3 = eneeCheckIfDone (liftI . put)
 
-    put k (EOF mx) = idone (k $ EOF mx) $ EOF mx
+    put k (EOF mx) = idone (liftI k) $ EOF mx
     put k (Chunk [    ]) = liftI $ put k
     put k (Chunk (r:rs)) = eneeCheckIfDone (\k' -> put k' (Chunk rs)) . k $ Chunk r'
       where
@@ -830,7 +830,7 @@ decodeBamLoop :: Monad m => Enumeratee Block [BamRaw] m a
 decodeBamLoop = eneeCheckIfDone loop
   where
     loop k = I.isFinished >>= loop' k
-    loop' k True = return $ k (EOF Nothing)
+    loop' k True = return $ liftI k
     loop' k False = do off <- getOffset
                        raw <- liftBlock $ do
                                 bsize <- endianRead4 LSB
