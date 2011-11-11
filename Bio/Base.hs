@@ -31,7 +31,9 @@ module Bio.Base(
     wrapRange,
 
     w2c,
-    c2w
+    c2w,
+
+    findAuxFile
 ) where
 
 import Data.Char            ( isAlpha, isSpace )
@@ -39,6 +41,9 @@ import Data.Ix              ( Ix )
 import Data.Word            ( Word8 )
 import Foreign.Storable     ( Storable(..) )
 import Foreign.Ptr          ( Ptr, castPtr )
+import System.Directory     ( doesFileExist )
+import System.FilePath      ( (</>), isAbsolute, splitSearchPath )
+import System.Environment   ( getEnvironment )
 
 import qualified Data.ByteString.Char8 as S
 import qualified Data.ByteString.Lazy as L
@@ -241,4 +246,14 @@ insideRange (Range (Pos _ Reverse start1) length1) (Range (Pos sq Reverse start2
 -- @Range@ is to be mapped onto a circular genome.
 wrapRange :: Int -> Range -> Range
 wrapRange n (Range (Pos sq str s) l) = Range (Pos sq str (s `mod` n)) l
+
+-- | Finds a file by searching the environment variable BIOHAZARD like a
+-- PATH.
+findAuxFile :: FilePath -> IO FilePath
+findAuxFile fn | isAbsolute fn = return fn
+               | otherwise = loop . maybe ["."] splitSearchPath . lookup "BIOHAZARD" =<< getEnvironment
+  where
+    loop [    ] = return fn
+    loop (p:ps) = do e <- doesFileExist $ p </> fn
+                     if e then return $ p </> fn else loop ps
 

@@ -12,7 +12,6 @@ module Bio.File.Bam.Filter (
 
 import Bio.File.Bam
 import Bio.Iteratee
-import Control.Monad.Trans.Class
 import Data.Bits
 import Data.Word ( Word8 )
 

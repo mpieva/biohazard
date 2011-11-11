@@ -10,6 +10,11 @@ module Bio.Iteratee (
     i'filterM,
     ($^),
     ListLike,
+    MonadIO,
+    MonadCatchIO,
+    lift,
+    liftIO,
+    (>=>), (<=<),
 
     module Data.Iteratee.Binary,
     module Data.Iteratee.Char,
@@ -19,6 +24,8 @@ module Bio.Iteratee (
                     ) where
 
 import Control.Monad
+import Control.Monad.CatchIO
+import Control.Monad.IO.Class
 import Control.Monad.Trans.Class
 import Data.Iteratee.Binary
 import Data.Iteratee.Char

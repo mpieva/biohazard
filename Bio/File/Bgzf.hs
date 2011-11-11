@@ -1,4 +1,4 @@
-{-# LANGUAGE ForeignFunctionInterface, BangPatterns, MultiParamTypeClasses #-}
+{-# LANGUAGE ForeignFunctionInterface, BangPatterns, MultiParamTypeClasses, OverloadedStrings #-}
 
 -- | Handling of BGZF files.  Right now, we have an Enumeratee each for
 -- input and output.  The input iteratee can optionally supply virtual
@@ -15,7 +15,6 @@ module Bio.File.Bgzf (
 import Bio.Iteratee
 import Control.Exception
 import Control.Monad
-import Control.Monad.Trans.Class
 -- import Foreign.Marshal.Alloc
 -- import Foreign.Marshal.Utils
 -- import Foreign.Storable
@@ -160,8 +159,7 @@ decompressWith blk !off inner = I.isFinished >>= go
 -- | Decodes a BGZF block header and returns the block size if
 -- successful.
 get_bgzf_header :: Monad m => Iteratee S.ByteString m (Maybe Word16)
-get_bgzf_header = do 31 <- I.head
-                     139 <- I.head
+get_bgzf_header = do n <- I.heads "\31\139"
                      _cm <- I.head
                      flg <- I.head
                      if flg `testBit` 2 then do
@@ -169,7 +167,8 @@ get_bgzf_header = do 31 <- I.head
                          xlen <- endianRead2 LSB 
                          it <- I.take (fromIntegral xlen) get_bsize >>= lift . tryRun
                          case it of Left e -> throwErr e
-                                    Right s -> return $! Just s
+                                    Right s | n == 2 -> return $! Just s
+                                    _ -> return Nothing
                       else return Nothing
   where
     get_bsize = do i1 <- I.head
@@ -186,16 +185,20 @@ virtualSeek o = icont (idone ()) $ Just $ toException $ SeekException o
 -- | Tests whether a stream is in BGZF format.  Does not consume any
 -- input.
 isBgzf :: Monad m => Iteratee S.ByteString m Bool
-isBgzf = maybe False (const True) `liftM` i'lookAhead get_bgzf_header
+isBgzf = liftM check $ checkErr $ i'lookAhead $ get_bgzf_header
+  where check (Left         _) = False
+        check (Right  Nothing) = False
+        check (Right (Just _)) = True
 
 -- | Tests whether a stream is in GZip format.  Also returns @True@ on a
 -- Bgzf stream, which is technically a special case of GZip.
 isGzip :: Monad m => Iteratee S.ByteString m Bool
-isGzip = either (\(SomeException _) -> False) not `liftM` tryRun test
+isGzip = liftM (either (const False) id) $ checkErr $ i'lookAhead $ test
   where
-    test = do 2 <- I.heads [31,139::Word8]
+    test = do n <- I.heads "\31\139"
               I.drop 24
-              I.isFinished
+              b <- I.isFinished
+              return $ not b && n == 2
 
 -- ------------------------------------------------------------------------- Output
 

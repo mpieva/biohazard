@@ -9,8 +9,6 @@ module Bio.File.Glf (
 import Bio.File.Bgzf
 import Bio.Iteratee
 import Control.Monad
-import Control.Monad.CatchIO
-import Control.Monad.Trans.Class
 import Data.Bits
 import System.IO
 

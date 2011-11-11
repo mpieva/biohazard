@@ -1,4 +1,4 @@
-{-# LANGUAGE OverloadedStrings, PatternGuards, BangPatterns #-}
+{-# LANGUAGE OverloadedStrings, PatternGuards, BangPatterns, NoMonomorphismRestriction #-}
 
 -- TODO:  
 -- - Index writer
@@ -15,6 +15,11 @@
 -- - Same for statistics.  Something like "flagstats" could always be
 --   written.  Actually, having @writeBamHandle@ return enhanced
 --   flagstats as a result might be even better.
+--
+-- NICE_TO_HAVE:
+-- - Decoding of BAM needlessly needs a MonadIO context, because of the
+--   weird Zlib bindings.
+-- - BZip compression isn't supported.  
 
 -- TONOTDO:  
 -- - SAM writer.  Writing SAM is a bad idea.
@@ -24,7 +29,14 @@
 module Bio.File.Bam (
     module Bio.Base,
 
+    Enumeratee',
+    BamrawEnumeratee,
+    BamEnumeratee,
     isBam,
+    isPlainBam,
+    isGzipBam,
+    isBgzfBam,
+    isBamOrSam,
 
     decodeBam,
     decodeBamEntry,
@@ -34,7 +46,9 @@ module Bio.File.Bam (
     decodeSam',
 
     decodeAnyBam,
+    decodeAnyBamFile,
     decodeAnyBamOrSam,
+    decodeAnyBamOrSamFile,
 
     encodeBam,
     encodeBamEntry,
@@ -107,8 +121,6 @@ import Bio.File.Bgzf
 import Bio.Iteratee
 
 import Control.Monad
-import Control.Monad.IO.Class
-import Control.Monad.Trans.Class
 import Control.Applicative
 import Data.Array.IArray
 import Data.Array.IO
@@ -240,30 +252,62 @@ nullBamRec = BamRec {
         b_virtual_offset = 0
     }
 
+type Enumeratee' h ei eo m b = (h -> Iteratee eo m b) -> Iteratee ei m (Iteratee eo m b)
+type BamrawEnumeratee m b = Enumeratee' BamMeta S.ByteString [BamRaw] m b
+type BamEnumeratee m b = Enumeratee' BamMeta S.ByteString [BamRec] m b
+
 -- | Tests if a data stream is a Bam file.
--- Recognizes plain Bam, gzipped Bam and bgzf'd Bam.
-isBam :: MonadIO m => Iteratee S.ByteString m Bool
-isBam = or `liftM` sequence [ isPlainBam, isBgzfBam, isGzipBam ]
+-- Recognizes plain Bam, gzipped Bam and bgzf'd Bam.  If a file is
+-- recognized as Bam, a decoder (suitable Iteratee) for it is returned.
+isBam, isPlainBam, isBgzfBam, isGzipBam :: MonadIO m => Iteratee S.ByteString m (Maybe (BamrawEnumeratee m a))
+isBam = msum `liftM` sequence [ isPlainBam, isBgzfBam, isGzipBam ]
+
+isPlainBam = (\n -> if n == 4 then Just ((>>= lift . run) . decompressPlain . decodeBam) else Nothing) 
+             `liftM` i'lookAhead (I.heads "BAM\SOH")
+
+isBgzfBam = (\n -> if n == 4 then Just ((>>= lift . run) . decompress' . decodeBam) else Nothing)
+            `liftM` do b <- isBgzf
+                       if b then i'lookAhead $ joinI $ decompress $ I.heads "BAM\SOH" else return 0
+
+isGzipBam  = do b <- isGzip
+                k <- if b then i'lookAhead $ joinI $ lift $ enumInflate GZip defaultDecompressParams isPlainBam
+                          else return Nothing
+                return $ (((>>= lift . run) . lift . enumInflate GZip defaultDecompressParams) .) `fmap` k
+                
+isBamOrSam :: MonadIO m => Iteratee S.ByteString m (BamEnumeratee m a)
+isBamOrSam = maybe decodeSam wrap `liftM` isBam
   where
-    isPlainBam = (==) 4 `liftM` i'lookAhead (I.heads "BAM\SOH")
-    isBgzfBam  = do b <- isBgzf
-                    if b then i'lookAhead $ joinI $ decompress $ isBam
-                         else return False
-    isGzipBam  = do b <- isGzip
-                    if b then i'lookAhead $ joinI $ lift $ enumInflate GZip defaultDecompressParams isBam
-                         else return False                         
+    wrap enee it' = enee (\hdr -> I.mapStream decodeBamEntry (it' hdr)) >>= lift . run
+
 
 -- | Checks if a file contains BAM in any of the common forms, then
 -- decompresses it appropriately.  We support plain BAM, Bgzf'd BAM,
--- Gzip'ed BAM and Bzip2'ed BAM.  XXX undefined
-decodeAnyBam :: Monad m => (BamMeta -> Iteratee [BamRaw] m a) -> Iteratee S.ByteString m (Iteratee [BamRaw] m a)
-decodeAnyBam = undefined
+-- and Gzip'ed BAM.
+--
+-- The recommendation for these functions is to use @decodeAnyBam@ (or
+-- @decodeAnyBamFile@) for any code that can handle @BamRaw@ input, but
+-- @decodeAnyBamOrSam@ (or @decodeAnyBamOrSamFile@) for code that needs
+-- @BamRec@.  That way, SAM is supported automatically, and seeking will
+-- be supported if possible.
+decodeAnyBam :: MonadIO m => BamrawEnumeratee m a
+decodeAnyBam it = do mk <- isBam ; case mk of Just  k -> k it 
+                                              Nothing -> fail "this isn't BAM."
+
+decodeAnyBamFile :: MonadCatchIO m => FilePath -> (BamMeta -> Iteratee [BamRaw] m a) -> m (Iteratee [BamRaw] m a)
+decodeAnyBamFile fn k = enumFileRandom defaultBufSize fn (decodeAnyBam k) >>= run
+
 
 -- | Checks if a file contains BAM in any of the common forms,
 -- then decompresses it appropriately.  If the stream doesn't contain
--- BAM at all, it is instead decoded as SAM.  XXX undefined
-decodeAnyBamOrSam :: Monad m => (BamMeta -> Iteratee [BamRaw] m a) -> Iteratee S.ByteString m (Iteratee [BamRaw] m a)
-decodeAnyBamOrSam = undefined
+-- BAM at all, it is instead decoded as SAM.  Since SAM is next to
+-- impossible to recognize reliably, we don't even try.  Any old junk is
+-- decoded as SAM and will fail later.
+decodeAnyBamOrSam :: MonadIO m => BamEnumeratee m a
+decodeAnyBamOrSam it = isBamOrSam >>= \k -> k it
+
+decodeAnyBamOrSamFile :: MonadCatchIO m => FilePath -> (BamMeta -> Iteratee [BamRec] m a) -> m (Iteratee [BamRec] m a)
+decodeAnyBamOrSamFile fn k = enumFileRandom defaultBufSize fn (decodeAnyBamOrSam k) >>= run
+
 
 -- Seek to a given sequence in a Bam file, read those records.  This
 -- requires an appropriate index (read separately), and the file must

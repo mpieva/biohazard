@@ -59,7 +59,7 @@ Library
                        zlib, attoparsec-iteratee, attoparsec, iteratee,
                        transformers, binary-strict, ListLike,
                        MonadCatchIO-transformers, random,
-                       iteratee-compress
+                       iteratee-compress, filepath, directory
   
   Ghc-options:         -Wall -auto-all
 
