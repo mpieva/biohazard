@@ -1,3 +1,6 @@
+-- | Trimming of reads as found in BAM files.  Implements trimming low
+-- quality sequence from the 3' end.
+
 module Bio.File.Bam.Trim ( trim_3', trim_low_quality ) where
 
 import Bio.File.Bam

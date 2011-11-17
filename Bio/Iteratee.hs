@@ -1,20 +1,25 @@
-{-# LANGUAGE PatternGuards, BangPatterns #-}
-
 -- | Basically a reexport of @Data.Iteratee@ less the names that clash
 -- with @Prelude@ plus a handful of utilities.
+
+{-# LANGUAGE PatternGuards, BangPatterns #-}
 module Bio.Iteratee (
     i'groupBy,
     i'groupOn,
     i'getString,
     i'lookAhead,
     i'filterM,
-    ($^),
+    ($^), ($^^),
     ListLike,
     MonadIO,
     MonadCatchIO,
     lift,
     liftIO,
     (>=>), (<=<),
+
+    enumAuxFile,
+
+    Enumerator',
+    Enumeratee',
 
     module Data.Iteratee.Binary,
     module Data.Iteratee.Char,
@@ -23,6 +28,7 @@ module Bio.Iteratee (
     module Data.Iteratee.Parallel
                     ) where
 
+import Bio.Base ( findAuxFile )
 import Control.Monad
 import Control.Monad.CatchIO
 import Control.Monad.IO.Class
@@ -37,6 +43,7 @@ import Data.ListLike ( ListLike )
 
 import qualified Data.ListLike as LL
 import qualified Data.ByteString as S
+
 
 -- | Grouping on @Iteratee@s.  @i'groupOn proj inner outer@ executes
 -- @inner (proj e)@, where @e@ is the first input element, to obtain an
@@ -128,13 +135,20 @@ i'getString n = liftI $ step [] 0
                                                  in idone r (Chunk $ S.drop (n-l) c)
                          | otherwise           = liftI $ step (c:acc) (l + S.length c)
 
-infixl 2 $^
--- | Compose an @Enumertator@ with an @Enumeratee@, giving a new
+infixl 2 $^, $^^
+-- | Compose an @Enumerator@ with an @Enumeratee@, giving a new
 -- @Enumerator@.
 ($^) :: Monad m => Enumerator input m (Iteratee output m result)
                 -> Enumeratee input output m result 
                 -> Enumerator output m result
 ($^) enum enee iter = run =<< enum (enee iter)
+
+-- | Compose an @Enumerator'@ with an @Enumeratee@, giving a new
+-- @Enumerator'@.
+($^^) :: Monad m => Enumerator' hdr input m (Iteratee output m result)
+                 -> Enumeratee      input             output m result 
+                 -> Enumerator' hdr                   output m result
+($^^) enum enee iter = run =<< enum (\hdr -> enee $ iter hdr)
 
 -- | Apply a monadic filter predicate to an @Iteratee@.
 i'filterM :: Monad m => (a -> m Bool) -> Enumeratee [a] [a] m b
@@ -144,3 +158,10 @@ i'filterM k = eneeCheckIfDone (liftI . step)
                          eneeCheckIfDone (liftI . step) . it . Chunk
     step it stream     = idone (liftI it) stream
  
+
+type Enumerator' h eo m b = (h -> Iteratee eo m b) -> m (Iteratee eo m b)
+type Enumeratee' h ei eo m b = (h -> Iteratee eo m b) -> Iteratee ei m (Iteratee eo m b)
+
+enumAuxFile :: MonadCatchIO m => FilePath -> Iteratee S.ByteString m a -> m a
+enumAuxFile fp it = liftIO (findAuxFile fp) >>= fileDriver it
+

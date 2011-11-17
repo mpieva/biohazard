@@ -29,9 +29,9 @@
 module Bio.File.Bam (
     module Bio.Base,
 
-    Enumeratee',
     BamrawEnumeratee,
     BamEnumeratee,
+
     isBam,
     isPlainBam,
     isGzipBam,
@@ -106,7 +106,6 @@ module Bio.File.Bam (
     readBamIndex',
 
     BamMeta(..),
-    nullMeta,
     parseBamMeta,
     showBamMeta,
 
@@ -132,7 +131,8 @@ import Data.Bits                    ( testBit, shiftL, shiftR, (.&.), (.|.) )
 import Data.Char                    ( chr, ord, isDigit, digitToInt )
 import Data.Int                     ( Int64, Int32 )
 import Data.Iteratee.ZLib
-import Data.Sequence                ( (<|), (|>) )
+import Data.Monoid
+import Data.Sequence                ( (<|), (|>), (><) )
 import Data.Word                    ( Word32, Word8 )
 import Foreign.Marshal.Alloc        ( alloca )
 import Foreign.Ptr                  ( castPtr )
@@ -252,7 +252,6 @@ nullBamRec = BamRec {
         b_virtual_offset = 0
     }
 
-type Enumeratee' h ei eo m b = (h -> Iteratee eo m b) -> Iteratee ei m (Iteratee eo m b)
 type BamrawEnumeratee m b = Enumeratee' BamMeta S.ByteString [BamRaw] m b
 type BamEnumeratee m b = Enumeratee' BamMeta S.ByteString [BamRec] m b
 
@@ -270,9 +269,9 @@ isBgzfBam = (\n -> if n == 4 then Just ((>>= lift . run) . decompress' . decodeB
                        if b then i'lookAhead $ joinI $ decompress $ I.heads "BAM\SOH" else return 0
 
 isGzipBam  = do b <- isGzip
-                k <- if b then i'lookAhead $ joinI $ lift $ enumInflate GZip defaultDecompressParams isPlainBam
+                k <- if b then i'lookAhead $ joinI $ enumInflate GZip defaultDecompressParams isPlainBam
                           else return Nothing
-                return $ (((>>= lift . run) . lift . enumInflate GZip defaultDecompressParams) .) `fmap` k
+                return $ (((>>= lift . run) . enumInflate GZip defaultDecompressParams) .) `fmap` k
                 
 isBamOrSam :: MonadIO m => Iteratee S.ByteString m (BamEnumeratee m a)
 isBamOrSam = maybe decodeSam wrap `liftM` isBam
@@ -731,11 +730,24 @@ data BamMeta = BamMeta {
         meta_comment :: [S.ByteString]
     } deriving Show
 
+instance Monoid BamMeta where
+    mempty = BamMeta mempty noRefs [] []
+    a `mappend` b = BamMeta { meta_hdr = meta_hdr a `mappend` meta_hdr b
+                            , meta_refs = meta_refs a >< meta_refs b
+                            , meta_other_shit = meta_other_shit a ++ meta_other_shit b
+                            , meta_comment = meta_comment a ++ meta_comment b }
+
 data BamHeader = BamHeader {
         hdr_version :: (Int, Int),
         hdr_sorting :: BamSorting,
         hdr_other_shit :: BamOtherShit
     } deriving Show
+
+instance Monoid BamHeader where
+    mempty = BamHeader (0,0) Unsorted []
+    a `mappend` b = BamHeader { hdr_version = hdr_version a `min` hdr_version b
+                              , hdr_sorting = let u = hdr_sorting a ; v = hdr_sorting b in if u == v then u else Unsorted
+                              , hdr_other_shit = hdr_other_shit a ++ hdr_other_shit b }
 
 data BamSQ = BamSQ {
         sq_name :: Seqid,
@@ -747,12 +759,12 @@ bad_seq :: BamSQ
 bad_seq = BamSQ (error "no SN field") (error "no LN field") []
 
 data BamSorting = Unsorted | Grouped | Queryname | Coordinate | GroupSorted 
-    deriving Show
+    deriving (Show, Eq)
 
 type BamOtherShit = [(Char, Char, S.ByteString)]
 
 parseBamMeta :: P.Parser BamMeta
-parseBamMeta = foldr ($) nullMeta <$> P.sepBy parseBamMetaLine (P.char '\n')
+parseBamMeta = foldr ($) mempty <$> P.sepBy parseBamMetaLine (P.char '\n')
 
 parseBamMetaLine :: P.Parser (BamMeta -> BamMeta)
 parseBamMetaLine = P.char '@' >> P.choice [hdLine, sqLine, coLine, otherLine]
@@ -795,9 +807,6 @@ parseBamMetaLine = P.char '@' >> P.choice [hdLine, sqLine, coLine, otherLine]
     
     pall :: P.Parser S.ByteString
     pall = P.takeWhile (\c -> c/='\t' && c/='\n')
-
-nullMeta :: BamMeta
-nullMeta = BamMeta (BamHeader (0,0) Unsorted []) noRefs [] []
 
 showBamMeta :: BamMeta -> L.ByteString -> L.ByteString
 showBamMeta (BamMeta h ss os cs) = 
@@ -892,7 +901,7 @@ decodeSam :: Monad m => (BamMeta -> Iteratee [BamRec] m a) -> Iteratee S.ByteStr
 decodeSam inner = joinI $ enumLinesBS $ do
     let pHeaderLine acc str = case P.parseOnly parseBamMetaLine str of Right f -> return $ f : acc
                                                                        Left e  -> fail $ e ++ ", " ++ show str
-    meta <- liftM (foldr ($) nullMeta . reverse) (joinI $ I.breakE (not . S.isPrefixOf "@") $ I.foldM pHeaderLine [])
+    meta <- liftM (foldr ($) mempty . reverse) (joinI $ I.breakE (not . S.isPrefixOf "@") $ I.foldM pHeaderLine [])
     decodeSamLoop (meta_refs meta) (inner meta)
 
 
@@ -985,14 +994,14 @@ sam_test :: IO ()
 sam_test = fileDriver (joinI $ decodeSam (const print_names')) "foo.sam"
 
 print_names :: Iteratee [BamRaw] IO ()
-print_names = I.mapM_ $ S.putStrLn . b_qname . decodeBamEntry 
+print_names = I.mapM_ $ B.putStrLn . b_qname . decodeBamEntry 
 
 print_names_and_refs :: Iteratee [BamRaw] IO ()
 print_names_and_refs = I.mapM_ $ pr . decodeBamEntry
   where pr b = putStrLn $ shows (b_qname b) " " ++ show (b_rname b)
 
 print_names' :: Iteratee [BamRec] IO ()
-print_names' = I.mapM_ $ S.putStrLn . b_qname
+print_names' = I.mapM_ $ B.putStrLn . b_qname
 
 
 bam2bam_test :: IO ()

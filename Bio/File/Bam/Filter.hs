@@ -1,14 +1,15 @@
+-- | Quality filters adapted from old pipeline.
+--
+-- TODO: - "SAGE" filter (enforce 17nt reads)?
+--       - "rim job" (try to detect glass border)?
+--       - quality conversion (old Solexa to Phred scale)?
+
 {-# LANGUAGE BangPatterns #-}
 module Bio.File.Bam.Filter (
     QualFilter, qualityFilterWith, qualityFilterWith',
     complexSimple, complexEntropy,
     qualityAverage, qualityMinimum
                            ) where
-
--- Quality filters adapted from old pipeline.
--- TODO: - "SAGE" filter (enforce 17nt reads)?
---       - "rim job" (try to detect glass border)?
---       - quality conversion (old Solexa to Phred scale)?
 
 import Bio.File.Bam
 import Bio.Iteratee
@@ -58,6 +59,9 @@ stepQF p f = step
                       step u (v+c) it' (Chunk rs)
       where !c = length $ filter (not . isFailsQC) r
 
+-- | A quality filter consists of a predicate on @BamRec@s and a
+-- transformation of @BamRec@s.  Records failing the predicate will be
+-- dropped, others transformed.
 type QualFilter = (BamRec->Bool, BamRec->BamRec)
 
 -- | Simple complexity filter aka "Nancy Filter".  A read is considered

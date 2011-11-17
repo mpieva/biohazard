@@ -1,9 +1,10 @@
+-- | Parser for FastA/FastQ, @Iteratee@ style, based on Attoparsec, and
+-- written such that it is compatible with module @Bio.File.Bam@.
+
 {-# LANGUAGE OverloadedStrings #-}
 module Bio.File.Bam.Fastq (
     parseFastq, parseFastq'
                           ) where
-
--- Parser for FastA/FastQ, @Iteratee@ style, based on Attoparsec.
 
 import Bio.File.Bam
 import Bio.Iteratee
@@ -13,7 +14,8 @@ import Data.Attoparsec.Iteratee
 import Data.Bits
 
 import qualified Data.Attoparsec.Char8  as P
-import qualified Data.ByteString        as S
+import qualified Data.ByteString        as B
+import qualified Data.ByteString.Char8  as S
 import qualified Data.Iteratee.ListLike as I
 import qualified Data.Map               as M
 
@@ -71,7 +73,7 @@ parseFastq' descr it = do skipJunk ; convStream (parserToIteratee $ (:[]) <$> pR
              <|> pure []                                                   <?> "sequence" 
 
     pQual sq = (,) sq <$> (char '+' *> skipWhile ('\n' /=) *> pQual' (length sq) <* skipSpace <|> return S.empty)  <?> "qualities"
-    pQual' n = S.map (subtract 33) . S.filter (not . isSpace_w8) <$> scan n step
+    pQual' n = B.map (subtract 33) . B.filter (not . isSpace_w8) <$> scan n step
     step 0 _ = Nothing
     step i c | isSpace c = Just i
              | otherwise = Just (i-1)
@@ -114,8 +116,8 @@ makeRecord name0 extra (sq,qual) = extra $ BamRec {
 
     rdrop n s = S.take (S.length s - n) s
 
-    checkSharp (n,f,t) = case S.split (c2w '#') n of [n',ts] -> (n', f, M.insert "ZT" (Text ts) t)
-                                                     _       -> ( n, f,                         t)
+    checkSharp (n,f,t) = case S.split '#' n of [n',ts] -> (n', f, M.insert "ZT" (Text ts) t)
+                                               _       -> ( n, f,                         t)
 
 ----------------------------------------------------------------------------
 
