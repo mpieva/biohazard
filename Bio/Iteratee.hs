@@ -8,7 +8,7 @@ module Bio.Iteratee (
     i'getString,
     i'lookAhead,
     i'filterM,
-    ($^), ($^^),
+    ($==),
     ListLike,
     MonadIO,
     MonadCatchIO,
@@ -135,20 +135,13 @@ i'getString n = liftI $ step [] 0
                                                  in idone r (Chunk $ S.drop (n-l) c)
                          | otherwise           = liftI $ step (c:acc) (l + S.length c)
 
-infixl 2 $^, $^^
--- | Compose an @Enumerator@ with an @Enumeratee@, giving a new
--- @Enumerator@.
-($^) :: Monad m => Enumerator input m (Iteratee output m result)
-                -> Enumeratee input output m result 
-                -> Enumerator output m result
-($^) enum enee iter = run =<< enum (enee iter)
-
+infixl 1 $==
 -- | Compose an @Enumerator'@ with an @Enumeratee@, giving a new
 -- @Enumerator'@.
-($^^) :: Monad m => Enumerator' hdr input m (Iteratee output m result)
+($==) :: Monad m => Enumerator' hdr input m (Iteratee output m result)
                  -> Enumeratee      input             output m result 
                  -> Enumerator' hdr                   output m result
-($^^) enum enee iter = run =<< enum (\hdr -> enee $ iter hdr)
+($==) enum enee iter = run =<< enum (\hdr -> enee $ iter hdr)
 
 -- | Apply a monadic filter predicate to an @Iteratee@.
 i'filterM :: Monad m => (a -> m Bool) -> Enumeratee [a] [a] m b
