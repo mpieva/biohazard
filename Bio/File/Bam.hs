@@ -319,7 +319,7 @@ decodeBamSequence idx refseq iter = case idx ! refseq of
         _ | not (bounds idx `inRange` refseq) -> return iter
         0                                     -> return iter
         virtoff -> do virtualSeek $ fromIntegral virtoff
-                      decodeBamLoop (joinI $ I.breakE wrong_ref iter)
+                      (decodeBamLoop ><> I.breakE wrong_ref) iter
   where
     wrong_ref br = let a = fromIntegral $ raw_data br `S.index` 0
                        b = fromIntegral $ raw_data br `S.index` 1
