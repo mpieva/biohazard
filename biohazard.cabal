@@ -52,13 +52,13 @@ Library
   -- Modules exported by the library.
   Exposed-modules:     Bio.Base, Bio.File.Bam, Bio.File.Bam.Filter, Bio.File.Bam.Trim,
                        Bio.File.Bam.Fastq, Bio.File.Glf, Bio.File.TwoBit,
-                       Bio.File.Bgzf, Bio.Iteratee
+                       Bio.File.Bgzf, Bio.Iteratee, Bio.Util
   
   -- Packages needed in order to build this package.
   Build-depends:       bytestring, containers, base >=4, binary, array,
                        zlib, attoparsec-iteratee, attoparsec, iteratee,
                        transformers, binary-strict, ListLike,
-                       MonadCatchIO-transformers, random,
+                       MonadCatchIO-transformers, random, erf,
                        iteratee-compress >=0.3, filepath, directory
   
   Ghc-options:         -Wall -auto-all

@@ -13,7 +13,7 @@ module Bio.File.Bgzf (
                      ) where
 
 import Bio.Iteratee
-import Control.Exception
+-- import Control.Exception
 import Control.Monad
 -- import Foreign.Marshal.Alloc
 -- import Foreign.Marshal.Utils

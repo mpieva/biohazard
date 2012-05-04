@@ -816,7 +816,7 @@ showBamMeta (BamMeta h ss os cs) =
     foldr ((.) . show_bam_meta_comment) id cs
   where
     show_bam_meta_hdr (BamHeader (major,minor) so os') = 
-        L.append "@HD\tVN:" . L.append (L.pack (show major ++ ':' : show minor)) .
+        L.append "@HD\tVN:" . L.append (L.pack (show major ++ '.' : show minor)) .
         L.append (case so of Unsorted -> L.empty
                              Grouped  -> "\tSO:grouped"
                              Queryname  -> "\tSO:queryname"
@@ -824,9 +824,10 @@ showBamMeta (BamMeta h ss os cs) =
                              GroupSorted  -> "\tSO:groupsort") .
         show_bam_others os'
 
+    show_bam_meta_seq (BamSQ nm ln []) = id
     show_bam_meta_seq (BamSQ nm ln ts) =
-        L.append "@CO\tSN:" . L.append (L.fromChunks [nm]) . L.append "\tLN:" .
-        L.append (L.pack (shows ln "\t")) . show_bam_others ts
+        L.append "@SQ\tSN:" . L.append (L.fromChunks [nm]) . L.append "\tLN:" .
+        L.append (L.pack (show ln)) . show_bam_others ts
 
     show_bam_meta_comment cm = L.append "@CO\t" . L.append (L.fromChunks [cm]) . L.cons '\n'
 
@@ -955,8 +956,8 @@ parseSamRec ref = (\nm fl rn po mq cg rn' -> BamRec nm fl rn po mq cg (rn' rn))
                P.char 'H' *> P.char ':' *> (Bin  <$>               hexarray) <|>
                P.char 'f' *> P.char ':' *> (Float . realToFrac <$> P.double) <|>
                P.char 'B' *> P.char ':' *> (
-                    P.satisfy (P.inClass "cCsSiI") *> (intArr   <$> P.many (P.char ',' *> P.signed P.decimal)) <|>
-                    P.char 'f'                     *> (floatArr <$> P.many (P.char ',' *> P.double)))
+                    P.satisfy (P.inClass "cCsSiI") *> (intArr   <$> many (P.char ',' *> P.signed P.decimal)) <|>
+                    P.char 'f'                     *> (floatArr <$> many (P.char ',' *> P.double)))
 
     intArr   is = IntArr   $ listArray (0, length is -1) is
     floatArr fs = FloatArr $ listArray (0, length fs -1) $ map realToFrac fs
