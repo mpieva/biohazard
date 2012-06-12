@@ -3,11 +3,17 @@
 
 {-# LANGUAGE PatternGuards, BangPatterns #-}
 module Bio.Iteratee (
-    i'groupBy,
-    i'groupOn,
+    groupStreamBy,
+    groupStreamOn,
     i'getString,
     i'lookAhead,
-    i'filterM,
+    mapStream,
+    mapStreamM,
+    filterStream,
+    filterStreamM,
+    foldStream,
+    foldStreamM,
+
     ($==),
     ListLike,
     MonadIO,
@@ -17,6 +23,9 @@ module Bio.Iteratee (
     (>=>), (<=<),
 
     enumAuxFile,
+
+    Ordering'(..),
+    mergeSortStreams,
 
     Enumerator',
     Enumeratee',
@@ -43,19 +52,20 @@ import Data.ListLike ( ListLike )
 
 import qualified Data.ListLike as LL
 import qualified Data.ByteString as S
+import qualified Data.Iteratee as I
 
 
--- | Grouping on @Iteratee@s.  @i'groupOn proj inner outer@ executes
+-- | Grouping on @Iteratee@s.  @groupStreamOn proj inner outer@ executes
 -- @inner (proj e)@, where @e@ is the first input element, to obtain an
 -- @Iteratee i@, then passes elements @e@ to @i@ as long as @proj e@
 -- produces the same result.  If @proj e@ changes or the input ends, the
 -- pair of @proj e@ and the result of @run i@ is passed to @outer@.  At
 -- end of input, the resulting @outer@ is returned.
-i'groupOn :: (Monad m, LL.ListLike l e, Eq t1, NullPoint l, Nullable l)
-          => (e -> t1)
-          -> (t1 -> m (Iteratee l m t2))
-          -> Enumeratee l [(t1, t2)] m a
-i'groupOn proj inner = eneeCheckIfDone (liftI . step)
+groupStreamOn :: (Monad m, LL.ListLike l e, Eq t1, NullPoint l, Nullable l)
+              => (e -> t1)
+              -> (t1 -> m (Iteratee l m t2))
+              -> Enumeratee l [(t1, t2)] m a
+groupStreamOn proj inner = eneeCheckIfDone (liftI . step)
   where
     step outer   (EOF   mx) = idone (liftI outer) $ EOF mx
     step outer c@(Chunk as)
@@ -88,11 +98,11 @@ i'groupOn proj inner = eneeCheckIfDone (liftI . step)
 -- long as @cmp e' e@, where @e'@ is some preceeding element, is true.
 -- Else, the result of @run i@ is passed to @outer@ and @i'groupBy@
 -- restarts.  At end of input, the resulting @outer@ is returned.
-i'groupBy :: (Monad m, LL.ListLike l t, NullPoint l, Nullable l)
-          => (t -> t -> Bool)
-          -> m (Iteratee l m t2)
-          -> Enumeratee l [t2] m a
-i'groupBy cmp inner = eneeCheckIfDone (liftI . step)
+groupStreamBy :: (Monad m, LL.ListLike l t, NullPoint l, Nullable l)
+              => (t -> t -> Bool)
+              -> m (Iteratee l m t2)
+              -> Enumeratee l [t2] m a
+groupStreamBy cmp inner = eneeCheckIfDone (liftI . step)
   where
     step outer    (EOF   mx) = idone (liftI outer) $ EOF mx
     step outer  c@(Chunk as)
@@ -143,18 +153,60 @@ infixl 1 $==
                  -> Enumerator' hdr                   output m result
 ($==) enum enee iter = run =<< enum (\hdr -> enee $ iter hdr)
 
+-- | Apply a filter predicate to an @Iteratee@.
+filterStream :: (Monad m, ListLike s a, NullPoint s) => (a -> Bool) -> Enumeratee s s m r
+filterStream = mapChunks . LL.filter
+
 -- | Apply a monadic filter predicate to an @Iteratee@.
-i'filterM :: Monad m => (a -> m Bool) -> Enumeratee [a] [a] m b
-i'filterM k = eneeCheckIfDone (liftI . step)
+filterStreamM :: (Monad m, ListLike s a, Nullable s, NullPoint s) => (a -> m Bool) -> Enumeratee s s m a
+filterStreamM k = mapChunksM (go id)
   where
-    step it (Chunk xs) = lift (filterM k xs) >>=
-                         eneeCheckIfDone (liftI . step) . it . Chunk
-    step it stream     = idone (liftI it) stream
- 
+    go acc s | LL.null s = return $! acc LL.empty
+             | otherwise = do p <- k (LL.head s)
+                              let acc' = if p then LL.cons (LL.head s) . acc else acc
+                              go acc' (LL.tail s)
+
+-- | Map a function over an @Iteratee@.
+mapStream :: (Monad m, ListLike (s el) el, ListLike (s el') el', NullPoint (s el), LooseMap s el el')
+          => (el -> el') -> Enumeratee (s el) (s el') m a
+mapStream = I.mapStream
+
+-- | Map a monadic function over an @Iteratee@.
+mapStreamM :: (Monad m, ListLike (s el) el, ListLike (s el') el', NullPoint (s el), Nullable (s el), LooseMap s el el')
+           => (el -> m el') -> Enumeratee (s el) (s el') m a
+mapStreamM = mapChunksM . LL.mapM
+
+-- | Fold a monadic function over an @Iteratee@.
+foldStreamM :: (Monad m, Nullable s, ListLike s a) => (b -> a -> m b) -> b -> Iteratee s m b
+foldStreamM k = foldChunksM go
+  where
+    go b s | LL.null s = return b
+           | otherwise = k b (LL.head s) >>= \b' -> go b' (LL.tail s)
+
+-- | Fold a function over an @Iteratee@.
+foldStream :: (Monad m, Nullable s, ListLike s a) => (b -> a -> b) -> b -> Iteratee s m b
+foldStream f = foldChunksM (\b s -> return $! LL.foldl' f b s)
 
 type Enumerator' h eo m b = (h -> Iteratee eo m b) -> m (Iteratee eo m b)
 type Enumeratee' h ei eo m b = (h -> Iteratee eo m b) -> Iteratee ei m (Iteratee eo m b)
 
 enumAuxFile :: MonadCatchIO m => FilePath -> Iteratee S.ByteString m a -> m a
 enumAuxFile fp it = liftIO (findAuxFile fp) >>= fileDriver it
+
+
+data Ordering' a = Less | Equal a | NotLess
+
+mergeSortStreams :: (Monad m, ListLike s a, Nullable s) => (a -> a -> Ordering' a) -> Enumeratee s s (Iteratee s m) b
+mergeSortStreams comp = eneeCheckIfDone step 
+  where
+    step out = I.peek >>= \mx -> lift I.peek >>= \my -> case (mx, my) of
+        (Just x, Just y) -> case x `comp` y of
+            Less    -> do I.drop 1 ;                   eneeCheckIfDone step . out . Chunk $ LL.singleton x
+            NotLess -> do            lift (I.drop 1) ; eneeCheckIfDone step . out . Chunk $ LL.singleton y
+            Equal z -> do I.drop 1 ; lift (I.drop 1) ; eneeCheckIfDone step . out . Chunk $ LL.singleton z
+
+        (Just  x, Nothing) -> do       I.drop 1  ; eneeCheckIfDone step . out . Chunk $ LL.singleton x
+        (Nothing, Just  y) -> do lift (I.drop 1) ; eneeCheckIfDone step . out . Chunk $ LL.singleton y
+        (Nothing, Nothing) -> do idone (liftI out) $ EOF Nothing
+
 

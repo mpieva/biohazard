@@ -29,6 +29,11 @@
 module Bio.File.Bam (
     module Bio.Base,
 
+    Block,
+    decompressBgzf,
+    decompressBgzf',
+    compressBgzf,
+
     BamrawEnumeratee,
     BamEnumeratee,
 
@@ -94,12 +99,10 @@ module Bio.File.Bam (
     flagAuxillary,      isAuxillary,
     flagFailsQC,        isFailsQC,
     flagDuplicate,      isDuplicate,
-    flagLowQuality,     isLowQuality,
-    flagLowComplexity,  isLowComplexity,
+    flagTrimmed,        isTrimmed,   
+    flagMerged,         isMerged,       
 
-    filterFlags,
-    isMerged,
-    isAdapterTrimmed,
+    setQualFlag,
 
     BamIndex,
     readBamIndex,
@@ -127,7 +130,7 @@ import Data.Array.Unboxed
 import Data.Attoparsec              ( anyWord8 )
 import Data.Attoparsec.Iteratee
 import Data.Binary.Put
-import Data.Bits                    ( testBit, shiftL, shiftR, (.&.), (.|.) )
+import Data.Bits                    ( testBit, shiftL, shiftR, (.&.), (.|.), complement )
 import Data.Char                    ( chr, ord, isDigit, digitToInt )
 import Data.Int                     ( Int64, Int32 )
 import Data.Iteratee.ZLib
@@ -156,6 +159,16 @@ import qualified Data.Sequence                  as Z
 -- far, the implementation of the nucleotides is somewhat lacking:  we
 -- do not have support for ambiguity codes, and the "=" symbol is not
 -- understood.
+
+
+decompressBgzf' :: Monad m => Enumeratee S.ByteString Block m a
+decompressBgzf' = decompress'
+
+decompressBgzf :: Monad m => Enumeratee S.ByteString S.ByteString m a
+decompressBgzf = decompress
+
+compressBgzf :: Monad m => Enumeratee S.ByteString S.ByteString m a
+compressBgzf = compress
 
 
 -- | Cigar line in BAM coding
@@ -345,7 +358,7 @@ getRef refs (Refseq i) = Z.index refs (fromIntegral i)
 decodeBamEntry :: BamRaw -> BamRec
 decodeBamEntry (BamRaw offs s) = case G.runGet go s of
     (Left  e,  _)             -> error e
-    (Right r, s') | S.null s' -> r
+    (Right r, s') | S.null s' -> fixup r
                   | otherwise -> error "incomplete BAM record"
   where
     go = do !rid       <- Refseq       <$> G.getWord32le
@@ -375,6 +388,24 @@ decodeBamEntry (BamRaw offs s) = case G.runGet go s of
                   | otherwise = error "unknown Cigar operation"
       where cc = fromIntegral c .&. 0xf; cl = fromIntegral c `shiftR` 4
 
+    -- fixups for changed conventions
+    fixup b = (if b_flag b .&. flagLowQuality /= 0 then setQualFlag 'Q' else id) $
+              (if b_flag b .&. flagLowComplexity /= 0 then setQualFlag 'C' else id) $
+              b { b_flag = oflags .|. (eflags `shiftL` 16) }
+      where
+        flags' = b_flag b .&. complement (flagLowQuality .|. flagLowQuality)
+        oflags | flags' .&. flagPaired == 0 = flags' .&. complement (flagFirstMate .|. flagSecondMate)
+               | otherwise                  = flags'
+
+        is_merged = flags' .&. (flagPaired .|. flagFirstMate .|. flagSecondMate) == (flagFirstMate .|. flagSecondMate)
+        is_trimmed = flags' .&. (flagPaired .|. flagFirstMate .|. flagSecondMate) == flagSecondMate
+
+        eflags = (if is_merged then flagMerged else 0) .|.
+                 (if is_trimmed then flagTrimmed else 0) .|.
+                 (case M.lookup "XF" (b_exts b) of Just (Int i) -> i ; _ -> 0)
+
+        flagLowQuality = 0x800
+        flagLowComplexity = 0x1000
 
 -- | A collection of extension fields.  The key is actually only two @Char@s, but that proved impractical.
 type Extensions = M.Map String Ext
@@ -421,6 +452,7 @@ getExt = do key <- (\a b -> [w2c a, w2c b]) <$> G.getWord8 <*> G.getWord8
                         fromIntegral <$> G.getWord32le ]
 
 
+        
 getByteStringNul :: G.Get S.ByteString
 getByteStringNul = S.init <$> (G.lookAhead (get_len 1) >>= G.getByteString)
   where 
@@ -584,7 +616,7 @@ readMd s | B.null s           = return []
 
 
 flagPaired, flagProperlyPaired, flagUnmapped, flagMateUnmapped, flagReversed, flagMateReversed, flagFirstMate, flagSecondMate,
- flagAuxillary, flagFailsQC, flagDuplicate, flagLowQuality, flagLowComplexity :: Int
+ flagAuxillary, flagFailsQC, flagDuplicate, flagTrimmed, flagMerged :: Int
 
 flagPaired = 0x1
 flagProperlyPaired = 0x2
@@ -597,12 +629,13 @@ flagSecondMate = 0x80
 flagAuxillary = 0x100
 flagFailsQC = 0x200
 flagDuplicate = 0x400
-flagLowQuality = 0x800
-flagLowComplexity = 0x1000
 
+flagTrimmed = 0x10000
+flagMerged  = 0x20000
 
-isPaired, isProperlyPaired, isUnmapped, isMateUnmapped, isReversed, isMateReversed, isAuxillary, isFailsQC, isDuplicate,
- isLowQuality, isLowComplexity :: BamRec -> Bool
+isPaired, isProperlyPaired, isUnmapped, isMateUnmapped, isReversed,
+    isMateReversed, isAuxillary, isFailsQC, isDuplicate, isTrimmed,
+    isMerged :: BamRec -> Bool
 
 isPaired         = flip testBit  0 . b_flag
 isProperlyPaired = flip testBit  1 . b_flag
@@ -610,46 +643,15 @@ isUnmapped       = flip testBit  2 . b_flag
 isMateUnmapped   = flip testBit  3 . b_flag
 isReversed       = flip testBit  4 . b_flag
 isMateReversed   = flip testBit  5 . b_flag
+isFirstMate      = flip testBit  6 . b_flag
+isSecondMate     = flip testBit  7 . b_flag
 isAuxillary      = flip testBit  8 . b_flag
 isFailsQC        = flip testBit  9 . b_flag
 isDuplicate      = flip testBit 10 . b_flag
-isLowQuality     = flip testBit 11 . b_flag
-isLowComplexity  = flip testBit 12 . b_flag
+isTrimmed        = flip testBit 16 . b_flag
+isMerged         = flip testBit 17 . b_flag
 
  
--- | tests if a record is a "first mate"
--- Returns true if the read is flagged as "paired" and "first mate".
--- Does not return true for single reads.
-isFirstMate :: BamRec -> Bool
-isFirstMate = (==) good . (.&.) type_mask . b_flag
-  where good = flagPaired .|. flagFirstMate
-
--- | Tests if a record is a "second mate".
--- Returns true if the read is flagged as "paired" and "second mate".
--- Does not return true for single reads, even if they are adapter
--- trimmed or merged.
-isSecondMate :: BamRec -> Bool
-isSecondMate = (==) good . (.&.) type_mask . b_flag
-  where good = flagPaired .|. flagSecondMate
-
--- | Tests if a read is merged.
--- Returns true for merged single reads (not flagged as "paired", but
--- flagged as both "first mate" and "second mate"), does not get
--- confused by true singles (not flagged as "first mate" and "second
--- mate").
-isMerged :: BamRec -> Bool
-isMerged = (==) good . (.&.) type_mask . b_flag
-  where good = flagFirstMate .|. flagSecondMate
-
--- | Tests if a read is adapter trimmed.
--- Returns true for adapter trimmed single reads (not flagged as
--- "paired", but flagged as "second mate"), does not get confused by
--- paired reads (also flagged as "paired") or merged reads (also flagged
--- as "first mate").
-isAdapterTrimmed :: BamRec -> Bool
-isAdapterTrimmed = (==) flagSecondMate . (.&.) type_mask . b_flag
-
-
 type_mask :: Int
 type_mask = flagFirstMate .|. flagSecondMate .|. flagPaired
 
@@ -683,13 +685,23 @@ compareNames n m = case (B.uncons n, B.uncons m) of
                     EQ -> n' `compareNames` m'
                                          
 
--- | Gets all the filter flags.
--- Filter flags are the standard "fails QC", "is duplicate" and our
--- extensions "fails quality" and "fails complexity".
-filterFlags :: BamRec -> Int
-filterFlags = (.&.) mask . b_flag  
-  where mask = flagLowQuality .|. flagLowComplexity .|. flagFailsQC .|. flagDuplicate
+extAsInt :: Int -> String -> BamRec -> Int
+extAsInt d nm br = case M.lookup nm (b_exts br) of Just (Int i) -> i ; _ -> d
 
+extAsString :: String -> BamRec -> S.ByteString
+extAsString nm br = case M.lookup nm (b_exts br) of
+    Just (Char c) -> S.singleton c
+    Just (Text s) -> s
+    _             -> S.empty
+
+
+setQualFlag :: Char -> BamRec -> BamRec
+setQualFlag c br = br { b_exts = M.insert "ZQ" (Text s') $ b_exts br }
+  where
+    s  = extAsString "ZQ" br
+    s' = if c `B.elem` s then s else c `B.cons` s
+
+--
 -- | Stop gap solution for a cheap index.  We only get the first offset
 -- from the linear index, which allows us to navigate to a target
 -- sequence.  Will do the rest when I need it.
@@ -824,7 +836,7 @@ showBamMeta (BamMeta h ss os cs) =
                              GroupSorted  -> "\tSO:groupsort") .
         show_bam_others os'
 
-    show_bam_meta_seq (BamSQ nm ln []) = id
+    show_bam_meta_seq (BamSQ  _  _ []) = id
     show_bam_meta_seq (BamSQ nm ln ts) =
         L.append "@SQ\tSN:" . L.append (L.fromChunks [nm]) . L.append "\tLN:" .
         L.append (L.pack (show ln)) . show_bam_others ts

@@ -23,23 +23,22 @@ import qualified Data.Map               as M
 -- everything vaguely looking like FastA or FastQ, then shoehorn it into
 -- a BAM record.  We strive to extract information following
 -- more-or-less-established conventions from the header, but we won't
--- support everything under the sun.  Only the canonical variant of
--- FastQ is supported (qualities stored as raw bytes with base 33).
--- Input can be gzipped.
+-- support everything under the sun.  The recognized syntactical warts
+-- are converted into appropriate flags and removed.  Only the canonical
+-- variant of FastQ is supported (qualities stored as raw bytes with
+-- base 33).  Input can be gzipped.
 --
 -- Supported conventions:
 -- * A name suffix of /1 or /2 is turned into the first mate or second
 --   mate flag and the read is flagged as paired.
 -- * Same for name prefixes of F_ or R_, respectively.
--- * A name prefix of M_ flags the sequence as unpaired and both first
---   and second mate (a merged read).
--- * A name prefix of T_ flags the sequence as unpaired and second mate
---   (an adapter trimmed read).
+-- * A name prefix of M_ flags the sequence as unpaired and merged (XF:i:2) 
+-- * A name prefix of T_ flags the sequence as unpaired and trimmed (XF:i:1) 
 -- * A name prefix of C_, either before or after any of the other
 --   prefixes, is turned into the extra flag XP:i:-1 (result of
 --   duplicate removal with unknown depth).
 -- * A collection of tags separated from the name by an octothorpe is
---   removed and but into the field ZT (provisional: tags) as text.
+--   removed and put into the fields XI and YI as text.
 --
 -- Everything before the first sequence header is ignored.  Headers can
 -- start with '>' or '@', we treat both equally.  The first word of the
@@ -103,21 +102,27 @@ makeRecord name0 extra (sq,qual) = extra $ BamRec {
   where
     (name, flags, tags) = checkFR $ checkC $ checkSharp (name0, 0, M.empty)
 
-    checkFR (n,f,t) | "F_" `S.isPrefixOf` n = checkC (S.drop 2 n, f .|. flagFirstMate  .|. flagPaired,     t)
-                    | "R_" `S.isPrefixOf` n = checkC (S.drop 2 n, f .|. flagSecondMate .|. flagPaired,     t)
-                    | "M_" `S.isPrefixOf` n = checkC (S.drop 2 n, f .|. flagFirstMate  .|. flagSecondMate, t)
-                    | "T_" `S.isPrefixOf` n = checkC (S.drop 2 n, f .|.                    flagSecondMate, t)
-                    | "/1" `S.isSuffixOf` n =        ( rdrop 2 n, f .|. flagFirstMate  .|. flagPaired,     t)
-                    | "/2" `S.isSuffixOf` n =        ( rdrop 2 n, f .|. flagSecondMate .|. flagPaired,     t)
-                    | otherwise             =        (         n, f,                                       t)
+    checkFR (n,f,t) | "F_" `S.isPrefixOf` n = checkC (S.drop 2 n, f .|. flagFirstMate  .|. flagPaired, t)
+                    | "R_" `S.isPrefixOf` n = checkC (S.drop 2 n, f .|. flagSecondMate .|. flagPaired, t)
+                    | "M_" `S.isPrefixOf` n = checkC (S.drop 2 n, f,                           setXF 2 t)
+                    | "T_" `S.isPrefixOf` n = checkC (S.drop 2 n, f,                           setXF 3 t)
+                    | "/1" `S.isSuffixOf` n =        ( rdrop 2 n, f .|. flagFirstMate  .|. flagPaired, t)
+                    | "/2" `S.isSuffixOf` n =        ( rdrop 2 n, f .|. flagSecondMate .|. flagPaired, t)
+                    | otherwise             =        (         n, f,                                   t)
 
     checkC (n,f,t) | "C_" `S.isPrefixOf` n  = (S.drop 2 n, f, M.insert "XP" (Int (-1)) t)
                    | otherwise              = (         n, f,                          t)
 
     rdrop n s = S.take (S.length s - n) s
 
-    checkSharp (n,f,t) = case S.split '#' n of [n',ts] -> (n', f, M.insert "ZT" (Text ts) t)
-                                               _       -> ( n, f,                         t)
+    checkSharp (n,f,t) = case S.split '#' n of [n',ts] -> (n', f, insertTags ts t)
+                                               _       -> ( n, f,               t)
+
+    setXF f t = M.insert "XF" (Int (case M.lookup "XF" t of Just (Int i) -> i .|. f ; _ -> f)) t
+
+    insertTags ts t | S.null y  = M.insert "XI" (Text ts) t
+                    | otherwise = M.insert "XI" (Text  x) $ M.insert "YI" (Text $ S.tail y) t
+        where (x,y) = S.break (== ',') ts
 
 ----------------------------------------------------------------------------
 

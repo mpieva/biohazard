@@ -2,13 +2,13 @@
 --
 -- TODO: - "SAGE" filter (enforce 17nt reads)?
 --       - "rim job" (try to detect glass border)?
---       - quality conversion (old Solexa to Phred scale)?
 
 {-# LANGUAGE BangPatterns #-}
 module Bio.File.Bam.Filter (
-    QualFilter, qualityFilterWith, qualityFilterWith',
+    filterPairs, QualFilter,
     complexSimple, complexEntropy,
-    qualityAverage, qualityMinimum
+    qualityAverage, qualityMinimum,
+    qualityFromOldIllumina, qualityFromNewIllumina
                            ) where
 
 import Bio.File.Bam
@@ -19,86 +19,101 @@ import Data.Word ( Word8 )
 import qualified Data.Iteratee    as I
 import qualified Data.ByteString  as S
 
--- | Generic quality filter.  In @qualityFilterWith (p,f)@, a read @r@
--- passes the filter if @p r@ is @True@.  If all reads in a group of
--- consecutive records with the same QNAME pass the filter, the whole
--- group is passed through.  Else @f@ is applied to each read in the
--- group(!) before passing it on and each read in the group(!) is
--- considered to have failed the filter.
--- The return value is @(u,v,it)@, where @u@ is the number of reads that
--- were not marked @isFailsQC@ before and passed the filter, @v@ is the
--- number of reads that were not marked @isFailsQC@ before, and @it@ is
--- the transformed output @Iteratee@.
+-- | A filter applied to pairs of reads.  We supply a predicate to be
+-- applied to single reads and one to be applied to pairs.  This
+-- function causes an error if a lone mate is hit.  If this is run on a
+-- file sorted by coordinate, an error is almost guaranteed.
 
-qualityFilterWith :: Monad m => QualFilter -> Iteratee [BamRec] m a
-                  -> Iteratee [BamRec] m (Int, Int, Iteratee [BamRec] m a)
-qualityFilterWith (p,f) = joinI . I.groupBy same_qname . liftI . stepQF p f 0 0
-  where same_qname a b = b_qname a == b_qname b
-
--- | Same as @qualityFilterWith@, but reads are not grouped before
--- testing.  This will result in mate pairs with inconsistent flags,
--- which in turn will result in lone mates and all sort of troubles with
--- programs that expect non-broken BAM files.  Present merely for
--- completeness, not because it's useful.
-{-# DEPRECATED qualityFilterWith' "You are strongly urged to consider qualityFilterWith instead" #-}
-qualityFilterWith' :: Monad m => QualFilter -> Iteratee [BamRec] m a
-                   -> Iteratee [BamRec] m (Int, Int, Iteratee [BamRec] m a)
-qualityFilterWith' (p,f) = joinI . I.mapStream (:[]) . liftI . stepQF p f 0 0
-
-stepQF :: (Monad m) => (BamRec -> Bool) -> (BamRec -> BamRec)
-     -> Int -> Int -> Iteratee [BamRec] m a
-     -> Stream [[BamRec]] -> Iteratee [[BamRec]] m (Int, Int, Iteratee [BamRec] m a)
-stepQF p f = step    
+filterPairs :: Monad m => (BamRec -> Bool) 
+                       -> (BamRec -> BamRec -> Bool)
+                       -> Enumeratee [BamRec] [BamRec] m a
+filterPairs ps pp = eneeCheckIfDone step
   where
-    step !u !v it (EOF       mx) = idone (u,v,it) (EOF mx)
-    step !u !v it (Chunk [    ]) = liftI $ step u v it
-    step !u !v it (Chunk (r:rs)) 
-        | all p r   = lift (enumPure1Chunk r it) >>= \it' ->
-                      step (u+c) (v+c) it' (Chunk rs)
-        | otherwise = lift (enumPure1Chunk (map f r) it) >>= \it' ->
-                      step u (v+c) it' (Chunk rs)
-      where !c = length $ filter (not . isFailsQC) r
+    step k = I.tryHead >>= step' k
+    step' k Nothing = return $ liftI k
+    step' k (Just b)
+        | isPaired b = I.tryHead >>= step'' k b
+        | otherwise  = if ps b then eneeCheckIfDone step . k $ Chunk [b] else step k
 
--- | A quality filter consists of a predicate on @BamRec@s and a
--- transformation of @BamRec@s.  Records failing the predicate will be
--- dropped, others transformed.
-type QualFilter = (BamRec->Bool, BamRec->BamRec)
+    step'' _ _ Nothing = fail "lone mate"
+    step'' k b (Just c)
+        | b_rname b /= b_rname c || not (isPaired c) = fail "lone mate"
+        | isFirstMate b && isSecondMate c = step''' k b c
+        | isFirstMate c && isSecondMate b = step''' k c b
+        | otherwise = fail "strange pair"
+
+    step''' k b c = if pp b c then eneeCheckIfDone step . k $ Chunk [b,c] else step k        
+
+
+-- | A quality filter is simply a transformation on @BamRec@s.  By
+-- convention, quality filters should set @flagFailsQC@, a further step
+-- can then remove the failed reads.  Filtering of individual reads
+-- tends to result in mate pairs with inconsistent flags, which in turn
+-- will result in lone mates and all sort of troubles with programs that
+-- expect non-broken BAM files.  It is therefore recommended to use
+-- @pairFilter@ with suitable predicates to do the post processing.
+
+type QualFilter = BamRec -> BamRec
 
 -- | Simple complexity filter aka "Nancy Filter".  A read is considered
 -- not-sufficiently-complex if the most common base accounts for greater
 -- than the @cutoff@ fraction of all non-N bases.
+{-# INLINE complexSimple #-}
 complexSimple :: Double -> QualFilter
-complexSimple r = (p,f)
+complexSimple r b = if p then b else b'
   where
-    f b = b { b_flag = b_flag b .|. flagFailsQC .|. flagLowComplexity }
-    p b = let counts = [ length $ filter ((==) x) (b_seq b) | x <- [A,C,G,T] ]
-              lim = floor $ r * fromIntegral (sum counts)
-          in all (<= lim) counts
+    b' = setQualFlag 'C' $ b { b_flag = b_flag b .|. flagFailsQC }
+    p  = let counts = [ length $ filter ((==) x) (b_seq b) | x <- [A,C,G,T] ]
+             lim = floor $ r * fromIntegral (sum counts)
+         in all (<= lim) counts
 
--- | Filter on order zero empirical entropy.  Average entropy must be
+-- | Filter on order zero empirical entropy.  Entropy per base must be
 -- greater than cutoff.
+{-# INLINE complexEntropy #-}
 complexEntropy :: Double -> QualFilter
-complexEntropy r = (p,f)
+complexEntropy r b = if p then b else b'
   where
-    f b = b { b_flag = b_flag b .|. flagFailsQC .|. flagLowComplexity }
-    p b = let counts = [ fromIntegral $ length $ filter ((==) x) (b_seq b) | x <- [A,C,G,T] ]
-              total = fromIntegral $ length $ b_seq b
-              ent   = sum [ c * log (total / c) | c <- counts ] / log 2
-          in ent >= r * total
+    b' = setQualFlag 'C' $ b { b_flag = b_flag b .|. flagFailsQC }
+    p = let counts = [ fromIntegral $ length $ filter ((==) x) (b_seq b) | x <- [A,C,G,T] ]
+            total = fromIntegral $ length $ b_seq b
+            ent   = sum [ c * log (total / c) | c <- counts ] / log 2
+        in ent >= r * total
 
 -- | Filter on average quality.  Reads without quality string pass.
+{-# INLINE qualityAverage #-}
 qualityAverage :: Int -> QualFilter
-qualityAverage q = (p,f)
+qualityAverage q b = if p then b else b'
   where
-    f b = b { b_flag = b_flag b .|. flagFailsQC .|. flagLowQuality }
-    p b = let total = S.foldl' (\a x -> a + fromIntegral x) 0 $ b_qual b
-          in total >= q * S.length (b_qual b)
+    b' = setQualFlag 'Q' $ b { b_flag = b_flag b .|. flagFailsQC }
+    p  = let total = S.foldl' (\a x -> a + fromIntegral x) 0 $ b_qual b
+         in total >= q * S.length (b_qual b)
 
 -- | Filter on minimum quality.  In @qualityMinimum n q@, a read passes
 -- if it has no more than @n@ bases with quality less than @q@.  Reads
 -- without quality string pass.
+{-# INLINE qualityMinimum #-}
 qualityMinimum :: Int -> Word8 -> QualFilter
-qualityMinimum n q = (p,f)
+qualityMinimum n q b = if p then b else b'
   where
-    f b = b { b_flag = b_flag b .|. flagFailsQC .|. flagLowQuality }
-    p b = S.length (S.filter (< q) (b_qual b)) <= n
+    b' = setQualFlag 'Q' $ b { b_flag = b_flag b .|. flagFailsQC }
+    p  = S.length (S.filter (< q) (b_qual b)) <= n
+
+
+-- | Convert quality scores from old Illumina scale (different formula
+-- and offset 64 in FastQ).
+qualityFromOldIllumina :: BamRec -> BamRec
+qualityFromOldIllumina b = b { b_qual = S.map conv $ b_qual b }
+  where
+    conv :: Word8 -> Word8
+    conv s = let s' :: Double
+                 s' = exp $ log 10 * (fromIntegral s - 31) / (-10)
+                 p  = s' / (1+s')
+                 q  = - 10 * log p / log 10
+             in round q    
+                 
+-- | Convert quality scores from new Illumina scale (standard formula
+-- but offset 64 in FastQ).
+qualityFromNewIllumina :: BamRec -> BamRec
+qualityFromNewIllumina b = b { b_qual = S.map (subtract 31) $ b_qual b }
+
+
