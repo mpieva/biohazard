@@ -85,8 +85,8 @@ module Bio.File.Bam (
     CigOp(..),
     cigarToAlnLen,
 
-    Extensions,
-    Ext(..),
+    Extensions, Ext(..),
+    extAsInt, extAsString, setQualFlag,
 
     flagPaired,         isPaired,
     flagProperlyPaired, isProperlyPaired,
@@ -101,8 +101,6 @@ module Bio.File.Bam (
     flagDuplicate,      isDuplicate,
     flagTrimmed,        isTrimmed,   
     flagMerged,         isMerged,       
-
-    setQualFlag,
 
     BamIndex,
     readBamIndex,
@@ -519,9 +517,14 @@ encodeBamEntry = S.concat . L.toChunks . runPut . putEntry
                      putSeq $ b_seq b
                      putByteString $ if not (S.null (b_qual b)) then b_qual b
                                      else S.replicate (length $ b_seq b) 0xff
-                     forM_ (M.toList $ b_exts b) $ \(k,v) -> 
+                     forM_ (M.toList $ more_exts b) $ \(k,v) -> 
                         case k of [c,d] -> putChr c >> putChr d >> putValue v
                                   _     -> error $ "invalid field key " ++ show k
+
+    more_exts :: BamRec -> Extensions
+    more_exts b = if xf /= 0 then x' else b_exts b
+        where xf = b_flag b `shiftR` 16
+              x' = M.insert "XF" (Int xf) $ b_exts b
 
     encodeCigar :: (CigOp,Int) -> Int
     encodeCigar (op,l) = fromEnum op .|. l `shiftL` 4
