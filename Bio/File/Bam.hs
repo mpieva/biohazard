@@ -77,9 +77,13 @@ module Bio.File.Bam (
     unknownMapq,
     compareNames,
 
+    combineCoordinates,
+    combineNames,
+
     MdOp(..),
     getMd,
     readMd,
+    showMd,
 
     Cigar(..),
     CigOp(..),
@@ -129,7 +133,7 @@ import Data.Attoparsec              ( anyWord8 )
 import Data.Attoparsec.Iteratee
 import Data.Binary.Put
 import Data.Bits                    ( testBit, shiftL, shiftR, (.&.), (.|.), complement )
-import Data.Char                    ( chr, ord, isDigit, digitToInt )
+import Data.Char                    ( ord, isDigit, digitToInt )
 import Data.Int                     ( Int64, Int32 )
 import Data.Iteratee.ZLib
 import Data.Monoid
@@ -354,10 +358,7 @@ getRef refs (Refseq i) = Z.index refs (fromIntegral i)
 
 -- | Decodes a raw block into a @BamRec@.
 decodeBamEntry :: BamRaw -> BamRec
-decodeBamEntry (BamRaw offs s) = case G.runGet go s of
-    (Left  e,  _)             -> error e
-    (Right r, s') | S.null s' -> fixup r
-                  | otherwise -> error "incomplete BAM record"
+decodeBamEntry (BamRaw offs s) = either error fixup . fst $ G.runGet go s
   where
     go = do !rid       <- Refseq       <$> G.getWord32le
             !start     <- fromIntegral <$> G.getWord32le
@@ -406,6 +407,8 @@ decodeBamEntry (BamRaw offs s) = case G.runGet go s of
         flagLowComplexity = 0x1000
 
 -- | A collection of extension fields.  The key is actually only two @Char@s, but that proved impractical.
+-- (Hmm... we could introduce a Key type that is a 16 bit int, then give
+-- it an @instance IsString@... practical?)
 type Extensions = M.Map String Ext
 
 data Ext = Int Int | Float Float | Text S.ByteString | Bin S.ByteString | Char Word8
@@ -413,34 +416,32 @@ data Ext = Int Int | Float Float | Text S.ByteString | Bin S.ByteString | Char W
     deriving Show
 
 getExtensions :: Extensions -> G.Get Extensions
-getExtensions m = G.isEmpty >>= \e -> case e of
-    True  -> return m
-    False -> getExt >>= \(!k,!a) -> getExtensions $! M.insert k a m
-
-getExt :: G.Get (String, Ext)
-getExt = do key <- (\a b -> [w2c a, w2c b]) <$> G.getWord8 <*> G.getWord8
-            typ <- G.getWord8
-            res <- case w2c typ of
-                    'Z' -> Text <$> getByteStringNul
-                    'H' -> Bin  <$> getByteStringNul
-                    'A' -> Char <$> G.getWord8
-                    'f' -> Float . to_float <$> G.getWord32le
-                    'B' -> get_arr
-                    x | Just get <- M.lookup x get_some_int -> Int <$> get
-                      | otherwise                           -> error $ "cannot handle optional field type " ++ [x]
-            return (key,res)
+getExtensions m = getExt `G.plus` return m
   where
+    getExt :: G.Get Extensions
+    getExt = do
+            key <- (\a b -> [w2c a, w2c b]) <$> G.getWord8 <*> G.getWord8
+            typ <- G.getWord8
+            let cont v = getExtensions $! M.insert key v m
+            case w2c typ of
+                    'Z' -> cont . Text =<< getByteStringNul
+                    'H' -> cont . Bin  =<< getByteStringNul
+                    'A' -> cont . Char =<< G.getWord8
+                    'f' -> cont . Float . to_float =<< G.getWord32le
+                    'B' -> do tp <- G.getWord8
+                              n <- fromIntegral <$> G.getWord32le
+                              case w2c tp of
+                                 'f' -> cont . FloatArr . listArray (0,n) . map to_float =<< replicateM (n+1) G.getWord32le
+                                 x | Just get <- M.lookup x get_some_int -> cont . IntArr . listArray (0,n) =<< replicateM (n+1) get
+                                   | otherwise                           -> fail $ "array type code " ++ show x ++ " not recognized"
+                    x | Just get <- M.lookup x get_some_int -> cont . Int =<< get
+                      | otherwise                           -> fail $ "type code " ++ show x ++ " not recognized"
+
     to_float :: Word32 -> Float
     to_float word = unsafePerformIO $ alloca $ \buf ->
                     poke (castPtr buf) word >> peek buf
 
-    get_arr = do tp <- chr . fromIntegral <$> G.getWord8
-                 n <- fromIntegral <$> G.getWord32le
-                 case tp of
-                    'f' -> FloatArr . listArray (0,n) . map to_float <$> replicateM (n+1) G.getWord32le
-                    _ | Just get <- M.lookup tp get_some_int -> IntArr . listArray (0,n) <$> replicateM (n+1) get
-                      | otherwise                            -> error $ "cannot handle optional array field type " ++ [tp]
-
+    get_some_int :: M.Map Char (G.Get Int)
     get_some_int = M.fromList $ zip "cCsSiI" [
                         fromIntegral <$> G.getWord8,
                         fromIntegral <$> G.getWord8,
@@ -617,6 +618,12 @@ readMd s | B.null s           = return []
                                 in (MdDel (map toNucleotide $ B.unpack a) :) <$> readMd b
          | otherwise          = (MdRep (toNucleotide $ B.head s) :) <$> readMd (B.tail s)
 
+showMd :: [MdOp] -> B.ByteString
+showMd = B.pack . concatMap s1
+  where
+    s1 (MdNum i) = show i
+    s1 (MdRep n) = show n
+    s1 (MdDel ns) = '^' : show ns
 
 flagPaired, flagProperlyPaired, flagUnmapped, flagMateUnmapped, flagReversed, flagMateReversed, flagFirstMate, flagSecondMate,
  flagAuxillary, flagFailsQC, flagDuplicate, flagTrimmed, flagMerged :: Int
@@ -637,8 +644,8 @@ flagTrimmed = 0x10000
 flagMerged  = 0x20000
 
 isPaired, isProperlyPaired, isUnmapped, isMateUnmapped, isReversed,
-    isMateReversed, isAuxillary, isFailsQC, isDuplicate, isTrimmed,
-    isMerged :: BamRec -> Bool
+    isMateReversed, isFirstMate, isSecondMate, isAuxillary, isFailsQC,
+    isDuplicate, isTrimmed, isMerged :: BamRec -> Bool
 
 isPaired         = flip testBit  0 . b_flag
 isProperlyPaired = flip testBit  1 . b_flag
@@ -687,6 +694,14 @@ compareNames n m = case (B.uncons n, B.uncons m) of
                     GT -> GT
                     EQ -> n' `compareNames` m'
                                          
+combineCoordinates :: Monad m => Enumeratee [BamRec] [BamRec] (Iteratee [BamRec] m) a
+combineCoordinates = mergeSortStreams comp
+  where comp u v = if (b_rname u, b_pos u) < (b_rname v, b_pos v) then Less else NotLess
+
+combineNames :: Monad m => Enumeratee [BamRec] [BamRec] (Iteratee [BamRec] m) a
+combineNames = mergeSortStreams comp
+  where comp u v = case b_qname u `compareNames` b_qname v of LT -> Less ; _ -> NotLess
+
 
 extAsInt :: Int -> String -> BamRec -> Int
 extAsInt d nm br = case M.lookup nm (b_exts br) of Just (Int i) -> i ; _ -> d

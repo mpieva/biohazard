@@ -29,6 +29,7 @@ module Bio.Iteratee (
 
     Enumerator',
     Enumeratee',
+    mergeEnums',
 
     module Data.Iteratee.Binary,
     module Data.Iteratee.Char,
@@ -153,6 +154,16 @@ infixl 1 $==
                  -> Enumerator' hdr                   output m result
 ($==) enum enee iter = run =<< enum (\hdr -> enee $ iter hdr)
 
+-- | Merge two @Enumerator'@s into one.  The header provided by the
+-- inner @Enumerator'@ is passed to the output iterator, the header
+-- provided by the outer @Enumerator'@ is passed to the merging iteratee
+mergeEnums' :: (Nullable s2, Nullable s1, Monad m)
+            => Enumerator' hi s1 m a                            -- ^ inner enumerator
+            -> Enumerator' ho s2 (Iteratee s1 m) a              -- ^ outer enumerator
+            -> (ho -> Enumeratee  s2 s1 (Iteratee s1 m) a)      -- ^ merging enumeratee
+            -> Enumerator' hi s1 m a
+mergeEnums' e1 e2 etee i = e1 $ \hi -> e2 (\ho -> joinI . etee ho $ ilift lift (i hi)) >>= run
+
 -- | Apply a filter predicate to an @Iteratee@.
 filterStream :: (Monad m, ListLike s a, NullPoint s) => (a -> Bool) -> Enumeratee s s m r
 filterStream = mapChunks . LL.filter
@@ -208,5 +219,4 @@ mergeSortStreams comp = eneeCheckIfDone step
         (Just  x, Nothing) -> do       I.drop 1  ; eneeCheckIfDone step . out . Chunk $ LL.singleton x
         (Nothing, Just  y) -> do lift (I.drop 1) ; eneeCheckIfDone step . out . Chunk $ LL.singleton y
         (Nothing, Nothing) -> do idone (liftI out) $ EOF Nothing
-
 

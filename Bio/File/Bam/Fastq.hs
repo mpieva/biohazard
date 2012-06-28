@@ -3,7 +3,7 @@
 
 {-# LANGUAGE OverloadedStrings #-}
 module Bio.File.Bam.Fastq (
-    parseFastq, parseFastq'
+    parseFastq, parseFastq', removeWarts
                           ) where
 
 import Bio.File.Bam
@@ -85,27 +85,19 @@ skipJunk = I.peek >>= check
     bad c = c /= c2w '>' && c /= c2w '@'
 
 makeRecord :: Seqid -> (BamRec->BamRec) -> (String, S.ByteString) -> BamRec
-makeRecord name0 extra (sq,qual) = extra $ BamRec {
-        b_qname = name,
-        b_flag  = flags,
-        b_rname = invalidRefseq,
-        b_pos   = invalidPos,
-        b_mapq  = 0,
-        b_cigar = Cigar [],
-        b_mrnm  = invalidRefseq,
-        b_mpos  = invalidPos,
-        b_isize = 0,
-        b_seq   = read sq,
-        b_qual  = qual,
-        b_exts  = tags,
-        b_virtual_offset = 0 }
+makeRecord name extra (sq,qual) = extra $ removeWarts $ nullBamRec
+        { b_qname = name, b_seq = read sq, b_qual = qual }
+
+-- | Remove syntactic warts from old read names.
+removeWarts :: BamRec -> BamRec
+removeWarts br = br { b_qname = name, b_flag = flags, b_exts = tags }
   where
-    (name, flags, tags) = checkFR $ checkC $ checkSharp (name0, 0, M.empty)
+    (name, flags, tags) = checkFR $ checkC $ checkSharp (b_qname br, b_flag br, b_exts br)
 
     checkFR (n,f,t) | "F_" `S.isPrefixOf` n = checkC (S.drop 2 n, f .|. flagFirstMate  .|. flagPaired, t)
                     | "R_" `S.isPrefixOf` n = checkC (S.drop 2 n, f .|. flagSecondMate .|. flagPaired, t)
-                    | "M_" `S.isPrefixOf` n = checkC (S.drop 2 n, f,                           setXF 2 t)
-                    | "T_" `S.isPrefixOf` n = checkC (S.drop 2 n, f,                           setXF 3 t)
+                    | "M_" `S.isPrefixOf` n = checkC (S.drop 2 n, f .|. flagMerged,                    t)
+                    | "T_" `S.isPrefixOf` n = checkC (S.drop 2 n, f .|. flagTrimmed,                   t)
                     | "/1" `S.isSuffixOf` n =        ( rdrop 2 n, f .|. flagFirstMate  .|. flagPaired, t)
                     | "/2" `S.isSuffixOf` n =        ( rdrop 2 n, f .|. flagSecondMate .|. flagPaired, t)
                     | otherwise             =        (         n, f,                                   t)
@@ -117,8 +109,6 @@ makeRecord name0 extra (sq,qual) = extra $ BamRec {
 
     checkSharp (n,f,t) = case S.split '#' n of [n',ts] -> (n', f, insertTags ts t)
                                                _       -> ( n, f,               t)
-
-    setXF f t = M.insert "XF" (Int (case M.lookup "XF" t of Just (Int i) -> i .|. f ; _ -> f)) t
 
     insertTags ts t | S.null y  = M.insert "XI" (Text ts) t
                     | otherwise = M.insert "XI" (Text  x) $ M.insert "YI" (Text $ S.tail y) t
