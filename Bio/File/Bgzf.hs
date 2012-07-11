@@ -9,7 +9,8 @@
 module Bio.File.Bgzf (
     decompress, decompress', decompressWith, decompressPlain,
     Block(..), compress, maxBlockSize, bgzfEofMarker, 
-    liftBlock, getOffset, virtualSeek, isBgzf, isGzip
+    liftBlock, getOffset, virtualSeek, isBgzf, isGzip,
+    Z.CompressionLevel, Z.noCompression, Z.bestCompression
                      ) where
 
 import Bio.Iteratee
@@ -212,7 +213,7 @@ maxBlockSize = 65450
 -- This is just an empty string compressed as BGZF.  Appended to BAM
 -- files to indicate their end.
 bgzfEofMarker :: S.ByteString
-bgzfEofMarker = compress1 []
+bgzfEofMarker = compress1 Z.noCompression []
 
 
 -- | Compresses a stream of @ByteString@s into a stream of Bgzf blocks.
@@ -224,12 +225,12 @@ bgzfEofMarker = compress1 []
 --
 -- XXX Need a way to write an index "on the side".  Additional output
 -- streams?  (Implicitly) pair two @Iteratee@s, similar to @I.pair@?
-compress :: Monad m => Enumeratee S.ByteString S.ByteString m a
-compress = eneeCheckIfDone (liftI . step 0 [])  
+compress :: Monad m => Z.CompressionLevel -> Enumeratee S.ByteString S.ByteString m a
+compress lv = eneeCheckIfDone (liftI . step 0 [])  
   where
     step    _ acc it c@(EOF _) = step1 it
       where
-        step1 i = eneeCheckIfDone step2 . i . Chunk $ compress1 acc
+        step1 i = eneeCheckIfDone step2 . i . Chunk $ compress1 lv acc
         step2 i = eneeCheckIfDone step3 . i . Chunk $ bgzfEofMarker
         step3 i = idone (liftI i) c
 
@@ -238,20 +239,21 @@ compress = eneeCheckIfDone (liftI . step 0 [])
             = liftI $ step (alen + S.length c) (c:acc) it
 
         | S.length c < maxBlockSize
-            = eneeCheckIfDone (liftI . step (S.length c) [c]) . it . Chunk $ compress1 acc     -- XXX index?
+            = eneeCheckIfDone (liftI . step (S.length c) [c]) . it . Chunk $ compress1 lv acc     -- XXX index?
 
         | otherwise = loop c it -- XXX index?
 
     loop s i | S.null s  = liftI $ step 0 [] i
-             | otherwise = eneeCheckIfDone (loop (S.drop maxBlockSize s)) . i . Chunk $ compress1 [S.take maxBlockSize s]
+             | otherwise = eneeCheckIfDone (loop (S.drop maxBlockSize s)) . i . Chunk $ compress1 lv [S.take maxBlockSize s]
 
 
 -- | Compress a collection of strings into a single BGZF block.
-compress1 :: [S.ByteString] -> S.ByteString
-compress1 ss | sum (map S.length ss) > maxBlockSize = error "Trying to create too big a BGZF block."
-compress1 ss = S.concat (L.toChunks hdr) `S.append` rest
+compress1 :: Z.CompressionLevel -> [S.ByteString] -> S.ByteString
+compress1 _lv ss | sum (map S.length ss) > maxBlockSize = error "Trying to create too big a BGZF block."
+compress1  lv ss = S.concat (L.toChunks hdr) `S.append` rest
   where
-    z = S.concat $ L.toChunks $ Z.compress (L.fromChunks (reverse ss))
+    z = S.concat $ L.toChunks $ Z.compressWith (Z.defaultCompressParams { Z.compressLevel = lv })
+                                               (L.fromChunks (reverse ss))
     (Right hdr, rest) = runGet patch_header z
     patch_header = do !k <- getWord16le
                       !m <- getWord8

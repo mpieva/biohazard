@@ -5,9 +5,13 @@ echo "Building and installing biohazard-${version}"
 cabal clean
 cabal configure --ghc-options=-Wall -O2
 cabal build
-cabal install --force-reinstall
-cabal sdist
+if which cabal-src-install ; then
+    cabal-src-install
+else
+    cabal install
+fi
+# cabal sdist
 
-echo "SCP to bioinf..."
-scp dist/biohazard-${version}.tar.gz \
-    bioinf:htdocs/biohazard/
+#echo "SCP to bioinf..."
+#scp dist/biohazard-${version}.tar.gz \
+    #bioinf:htdocs/biohazard/

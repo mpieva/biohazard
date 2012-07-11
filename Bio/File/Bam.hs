@@ -56,10 +56,13 @@ module Bio.File.Bam (
     decodeAnyBamOrSamFile,
 
     encodeBam,
+    encodeBamWith,
+    encodeBamUncompressed,
     encodeBamEntry,
 
     writeBamFile,
     writeBamHandle,
+    pipeBamOutput,
 
     BamRaw(..),
 
@@ -135,7 +138,7 @@ import Data.Binary.Put
 import Data.Bits                    ( testBit, shiftL, shiftR, (.&.), (.|.), complement )
 import Data.Char                    ( ord, isDigit, digitToInt )
 import Data.Int                     ( Int64, Int32 )
-import Data.Iteratee.ZLib
+import Data.Iteratee.ZLib hiding ( CompressionLevel )
 import Data.Monoid
 import Data.Sequence                ( (<|), (|>), (><) )
 import Data.Word                    ( Word32, Word8 )
@@ -169,7 +172,7 @@ decompressBgzf' = decompress'
 decompressBgzf :: Monad m => Enumeratee S.ByteString S.ByteString m a
 decompressBgzf = decompress
 
-compressBgzf :: Monad m => Enumeratee S.ByteString S.ByteString m a
+compressBgzf :: Monad m => CompressionLevel -> Enumeratee S.ByteString S.ByteString m a
 compressBgzf = compress
 
 
@@ -467,7 +470,13 @@ getByteStringNul = S.init <$> (G.lookAhead (get_len 1) >>= G.getByteString)
 -- hasn't been designed in, yet.
 
 encodeBam :: Monad m => BamMeta -> Enumeratee [S.ByteString] S.ByteString m a
-encodeBam meta = eneeBam ><> compress
+encodeBam = encodeBamWith bestCompression
+
+encodeBamUncompressed :: Monad m => BamMeta -> Enumeratee [S.ByteString] S.ByteString m a
+encodeBamUncompressed = encodeBamWith noCompression
+
+encodeBamWith :: Monad m => CompressionLevel -> BamMeta -> Enumeratee [S.ByteString] S.ByteString m a
+encodeBamWith lv meta = eneeBam ><> compress lv
   where
     eneeBam = eneeCheckIfDone (\k -> eneeBam2 . k $ Chunk header)
     eneeBam2 = eneeCheckIfDone (\k -> eneeBam3 . k $ Chunk S.empty)
@@ -551,6 +560,13 @@ writeBamFile fp meta =
                 (liftIO . hClose)
                 (flip writeBamHandle meta) 
 
+pipeBamOutput :: MonadIO m => BamMeta -> Iteratee [BamRec] m ()
+pipeBamOutput meta = 
+    joinI $ I.mapStream encodeBamEntry $
+    joinI $ encodeBamUncompressed meta $
+    mapChunksM_ (liftIO . S.hPut stdout)
+
+
 writeBamHandle :: MonadIO m => Handle -> BamMeta -> Iteratee [BamRec] m ()
 writeBamHandle hdl meta = 
     joinI $ I.mapStream encodeBamEntry $
@@ -567,7 +583,7 @@ putChr :: Char -> Put
 putChr = putWord8 . fromIntegral . ord
 
 distinctBin :: BamRec -> Int
-distinctBin b = mkbin 14 $ mkbin 17 $ mkbin 20 $ mkbin 23 $ mkbin 16 $ 0
+distinctBin b = mkbin 14 $ mkbin 17 $ mkbin 20 $ mkbin 23 $ mkbin 26 $ 0
   where beg = b_pos b
         end = beg + cigarToAlnLen (b_cigar b) - 1
         mkbin n x = if beg `shiftR` n /= end `shiftR` n then x
