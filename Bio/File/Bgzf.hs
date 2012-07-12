@@ -213,7 +213,7 @@ maxBlockSize = 65450
 -- This is just an empty string compressed as BGZF.  Appended to BAM
 -- files to indicate their end.
 bgzfEofMarker :: S.ByteString
-bgzfEofMarker = compress1 Z.noCompression []
+bgzfEofMarker = "\x1f\x8b\x8\x4\0\0\0\0\0\xff\x6\0\x42\x43\x2\0\x1b\0\x3\0\0\0\0\0\0\0\0\0"
 
 
 -- | Compresses a stream of @ByteString@s into a stream of Bgzf blocks.
