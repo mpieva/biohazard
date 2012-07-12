@@ -23,6 +23,8 @@ module Bio.Iteratee (
     (>=>), (<=<),
 
     enumAuxFile,
+    enumInputs,
+    enumDefaultInputs,
 
     Ordering'(..),
     mergeSortStreams,
@@ -50,6 +52,8 @@ import Data.Iteratee.Iteratee
 import Data.Iteratee.Parallel
 import Data.Monoid
 import Data.ListLike ( ListLike )
+import System.IO ( stdin )
+import System.Environment ( getArgs )
 
 import qualified Data.ListLike as LL
 import qualified Data.ByteString as S
@@ -203,6 +207,16 @@ type Enumeratee' h ei eo m b = (h -> Iteratee eo m b) -> Iteratee ei m (Iteratee
 
 enumAuxFile :: MonadCatchIO m => FilePath -> Iteratee S.ByteString m a -> m a
 enumAuxFile fp it = liftIO (findAuxFile fp) >>= fileDriver it
+
+enumDefaultInputs :: MonadCatchIO m => Enumerator S.ByteString m a
+enumDefaultInputs it0 = liftIO getArgs >>= flip enumInputs it0
+
+enumInputs :: MonadCatchIO m => [FilePath] -> Enumerator S.ByteString m a
+enumInputs [] = enumHandle defaultBufSize stdin
+enumInputs xs = go xs
+  where go ("-":fs) = enumHandle defaultBufSize stdin >=> go fs
+        go ( f :fs) = enumFile defaultBufSize f >=> go fs
+        go [      ] = return
 
 
 data Ordering' a = Less | Equal a | NotLess
