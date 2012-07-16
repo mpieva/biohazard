@@ -44,6 +44,12 @@ import qualified Data.Iteratee as I
 -- unreliable.  We do not consider this possibility... some losses are
 -- simply inevitable.
 --
+-- In principle, we might want to allow some wiggle room in the
+-- coordinates.  So far, this has not been implemented.  It adds the
+-- complication that groups of separated reads can turn into a set of
+-- duplicates because of the appearance of a new reads.  Needs some
+-- thinking about... or maybe it's not too important.
+--
 -- Once a set of duplicates is collected, we perform a majority vote on
 -- the correct CIGAR line.  Of all those reads that agree on this CIGAR
 -- line, a consensus is called, quality scores are adjusted and clamped

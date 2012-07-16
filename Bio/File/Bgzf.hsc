@@ -34,6 +34,8 @@ import qualified Data.ByteString.Lazy       as L
 import qualified Data.Iteratee.ListLike     as I
 import qualified Data.ListLike              as LL
 
+#include <zlib.h>
+
 -- | One BGZF block: virtual offset and contents.  Could also be a block
 -- of an uncompressed file, if we want to support indexing of
 -- uncompressed BAM or some silliness like that.
@@ -248,6 +250,7 @@ compress lv = eneeCheckIfDone (liftI . step 0 [])
 
 
 -- | Compress a collection of strings into a single BGZF block.
+{-
 compress1 :: Z.CompressionLevel -> [S.ByteString] -> S.ByteString
 compress1 _lv ss | sum (map S.length ss) > maxBlockSize = error "Trying to create too big a BGZF block."
 compress1  lv ss = S.concat (L.toChunks hdr) `S.append` rest
@@ -276,6 +279,75 @@ compress1  lv ss = S.concat (L.toChunks hdr) `S.append` rest
                             putWord16le 2
                             putWord16le . fromIntegral $ S.length z + 5 + 
                                 if f `testBit` 2 then 0 else 2
+-}
+
+-- Okay, performance was lacking... let's do it again, in a more direct
+-- style.  We build out block manually.  First check if the compressed
+-- data is going to fit---if not, that's a bug.  Then alloc a buffer,
+-- fill with adummy header, alloc a ZStream, compress the pieces we were
+-- handed one at a time.  Calculate CRC32, finalize header, construct a
+-- byte string, return it.
+--
+-- We could probably get away with @unsafePerformIO@'ing everything in
+-- here, but then again, we only do this when we're writing output
+-- anyway.  Hence, run in IO.
+
+compress1 :: Int -> [S.ByteString] -> IO S.ByteString
+compress1 lv ss0 = do
+    let input_length = sum (map S.length ss0)
+    when (input_length > maxBlockSize) $ error "Trying to create too big a BGZF block; this is a bug."
+    buf <- mallocBytes 65536
+
+    -- steal header from the EOF marker (length is wrong for now)
+    S.unsafeUseAsCString bgzfEofMarker $ \eof ->
+        forM_ [0,4..16] $ \o -> do x <- peekByteOff i eof
+                                   pokeByteOff i buf (x::Word32)
+
+    -- set up ZStream
+    stream <- mallocBytes (#{const sizeof(z_stream)})
+    #{poke z_stream, msg}       stream nullPtr
+    #{poke z_stream, zalloc}    stream nullPtr
+    #{poke z_stream, zfree}     stream nullPtr
+    #{poke z_stream, opaque}    stream nullPtr
+    #{poke z_stream, next_in}   stream nullPtr
+    #{poke z_stream, next_out}  stream (buf `plusPtr` 18)
+    #{poke z_stream, avail_in}  stream (0 :: CUInt)
+    #{poke z_stream, avail_out} stream (65536-18-8 :: CUInt)
+ 
+    z_err <- c_deflateInit2 stream lv {#const Z_DEFLATED} (-16)
+             {#const Z_DEFAULT_MEM_LEVEL} {#const Z_DEFAULT_STRATEGY}
+    when (z_err /= {#const Z_OK}) $ error "deflateInit2 failed"
+
+    -- loop over the fragments.  In reverse order!
+    let loop (s:ss) = do 
+            loop ss
+            unsafeUseAsCString s $ \p -> do
+                let l = fromIntegral $ S.length s
+                #{poke z_stream, next_in} stream p
+                #{poke z_stream, avail_in} stream (l :: CUInt)
+                z_err <- c_deflate stream 0
+                when (z_err /= #{const Z_OK}) $ error "deflate failed"
+        loop [] = do z_err <- c_deflate stream #{const Z_FINISH}
+                     when (z_err /= #{const Z_OK}) $ error "deflate failed"
+    loop ss0
+        
+    z_err <- c_deflateEnd stream
+    when (z_err /= #{const Z_OK}) $ error "deflateEnd failed"
+
+    compressed_length <- (+) (18+8) <$> #{peek z_stream, total_out}
+    when (compressed_length > maxBlockSize) $ error "produced too big a block" 
+    
+    -- set length in header
+    pokeByteOff 16 buf (fromIntegral $ (compressed_length-1) .&. 0xff :: Word8)
+    pokeByteOff 17 buf (fromIntegral $ (compressed_length-1) `shiftR` 8 :: Word8)
+
+    let crc = 0 -- XXX broken!!!1
+    pokeByteOff (compressed_length-8) buf (crc :: Word32)
+    pokeByteOff (compressed_length-4) buf (input_length :: Word32)
+
+    unsafePackCStringLen buf compressed_length
+
+
 
 -- ------------------------------------------------------------------------------------------------- utils
 
