@@ -172,7 +172,7 @@ decompressBgzf' = decompress'
 decompressBgzf :: Monad m => Enumeratee S.ByteString S.ByteString m a
 decompressBgzf = decompress
 
-compressBgzf :: Monad m => CompressionLevel -> Enumeratee S.ByteString S.ByteString m a
+compressBgzf :: MonadIO m => Int -> Enumeratee S.ByteString S.ByteString m a
 compressBgzf = compress
 
 
@@ -469,13 +469,13 @@ getByteStringNul = S.init <$> (G.lookAhead (get_len 1) >>= G.getByteString)
 -- It would be nice if we were able to write an index on the side.  That
 -- hasn't been designed in, yet.
 
-encodeBam :: Monad m => BamMeta -> Enumeratee [S.ByteString] S.ByteString m a
-encodeBam = encodeBamWith bestCompression
+encodeBam :: MonadIO m => BamMeta -> Enumeratee [S.ByteString] S.ByteString m a
+encodeBam = encodeBamWith 6 -- bestCompression
 
-encodeBamUncompressed :: Monad m => BamMeta -> Enumeratee [S.ByteString] S.ByteString m a
-encodeBamUncompressed = encodeBamWith noCompression
+encodeBamUncompressed :: MonadIO m => BamMeta -> Enumeratee [S.ByteString] S.ByteString m a
+encodeBamUncompressed = encodeBamWith 0 -- noCompression
 
-encodeBamWith :: Monad m => CompressionLevel -> BamMeta -> Enumeratee [S.ByteString] S.ByteString m a
+encodeBamWith :: MonadIO m => Int -> BamMeta -> Enumeratee [S.ByteString] S.ByteString m a
 encodeBamWith lv meta = eneeBam ><> compress lv
   where
     eneeBam = eneeCheckIfDone (\k -> eneeBam2 . k $ Chunk header)

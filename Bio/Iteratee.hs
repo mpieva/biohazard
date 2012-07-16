@@ -13,6 +13,7 @@ module Bio.Iteratee (
     filterStreamM,
     foldStream,
     foldStreamM,
+    mapChunksMP,
 
     ($==),
     ListLike,
@@ -233,4 +234,12 @@ mergeSortStreams comp = eneeCheckIfDone step
         (Just  x, Nothing) -> do       I.drop 1  ; eneeCheckIfDone step . out . Chunk $ LL.singleton x
         (Nothing, Just  y) -> do lift (I.drop 1) ; eneeCheckIfDone step . out . Chunk $ LL.singleton y
         (Nothing, Nothing) -> do idone (liftI out) $ EOF Nothing
+
+-- | Map a function over chunks, running in a separate (light weight)
+-- thread for each chunk.
+--
+-- XXX Isn't actually parallel...
+
+mapChunksMP :: (Monad m, Nullable a) => (a -> m b) -> Enumeratee a b m c
+mapChunksMP = mapChunksM
 

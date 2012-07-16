@@ -1,4 +1,5 @@
 {-# LANGUAGE ForeignFunctionInterface, BangPatterns, MultiParamTypeClasses, OverloadedStrings #-}
+-- :vim:syn=haskell:
 
 -- | Handling of BGZF files.  Right now, we have an Enumeratee each for
 -- input and output.  The input iteratee can optionally supply virtual
@@ -16,21 +17,19 @@ module Bio.File.Bgzf (
 import Bio.Iteratee
 -- import Control.Exception
 import Control.Monad
--- import Foreign.Marshal.Alloc
--- import Foreign.Marshal.Utils
--- import Foreign.Storable
--- import Foreign.C.Types
--- import Foreign.Ptr
-import Data.Binary.Put
-import Data.Binary.Strict.Get
+import Foreign.Marshal.Alloc
+import Foreign.Storable
+import Foreign.C.String
+import Foreign.C.Types
+import Foreign.Ptr
 import Data.Bits
 import Data.Monoid
-import Data.Word                            ( Word16, Word8 )
+import Data.Word                            ( Word32, Word16, Word8 )
 
 import qualified Codec.Compression.GZip     as Z
 import qualified Data.ByteString            as S
 import qualified Data.ByteString.Lazy       as L
--- import qualified Data.ByteString.Unsafe     as S
+import qualified Data.ByteString.Unsafe     as S
 import qualified Data.Iteratee.ListLike     as I
 import qualified Data.ListLike              as LL
 
@@ -135,8 +134,7 @@ decompressWith blk !off inner = I.isFinished >>= go
 
     
 
-   -- Doesn't work.  Maybe because 'uncompress'
-   -- gets confused by the headers?
+   -- Doesn't work because 'uncompress' gets confused by the headers
    -- c <- liftIO $ do pu <- mallocBytes (fromIntegral usize)
                     -- S.unsafeUseAsCStringLen comp $ \(pc, lc) -> do
                         -- guard (lc == fromIntegral csize + 1)
@@ -217,7 +215,6 @@ maxBlockSize = 65450
 bgzfEofMarker :: S.ByteString
 bgzfEofMarker = "\x1f\x8b\x8\x4\0\0\0\0\0\xff\x6\0\x42\x43\x2\0\x1b\0\x3\0\0\0\0\0\0\0\0\0"
 
-
 -- | Compresses a stream of @ByteString@s into a stream of Bgzf blocks.
 -- We accumulate an uncompressed block as long as adding a new chunk to
 -- it doesn't exceed the max. block size.  If we receive an empty chunk
@@ -227,59 +224,30 @@ bgzfEofMarker = "\x1f\x8b\x8\x4\0\0\0\0\0\xff\x6\0\x42\x43\x2\0\x1b\0\x3\0\0\0\0
 --
 -- XXX Need a way to write an index "on the side".  Additional output
 -- streams?  (Implicitly) pair two @Iteratee@s, similar to @I.pair@?
-compress :: Monad m => Z.CompressionLevel -> Enumeratee S.ByteString S.ByteString m a
-compress lv = eneeCheckIfDone (liftI . step 0 [])  
+compress :: MonadIO m => Int -> Enumeratee S.ByteString S.ByteString m a
+compress lv = eneeCheckIfDone (liftI . step 0 []) ><> mapChunksMP (liftIO . compress1 lv)
   where
     step    _ acc it c@(EOF _) = step1 it
       where
-        step1 i = eneeCheckIfDone step2 . i . Chunk $ compress1 lv acc
-        step2 i = eneeCheckIfDone step3 . i . Chunk $ bgzfEofMarker
+        step1 i | null acc  = step2 i 
+                | otherwise = eneeCheckIfDone step2 . i $ Chunk acc
+        step2 i = eneeCheckIfDone step3 . i $ Chunk []
         step3 i = idone (liftI i) c
 
     step alen acc it (Chunk c) 
         | alen + S.length c < maxBlockSize
             = liftI $ step (alen + S.length c) (c:acc) it
 
-        | S.length c < maxBlockSize
-            = eneeCheckIfDone (liftI . step (S.length c) [c]) . it . Chunk $ compress1 lv acc     -- XXX index?
+        | S.length c < maxBlockSize 
+            = eneeCheckIfDone (liftI . step (S.length c) [c]) . it $ Chunk acc     -- XXX index?
 
         | otherwise = loop c it -- XXX index?
 
     loop s i | S.null s  = liftI $ step 0 [] i
-             | otherwise = eneeCheckIfDone (loop (S.drop maxBlockSize s)) . i . Chunk $ compress1 lv [S.take maxBlockSize s]
+             | otherwise = eneeCheckIfDone (loop (S.drop maxBlockSize s)) . i $ Chunk [S.take maxBlockSize s]
 
 
 -- | Compress a collection of strings into a single BGZF block.
-{-
-compress1 :: Z.CompressionLevel -> [S.ByteString] -> S.ByteString
-compress1 _lv ss | sum (map S.length ss) > maxBlockSize = error "Trying to create too big a BGZF block."
-compress1  lv ss = S.concat (L.toChunks hdr) `S.append` rest
-  where
-    z = S.concat $ L.toChunks $ Z.compressWith (Z.defaultCompressParams { Z.compressLevel = lv })
-                                               (L.fromChunks (reverse ss))
-    (Right hdr, rest) = runGet patch_header z
-    patch_header = do !k <- getWord16le
-                      !m <- getWord8
-                      !f <- getWord8
-                      !t <- getWord32le
-                      !xf <- getWord8
-                      !_os <- getWord8
-                      !xlen <- if f `testBit` 2 then getWord16le else return 0
-
-                      return $! runPut $ do 
-                            putWord16le k
-                            putWord8 m
-                            putWord8 $ f .|. 4
-                            putWord32le t
-                            putWord8 xf
-                            putWord8 0xff   -- unknown OS
-                            putWord16le $ xlen + 6
-                            putWord8 66
-                            putWord8 67
-                            putWord16le 2
-                            putWord16le . fromIntegral $ S.length z + 5 + 
-                                if f `testBit` 2 then 0 else 2
--}
 
 -- Okay, performance was lacking... let's do it again, in a more direct
 -- style.  We build out block manually.  First check if the compressed
@@ -293,6 +261,7 @@ compress1  lv ss = S.concat (L.toChunks hdr) `S.append` rest
 -- anyway.  Hence, run in IO.
 
 compress1 :: Int -> [S.ByteString] -> IO S.ByteString
+compress1 _lv [] = return bgzfEofMarker
 compress1 lv ss0 = do
     let input_length = sum (map S.length ss0)
     when (input_length > maxBlockSize) $ error "Trying to create too big a BGZF block; this is a bug."
@@ -300,8 +269,8 @@ compress1 lv ss0 = do
 
     -- steal header from the EOF marker (length is wrong for now)
     S.unsafeUseAsCString bgzfEofMarker $ \eof ->
-        forM_ [0,4..16] $ \o -> do x <- peekByteOff i eof
-                                   pokeByteOff i buf (x::Word32)
+        forM_ [0,4..16] $ \o -> do x <- peekByteOff eof o
+                                   pokeByteOff buf o (x::Word32)
 
     -- set up ZStream
     stream <- mallocBytes (#{const sizeof(z_stream)})
@@ -314,40 +283,59 @@ compress1 lv ss0 = do
     #{poke z_stream, avail_in}  stream (0 :: CUInt)
     #{poke z_stream, avail_out} stream (65536-18-8 :: CUInt)
  
-    z_err <- c_deflateInit2 stream lv {#const Z_DEFLATED} (-16)
-             {#const Z_DEFAULT_MEM_LEVEL} {#const Z_DEFAULT_STRATEGY}
-    when (z_err /= {#const Z_OK}) $ error "deflateInit2 failed"
+    z_check "deflateInit2" $ c_deflateInit2 stream (fromIntegral lv) #{const Z_DEFLATED}
+                                            (-15) 8 #{const Z_DEFAULT_STRATEGY}
 
     -- loop over the fragments.  In reverse order!
     let loop (s:ss) = do 
-            loop ss
-            unsafeUseAsCString s $ \p -> do
-                let l = fromIntegral $ S.length s
-                #{poke z_stream, next_in} stream p
-                #{poke z_stream, avail_in} stream (l :: CUInt)
-                z_err <- c_deflate stream 0
-                when (z_err /= #{const Z_OK}) $ error "deflate failed"
-        loop [] = do z_err <- c_deflate stream #{const Z_FINISH}
-                     when (z_err /= #{const Z_OK}) $ error "deflate failed"
-    loop ss0
+            crc <- loop ss
+            S.unsafeUseAsCString s $ \p ->
+              case fromIntegral $ S.length s of
+                l | l > 0 -> do
+                    #{poke z_stream, next_in} stream p
+                    #{poke z_stream, avail_in} stream (l :: CUInt)
+                    z_check "deflate" $ c_deflate stream #{const Z_NO_FLUSH}
+                    c_crc32 crc p l
+                _ -> return crc    
+        loop [] = c_crc32 0 nullPtr 0
+    crc <- loop ss0
         
-    z_err <- c_deflateEnd stream
-    when (z_err /= #{const Z_OK}) $ error "deflateEnd failed"
+    z_check "deflate" $ c_deflate stream #{const Z_FINISH}
+    z_check "deflateEnd" $ c_deflateEnd stream
 
-    compressed_length <- (+) (18+8) <$> #{peek z_stream, total_out}
-    when (compressed_length > maxBlockSize) $ error "produced too big a block" 
+    compressed_length <- (+) (18+8) `fmap` #{peek z_stream, total_out} stream
+    when (compressed_length > 65536) $ error "produced too big a block" 
     
     -- set length in header
-    pokeByteOff 16 buf (fromIntegral $ (compressed_length-1) .&. 0xff :: Word8)
-    pokeByteOff 17 buf (fromIntegral $ (compressed_length-1) `shiftR` 8 :: Word8)
+    pokeByteOff buf 16 (fromIntegral $ (compressed_length-1) .&. 0xff :: Word8)
+    pokeByteOff buf 17 (fromIntegral $ (compressed_length-1) `shiftR` 8 :: Word8)
 
-    let crc = 0 -- XXX broken!!!1
-    pokeByteOff (compressed_length-8) buf (crc :: Word32)
-    pokeByteOff (compressed_length-4) buf (input_length :: Word32)
+    pokeByteOff buf (compressed_length-8) (fromIntegral crc :: Word32)
+    pokeByteOff buf (compressed_length-4) (fromIntegral input_length :: Word32)
 
-    unsafePackCStringLen buf compressed_length
+    S.unsafePackCStringLen (buf,compressed_length)
+  where
+    z_check msg code = code >>= \c ->
+                       when (c /= #{const Z_OK} && c /= #{const Z_STREAM_END}) $
+                       error $ msg ++ " failed: " ++ show c
 
 
+c_deflateInit2 :: Ptr Word8 -> CInt -> CInt -> CInt -> CInt -> CInt -> IO CInt
+c_deflateInit2 z a b c d e = withCAString #{const_str ZLIB_VERSION} $ \versionStr ->
+    c_deflateInit2_ z a b c d e versionStr (#{const sizeof(z_stream)} :: CInt)
+
+foreign import ccall unsafe "zlib.h deflateInit2_" c_deflateInit2_ ::
+    Ptr Word8 -> CInt -> CInt -> CInt -> CInt -> CInt
+		      -> Ptr CChar -> CInt -> IO CInt
+
+foreign import ccall safe "zlib.h deflate" c_deflate ::
+    Ptr Word8 -> CInt -> IO CInt
+
+foreign import ccall safe "zlib.h deflateEnd" c_deflateEnd ::
+    Ptr Word8 -> IO CInt
+
+foreign import ccall safe "zlib.h crc32" c_crc32 ::
+    CULong -> Ptr CChar -> CUInt -> IO CULong
 
 -- ------------------------------------------------------------------------------------------------- utils
 
@@ -373,4 +361,5 @@ liftBlock = liftI . step
       where
         onDone od hdr (Chunk rest) = od hdr (Chunk $ Block (l + fromIntegral (S.length s-S.length rest)) rest)
         onDone od hdr (EOF     ex) = od hdr (EOF ex)
+
 
