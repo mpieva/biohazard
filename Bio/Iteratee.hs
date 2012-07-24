@@ -26,6 +26,7 @@ module Bio.Iteratee (
     enumAuxFile,
     enumInputs,
     enumDefaultInputs,
+    defaultBufSize,
 
     Ordering'(..),
     mergeSortStreams,
@@ -42,13 +43,15 @@ module Bio.Iteratee (
                     ) where
 
 import Bio.Base ( findAuxFile )
+import Control.Concurrent
+import Control.Concurrent.MVar
 import Control.Monad
 import Control.Monad.CatchIO
 import Control.Monad.IO.Class
 import Control.Monad.Trans.Class
 import Data.Iteratee.Binary
 import Data.Iteratee.Char
-import Data.Iteratee.IO
+import Data.Iteratee.IO hiding ( defaultBufSize )
 import Data.Iteratee.Iteratee
 import Data.Iteratee.Parallel
 import Data.Monoid
@@ -219,6 +222,8 @@ enumInputs xs = go xs
         go ( f :fs) = enumFile defaultBufSize f >=> go fs
         go [      ] = return
 
+defaultBufSize :: Int
+defaultBufSize = 32768
 
 data Ordering' a = Less | Equal a | NotLess
 
@@ -236,10 +241,38 @@ mergeSortStreams comp = eneeCheckIfDone step
         (Nothing, Nothing) -> do idone (liftI out) $ EOF Nothing
 
 -- | Map a function over chunks, running in a separate (light weight)
--- thread for each chunk.
---
--- XXX Isn't actually parallel...
+-- thread for each chunk.  MonadIO is needed for the forking.
+data Ch a = Ch (MVar (Maybe (a, Ch a)))
 
-mapChunksMP :: (Monad m, Nullable a) => (a -> m b) -> Enumeratee a b m c
-mapChunksMP = mapChunksM
+mapChunksMP :: (MonadIO m, Nullable a) => (a -> IO b) -> Enumeratee a b m c
+mapChunksMP f it = do chan <- liftIO $ Ch `liftM` newEmptyMVar
+                      eneeCheckIfDone (liftI . go 0 chan chan) it
+  where
+    maxqueue = 32 -- arbitrary
+
+    go num chan (Ch back) k (EOF mx) = do
+        -- end the channel, then empty it
+        liftIO $ putMVar back Nothing
+        let loop (Ch c) k = do mr <- liftIO $ takeMVar c
+                               case mr of 
+                                   -- end marker
+                                   Nothing -> idone (liftI k) (EOF mx)
+                                   Just (r,c') -> eneeCheckIfDone (loop c') . k $ Chunk r
+        loop chan k
+
+    go num (Ch chan) (Ch back) k (Chunk c) = do
+        -- First try to get the next finished chunk.  If the queue is
+        -- full, don't try, but wait.  If we get something, pass it on
+        -- and recurse immediately.
+        mnext <- liftIO $ if num >= maxqueue then Just `liftM` takeMVar chan else tryTakeMVar chan
+        case mnext of 
+            Just (Just (r,chan')) -> eneeCheckIfDone (\k' -> go (num-1) chan' (Ch back) k' (Chunk c)) . k $ Chunk r
+
+            -- end marker... shouldn't actually happen
+            Just Nothing -> idone (liftI k) (Chunk c)
+
+            -- if we got nothing, fork and recurse
+            Nothing -> do back' <- Ch `liftM` liftIO newEmptyMVar
+                          liftIO . forkIO $ do r <- f c ; putMVar back (Just (r, back'))
+                          liftI $ go (num+1) (Ch chan) back' k
 

@@ -29,9 +29,8 @@
 module Bio.File.Bam (
     module Bio.Base,
 
-    Block,
+    Block(..),
     decompressBgzf,
-    decompressBgzf',
     compressBgzf,
 
     BamrawEnumeratee,
@@ -64,7 +63,17 @@ module Bio.File.Bam (
     writeBamHandle,
     pipeBamOutput,
 
-    BamRaw(..),
+    BamRaw,
+    bamRaw,
+    virt_offset,
+    raw_data,
+    br_qname,
+    br_l_read_name,
+    br_l_seq,
+    br_n_cigar_op,
+    br_flag,
+    br_isFirstMate,
+    br_isPaired,
 
     BamRec(..),
     nullBamRec,
@@ -108,6 +117,7 @@ module Bio.File.Bam (
     flagDuplicate,      isDuplicate,
     flagTrimmed,        isTrimmed,   
     flagMerged,         isMerged,       
+    type_mask,
 
     BamIndex,
     readBamIndex,
@@ -152,6 +162,7 @@ import qualified Control.Monad.CatchIO          as CIO
 import qualified Data.Attoparsec.Char8          as P
 import qualified Data.Binary.Strict.Get         as G
 import qualified Data.ByteString                as S
+import qualified Data.ByteString.Unsafe         as S
 import qualified Data.ByteString.Char8          as B
 import qualified Data.ByteString.Lazy.Char8     as L
 import qualified Data.Foldable                  as F
@@ -164,16 +175,6 @@ import qualified Data.Sequence                  as Z
 -- far, the implementation of the nucleotides is somewhat lacking:  we
 -- do not have support for ambiguity codes, and the "=" symbol is not
 -- understood.
-
-
-decompressBgzf' :: Monad m => Enumeratee S.ByteString Block m a
-decompressBgzf' = decompress'
-
-decompressBgzf :: Monad m => Enumeratee S.ByteString S.ByteString m a
-decompressBgzf = decompress
-
-compressBgzf :: MonadIO m => Int -> Enumeratee S.ByteString S.ByteString m a
-compressBgzf = compress
 
 
 -- | Cigar line in BAM coding
@@ -282,9 +283,11 @@ isBam = msum `liftM` sequence [ isPlainBam, isBgzfBam, isGzipBam ]
 isPlainBam = (\n -> if n == 4 then Just ((>>= lift . run) . decompressPlain . decodeBam) else Nothing) 
              `liftM` i'lookAhead (I.heads "BAM\SOH")
 
-isBgzfBam = (\n -> if n == 4 then Just ((>>= lift . run) . decompress' . decodeBam) else Nothing)
+isBgzfBam = (\n -> if n == 4 then Just ((>>= lift . run) . decompressBgzf . decodeBam) else Nothing)
             `liftM` do b <- isBgzf
-                       if b then i'lookAhead $ joinI $ decompress $ I.heads "BAM\SOH" else return 0
+                       if b then i'lookAhead $ joinI $ decompressBgzf $ joinI $
+                                 mapChunks block_contents $ I.heads "BAM\SOH"
+                            else return 0
 
 isGzipBam  = do b <- isGzip
                 k <- if b then i'lookAhead $ joinI $ enumInflate GZip defaultDecompressParams isPlainBam
@@ -336,7 +339,7 @@ decodeBamSequence :: Monad m => BamIndex -> Refseq -> Enumeratee Block [BamRaw] 
 decodeBamSequence idx refseq iter = case idx ! refseq of
         _ | not (bounds idx `inRange` refseq) -> return iter
         0                                     -> return iter
-        virtoff -> do virtualSeek $ fromIntegral virtoff
+        virtoff -> do seek $ fromIntegral virtoff
                       (decodeBamLoop ><> I.breakE wrong_ref) iter
   where
     wrong_ref br = let a = fromIntegral $ raw_data br `S.index` 0
@@ -476,7 +479,7 @@ encodeBamUncompressed :: MonadIO m => BamMeta -> Enumeratee [S.ByteString] S.Byt
 encodeBamUncompressed = encodeBamWith 0 -- noCompression
 
 encodeBamWith :: MonadIO m => Int -> BamMeta -> Enumeratee [S.ByteString] S.ByteString m a
-encodeBamWith lv meta = eneeBam ><> compress lv
+encodeBamWith lv meta = eneeBam ><> compressBgzf lv
   where
     eneeBam = eneeCheckIfDone (\k -> eneeBam2 . k $ Chunk header)
     eneeBam2 = eneeCheckIfDone (\k -> eneeBam3 . k $ Chunk S.empty)
@@ -891,6 +894,42 @@ showBamMeta (BamMeta h ss os cs) =
 data BamRaw = BamRaw { virt_offset :: {-# UNPACK #-} !FileOffset
                      , raw_data :: {-# UNPACK #-} !S.ByteString }
 
+-- | Smart constructor.  Makes sure we got a at least a full record.
+bamRaw :: FileOffset -> S.ByteString -> BamRaw
+bamRaw o s = if good then r else error $ "broken BAM record " ++ show (S.length s, m) ++
+    show [ 32, br_l_read_name r, br_l_seq r, (br_l_seq r+1) `div` 2, br_n_cigar_op r * 4 ] 
+  where
+    r = BamRaw o s 
+    good | S.length s < 32 = False
+         | otherwise       = S.length s >= m
+    m = sum [ 32, br_l_read_name r, br_l_seq r, (br_l_seq r+1) `div` 2, br_n_cigar_op r * 4 ] 
+
+-- | Accessor for raw bam.
+br_qname :: BamRaw -> S.ByteString
+br_qname r@(BamRaw _ raw) = S.unsafeTake (br_l_read_name r) $ S.unsafeDrop 32 raw
+
+br_l_read_name :: BamRaw -> Int  
+br_l_read_name (BamRaw _ raw) = fromIntegral $ S.unsafeIndex raw 8 - 1
+
+br_l_seq :: BamRaw -> Int
+br_l_seq (BamRaw _ raw) = 
+    fromIntegral (S.unsafeIndex raw 16)             .|. fromIntegral (S.unsafeIndex raw 17) `shiftL`  8 .|.
+    fromIntegral (S.unsafeIndex raw 18) `shiftL` 16 .|. fromIntegral (S.unsafeIndex raw 19) `shiftL` 24
+
+br_n_cigar_op :: BamRaw -> Int
+br_n_cigar_op (BamRaw _ raw) =
+    fromIntegral (S.unsafeIndex raw 12) .|. fromIntegral (S.unsafeIndex raw 13) `shiftL`  8
+
+br_flag :: BamRaw -> Int
+br_flag (BamRaw _ raw) =
+    fromIntegral (S.unsafeIndex raw 14) .|. fromIntegral (S.unsafeIndex raw 15) `shiftL`  8
+
+br_isFirstMate :: BamRaw -> Bool
+br_isFirstMate r = (br_flag r .&. flagFirstMate) /= 0
+
+br_isPaired :: BamRaw -> Bool
+br_isPaired r = (br_flag r .&. flagPaired) /= 0
+
 
 -- | Decode a BAM stream into raw entries.  Note that the entries can be
 -- unpacked using @decodeBamEntry@.  Also note that this is an
@@ -936,7 +975,7 @@ decodeBamLoop = eneeCheckIfDone loop
                                 bsize <- endianRead4 LSB
                                 when (bsize < 32) $ fail "short BAM record"
                                 i'getString (fromIntegral bsize)
-                       eneeCheckIfDone loop . k $ Chunk [BamRaw off raw]
+                       eneeCheckIfDone loop . k $ Chunk [bamRaw off raw]
 
 
 -- | Iteratee-style parser for SAM files, designed to be compatible with
@@ -1017,15 +1056,14 @@ some_file = "/mnt/ngs_data/101203_SOLEXA-GA04_00007_PEDi_MM_QF_SR/Ibis/BWA/s_5_L
 
 bam_test' :: FilePath -> IO ()
 bam_test' = fileDriver $
-            joinI $ decompress'  $
-            joinI $ decodeBam    $
+            joinI $ decompressBgzf $
+            joinI $ decodeBam      $
             dump_bam
             
 bam_test :: FilePath -> IO ()
 bam_test = fileDriverRandom $
-           joinI $ decompress'  $
-           joinI $ do virtualSeek 0
-                      decodeBam dump_bam 
+           joinI $ decompressBgzf $
+           joinI $ seek 0 >> decodeBam dump_bam
 
 dump_bam :: BamMeta -> Iteratee [BamRaw] IO ()
 dump_bam meta = lift (print meta) >> print_names
@@ -1034,7 +1072,7 @@ seek_test :: [Char] -> Word32 -> IO ()
 seek_test fp i = do
     idx <- readBamIndex $ fp ++ ".bai"
     flip fileDriverRandom fp $
-           joinI $ decompress'  $
+           joinI $ decompressBgzf $
            joinI $ decodeBamSequence idx (Refseq i) print_names_and_refs
 
 sam_test :: IO ()
@@ -1053,20 +1091,20 @@ print_names' = I.mapM_ $ B.putStrLn . b_qname
 
 bam2bam_test :: IO ()
 bam2bam_test = withFile "foo.bam" WriteMode $       \hdl ->
-               flip fileDriver some_file $
-               joinI $ decompress' $ 
-               joinI $ decodeBam   $                \meta ->
+               flip fileDriver some_file    $
+               joinI $ decompressBgzf       $
+               joinI $ decodeBam            $       \meta ->
                joinI $ I.mapStream raw_data $
-               joinI $ encodeBam meta $
+               joinI $ encodeBam meta       $
                mapChunksM_ (S.hPut hdl)
 
 sam2bam_test :: IO ()               
-sam2bam_test = withFile "bar.bam" WriteMode $                   \hdl ->
-               flip fileDriver "foo.sam" $
-               joinI $ decodeSam $                              \meta ->
+sam2bam_test = withFile "bar.bam" WriteMode       $             \hdl ->
+               flip fileDriver "foo.sam"          $
+               joinI $ decodeSam                  $             \meta ->
                joinI $ I.mapStream encodeBamEntry $
-               lift (print meta) >>=                            \_ -> 
-               joinI $ encodeBam meta $
+               lift (print meta)                >>=             \_ -> 
+               joinI $ encodeBam meta             $
                mapChunksM_ (S.hPut hdl)
 
 
