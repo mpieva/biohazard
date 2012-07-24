@@ -12,6 +12,7 @@ module Bio.File.Bgzf (
                      ) where
 
 import Bio.Iteratee
+import Control.Concurrent
 import Control.Monad
 import Foreign.Marshal.Alloc
 import Foreign.Storable
@@ -21,7 +22,6 @@ import Foreign.Ptr
 import Data.Bits
 import Data.Monoid
 import Data.Word                            ( Word32, Word16, Word8 )
-import System.IO
 
 import qualified Data.ByteString            as S
 import qualified Data.ByteString.Unsafe     as S
@@ -72,29 +72,63 @@ decompressPlain = eneeCheckIfDone (liftI . step 0)
     step !o it (Chunk s) = eneeCheckIfDone (liftI . step (o + fromIntegral (S.length s))) . it $ Chunk (Block o s)
     step  _ it (EOF  mx) = idone (liftI it) (EOF mx)
 
+newtype Ch a = Ch (MVar (Maybe (a, Ch a)))
+
 -- | Generic decompression where a function determines how to assemble
 -- blocks.
 decompressBgzf :: MonadIO m => Enumeratee S.ByteString Block m a
-decompressBgzf = dc 0
+decompressBgzf it = do chan <- liftIO $ Ch `liftM` newEmptyMVar
+                       dc 0 chan chan 0 it
   where
-    dc !off = eneeCheckIfDonePass $ \k -> go off k . (>>= fromException)
+    maxqueue = 32 :: Int -- arbitrary
 
-    go !off k Nothing = do e <- I.isFinished 
-                           if e then return $ liftI k 
-                                else go' off k
+    dc !num !front !back !off = eneeCheckIfDonePass $ \k -> go num front back off k . (>>= fromException)
 
-    go   _  k (Just (SeekException o)) = do
+    go !num !front !(Ch back) !off k Nothing = do
+            e <- I.isFinished 
+            if e then do liftIO $ putMVar back Nothing
+                         let loop (Ch c) k' = do
+                                mr <- liftIO $ takeMVar c
+                                case mr of 
+                                    Nothing -> return $ liftI k'
+                                    Just (r,c') -> eneeCheckIfDone (loop c') . k' $ Chunk r
+                         loop front k
+                 else go' num front (Ch back) off k
+
+    go !_num !_front !_back !_off k (Just (SeekException !o)) = do
             seek $ o `shiftR` 16
-            dc (o `shiftR` 16) $ do I.drop . fromIntegral $ o .&. 0xffff 
-                                    k $ Chunk mempty
+            -- throw old channel away and recurse
+            -- XXX could kill running threads.  Means I need to keep
+            -- track of them...
+            chan <- liftIO $ Ch `liftM` newEmptyMVar
+            dc 0 chan chan (o `shiftR` 16) $ do
+                    I.drop . fromIntegral $ o .&. 0xffff 
+                    k $ Chunk mempty
 
-    go' !off k = do
-            !(csize,xlen) <- maybe (fail "no BGZF") return =<< get_bgzf_header
-            !comp  <- get_block . fromIntegral $ csize - xlen - 19
-            !crc   <- endianRead4 LSB
-            !isize <- endianRead4 LSB
-            blk <- liftIO $ decompress1 (off `shiftL` 16) comp crc (fromIntegral isize)
-            dc (off + fromIntegral csize + 1) . k $ Chunk blk
+    go' !num !(Ch chan) !(Ch back) !off k = do
+            -- First try to get the next finished chunk.  If the queue is
+            -- full, don't try, but wait.  If we get something, pass it on
+            -- and recurse immediately.
+            mnext <- liftIO $ if num >= maxqueue then Just `liftM` takeMVar chan else tryTakeMVar chan
+            case mnext of 
+                -- something is ready
+                Just (Just (r,chan')) -> dc (num-1) chan' (Ch back) off . k $ Chunk r
+
+                -- end marker... shouldn't actually happen
+                Just Nothing -> return $ liftI k
+
+                -- if we got nothing, read input, fork and recurse
+                Nothing -> do
+                        !(csize,xlen) <- maybe (fail "no BGZF") return =<< get_bgzf_header
+                        !comp  <- get_block . fromIntegral $ csize - xlen - 19
+                        !crc   <- endianRead4 LSB
+                        !isize <- endianRead4 LSB
+
+                        back' <- Ch `liftM` liftIO newEmptyMVar
+                        let blk = decompress1 (off `shiftL` 16) comp crc (fromIntegral isize)
+                        _ <- liftIO . forkIO $ do r <- blk ; putMVar back (Just (r, back'))
+
+                        go (num+1) (Ch chan) back' (off + fromIntegral csize + 1) k Nothing
 
     -- Get a block of a prescribed size.  Comes back as a list of
     -- chunks.

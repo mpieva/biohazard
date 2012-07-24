@@ -44,7 +44,6 @@ module Bio.Iteratee (
 
 import Bio.Base ( findAuxFile )
 import Control.Concurrent
-import Control.Concurrent.MVar
 import Control.Monad
 import Control.Monad.CatchIO
 import Control.Monad.IO.Class
@@ -242,25 +241,25 @@ mergeSortStreams comp = eneeCheckIfDone step
 
 -- | Map a function over chunks, running in a separate (light weight)
 -- thread for each chunk.  MonadIO is needed for the forking.
-data Ch a = Ch (MVar (Maybe (a, Ch a)))
+newtype Ch a = Ch (MVar (Maybe (a, Ch a)))
 
 mapChunksMP :: (MonadIO m, Nullable a) => (a -> IO b) -> Enumeratee a b m c
 mapChunksMP f it = do chan <- liftIO $ Ch `liftM` newEmptyMVar
                       eneeCheckIfDone (liftI . go 0 chan chan) it
   where
-    maxqueue = 32 -- arbitrary
+    maxqueue = 32 :: Int -- arbitrary
 
-    go num chan (Ch back) k (EOF mx) = do
+    go !_num !chan (Ch !back) k (EOF mx) = do
         -- end the channel, then empty it
         liftIO $ putMVar back Nothing
-        let loop (Ch c) k = do mr <- liftIO $ takeMVar c
-                               case mr of 
-                                   -- end marker
-                                   Nothing -> idone (liftI k) (EOF mx)
-                                   Just (r,c') -> eneeCheckIfDone (loop c') . k $ Chunk r
+        let loop (Ch c) k' = do mr <- liftIO $ takeMVar c
+                                case mr of 
+                                    -- end marker
+                                    Nothing -> idone (liftI k') (EOF mx)
+                                    Just (r,c') -> eneeCheckIfDone (loop c') . k' $ Chunk r
         loop chan k
 
-    go num (Ch chan) (Ch back) k (Chunk c) = do
+    go !num (Ch !chan) (Ch !back) k (Chunk c) = do
         -- First try to get the next finished chunk.  If the queue is
         -- full, don't try, but wait.  If we get something, pass it on
         -- and recurse immediately.
@@ -273,6 +272,6 @@ mapChunksMP f it = do chan <- liftIO $ Ch `liftM` newEmptyMVar
 
             -- if we got nothing, fork and recurse
             Nothing -> do back' <- Ch `liftM` liftIO newEmptyMVar
-                          liftIO . forkIO $ do r <- f c ; putMVar back (Just (r, back'))
+                          _ <- liftIO . forkIO $ do r <- f c ; putMVar back (Just (r, back'))
                           liftI $ go (num+1) (Ch chan) back' k
 

@@ -140,8 +140,9 @@ import Bio.Iteratee
 import Control.Monad
 import Control.Applicative
 import Data.Array.IArray
-import Data.Array.IO
+import Data.Array.IO                ( IOUArray, newArray_, writeArray )
 import Data.Array.Unboxed
+import Data.Array.Unsafe            ( unsafeFreeze )
 import Data.Attoparsec              ( anyWord8 )
 import Data.Attoparsec.Iteratee
 import Data.Binary.Put
