@@ -65,14 +65,13 @@ rmdup strand_preserved maxq =
     check_sort ><> mapGroups (do_rmdup strand_preserved maxq) ><> check_sort
   where
     same_pos u v = b_cpos u == b_cpos v
-    -- all_same_start (r:rs) = all ((== b_cpos r) . b_cpos) rs
     b_cpos br = (b_rname br, b_pos br)
 
     mapGroups f o = I.tryHead >>= maybe (return o) (\a -> eneeCheckIfDone (mg1 f a []) o)
     mg1 f a acc k = I.tryHead >>= \mb -> case mb of
-                        Nothing -> return . k . Chunk . f $ a : reverse acc
+                        Nothing -> return . k . Chunk . f $ a : acc
                         Just b | same_pos a b -> mg1 f a (b:acc) k
-                               | otherwise -> eneeCheckIfDone (mg1 f b []) . k . Chunk . f $ a : reverse acc
+                               | otherwise -> eneeCheckIfDone (mg1 f b []) . k . Chunk . f $ a : acc
     
 check_sort :: Monad m => Enumeratee [BamRec] [BamRec] m a
 check_sort out = I.tryHead >>= maybe (return out) (\a -> eneeCheckIfDone (step a) out)
@@ -153,7 +152,12 @@ mk_new_md ((HMa, _):cigs) md osq nsq = mk_new_md cigs md         osq          ns
 mk_new_md ((Pad, _):cigs) md osq nsq = mk_new_md cigs md         osq          nsq
 mk_new_md ((Nop, _):cigs) md osq nsq = mk_new_md cigs md         osq          nsq
 
-mk_new_md _ _ _ _ = error "F'ing MD field is f'ed up!"
+mk_new_md cigs ms osq nsq = error $ unlines
+    [ "F'ing MD field is f'ed up when constructing new MD!"
+    , "CIGAR: " ++ show cigs
+    , "MD: " ++ show ms
+    , "refseq: " ++ show osq
+    , "readseq: " ++ show nsq ]
 
 
 consensus :: Word8 -> [ (Nucleotide, Word8) ] -> (Nucleotide, Word8)

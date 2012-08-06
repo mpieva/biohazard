@@ -639,11 +639,19 @@ readMd s | B.null s           = return []
          | otherwise          = (MdRep (toNucleotide $ B.head s) :) <$> readMd (B.tail s)
 
 showMd :: [MdOp] -> B.ByteString
-showMd = B.pack . concatMap s1
+showMd = B.pack . flip s1 []
   where
-    s1 (MdNum i) = show i
-    s1 (MdRep n) = show n
-    s1 (MdDel ns) = '^' : show ns
+    s1 (MdNum  i : MdNum  j : ms) = s1 (MdNum (i+j) : ms)
+    s1 (MdNum  0            : ms) = s1 ms
+    s1 (MdNum  i            : ms) = shows i . s1 ms
+
+    s1 (MdRep  r            : ms) = shows r . s1 ms
+
+    s1 (MdDel d1 : MdDel d2 : ms) = s1 (MdDel (d1++d2) : ms)
+    s1 (MdDel []            : ms) = s1 ms
+    s1 (MdDel ns : MdRep  r : ms) = (:) '^' . shows ns . (:) '0' . shows r . s1 ms
+    s1 (MdDel ns            : ms) = (:) '^' . shows ns . s1 ms
+    s1 [                        ] = id
 
 flagPaired, flagProperlyPaired, flagUnmapped, flagMateUnmapped, flagReversed, flagMateReversed, flagFirstMate, flagSecondMate,
  flagAuxillary, flagFailsQC, flagDuplicate, flagTrimmed, flagMerged :: Int
