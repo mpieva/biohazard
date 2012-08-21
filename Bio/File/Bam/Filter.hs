@@ -63,7 +63,7 @@ complexSimple :: Double -> QualFilter
 complexSimple r b = if p then b else b'
   where
     b' = setQualFlag 'C' $ b { b_flag = b_flag b .|. flagFailsQC }
-    p  = let counts = [ length $ filter ((==) x) (b_seq b) | x <- [A,C,G,T] ]
+    p  = let counts = [ length $ filter ((==) x) (b_seq b) | x <- properBases ]
              lim = floor $ r * fromIntegral (sum counts)
          in all (<= lim) counts
 
@@ -74,7 +74,7 @@ complexEntropy :: Double -> QualFilter
 complexEntropy r b = if p then b else b'
   where
     b' = setQualFlag 'C' $ b { b_flag = b_flag b .|. flagFailsQC }
-    p = let counts = [ fromIntegral $ length $ filter ((==) x) (b_seq b) | x <- [A,C,G,T] ]
+    p = let counts = [ fromIntegral $ length $ filter ((==) x) (b_seq b) | x <- properBases ]
             total = fromIntegral $ length $ b_seq b
             ent   = sum [ c * log (total / c) | c <- counts ] / log 2
         in ent >= r * total

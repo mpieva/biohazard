@@ -161,10 +161,10 @@ mk_new_md cigs ms osq nsq = error $ unlines
 
 
 consensus :: Word8 -> [ (Nucleotide, Word8) ] -> (Nucleotide, Word8)
-consensus maxq nqs = if qr > 3 then (n0, qr) else (N,0)
+consensus maxq nqs = if qr > 3 then (n0, qr) else (nucN,0)
   where
     accs :: UArray Nucleotide Int
-    accs = accumArray (+) 0 (A,T) [ (n,fromIntegral q) | (n,q) <- nqs, isProperBase n ]
+    accs = accumArray (+) 0 (minBound,maxBound) [ (n,fromIntegral q) | (n,q) <- nqs ]
 
     (n0,q0) : (_,q1) : _ = sortBy (flip $ comparing snd) $ assocs accs
     qr = fromIntegral $ (q0-q1) `min` fromIntegral maxq

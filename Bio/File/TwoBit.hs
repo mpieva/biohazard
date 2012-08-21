@@ -132,14 +132,14 @@ repM :: Monad m => Int -> m a -> m [a]
 repM 0 _ = return []
 repM n m = m >>= \x -> seq x (repM (n-1) m >>= return . (x:))
 
-do_frag :: Int -> Int -> Sense -> I.IntMap Int -> (Integer -> IO L.ByteString) -> Int -> IO [Nucleotide]
+do_frag :: Int -> Int -> Bool -> I.IntMap Int -> (Integer -> IO L.ByteString) -> Int -> IO [Nucleotide]
 do_frag start0 len revcomplp s_blocks raw ofs0 = do
-    dna <- get_dna (case revcomplp of Forward -> fwd_nt ; Reverse -> cmp_nt) 
+    dna <- get_dna (if revcomplp then cmp_nt else fwd_nt)
                    start len final_blocks raw ofs0
-    return $ case revcomplp of { Forward -> dna ; Reverse -> reverse dna }
+    return $ if revcomplp then reverse dna else dna
 
   where
-    start = case revcomplp of Forward -> start0 ; Reverse -> start0 - len
+    start = if revcomplp then start0 - len else start0
     (left_junk, mfirst, left_clipped) = I.splitLookup start s_blocks
 
     left_fragment = case I.maxViewWithKey left_junk of
@@ -164,17 +164,17 @@ do_frag start0 len revcomplp s_blocks raw ofs0 = do
 
     final_blocks = rdrop1 (I.toAscList right_clipped) ++ maybe [] (:[]) right_fragment
 
-    fwd_nt = (!!) [T,C,A,G] . fromIntegral
-    cmp_nt = (!!) [A,G,T,C] . fromIntegral
+    fwd_nt = (!!) [nucT, nucC, nucA, nucG] . fromIntegral
+    cmp_nt = (!!) [nucA, nucG, nucT, nucC] . fromIntegral
 
 
 
 get_dna :: (Word8 -> Nucleotide) -> Int -> Int -> [(Int, Int)] -> (Integer -> IO L.ByteString) -> Int -> IO [Nucleotide]
-get_dna _nt _start total [] _raw _ofs0              = return $ replicate total N
+get_dna _nt _start total [] _raw _ofs0              = return $ replicate total nucN
 get_dna _nt _start total _  _raw _ofs0 | total <= 0 = return []
 get_dna  nt  start total blocks0@((start1, len1) : blocks) raw ofs
     | start /= start1 =
-        (replicate (start1-start) N ++) `fmap`
+        (replicate (start1-start) nucN ++) `fmap`
         get_dna nt start1 (total-start1+start) blocks0 raw ofs
     | otherwise = do
         s <- L.take bytes' `fmap` raw (fromIntegral $ ofs + (ofs' `div` 4))
@@ -187,11 +187,13 @@ get_dna  nt  start total blocks0@((start1, len1) : blocks) raw ofs
 
 
 getSubseq :: TwoBitFile -> Range -> IO [Nucleotide]
-getSubseq tbf (Range { r_pos = Pos { p_seq = chr, p_start = start, p_sense = strand }, r_length = len }) = do
+getSubseq tbf (Range { r_pos = Pos { p_seq = chr, p_start = start }, r_length = len }) = do
              ref <- maybe (fail $ S.unpack chr ++ " doesn't exist") return 
                     $ M.lookup chr (tbf_seqs tbf)
              sq1 <- read_block_index tbf ref
-             do_frag start len strand (tbs_s_blocks sq1) (pGetContents $ tbf_handle tbf) (tbs_dna_offset sq1)
+             let go | start < 0 = do_frag (-start-len) len True
+                    | otherwise = do_frag   start      len False
+             go (tbs_s_blocks sq1) (pGetContents $ tbf_handle tbf) (tbs_dna_offset sq1)
 
 pGetContents :: Handle -> Integer -> IO L.ByteString
 pGetContents hdl ofs = L.fromChunks `fmap` go ofs
@@ -216,17 +218,12 @@ getSeqLength tbf chr = do
 
 -- | limits a range to a position within the actual sequence
 clampPosition :: TwoBitFile -> Range -> IO Range
-clampPosition g (Range (Pos n Forward start) len) = do
+clampPosition g (Range (Pos n start) len) = do
     size <- getSeqLength g n
-    let start' = max 0 start
-        end' = min size (start + len)
-    return $ Range (Pos n Forward start') (end' - start')
 
-clampPosition g (Range (Pos n Reverse start) len) = do
-    size <- getSeqLength g n
-    let start' = min start size
-        end'   = max 0 (start - len)
-    return $ Range (Pos n Reverse start') (start' - end')
+    let start' = if start < 0 then max start (-size) else start
+        end'   = min (start + len) $ if start < 0 then 0 else size
+    return $ Range (Pos n start') (end' - start')
 
 
 getRandomSeq :: TwoBitFile -> IO (([Nucleotide] -> Bool) -> Int -> IO (Range, [Nucleotide]))
@@ -237,10 +234,10 @@ getRandomSeq tbf = do
     let frags = I.fromList $ zip (scanl (+) 0 lengths) names
 
     let draw good l = do p <- randomRIO (1,total)
-                         d <- (!!) [Forward,Reverse] `liftM` randomRIO (0,1)
+                         d <- randomRIO (False,True)
                          let Just ((o,s),_) = I.maxViewWithKey $ fst $ I.split p frags
-                         r' <- clampPosition tbf $ Range (Pos s d (p-o)) l
-                         sq <- getSubseq tbf r'
+                         r' <- clampPosition tbf $ Range (Pos s (p-o)) l
+                         sq <- getSubseq tbf $ if d then r' else reverseRange r'
                          if r_length r' == l && good sq
                            then return (r', sq)
                            else draw good l

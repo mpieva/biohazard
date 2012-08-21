@@ -544,12 +544,12 @@ encodeBamEntry = S.concat . L.toChunks . runPut . putEntry
     encodeCigar (op,l) = fromEnum op .|. l `shiftL` 4
 
     putSeq :: [Nucleotide] -> Put
-    putSeq (a:b:ns) = putWord8 (num a `shiftL` 4 .|. num b) >> putSeq ns
+    putSeq (a:b:ns) = putWord8 (unN a `shiftL` 4 .|. num b) >> putSeq ns
     putSeq [a]      = putWord8 (num a `shiftL` 4)
     putSeq [ ]      = return ()
   
     num :: Nucleotide -> Word8
-    num A = 1 ; num C = 2 ; num G = 4 ; num T = 8 ; num N = 15 ; num _ = 0
+    num (N x) = x .&. 15
 
 -- | writes stuff to a BAM file                     
 -- We generate BAM with dynamic blocks, then stream them out to the
