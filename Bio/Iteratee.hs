@@ -7,13 +7,15 @@ module Bio.Iteratee (
     groupStreamOn,
     i'getString,
     i'lookAhead,
-    mapStream,
     mapStreamM,
     filterStream,
     filterStreamM,
     foldStream,
     foldStreamM,
     mapChunksMP,
+
+    I.mapStream,
+    I.takeWhileE,
 
     ($==),
     ListLike,
@@ -183,11 +185,6 @@ filterStreamM k = mapChunksM (go id)
              | otherwise = do p <- k (LL.head s)
                               let acc' = if p then LL.cons (LL.head s) . acc else acc
                               go acc' (LL.tail s)
-
--- | Map a function over an @Iteratee@.
-mapStream :: (Monad m, ListLike (s el) el, ListLike (s el') el', NullPoint (s el), LooseMap s el el')
-          => (el -> el') -> Enumeratee (s el) (s el') m a
-mapStream = I.mapStream
 
 -- | Map a monadic function over an @Iteratee@.
 mapStreamM :: (Monad m, ListLike (s el) el, ListLike (s el') el', NullPoint (s el), Nullable (s el), LooseMap s el el')

@@ -56,13 +56,18 @@ import qualified Data.Iteratee as I
 -- to a maximum, the MD field is updated and the XP field is assigned
 -- the number of reads in the original cluster.  The new MAPQ becomes
 -- the RMSQ of the map qualities of all reads.
+--
+-- Treatment of Read Groups:  We generalize by providing a "label"
+-- function; only reads that have the same label are considered
+-- duplicates of each other.  The typical label function would extract
+-- read groups, libraries or samples.
 
-rmdup :: Monad m => Bool -> Word8 -> Enumeratee [BamRec] [BamRec] m a 
-rmdup strand_preserved maxq =
+rmdup :: (Monad m, Ord l) => (BamRec -> l) -> Bool -> Word8 -> Enumeratee [BamRec] [BamRec] m a 
+rmdup label strand_preserved maxq =
     -- Easiest way to go about this:  We simply collect everything that
     -- starts at some specific coordinate and group it appropriately.
     -- Treat the groups separately, output, go on.
-    check_sort ><> mapGroups (do_rmdup strand_preserved maxq) ><> check_sort
+    check_sort ><> mapGroups (do_rmdup label strand_preserved maxq) ><> check_sort
   where
     same_pos u v = b_cpos u == b_cpos v
     b_cpos br = (b_rname br, b_pos br)
@@ -80,8 +85,8 @@ check_sort out = I.tryHead >>= maybe (return out) (\a -> eneeCheckIfDone (step a
     step' a k b | (b_rname a, b_pos a) > (b_rname b, b_pos b) = fail "sorting violated"
                 | otherwise = eneeCheckIfDone (step b) . k $ Chunk [a]
 
-do_rmdup :: Bool -> Word8 -> [BamRec] -> [BamRec]
-do_rmdup strand_preserved maxq rds = map (collapse maxq) $ filter (not . null) groups
+do_rmdup :: Ord l => (BamRec -> l) -> Bool -> Word8 -> [BamRec] -> [BamRec]
+do_rmdup label strand_preserved maxq rds = map (collapse maxq) $ filter (not . null) groups
   where
     (pairs, singles) = partition isPaired rds
     (merged, true_singles) = partition isMergeTrimmed singles
@@ -92,11 +97,11 @@ do_rmdup strand_preserved maxq rds = map (collapse maxq) $ filter (not . null) g
     b_aln_len = cigarToAlnLen . b_cigar
     b_mate_pos br = (b_mrnm br, b_mpos br)
 
-    group'sort f = groupBy (\a b -> f a == f b) . sortBy (comparing f)
+    group'sort f = groupBy (\a b -> compare (f a) (f b) == EQ) . sortBy (comparing f)
 
-    groups = true_singles :
-             group'sort (\b -> (b_aln_len b,  strand_preserved && isReversed  b)) merged ++ 
-             group'sort (\b -> (b_mate_pos b, strand_preserved && isFirstMate b)) pairs
+    groups = group'sort (\b -> (label b,               strand_preserved && isReversed  b)) true_singles ++
+             group'sort (\b -> (label b, b_aln_len b,  strand_preserved && isReversed  b)) merged ++ 
+             group'sort (\b -> (label b, b_mate_pos b, strand_preserved && isFirstMate b)) pairs
 
 collapse :: Word8 -> [BamRec] -> BamRec
 collapse maxq [br] = br { b_qual = SB.map (min maxq) $ b_qual br, b_virtual_offset = 0 }
