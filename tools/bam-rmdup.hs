@@ -4,8 +4,6 @@ import Bio.File.Bam.Rmdup
 import Bio.File.Bam.Fastq ( removeWarts )
 import Bio.Iteratee
 import Control.Monad
-import Data.ByteString ( ByteString )
-import Data.Monoid
 import System.Console.GetOpt
 import System.Environment ( getArgs, getProgName )
 import System.Exit
@@ -101,11 +99,11 @@ is_aligned br | not (isValidRefseq (b_rname br)) = False
 
 
 enum_all_input_files :: [FilePath] -> Enumerator' BamMeta [BamRec] IO a
-enum_all_input_files [  ] = enum_input_file "-"
-enum_all_input_files fps0 = go fps0
+enum_all_input_files [        ] = enum_input_file "-"
+enum_all_input_files (fp0:fps0) = go fp0 fps0
   where
-    go [  fp  ] = enum_input_file fp
-    go (fp:fps) = go fps ? enum_input_file fp 
+    go fp [       ] = enum_input_file fp
+    go fp (fp1:fps) = go fp1 fps ? enum_input_file fp 
     a ? b = mergeEnums' a b (const combineCoordinates)
 
 basicFilters :: Monad m => Enumeratee [BamRec] [BamRec] m a
@@ -127,7 +125,7 @@ enum_input_file' path = decodeAnyBamOrSamFile path
 progress :: MonadIO m => (String -> IO ()) -> Refs -> Enumeratee [BamRec] [BamRec] m a
 progress put refs = eneeCheckIfDone (liftI . go 0)
   where
-    go !n k (EOF mx) = do liftIO $ put "\27[KDone.\n" 
+    go !_ k (EOF mx) = do liftIO $ put "\27[KDone.\n" 
                           idone (liftI k) (EOF mx)
     
     go !n k (Chunk []) = liftI $ go n k

@@ -2,25 +2,27 @@ set -e
 version=$( awk '/Version:/ { print $2 }' biohazard.cabal )
 echo "Building and installing biohazard-${version}"
 
+STOW="/home/public/usr64/stow"
+DEST="${STOW}/biohazard-${version}"
+STAR="dist/biohazard-${version}.tar.gz"
+BTAR="dist/biohazard-${version}_x86_64.tar.gz"
+
 cabal clean
-cabal configure --ghc-options=-Wall -O2 --prefix=/home/public/usr64/stow/biohazard-${version}
+cabal configure --ghc-options=-Wall -O2 "--prefix=${DEST}"
 cabal build
 if which cabal-src-install ; then
-    cabal-src-install --prefix=/home/public/usr64/stow/biohazard-${version}
+    cabal-src-install "--prefix=${DEST}"
 else
-    cabal install --prefix=/home/public/usr64/stow/biohazard-${version}
+    cabal install "--prefix=${DEST}"
 fi
 cabal sdist
 
 (
-  cd /home/public/usr64/stow
-  stow -D biohazard-[0-9]*
-  stow biohazard-${version}
-  tar -czf /var/tmp/biohazard-${version}_x86_64.tar.gz biohazard-${version}
+  cd "${STOW}"
+  stow -D "biohazard-[0-9]*"
+  stow "biohazard-${version}"
 )
+tar -czf "${BTAR}" -C "${STOW}" "biohazard-${version}"
 
 echo "SCP to bioinf..."
-scp dist/biohazard-${version}.tar.gz \
-scp /var/tmp/biohazard-${version}_x86_64.tar.gz \
-    bioinf:htdocs/biohazard/
-rm /var/tmp/biohazard-${version}_x86_64.tar.gz 
+scp "${STAR}" "${BTAR}" bioinf:htdocs/biohazard/
