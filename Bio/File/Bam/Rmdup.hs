@@ -105,8 +105,7 @@ do_rmdup label strand_preserved maxq rds = map (collapse maxq) $ filter (not . n
 
 collapse :: Word8 -> [BamRec] -> BamRec
 collapse maxq [br] = br { b_qual = SB.map (min maxq) $ b_qual br, b_virtual_offset = 0 }
-collapse maxq  brs = b0 { b_exts = M.insert "XP" (Int (foldl' oplus 0 (map get_xp brs))) $
-                                   M.insert "MD" (Text $ showMd md') $ (b_exts b0)
+collapse maxq  brs = b0 { b_exts = xp' $ md' $ b_exts b0
                         , b_mapq = rmsq $ map b_mapq brs'
                         , b_cigar = Cigar cigar'
                         , b_seq = cons_seq
@@ -127,12 +126,16 @@ collapse maxq  brs = b0 { b_exts = M.insert "XP" (Int (foldl' oplus 0 (map get_x
     -- majority vote on the cigar lines, then filter
     cigar' = head . maximumBy (comparing length) . group . sort $ map (unCigar . b_cigar) brs
     brs' = filter ((==) cigar' . unCigar . b_cigar) brs
-    (seq1, md1) : _ = [ (b_seq b,md) | b <- brs', Just md <- [ getMd b ] ]
+    get_xp br = case M.lookup "XP" (b_exts br) of Just (Int i) -> i ; _ -> 1
 
     (cons_seq, cons_qual) = unzip $ map (consensus maxq) $ transpose $ map (\b -> zip (b_seq b) (SB.unpack $ b_qual b)) brs'
-    md' = mk_new_md cigar' md1 seq1 cons_seq
 
-    get_xp br = case M.lookup "XP" (b_exts br) of Just (Int i) -> i ; _ -> 1
+    xp' = M.insert "XP" (Int $ foldl' oplus 0 $ map get_xp brs)
+
+    md' = case [ (b_seq b,md) | b <- brs', Just md <- [ getMd b ] ] of
+            [             ] -> id
+            (seq1, md1) : _ -> M.insert "MD" (Text $ showMd $ mk_new_md cigar' md1 seq1 cons_seq)
+                
 
 mk_new_md :: [(CigOp, Int)] -> [MdOp] -> [Nucleotide] -> [Nucleotide] -> [MdOp]
 mk_new_md [] [] [] [] = []

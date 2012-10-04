@@ -628,6 +628,7 @@ data MdOp = MdNum Int | MdRep Nucleotide | MdDel [Nucleotide] deriving Show
 getMd :: BamRec -> Maybe [MdOp]
 getMd r = case M.lookup "MD" $ b_exts r of
     Just (Text mdfield) -> readMd mdfield
+    Just (Char mdfield) -> readMd $ S.singleton mdfield
     _                   -> Nothing
 
 readMd :: B.ByteString -> Maybe [MdOp]

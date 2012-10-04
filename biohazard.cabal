@@ -88,3 +88,10 @@ Test-Suite test-biohazard
                        iteratee-compress
 
 
+Executable bam-rmdup
+  Main-is:             tools/bam-rmdup.hs
+  Build-depends:       bytestring, containers, base >=4, binary, array,
+                       zlib, attoparsec-iteratee, attoparsec, iteratee,
+                       transformers, binary-strict, ListLike,
+                       MonadCatchIO-transformers, iteratee-compress,
+                       filepath, directory, biohazard
