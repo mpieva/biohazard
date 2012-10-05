@@ -7,7 +7,7 @@ Name:                biohazard
 -- The package version. See the Haskell package versioning policy
 -- (http://www.haskell.org/haskellwiki/Package_versioning_policy) for
 -- standards guiding when and how versions should be incremented.
-Version:             0.4.0
+Version:             0.4.1
 
 -- A short (one-line) description of the package.
 Synopsis:            bioinformatics support library
@@ -88,8 +88,48 @@ Test-Suite test-biohazard
                        iteratee-compress
 
 
+Executable bam-meld
+  Main-is:             tools/bam-meld.hs
+  Build-depends:       bytestring, containers, base >=4, binary, array,
+                       zlib, attoparsec-iteratee, attoparsec, iteratee,
+                       transformers, binary-strict, ListLike,
+                       MonadCatchIO-transformers, iteratee-compress,
+                       filepath, directory, biohazard
+
 Executable bam-rmdup
   Main-is:             tools/bam-rmdup.hs
+  Build-depends:       bytestring, containers, base >=4, binary, array,
+                       zlib, attoparsec-iteratee, attoparsec, iteratee,
+                       transformers, binary-strict, ListLike,
+                       MonadCatchIO-transformers, iteratee-compress,
+                       filepath, directory, biohazard
+
+Executable bam-trim
+  Main-is:             tools/bam-trim.hs
+  Build-depends:       bytestring, containers, base >=4, binary, array,
+                       zlib, attoparsec-iteratee, attoparsec, iteratee,
+                       transformers, binary-strict, ListLike,
+                       MonadCatchIO-transformers, iteratee-compress,
+                       filepath, directory, biohazard
+
+Executable count-coverage
+  Main-is:             tools/count-coverage.hs
+  Build-depends:       bytestring, containers, base >=4, binary, array,
+                       zlib, attoparsec-iteratee, attoparsec, iteratee,
+                       transformers, binary-strict, ListLike,
+                       MonadCatchIO-transformers, iteratee-compress,
+                       filepath, directory, biohazard
+
+Executable glf-consensus
+  Main-is:             tools/glf-consensus.hs
+  Build-depends:       bytestring, containers, base >=4, binary, array,
+                       zlib, attoparsec-iteratee, attoparsec, iteratee,
+                       transformers, binary-strict, ListLike,
+                       MonadCatchIO-transformers, iteratee-compress,
+                       filepath, directory, biohazard
+
+Executable wiggle-coverage
+  Main-is:             tools/wiggle-coverage.hs
   Build-depends:       bytestring, containers, base >=4, binary, array,
                        zlib, attoparsec-iteratee, attoparsec, iteratee,
                        transformers, binary-strict, ListLike,
