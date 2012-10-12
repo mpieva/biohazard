@@ -4,6 +4,8 @@ import Bio.File.Bam.Rmdup
 import Bio.File.Bam.Fastq ( removeWarts )
 import Bio.Iteratee
 import Control.Monad
+import Data.Bits
+import Data.Maybe
 import System.Console.GetOpt
 import System.Environment ( getArgs, getProgName )
 import System.Exit
@@ -15,17 +17,21 @@ data Conf = Conf {
     output :: BamMeta -> Iteratee [BamRec] IO (),
     max_qual :: Int,
     strand_preserved :: Bool,
+    filter_enee :: BamRec -> Maybe BamRec,
     debug :: String -> IO () }
 
 defaults :: Conf
 defaults = Conf { output = writeBamHandle stdout
                 , max_qual = 60
                 , strand_preserved = True
+                , filter_enee = is_aligned
                 , debug = \_ -> return () }
 
 options :: [OptDescr (Conf -> IO Conf)]
 options = [
     Option  "o" ["output"]       (ReqArg set_output "FILE") "Write to FILE (default: stdout)",
+    Option  "p" ["improper-pairs"] (NoArg  set_improper)    "Include improper pairs",
+    Option  "1" ["single-read"]  (NoArg  set_single)        "Pretend there is no second mate",
     Option  "Q" ["max-qual"]     (ReqArg set_qual "QUAL")   "Set maximum quality after consensus call to QUAL",
     Option  "s" ["no-strand"]    (NoArg  set_no_strand)     "Strand of alignments is uninformative",
     Option  "v" ["verbose"]      (NoArg  set_verbose)       "Print more diagnostics",
@@ -35,6 +41,8 @@ options = [
     set_qual    n c = readIO n >>= \a -> return $ c { max_qual = a }
     set_no_strand c =                    return $ c { strand_preserved = False }
     set_verbose   c =                    return $ c { debug = hPutStr stderr }
+    set_improper  c =                    return $ c { filter_enee = Just }
+    set_single    c =                    return $ c { filter_enee = make_single }
 
     usage _ = do p <- getProgName
                  hPutStrLn stderr $ usageInfo (p ++ info)  options 
@@ -83,20 +91,32 @@ main = do
                 debug "mapping of read groups to libraries:\n"
                 mapM_ debug [ unpackSeqid k ++ " --> " ++ unpackSeqid v ++ "\n" | (k,v) <- M.toList tbl ]
 
-       joinI $ takeWhileE is_halfway_aligned $
-           joinI $ filterStream is_aligned $ 
+       joinI $ mapChunks (mapMaybe filter_enee) $
            joinI $ progress debug (meta_refs hdr) $
-           joinI $ rmdup (get_library tbl) strand_preserved (fromIntegral $ min 255 max_qual) $
+           joinI $ rmdup (get_library tbl) strand_preserved (fromIntegral $ min 93 max_qual) $
            output hdr
 
 is_halfway_aligned :: BamRec -> Bool
 is_halfway_aligned br = not (isUnmapped br) || not (isMateUnmapped br)
 
-is_aligned :: BamRec -> Bool
-is_aligned br | not (isValidRefseq (b_rname br)) = False 
-              | isPaired br = not (isUnmapped br) && not (isMateUnmapped br)
-              | otherwise   = not (isUnmapped br)
+is_aligned :: BamRec -> Maybe BamRec
+is_aligned br | isUnmapped br || not (isValidRefseq (b_rname br)) = Nothing
+              | isPaired br && isMateUnmapped br                  = Nothing
+              | otherwise                                         = Just br
 
+make_single :: BamRec -> Maybe BamRec
+make_single br | isPaired br && isSecondMate br = Nothing
+               | isUnmapped br                  = Nothing
+               | not (isPaired br)              = Just br
+               | otherwise = Just br { b_flag = b_flag br .&. complement pair_flags
+                                     , b_mpos = invalidPos
+                                     , b_mrnm = invalidRefseq
+                                     , b_isize = 0 }
+  where                                    
+    pair_flags = flagPaired .|. flagProperlyPaired .|.
+                 flagFirstMate .|. flagSecondMate .|.
+                 flagMateUnmapped
+                                
 
 enum_all_input_files :: [FilePath] -> Enumerator' BamMeta [BamRec] IO a
 enum_all_input_files [        ] = enum_input_file "-"
@@ -107,12 +127,7 @@ enum_all_input_files (fp0:fps0) = go fp0 fps0
     a ? b = mergeEnums' a b (const combineCoordinates)
 
 basicFilters :: Monad m => Enumeratee [BamRec] [BamRec] m a
-basicFilters = mapStream removeWarts ><> filterStream checkFlags
-
-checkFlags :: BamRec -> Bool
-checkFlags br | isPaired br = not $ isUnmapped br && isMateUnmapped br
-              | otherwise   = not $ isFailsQC br || isUnmapped br
-
+basicFilters = mapStream removeWarts ><> takeWhileE is_halfway_aligned
 
 enum_input_file :: MonadCatchIO m => FilePath -> Enumerator' BamMeta [BamRec] m a
 enum_input_file f it = enum_input_file' f >=> run $ \hdr -> basicFilters $ it hdr

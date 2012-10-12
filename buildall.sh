@@ -19,7 +19,7 @@ cabal sdist
 
 (
   cd "${STOW}"
-  stow -D "biohazard-[0-9]*"
+  stow -D biohazard-[0-9]*
   stow "biohazard-${version}"
 )
 tar -czf "${BTAR}" -C "${STOW}" "biohazard-${version}"
