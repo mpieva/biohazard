@@ -5,7 +5,7 @@
 
 {-# LANGUAGE BangPatterns #-}
 module Bio.File.Bam.Filter (
-    filterPairs, QualFilter,
+    filterPairs, LoneMates(..), QualFilter,
     complexSimple, complexEntropy,
     qualityAverage, qualityMinimum,
     qualityFromOldIllumina, qualityFromNewIllumina
@@ -19,6 +19,8 @@ import Data.Word ( Word8 )
 import qualified Data.Iteratee    as I
 import qualified Data.ByteString  as S
 
+data LoneMates = LoneFail | LoneDrop
+
 -- | A filter applied to pairs of reads.  We supply a predicate to be
 -- applied to single reads and one to be applied to pairs.  This
 -- function causes an error if a lone mate is hit.  If this is run on a
@@ -26,8 +28,9 @@ import qualified Data.ByteString  as S
 
 filterPairs :: Monad m => (BamRec -> Bool) 
                        -> (BamRec -> BamRec -> Bool)
+                       -> LoneMates
                        -> Enumeratee [BamRec] [BamRec] m a
-filterPairs ps pp = eneeCheckIfDone step
+filterPairs ps pp lm = eneeCheckIfDone step
   where
     step k = I.tryHead >>= step' k
     step' k Nothing = return $ liftI k
@@ -35,12 +38,16 @@ filterPairs ps pp = eneeCheckIfDone step
         | isPaired b = I.tryHead >>= step'' k b
         | otherwise  = if ps b then eneeCheckIfDone step . k $ Chunk [b] else step k
 
-    step'' _ _ Nothing = fail "lone mate"
+    step'' k b Nothing = case lm of LoneFail -> fail $ "lone mate " ++ show (b_qname b)
+                                    LoneDrop -> step k
+
     step'' k b (Just c)
-        | b_rname b /= b_rname c || not (isPaired c) = fail "lone mate"
+        | b_rname b /= b_rname c || not (isPaired c) = case lm of LoneFail -> fail $ "lone mate " ++ show (b_qname b)
+                                                                  LoneDrop -> step' k (Just c)
         | isFirstMate b && isSecondMate c = step''' k b c
         | isFirstMate c && isSecondMate b = step''' k c b
-        | otherwise = fail "strange pair"
+        | otherwise = case lm of LoneFail -> fail $ "strange pair " ++ show (b_qname b)
+                                 LoneDrop -> step' k (Just c)
 
     step''' k b c = if pp b c then eneeCheckIfDone step . k $ Chunk [b,c] else step k        
 
