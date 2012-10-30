@@ -397,20 +397,20 @@ decodeBamEntry (BamRaw offs s) = either error fixup . fst $ G.runGet go s
     -- fixups for changed conventions
     fixup b = (if b_flag b .&. flagLowQuality /= 0 then setQualFlag 'Q' else id) $
               (if b_flag b .&. flagLowComplexity /= 0 then setQualFlag 'C' else id) $
-              b { b_flag = oflags .|. (eflags `shiftL` 16) }
+              b { b_flag = oflags .|. tflags .|. shiftL eflags 16 }
       where
-        flags' = b_flag b .&. complement (flagLowQuality .|. flagLowQuality)
+        flags' = b_flag b .&. complement (flagLowQuality .|. flagLowComplexity)
         oflags | flags' .&. flagPaired == 0 = flags' .&. complement (flagFirstMate .|. flagSecondMate)
                | otherwise                  = flags'
 
-        is_merged = flags' .&. (flagPaired .|. flagFirstMate .|. flagSecondMate) == (flagFirstMate .|. flagSecondMate)
+        is_merged  = flags' .&. (flagPaired .|. flagFirstMate .|. flagSecondMate) == flagFirstMate .|. flagSecondMate
         is_trimmed = flags' .&. (flagPaired .|. flagFirstMate .|. flagSecondMate) == flagSecondMate
 
-        eflags = (if is_merged then flagMerged else 0) .|.
-                 (if is_trimmed then flagTrimmed else 0) .|.
-                 (case M.lookup "XF" (b_exts b) of Just (Int i) -> i ; _ -> 0)
+        tflags = (if is_merged then flagMerged else 0) .|.
+                 (if is_trimmed then flagTrimmed else 0)
+        eflags = case M.lookup "XF" (b_exts b) of Just (Int i) -> i ; _ -> 0
 
-        flagLowQuality = 0x800
+        flagLowQuality    =  0x800
         flagLowComplexity = 0x1000
 
 -- | A collection of extension fields.  The key is actually only two @Char@s, but that proved impractical.
@@ -474,10 +474,10 @@ getByteStringNul = S.init <$> (G.lookAhead (get_len 1) >>= G.getByteString)
 -- hasn't been designed in, yet.
 
 encodeBam :: MonadIO m => BamMeta -> Enumeratee [S.ByteString] S.ByteString m a
-encodeBam = encodeBamWith 6 -- bestCompression
+encodeBam = encodeBamWith 6 -- sensible default compression level
 
 encodeBamUncompressed :: MonadIO m => BamMeta -> Enumeratee [S.ByteString] S.ByteString m a
-encodeBamUncompressed = encodeBamWith 0 -- noCompression
+encodeBamUncompressed = encodeBamWith 0
 
 encodeBamWith :: MonadIO m => Int -> BamMeta -> Enumeratee [S.ByteString] S.ByteString m a
 encodeBamWith lv meta = eneeBam ><> compressBgzf lv

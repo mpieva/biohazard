@@ -5,7 +5,7 @@
 
 {-# LANGUAGE BangPatterns #-}
 module Bio.File.Bam.Filter (
-    filterPairs, LoneMates(..), QualFilter,
+    filterPairs, QualFilter,
     complexSimple, complexEntropy,
     qualityAverage, qualityMinimum,
     qualityFromOldIllumina, qualityFromNewIllumina
@@ -18,38 +18,39 @@ import Data.Word ( Word8 )
 
 import qualified Data.Iteratee    as I
 import qualified Data.ByteString  as S
+import qualified Data.Map         as M
 
-data LoneMates = LoneFail | LoneDrop
+-- | A filter/transformation applied to pairs of reads.  We supply a
+-- predicate to be applied to single reads and one to be applied to
+-- pairs, tha latter can get incomplete pairs, too, if mates have been
+-- separated or filtered asymmetrically.
 
--- | A filter applied to pairs of reads.  We supply a predicate to be
--- applied to single reads and one to be applied to pairs.  This
--- function causes an error if a lone mate is hit.  If this is run on a
--- file sorted by coordinate, an error is almost guaranteed.
-
-filterPairs :: Monad m => (BamRec -> Bool) 
-                       -> (BamRec -> BamRec -> Bool)
-                       -> LoneMates
+filterPairs :: Monad m => (BamRec -> [BamRec])
+                       -> (Maybe BamRec -> Maybe BamRec -> [BamRec])
                        -> Enumeratee [BamRec] [BamRec] m a
-filterPairs ps pp lm = eneeCheckIfDone step
+filterPairs ps pp = eneeCheckIfDone step
   where
     step k = I.tryHead >>= step' k
     step' k Nothing = return $ liftI k
     step' k (Just b)
         | isPaired b = I.tryHead >>= step'' k b
-        | otherwise  = if ps b then eneeCheckIfDone step . k $ Chunk [b] else step k
+        | otherwise  = case ps b of [] -> step k ; b' -> eneeCheckIfDone step . k $ Chunk b'
 
-    step'' k b Nothing = case lm of LoneFail -> fail $ "lone mate " ++ show (b_qname b)
-                                    LoneDrop -> step k
+    step'' k b Nothing = case pp (Just b) Nothing of 
+                            [] -> return $ liftI k
+                            b' -> return $ k $ Chunk b'
 
     step'' k b (Just c)
-        | b_rname b /= b_rname c || not (isPaired c) = case lm of LoneFail -> fail $ "lone mate " ++ show (b_qname b)
-                                                                  LoneDrop -> step' k (Just c)
-        | isFirstMate b && isSecondMate c = step''' k b c
-        | isFirstMate c && isSecondMate b = step''' k c b
-        | otherwise = case lm of LoneFail -> fail $ "strange pair " ++ show (b_qname b)
-                                 LoneDrop -> step' k (Just c)
+        | b_rname b /= b_rname c || not (isPaired c) =
+                let b' = if isSecondMate b then pp Nothing (Just b) else pp (Just b) Nothing
+                in case b' of [] -> step' k (Just c)
+                              _  -> eneeCheckIfDone (\k' -> step' k' (Just c)) . k $ Chunk b'
 
-    step''' k b c = if pp b c then eneeCheckIfDone step . k $ Chunk [b,c] else step k        
+        | isFirstMate c && isSecondMate b = step''' k c b
+        | otherwise                       = step''' k b c
+
+    step''' k b c = case pp (Just b) (Just c) of [] -> step k
+                                                 b' -> eneeCheckIfDone step . k $ Chunk b'
 
 
 -- | A quality filter is simply a transformation on @BamRec@s.  By
@@ -78,13 +79,15 @@ complexSimple r b = if p then b else b'
 -- greater than cutoff.
 {-# INLINE complexEntropy #-}
 complexEntropy :: Double -> QualFilter
-complexEntropy r b = if p then b else b'
+complexEntropy r b = if p then b'' else b'
   where
-    b' = setQualFlag 'C' $ b { b_flag = b_flag b .|. flagFailsQC }
-    p = let counts = [ fromIntegral $ length $ filter ((==) x) (b_seq b) | x <- properBases ]
-            total = fromIntegral $ length $ b_seq b
-            ent   = sum [ c * log (total / c) | c <- counts ] / log 2
-        in ent >= r * total
+    b'' = b { b_exts = M.insert "EN" (Float $ realToFrac $ ent / total) $ b_exts b }
+    b' = setQualFlag 'C' $ b'' { b_flag = b_flag b .|. flagFailsQC }
+    p = ent >= r * total
+    
+    counts = [ length $ filter ((==) x) (b_seq b) | x <- properBases ]
+    total = fromIntegral $ length $ b_seq b
+    ent   = sum [ fromIntegral c * log (total / fromIntegral c) | c <- counts, c /= 0 ] / log 2
 
 -- | Filter on average quality.  Reads without quality string pass.
 {-# INLINE qualityAverage #-}
