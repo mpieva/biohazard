@@ -79,10 +79,9 @@ complexSimple r b = if p then b else b'
 -- greater than cutoff.
 {-# INLINE complexEntropy #-}
 complexEntropy :: Double -> QualFilter
-complexEntropy r b = if p then b'' else b'
+complexEntropy r b = if p then b else b'
   where
-    b'' = b { b_exts = M.insert "EN" (Float $ realToFrac $ ent / total) $ b_exts b }
-    b' = setQualFlag 'C' $ b'' { b_flag = b_flag b .|. flagFailsQC }
+    b' = setQualFlag 'C' $ b { b_flag = b_flag b .|. flagFailsQC }
     p = ent >= r * total
     
     counts = [ length $ filter ((==) x) (b_seq b) | x <- properBases ]
