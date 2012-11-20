@@ -8,9 +8,10 @@ import Data.List
 import Data.Ord
 import Data.Word ( Word8 )
 
-import qualified Data.Map as M
-import qualified Data.ByteString as SB
-import qualified Data.Iteratee as I
+import qualified Data.ByteString     as S
+import qualified Data.Iteratee       as I
+import qualified Data.Map            as M
+import qualified Data.Vector.Generic as V
 
 -- | Removes duplicates from an aligned, sorted BAM stream.
 --
@@ -104,12 +105,12 @@ do_rmdup label strand_preserved maxq rds = map (collapse maxq) $ filter (not . n
              group'sort (\b -> (label b, b_mate_pos b, strand_preserved && isFirstMate b)) pairs
 
 collapse :: Word8 -> [BamRec] -> BamRec
-collapse maxq [br] = br { b_qual = SB.map (min maxq) $ b_qual br, b_virtual_offset = 0 }
-collapse maxq  brs = b0 { b_exts = xp' $ md' $ b_exts b0
-                        , b_mapq = rmsq $ map b_mapq brs'
+collapse maxq [br] = br { b_qual  = S.map (min maxq) $ b_qual br, b_virtual_offset = 0 }
+collapse maxq  brs = b0 { b_exts  = xp' $ md' $ b_exts b0
+                        , b_mapq  = rmsq $ map b_mapq brs'
                         , b_cigar = Cigar cigar'
-                        , b_seq = cons_seq
-                        , b_qual = SB.pack cons_qual
+                        , b_seq   = V.fromList $ cons_seq
+                        , b_qual  = S.pack cons_qual
                         , b_virtual_offset = 0 }
   where
     _ `oplus` (-1) = -1
@@ -128,13 +129,16 @@ collapse maxq  brs = b0 { b_exts = xp' $ md' $ b_exts b0
     brs' = filter ((==) cigar' . unCigar . b_cigar) brs
     get_xp br = case M.lookup "XP" (b_exts br) of Just (Int i) -> i ; _ -> 1
 
-    (cons_seq, cons_qual) = unzip $ map (consensus maxq) $ transpose $ map (\b -> zip (b_seq b) (SB.unpack $ b_qual b)) brs'
+    (cons_seq, cons_qual) = unzip $ map (consensus maxq) $ transpose $ map to_pairs brs'
+
+    to_pairs b | S.null (b_qual b) = zip (V.toList $ b_seq b) (repeat 23)   -- error rate of ~0.5%
+               | otherwise         = zip (V.toList $ b_seq b) (S.unpack $ b_qual b)
 
     xp' = M.insert "XP" (Int $ foldl' oplus 0 $ map get_xp brs)
 
     md' = case [ (b_seq b,md) | b <- brs', Just md <- [ getMd b ] ] of
             [             ] -> id
-            (seq1, md1) : _ -> M.insert "MD" (Text $ showMd $ mk_new_md cigar' md1 seq1 cons_seq)
+            (seq1, md1) : _ -> M.insert "MD" (Text $ showMd $ mk_new_md cigar' md1 (V.toList seq1) cons_seq)
                 
 
 mk_new_md :: [(CigOp, Int)] -> [MdOp] -> [Nucleotide] -> [Nucleotide] -> [MdOp]

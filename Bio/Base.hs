@@ -1,10 +1,12 @@
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving, TypeFamilies #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
 -- | Common data types used everywhere.  This module is a collection of
 -- very basic "bioinformatics" data types that are simple, but don't
 -- make sense to define over and over.
 
 module Bio.Base(
     Nucleotide(..),
+    Sequence,
     nucA, nucC, nucG, nucT, nucN, gap,
     toNucleotide,
     showNucleotide,
@@ -37,6 +39,7 @@ module Bio.Base(
     findAuxFile
 ) where
 
+import Control.Monad        ( liftM )
 import Data.Array.Unboxed
 import Data.Bits
 import Data.Char            ( isAlpha, isSpace, ord, toUpper )
@@ -48,6 +51,10 @@ import System.Environment   ( getEnvironment )
 
 import qualified Data.ByteString.Char8 as S
 import qualified Data.ByteString.Lazy as L
+
+import qualified Data.Vector.Generic         as VG
+import qualified Data.Vector.Generic.Mutable as VM
+import qualified Data.Vector.Unboxed         as VU
 
 import Data.ByteString.Internal ( c2w, w2c )
 
@@ -74,6 +81,48 @@ nucG = N 4
 nucT = N 8
 nucN = N 15
 
+newtype instance VU.MVector s Nucleotide = MV_Nucleotide (VU.MVector s Word8)
+newtype instance VU.Vector    Nucleotide = V_Nucleotide  (VU.Vector    Word8)
+
+instance VM.MVector VU.MVector Nucleotide where
+    {-# INLINE basicLength #-}
+    basicLength (MV_Nucleotide v) = VM.basicLength v
+
+    {-# INLINE basicUnsafeSlice #-}
+    basicUnsafeSlice i l (MV_Nucleotide v) = MV_Nucleotide (VM.basicUnsafeSlice i l v)
+
+    {-# INLINE basicOverlaps #-}
+    basicOverlaps (MV_Nucleotide v) (MV_Nucleotide w) = VM.basicOverlaps v w 
+
+    {-# INLINE basicUnsafeNew #-}
+    basicUnsafeNew l = MV_Nucleotide `liftM` VM.basicUnsafeNew l
+   
+    {-# INLINE basicUnsafeRead #-}
+    basicUnsafeRead (MV_Nucleotide v) i = N `liftM` VM.basicUnsafeRead v i
+   
+    {-# INLINE basicUnsafeWrite #-}
+    basicUnsafeWrite (MV_Nucleotide v) i (N e) = VM.basicUnsafeWrite v i e
+
+
+instance VG.Vector VU.Vector Nucleotide where
+    {-# INLINE basicUnsafeFreeze #-}
+    basicUnsafeFreeze (MV_Nucleotide v) = V_Nucleotide `liftM` VG.basicUnsafeFreeze v
+
+    {-# INLINE basicUnsafeThaw #-}
+    basicUnsafeThaw (V_Nucleotide v) = MV_Nucleotide `liftM` VG.basicUnsafeThaw v
+
+    {-# INLINE basicLength #-}
+    basicLength (V_Nucleotide v) = VG.basicLength v
+
+    {-# INLINE basicUnsafeSlice #-}
+    basicUnsafeSlice i l (V_Nucleotide v) = V_Nucleotide (VG.basicUnsafeSlice i l v) 
+
+    {-# INLINE basicUnsafeIndexM #-}
+    basicUnsafeIndexM (V_Nucleotide v) i = N `liftM` VG.basicUnsafeIndexM v i
+
+
+instance VU.Unbox Nucleotide
+
 
 -- | Sequence identifiers are ASCII strings
 -- Since we tend to store them for a while, we use strict byte strings.
@@ -81,6 +130,9 @@ nucN = N 15
 -- it for storage.  Use @unpackSeqid@ and @packSeqid@ to avoid the
 -- import of @Data.ByteString@.
 type Seqid = S.ByteString
+
+-- | comparatively short Sequences 
+type Sequence = VU.Vector Nucleotide
 
 -- | Unpacks a @Seqid@ into a @String@
 unpackSeqid :: Seqid -> String

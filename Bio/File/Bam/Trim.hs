@@ -8,8 +8,9 @@ import Bio.File.Bam
 import Data.Bits ( testBit )
 import Data.List ( inits )
 import Data.Word ( Word8 )
-import qualified Data.ByteString as S
-import qualified Data.Map        as M
+import qualified Data.ByteString     as S
+import qualified Data.Map            as M
+import qualified Data.Vector.Generic as V
 
 -- | Trims from the 3' end of a sequence.
 -- @trim_3\' p b@ trims the 3' end of the sequence in @b@ at the
@@ -30,23 +31,23 @@ trim_3' p b | b_flag b `testBit` 4 = trim_rev
             | otherwise            = trim_fwd
   where
     trim_fwd = let l = subtract 1 . fromIntegral . length . takeWhile (uncurry p) $
-                            zip (inits . reverse $ b_seq b)
+                            zip (inits . reverse . V.toList $ b_seq b)
                                 (inits . reverse . S.unpack $ b_qual b)
                    (_, cigar') = trim_back_cigar (b_cigar b) l
-               in b { b_seq = reverse . drop l . reverse $ b_seq b
-                    , b_qual = S.take (S.length (b_qual b) - l) (b_qual b)
+               in b { b_seq   = V.take (V.length (b_seq  b) - l) (b_seq  b)
+                    , b_qual  = S.take (S.length (b_qual b) - l) (b_qual b)
                     , b_cigar = cigar'
-                    , b_exts = M.delete "MD" (b_exts b) }
+                    , b_exts  = M.delete "MD" (b_exts b) }
 
     trim_rev = let l = subtract 1 . fromIntegral . length . takeWhile (uncurry p) $
-                            zip (inits $ b_seq b)
+                            zip (inits . V.toList $ b_seq  b)
                                 (inits . S.unpack $ b_qual b)
                    (off, cigar') = trim_fwd_cigar (b_cigar b) l
-               in b { b_seq = drop l $ b_seq b
-                    , b_qual = S.drop l (b_qual b)
+               in b { b_seq   = V.drop l (b_seq  b)
+                    , b_qual  = S.drop l (b_qual b)
                     , b_cigar = cigar'
-                    , b_exts = M.delete "MD" (b_exts b)
-                    , b_pos = b_pos b + off
+                    , b_exts  = M.delete "MD" (b_exts b)
+                    , b_pos   = b_pos b + off
                     }
 
 

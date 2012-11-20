@@ -136,6 +136,7 @@ module Bio.File.Bam (
 import Bio.Base
 import Bio.File.Bgzf
 import Bio.Iteratee
+import Bio.Iteratee.ZLib hiding ( CompressionLevel )
 
 import Control.Monad
 import Control.Applicative
@@ -149,7 +150,6 @@ import Data.Binary.Put
 import Data.Bits                    ( testBit, shiftL, shiftR, (.&.), (.|.), complement )
 import Data.Char                    ( ord, isDigit, digitToInt )
 import Data.Int                     ( Int64, Int32 )
-import Data.Iteratee.ZLib hiding ( CompressionLevel )
 import Data.Monoid
 import Data.Sequence                ( (<|), (|>), (><) )
 import Data.Word                    ( Word32, Word8 )
@@ -158,6 +158,7 @@ import Foreign.Ptr                  ( castPtr )
 import Foreign.Storable             ( peek, poke )
 import System.IO
 import System.IO.Unsafe             ( unsafePerformIO )
+import Data.Vector.Generic          ( (!?) )
 
 import qualified Control.Monad.CatchIO          as CIO
 import qualified Data.Attoparsec.Char8          as P
@@ -170,6 +171,7 @@ import qualified Data.Foldable                  as F
 import qualified Data.Iteratee                  as I
 import qualified Data.Map                       as M
 import qualified Data.Sequence                  as Z
+import qualified Data.Vector.Generic            as V
 
 -- ^ Parsers and Printers for BAM and SAM.  We employ an @Iteratee@
 -- interface, and we strive to support everything possible in BAM.  So
@@ -240,19 +242,19 @@ unknownMapq = 255
 
 -- | internal representation of a BAM record
 data BamRec = BamRec {
-        b_qname :: S.ByteString,
-        b_flag  :: Int,
-        b_rname :: Refseq,
-        b_pos   :: Int,
-        b_mapq  :: Int,
-        b_cigar :: Cigar,
-        b_mrnm  :: Refseq,
-        b_mpos  :: Int,
-        b_isize :: Int,
-        b_seq   :: [Nucleotide],
-        b_qual  :: S.ByteString,       -- ^ quality, may be empty
+        b_qname :: !Seqid,
+        b_flag  :: !Int,
+        b_rname :: !Refseq,
+        b_pos   :: !Int,
+        b_mapq  :: !Int,
+        b_cigar :: !Cigar,
+        b_mrnm  :: !Refseq,
+        b_mpos  :: !Int,
+        b_isize :: !Int,
+        b_seq   :: !Sequence,
+        b_qual  :: !S.ByteString,       -- ^ quality, may be empty
         b_exts  :: Extensions,
-        b_virtual_offset :: FileOffset -- ^ virtual offset for indexing purposes
+        b_virtual_offset :: !FileOffset -- ^ virtual offset for indexing purposes
     } deriving Show
 
 nullBamRec :: BamRec
@@ -266,7 +268,7 @@ nullBamRec = BamRec {
         b_mrnm  = invalidRefseq,
         b_mpos  = invalidPos,
         b_isize = 0,
-        b_seq   = [],
+        b_seq   = V.empty,
         b_qual  = S.empty,
         b_exts  = M.empty,
         b_virtual_offset = 0
@@ -385,7 +387,7 @@ decodeBamEntry (BamRaw offs s) = either error fixup . fst $ G.runGet go s
             !exts <- getExtensions M.empty
 
             return $ BamRec read_name flag rid start mapq cigar
-                            mate_rid mate_pos ins_size (take read_len $ expand qry_seq) qual exts offs
+                            mate_rid mate_pos ins_size (V.fromListN read_len $ expand qry_seq) qual exts offs
   
     bases = listArray (0,15) (map toNucleotide "NACNGNNNTNNNNNNN") :: Array Word8 Nucleotide
     expand t = if S.null t then [] else let x = S.head t in bases ! (x `shiftR` 4) : bases ! (x .&. 0xf) : expand (S.tail t)
@@ -521,7 +523,7 @@ encodeBamEntry = S.concat . L.toChunks . runPut . putEntry
                      put_int_16    $ distinctBin b
                      put_int_16    $ length $ unCigar $ b_cigar b
                      put_int_16    $ b_flag b
-                     put_int_32    $ length $ b_seq b
+                     put_int_32    $ V.length $ b_seq b
                      putWord32le   $ unRefseq $ b_mrnm b
                      put_int_32    $ b_mpos b
                      put_int_32    $ b_isize b
@@ -530,7 +532,7 @@ encodeBamEntry = S.concat . L.toChunks . runPut . putEntry
                      mapM_ (put_int_32 . encodeCigar) $ unCigar $ b_cigar b
                      putSeq $ b_seq b
                      putByteString $ if not (S.null (b_qual b)) then b_qual b
-                                     else S.replicate (length $ b_seq b) 0xff
+                                     else S.replicate (V.length $ b_seq b) 0xff
                      forM_ (M.toList $ more_exts b) $ \(k,v) -> 
                         case k of [c,d] -> putChr c >> putChr d >> putValue v
                                   _     -> error $ "invalid field key " ++ show k
@@ -543,11 +545,14 @@ encodeBamEntry = S.concat . L.toChunks . runPut . putEntry
     encodeCigar :: (CigOp,Int) -> Int
     encodeCigar (op,l) = fromEnum op .|. l `shiftL` 4
 
-    putSeq :: [Nucleotide] -> Put
-    putSeq (a:b:ns) = putWord8 (unN a `shiftL` 4 .|. num b) >> putSeq ns
-    putSeq [a]      = putWord8 (num a `shiftL` 4)
-    putSeq [ ]      = return ()
-  
+    putSeq :: Sequence -> Put
+    putSeq v = case v !? 0 of 
+                 Nothing -> return ()
+                 Just a  -> case v !? 1 of
+                    Nothing -> putWord8 (num a `shiftL` 4)
+                    Just b  -> putWord8 (unN a `shiftL` 4 .|. num b)
+                               >> putSeq (V.drop 2 v)
+                         
     num :: Nucleotide -> Word8
     num (N x) = x .&. 15
 
@@ -1033,8 +1038,8 @@ parseSamRec ref = (\nm fl rn po mq cg rn' -> BamRec nm fl rn po mq cg (rn' rn))
 
     rnext    = id <$ P.char '=' <* sep <|> const . ref <$> word
     sequ     = {-# SCC "parseSamRec/sequ" #-}
-               ([] <$ P.char '*' <|>
-               map toNucleotide . B.unpack <$> P.takeWhile (P.inClass "acgtnACGTN")) <* sep
+               (V.empty <$ P.char '*' <|>
+               V.fromList . map toNucleotide . B.unpack <$> P.takeWhile (P.inClass "acgtnACGTN")) <* sep
     
     quals    = {-# SCC "parseSamRec/quals" #-} S.empty <$ P.char '*' <* sep <|> S.map (subtract 33) <$> word
 

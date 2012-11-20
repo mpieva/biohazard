@@ -16,9 +16,9 @@ import Bio.Iteratee
 import Data.Bits
 import Data.Word ( Word8 )
 
-import qualified Data.Iteratee    as I
-import qualified Data.ByteString  as S
-import qualified Data.Map         as M
+import qualified Data.ByteString     as S
+import qualified Data.Iteratee       as I
+import qualified Data.Vector.Generic as V
 
 -- | A filter/transformation applied to pairs of reads.  We supply a
 -- predicate to be applied to single reads and one to be applied to
@@ -63,6 +63,10 @@ filterPairs ps pp = eneeCheckIfDone step
 
 type QualFilter = BamRec -> BamRec
 
+{-# INLINE count #-}
+count :: (V.Vector v a, Eq a) => a -> v a -> Int
+count x v = V.foldl' (\acc y -> if x == y then acc+1 else acc) 0 v
+
 -- | Simple complexity filter aka "Nancy Filter".  A read is considered
 -- not-sufficiently-complex if the most common base accounts for greater
 -- than the @cutoff@ fraction of all non-N bases.
@@ -71,7 +75,7 @@ complexSimple :: Double -> QualFilter
 complexSimple r b = if p then b else b'
   where
     b' = setQualFlag 'C' $ b { b_flag = b_flag b .|. flagFailsQC }
-    p  = let counts = [ length $ filter ((==) x) (b_seq b) | x <- properBases ]
+    p  = let counts = [ count x $ b_seq b | x <- properBases ]
              lim = floor $ r * fromIntegral (sum counts)
          in all (<= lim) counts
 
@@ -84,8 +88,8 @@ complexEntropy r b = if p then b else b'
     b' = setQualFlag 'C' $ b { b_flag = b_flag b .|. flagFailsQC }
     p = ent >= r * total
     
-    counts = [ length $ filter ((==) x) (b_seq b) | x <- properBases ]
-    total = fromIntegral $ length $ b_seq b
+    counts = [ count x $ b_seq b | x <- properBases ]
+    total = fromIntegral $ V.length $ b_seq b
     ent   = sum [ fromIntegral c * log (total / fromIntegral c) | c <- counts, c /= 0 ] / log 2
 
 -- | Filter on average quality.  Reads without quality string pass.
