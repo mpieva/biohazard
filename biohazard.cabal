@@ -92,6 +92,14 @@ Test-Suite test-biohazard
                        MonadCatchIO-transformers, random, HUnit, vector
 
 
+Executable bam-fixpair
+  Main-is:             tools/bam-fixpair.hs
+  Build-depends:       bytestring, containers, base >=4, binary, array,
+                       zlib, attoparsec-iteratee, attoparsec, iteratee,
+                       transformers, binary-strict, ListLike,
+                       MonadCatchIO-transformers, filepath, directory,
+                       biohazard, vector, unordered-containers
+
 Executable bam-meld
   Main-is:             tools/bam-meld.hs
   Build-depends:       bytestring, containers, base >=4, binary, array,

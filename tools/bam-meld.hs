@@ -12,15 +12,17 @@
 import Bio.File.Bam
 import Bio.Iteratee
 import Control.Monad                            ( unless, foldM )
-import Data.List                                ( sortBy )
+import Data.List                                ( sortBy, intercalate )
 import Data.Monoid
 import System.Console.GetOpt
 import System.Environment                       ( getArgs )
 import System.Exit                              ( exitSuccess, exitFailure )
 import System.IO
 
-import qualified Data.Iteratee        as I
-import qualified Data.Sequence        as Z
+import qualified Data.ByteString.Char8 as S
+import qualified Data.Iteratee         as I
+import qualified Data.Map              as M
+import qualified Data.Sequence         as Z
 
 data Conf = Conf {
     c_score  :: Maybe (BamPair -> Int),
@@ -97,7 +99,7 @@ set_mapq (Pair a b) q = Pair (a { b_mapq = q }) (b { b_mapq = q })
 
 meld :: (BamPair -> Int) -> [BamPair] -> BamPair
 meld score rs | all p_is_unmapped rs = head rs
-              | all_equal (map p_qname rs) = set_mapq best mapq 
+              | all_equal (map p_qname rs) = set_mapq best' mapq 
               | otherwise = error $ "BAMs are not in the same order or sequences are missing: " 
                                   ++ show (map p_qname rs)
   where
@@ -107,6 +109,31 @@ meld score rs | all p_is_unmapped rs = head rs
     ( best : rs' ) = sortBy (\a b -> score a `compare` score b) $ filter (not . p_is_unmapped) rs
     mapq = case rs' of [    ] -> p_mapq best
                        (r2:_) -> p_mapq best `min` (score r2 - score best)
+    
+    
+    split_xa br = let s = extAsString "XA" br in if S.null s then id else (++) (S.split ';' s)
+
+    get_xas (Single a) (one,two) = (split_xa a one, two)
+    get_xas (Pair a b) (one,two) = (split_xa a one, split_xa b two)
+
+    (xas1, xas2) = foldr enc_xas (foldr get_xas ([],[]) (best:rs')) rs'
+
+    add_xas xas b = b { b_exts = M.insert "XA" (Text (S.intercalate (S.singleton ';') xas)) (b_exts b) }
+
+    best' = case best of Single a -> Single (add_xas xas1 a)
+                         Pair a b -> Pair (add_xas xas1 a) (add_xas xas2 b)
+
+    enc_xas (Single a) (one,two) = (encode a one,two)
+    enc_xas (Pair a b) (one,two) = (encode a one,encode b two)
+
+    encode b xas | isUnmapped b = xas
+                 | otherwise = S.pack (intercalate "," [ rnm, pos, cig, nm ]) : xas
+      where
+        nm =  show $ extAsInt 0 "NM" b
+        pos = (if isReversed b then '-' else '+') : show (b_pos b)
+        rnm = show $ b_rname b
+        cig = show $ b_cigar b
+
 
 options :: [OptDescr (Conf -> IO Conf)]
 options = 
