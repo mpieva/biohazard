@@ -155,12 +155,12 @@ print_fasta :: Formatter
 print_fasta name = eneeCheckIfDone (\k -> I.mapStream fst ><> toLines 60 $ k $ Chunk ('>' : name ++ "\n"))
                        
 print_fastq :: Formatter
-print_fastq name = eneeCheckIfDone p_header
+print_fastq name = eneeCheckIfDone p'header
   where
-    p_header k  = p_seq . k $ Chunk ('@' : name ++ "\n")
-    p_seq it    = I.zip ((I.mapStream fst ><> toLines 60) it) (liftI $ coll [])
-                  >>= \(it', qs) -> eneeCheckIfDone (p_sep qs) it'
-    p_sep qs k  = lift $ (enumList (map S.unpack qs) >=> run) (toLines 60 . k $ Chunk "+\n")
+    p'header k  = p'seq . k $ Chunk ('@' : name ++ "\n")
+    p'seq it    = I.zip ((I.mapStream fst ><> toLines 60) it) (liftI $ coll [])
+                  >>= \(it', qs) -> eneeCheckIfDone (p'sep qs) it'
+    p'sep qs k  = lift $ (enumList (map S.unpack qs) >=> run) (toLines 60 . k $ Chunk "+\n")
 
     mkqual = chr . max 33 . min 126 . (+) 33 . fromIntegral
     coll !acc (EOF x) = lift (print $ length acc) >> idone (reverse acc) (EOF x)

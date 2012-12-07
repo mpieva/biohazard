@@ -1,0 +1,62 @@
+.\" Process this file with
+.\" groff -man -Tascii bam-rmdup.1
+.\"
+.TH BAM-RMDUP 1 "DECEMBER 2012" Applications "User Manuals"
+.SH NAME
+bam-rmdup \- remove PCR duplicates from BAM files
+.SH SYNOPSIS
+.B bam-rmdup [
+.I option
+.B |
+.I file
+.B ... ]
+.SH DESCRIPTION
+.B bam-rmdup
+searches for PCR duplicates in BAM files.  From each set of duplicates,
+a consensus is formed, which replaces the whole set.  Input files must
+be sorted by coordinate, all inputs will be merged into a single sorted
+output file.
+
+For details, see http://biofs04/trac/bioinf/wiki/DuplicateRemoval.
+
+.SH OPTIONS
+.IP "-o, --output file"
+Send output to
+.I file
+instead of standard output.
+
+.IP "-p, --improper-pairs"
+Retain improper pairs, that is, mate-pairs of which only one mate is
+mapped.  These are discarded by default.
+
+.IP "-1, --single-read"
+Treat all reads as single.  This might be a workaround for a very bad
+second read, but is generally considered a bad idea.
+
+.IP "-Q, --max-qual qual"
+Set the maximum quality score after consensus calling to
+.I qual.
+Consensus calling can result in unrealistically high quality scores due
+to effect outside this program's scope (presumably errors in PCR).
+Quality score are therefore limited to an upper value, even if we didn't
+actually remove any duplicates.  The default is 60, corresponding to a
+very high fidelity polymerase.
+
+.IP "-s, --no-strand"
+Treat the strand information as uninformative.  Normally, PCR duplicates
+should always map to the same strand, however, in certain types of
+library (e.g. Illumina fork adapter preparation) the two strands of the
+same original molecule map to different strands.  With the
+.I --no-strand
+option, these are considered duplicates, without it, they are distinct.
+
+
+.SH BUGS
+It's way too slow.
+
+.SH AUTHOR
+Udo Stenzel <udo_stenzel@eva.mpg.de>
+
+.SH "SEE ALSO"
+.BR biohazard (7)
+

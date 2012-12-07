@@ -7,7 +7,7 @@ Name:                biohazard
 -- The package version. See the Haskell package versioning policy
 -- (http://www.haskell.org/haskellwiki/Package_versioning_policy) for
 -- standards guiding when and how versions should be incremented.
-Version:             0.4.4
+Version:             0.4.5
 
 -- A short (one-line) description of the package.
 Synopsis:            bioinformatics support library
@@ -38,7 +38,9 @@ Maintainer:          udo_stenzel@eva.mpg.de
 
 Category:            Development
 
-Build-type:          Simple
+Build-type:          Custom
+
+Extra-Source-Files:  man/man1/bam-rmdup.1
 
 -- Extra files to be distributed with the package, such as examples or
 -- a README.
@@ -68,8 +70,7 @@ Library
                        zlib, attoparsec-iteratee, attoparsec, iteratee,
                        transformers, binary-strict, ListLike,
                        MonadCatchIO-transformers, random, erf,
-                       filepath, directory,
-                       vector
+                       filepath, directory, vector
   
   Ghc-options:         -Wall -auto-all
 
@@ -86,8 +87,7 @@ Test-Suite test-biohazard
   Build-depends:       bytestring, containers, base >=4, binary, array,
                        zlib, attoparsec-iteratee, attoparsec, iteratee,
                        transformers, binary-strict, ListLike,
-                       MonadCatchIO-transformers, random, HUnit,
-                       vector
+                       MonadCatchIO-transformers, random, HUnit, vector
 
 
 Executable bam-meld
@@ -95,8 +95,8 @@ Executable bam-meld
   Build-depends:       bytestring, containers, base >=4, binary, array,
                        zlib, attoparsec-iteratee, attoparsec, iteratee,
                        transformers, binary-strict, ListLike,
-                       MonadCatchIO-transformers, 
-                       filepath, directory, biohazard, vector
+                       MonadCatchIO-transformers, filepath, directory,
+                       biohazard, vector
 
 Executable bam-resample
   Main-is:             tools/bam-resample.hs
@@ -113,6 +113,7 @@ Executable bam-rmdup
                        transformers, binary-strict, ListLike,
                        MonadCatchIO-transformers, 
                        filepath, directory, biohazard, vector
+  Ghc-options:         -threaded -rtsopts
 
 Executable bam-trim
   Main-is:             tools/bam-trim.hs

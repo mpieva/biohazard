@@ -190,7 +190,7 @@ data CigOp = Mat | Ins | Del | Nop | SMa | HMa | Pad
 
 instance Show Cigar where
     show (Cigar cs) = concat [ shows l (toChr op) | (op,l) <- cs ]
-      where toChr = (:[]) . B.index "MIDNSHP" . fromEnum
+      where toChr = (:[]) . B.index "MIDNSHPMM" . fromEnum
 
 -- | extracts the aligned length from a cigar line
 -- This gives the length of an alignment as measured on the reference,
@@ -397,20 +397,36 @@ decodeBamEntry (BamRaw offs s) = either error fixup . fst $ G.runGet go s
       where cc = fromIntegral c .&. 0xf; cl = fromIntegral c `shiftR` 4
 
     -- fixups for changed conventions
-    fixup b = (if b_flag b .&. flagLowQuality /= 0 then setQualFlag 'Q' else id) $
-              (if b_flag b .&. flagLowComplexity /= 0 then setQualFlag 'C' else id) $
-              b { b_flag = oflags .|. tflags .|. shiftL eflags 16 }
+    fixup b = (if b_flag b .&. flagLowQuality /= 0 then setQualFlag 'Q' else id) $          -- low qual, new convention
+              (if b_flag b .&. flagLowComplexity /= 0 then setQualFlag 'C' else id) $       -- low complexity, new convention
+              b { b_flag = fixPP $ oflags .|. muflag .|. tflags .|. shiftL eflags 16 }      -- extended flags
       where
+        -- removes old flag abuse
         flags' = b_flag b .&. complement (flagLowQuality .|. flagLowComplexity)
         oflags | flags' .&. flagPaired == 0 = flags' .&. complement (flagFirstMate .|. flagSecondMate)
                | otherwise                  = flags'
 
+        -- set "mate unmapped" if self coordinates and mate coordinates are equal, but self is paired and mapped
+        -- (BWA forgets this flag for invalid mate alignments)
+        muflag = if mu then flagMateUnmapped else 0
+        mu = and [ isPaired b, not (isUnmapped b)
+                 , isReversed b == isMateReversed b
+                 , b_rname b == b_mrnm b, b_pos b == b_mpos b ]
+
+        -- merged & trimmed from old flag abuse
         is_merged  = flags' .&. (flagPaired .|. flagFirstMate .|. flagSecondMate) == flagFirstMate .|. flagSecondMate
         is_trimmed = flags' .&. (flagPaired .|. flagFirstMate .|. flagSecondMate) == flagSecondMate
 
-        tflags = (if is_merged then flagMerged else 0) .|.
+        tflags = (if is_merged  then flagMerged  else 0) .|.
                  (if is_trimmed then flagTrimmed else 0)
-        eflags = case M.lookup "XF" (b_exts b) of Just (Int i) -> i ; _ -> 0
+
+        -- extended flags, renamed to avoid collision with BWA
+        eflags = case M.lookup "FF" (b_exts b) of { Just (Int i) -> i ; _ ->
+                 case M.lookup "XF" (b_exts b) of { Just (Int i) -> i ; _ -> 0 }}
+
+        -- if either mate is unmapped, remove "properly paired"
+        fixPP f | f .&. (flagUnmapped .|. flagMateUnmapped) == 0 = f
+                | otherwise = f .&. complement flagProperlyPaired
 
         flagLowQuality    =  0x800
         flagLowComplexity = 0x1000
@@ -422,7 +438,7 @@ type Extensions = M.Map String Ext
 
 data Ext = Int Int | Float Float | Text S.ByteString | Bin S.ByteString | Char Word8
          | IntArr (UArray Int Int) | FloatArr (UArray Int Float)
-    deriving Show
+    deriving (Show, Eq, Ord)
 
 getExtensions :: Extensions -> G.Get Extensions
 getExtensions m = getExt `G.plus` return m
@@ -540,7 +556,7 @@ encodeBamEntry = S.concat . L.toChunks . runPut . putEntry
     more_exts :: BamRec -> Extensions
     more_exts b = if xf /= 0 then x' else b_exts b
         where xf = b_flag b `shiftR` 16
-              x' = M.insert "XF" (Int xf) $ b_exts b
+              x' = M.insert "FF" (Int xf) $ b_exts b
 
     encodeCigar :: (CigOp,Int) -> Int
     encodeCigar (op,l) = fromEnum op .|. l `shiftL` 4

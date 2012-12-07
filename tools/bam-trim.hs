@@ -1,18 +1,14 @@
-import Control.Monad                        ( unless, foldM, (>=>) )
-import Data.Iteratee.Base
-import Data.Iteratee.IO
-import Data.Iteratee.Iteratee
-import Data.Iteratee.ListLike               ( mapStream )
-import Data.Word                            ( Word8 )
 import Bio.File.Bam
 import Bio.File.Bam.Trim
-import Bio.File.Bgzf
 import Bio.Iteratee
-import qualified Data.ByteString      as S  ( hPut )
+import Control.Monad                        ( unless, foldM )
+import Data.Word                            ( Word8 )
 import System.Console.GetOpt
 import System.Environment                   ( getArgs )
 import System.Exit                          ( exitFailure, exitSuccess )
-import System.IO                            ( stdin, stdout, stderr, hPutStrLn )
+import System.IO                            ( stdout, stderr, hPutStrLn )
+
+import qualified Data.ByteString      as S  ( hPut )
 
 data Conf = Conf { c_trim_pred :: [Nucleotide] -> [Word8] -> Bool
                  , c_pass_pred :: BamRec -> Bool }

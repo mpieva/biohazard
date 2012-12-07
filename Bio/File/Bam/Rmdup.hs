@@ -4,14 +4,16 @@ import Bio.File.Bam
 import Bio.Iteratee
 
 import Data.Array.Unboxed
+import Data.Bits
 import Data.List
 import Data.Ord
 import Data.Word ( Word8 )
 
-import qualified Data.ByteString     as S
-import qualified Data.Iteratee       as I
-import qualified Data.Map            as M
-import qualified Data.Vector.Generic as V
+import qualified Data.ByteString        as B
+import qualified Data.ByteString.Char8  as T
+import qualified Data.Iteratee          as I
+import qualified Data.Map               as M
+import qualified Data.Vector.Generic    as V
 
 -- | Removes duplicates from an aligned, sorted BAM stream.
 --
@@ -68,7 +70,7 @@ rmdup label strand_preserved maxq =
     -- Easiest way to go about this:  We simply collect everything that
     -- starts at some specific coordinate and group it appropriately.
     -- Treat the groups separately, output, go on.
-    check_sort ><> mapGroups (do_rmdup label strand_preserved maxq) ><> check_sort
+    check_flags ><> check_sort ><> mapGroups (do_rmdup label strand_preserved maxq) ><> check_sort
   where
     same_pos u v = b_cpos u == b_cpos v
     b_cpos br = (b_rname br, b_pos br)
@@ -86,6 +88,49 @@ check_sort out = I.tryHead >>= maybe (return out) (\a -> eneeCheckIfDone (step a
     step' a k b | (b_rname a, b_pos a) > (b_rname b, b_pos b) = fail "sorting violated"
                 | otherwise = eneeCheckIfDone (step b) . k $ Chunk [a]
 
+-- To be perfectly honest, I do not understand what these flags mean.
+-- All I know it that if and when they are set, the duplicate removal
+-- will go very, very wrong.
+check_flags :: Monad m => Enumeratee [BamRec] [BamRec] m a
+check_flags = mapStreamM check
+  where
+    check br | extAsInt 1 "HI" br /= 1 = fail "cannot deal with HI /= 1"
+             | extAsInt 1 "IH" br /= 1 = fail "cannot deal with IH /= 1"
+             | extAsInt 1 "NH" br /= 1 = fail "cannot deal with NH /= 1"
+             | otherwise               = return br
+
+{- Unmapped fragments should not be considered to be duplicates of
+   mapped fragments.  The "unmapped" flag can serve for that:  while
+   there are two classes of "unmapped reads (those that are not mapped
+   and those that are mapped to an invalid position), the two sets will
+   always have different coordinates.  (Unfortunately, correct duplicate
+   removal now relies on correct "unmapped" and "mate unmapped" flags,
+   and we didn't have those until four hours ago...)
+   
+   . Other definitions (e.g. lack of CIGAR) don't workj, because that
+     information won't be available for the mate.
+
+   . This would amount to making the "unmapped" flag part of the
+     coordinate, but samtools is not going to take it into account when
+     sorting.
+
+   . Instead, both flags become part of the "mate pos" grouping criterion.
+
+ - First Mates should (probably) not be considered duplicates of Second
+   Mates.  This is unconditionally true for libraries with A/B-style
+   adapters (definitely 454, probably Mathias' ds protocol) and the ss
+   protocol, it is not true for fork adapter protocols (standard
+   Illumina).  So it's an option for now, which was apparently turned
+   off for the Anuital Man.
+
+   . Taking the option out might simplify stuff.  Do it?
+
+ - This code ignores read groups, but it will do a majority vote on the
+   RG field and call consensi for the index sequences.  If you believe
+   that duplicates across read groups are impossible, you must call it
+   with an appropriately filtered stream.
+-}
+
 do_rmdup :: Ord l => (BamRec -> l) -> Bool -> Word8 -> [BamRec] -> [BamRec]
 do_rmdup label strand_preserved maxq rds = map (collapse maxq) $ filter (not . null) groups
   where
@@ -96,7 +141,7 @@ do_rmdup label strand_preserved maxq rds = map (collapse maxq) $ filter (not . n
         Just (Int i) -> rem i 4 /= 0 ; _ -> False
 
     b_aln_len = cigarToAlnLen . b_cigar
-    b_mate_pos br = (b_mrnm br, b_mpos br)
+    b_mate_pos br = (b_mrnm br, b_mpos br, isUnmapped br, isMateUnmapped br)
 
     group'sort f = groupBy (\a b -> compare (f a) (f b) == EQ) . sortBy (comparing f)
 
@@ -104,13 +149,45 @@ do_rmdup label strand_preserved maxq rds = map (collapse maxq) $ filter (not . n
              group'sort (\b -> (label b, b_aln_len b,  strand_preserved && isReversed  b)) merged ++ 
              group'sort (\b -> (label b, b_mate_pos b, strand_preserved && isFirstMate b)) pairs
 
+
+{- We need to deal sensibly with each field, but different fields have
+   different needs.  We can take the value from the first read to
+   preserve determinism or because all reads should be equal anyway,
+   aggregate over all reads computing either RMSQ or the most common
+   value, delete a field because it wouldn't make sense anymore or
+   because doing something sensible would be hard and we're going to
+   ignore it anyway, or we calculate some special value; see below.
+   Unknown fields will be taken from the first read, which seems to be a
+   safe default.
+ 
+   QNAME and most fields              taken from first
+   FLAG qc fail                       majority vote
+        dup                           deleted
+   MAPQ                               rmsq
+   CIGAR, SEQ, QUAL, MD, NM, XP       generated
+   XA                                 concatenate all
+   XI/YI, XJ/YJ                       compute consensus
+
+   BQ, CM, FZ, Q2, R2, XM, XO, XG, YQ, EN
+         deleted because they would become wrong
+
+   CQ, CS, E2, FS, OQ, OP, OC, U2, H0, H1, H2, HI, NH, IH, ZQ
+         delete because they will be ignored anyway
+
+   AM, AS, MQ, PQ, SM, UQ
+         compute rmsq
+
+   X0, X1, XT, XS, XF, XE, BC, LB, RG
+         majority vote -} 
+
 collapse :: Word8 -> [BamRec] -> BamRec
-collapse maxq [br] = br { b_qual  = S.map (min maxq) $ b_qual br, b_virtual_offset = 0 }
-collapse maxq  brs = b0 { b_exts  = xp' $ md' $ b_exts b0
+collapse maxq [br] = br { b_qual  = B.map (min maxq) $ b_qual br, b_virtual_offset = 0 }
+collapse maxq  brs = b0 { b_exts  = modify_extensions $ b_exts b0
+                        , b_flag  = failflag .&. complement flagDuplicate
                         , b_mapq  = rmsq $ map b_mapq brs'
                         , b_cigar = Cigar cigar'
                         , b_seq   = V.fromList $ cons_seq
-                        , b_qual  = S.pack cons_qual
+                        , b_qual  = B.pack cons_qual
                         , b_virtual_offset = 0 }
   where
     _ `oplus` (-1) = -1
@@ -118,28 +195,61 @@ collapse maxq  brs = b0 { b_exts  = xp' $ md' $ b_exts b0
     a `oplus` b = a + b
 
     b0 = minimumBy (comparing b_qname) brs
+    most_fail = 2 * length (filter isFailsQC brs) > length brs 
+    failflag | most_fail = b_flag b0 .|. flagFailsQC
+             | otherwise = b_flag b0 .&. complement flagFailsQC
 
-    rmsq xs = round $ sqrt x
+    rmsq xs = round $ sqrt (x::Double)
       where
-        x :: Double 
         x = fromIntegral (sum (map (\y->y*y) xs)) / genericLength xs
 
+    maj vs = head . maximumBy (comparing length) . group . sort $ vs
+    nub' = concatMap head . group . sort
+
     -- majority vote on the cigar lines, then filter
-    cigar' = head . maximumBy (comparing length) . group . sort $ map (unCigar . b_cigar) brs
+    cigar' = maj $ map (unCigar . b_cigar) brs
     brs' = filter ((==) cigar' . unCigar . b_cigar) brs
-    get_xp br = case M.lookup "XP" (b_exts br) of Just (Int i) -> i ; _ -> 1
 
     (cons_seq, cons_qual) = unzip $ map (consensus maxq) $ transpose $ map to_pairs brs'
+    
+    add_index k1 k2 | null inputs = id
+                    | otherwise = M.insert k1 (Text $ T.pack $ show conss) .
+                                  M.insert k2 (Text $ B.pack $ map (+33) consq) 
+      where
+        inputs = [ zip (map toNucleotide $ T.unpack sq) qs
+                 | es <- map b_exts brs
+                 , Text sq <- maybe [] (:[]) $ M.lookup k1 es
+                 , let qs = case M.lookup k2 es of
+                                Just (Text t) -> map (subtract 33) $ B.unpack t 
+                                _             -> repeat 23 ]
+        (conss,consq) = unzip $ map (consensus 93) $ transpose $ inputs
 
-    to_pairs b | S.null (b_qual b) = zip (V.toList $ b_seq b) (repeat 23)   -- error rate of ~0.5%
-               | otherwise         = zip (V.toList $ b_seq b) (S.unpack $ b_qual b)
 
-    xp' = M.insert "XP" (Int $ foldl' oplus 0 $ map get_xp brs)
+    to_pairs b | B.null (b_qual b) = zip (V.toList $ b_seq b) (repeat 23)   -- error rate of ~0.5%
+               | otherwise         = zip (V.toList $ b_seq b) (B.unpack $ b_qual b)
 
     md' = case [ (b_seq b,md) | b <- brs', Just md <- [ getMd b ] ] of
-            [             ] -> id
-            (seq1, md1) : _ -> M.insert "MD" (Text $ showMd $ mk_new_md cigar' md1 (V.toList seq1) cons_seq)
-                
+                [             ] -> []
+                (seq1, md1) : _ -> mk_new_md cigar' md1 (V.toList seq1) cons_seq
+    nm' = sum $ [ n | (Ins,n) <- cigar' ] ++ [ n | (Del,n) <- cigar' ] ++ [ 1 | MdRep _ <- md' ]
+    xa' = nub' [ T.split ';' xas | Just (Text xas) <- map (M.lookup "XA" . b_exts) brs ]
+
+    modify_extensions es = foldr ($!) es $
+        [ let vs = [ v | Just v <- map (M.lookup k . b_exts) brs ]
+          in if null vs then id else M.insert k $! maj vs | k <- do_maj ] ++
+        [ let vs = [ v | Just (Int v) <- map (M.lookup k . b_exts) brs ]
+          in if null vs then id else M.insert k $! Int (rmsq vs) | k <- do_rmsq ] ++
+        [ M.delete k | k <- useless ] ++
+        [ M.insert "NM" $! Int nm'
+        , M.insert "XP" $! Int (foldl' (\a b -> a `oplus` extAsInt 1 "XP" b) 0 brs)
+        , if null xa' then id else M.insert "XA" $! (Text $ T.intercalate (T.singleton ';') xa')
+        , if null md' then id else M.insert "MD" $! (Text $ showMd md') 
+        , add_index "XI" "YI"
+        , add_index "XJ" "YJ" ]
+
+    useless = words "BQ CM FZ Q2 R2 XM XO XG YQ EN CQ CS E2 FS OQ OP OC U2 H0 H1 H2 HI NH IH ZQ"
+    do_rmsq = words "AM AS MQ PQ SM UQ"
+    do_maj  = words "X0 X1 XT XS XF XE BC LB RG"
 
 mk_new_md :: [(CigOp, Int)] -> [MdOp] -> [Nucleotide] -> [Nucleotide] -> [MdOp]
 mk_new_md [] [] [] [] = []
@@ -165,7 +275,7 @@ mk_new_md ((Pad, _):cigs) md osq nsq = mk_new_md cigs md         osq          ns
 mk_new_md ((Nop, _):cigs) md osq nsq = mk_new_md cigs md         osq          nsq
 
 mk_new_md cigs ms osq nsq = error $ unlines
-    [ "F'ing MD field is f'ed up when constructing new MD!"
+    [ "Broken MD field when trying to construct new MD!"
     , "CIGAR: " ++ show cigs
     , "MD: " ++ show ms
     , "refseq: " ++ show osq

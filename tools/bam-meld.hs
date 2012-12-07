@@ -11,10 +11,7 @@
 
 import Bio.File.Bam
 import Bio.Iteratee
-import Control.Applicative                      ( (<$>), (<*>) )
 import Control.Monad                            ( unless, foldM )
-import Data.Array.IArray
-import Data.Bits                                ( (.&.) )
 import Data.List                                ( sortBy )
 import Data.Monoid
 import System.Console.GetOpt
@@ -22,10 +19,7 @@ import System.Environment                       ( getArgs )
 import System.Exit                              ( exitSuccess, exitFailure )
 import System.IO
 
-import qualified Data.ByteString      as S
-import qualified Data.ByteString.Lazy as L
 import qualified Data.Iteratee        as I
-import qualified Data.Map             as M
 import qualified Data.Sequence        as Z
 
 data Conf = Conf {
@@ -178,7 +172,7 @@ iter_transpose = eneeCheckIfDone step
 
     step' k Nothing Nothing = idone (liftI k) $ EOF Nothing
     step' k (Just x) (Just ys) | p_qname x == p_qname (head ys) = iter_transpose . k $ Chunk [x:ys]
-    step' k _ _ = error "files do not contain the same query records"
+    step' _ _ _ = error "files do not contain the same query records"
 
 merge_by_name :: Monad m => Enumeratee [BamPair] [[BamPair]] (Iteratee [[BamPair]] m) a
 merge_by_name = ensure_sorting ><> merge'
@@ -202,7 +196,9 @@ ensure_sorting = eneeCheckIfDone (liftI . step)
     step k (Chunk [    ]) = liftI $ step k
     step k (Chunk (x:xs)) = step' x k $ Chunk xs
 
+    step' x1 k (EOF   mx) = idone (k $ Chunk [ x1 ]) $ EOF mx
+    step' x1 k (Chunk []) = liftI $ step' x1 k
     step' x1 k (Chunk (x2:xs)) = case p_qname x1 `compareNames` p_qname x2 of
             GT -> error "input is not sorted by qname"
-            _  -> eneeCheckIfDone (liftI . step' x2) . k $ Chunk [ x1 ]
+            _  -> eneeCheckIfDone (\k' -> step' x2 k' (Chunk xs)) . k $ Chunk [ x1 ]
 

@@ -1,9 +1,6 @@
 {-# LANGUAGE BangPatterns, NoMonomorphismRestriction #-}
 import Bio.File.Bam
-import Bio.File.Bgzf
 import Bio.Iteratee
-import Control.Monad
-import Data.Iteratee.Base
 import System.Environment
 import System.Exit
 import System.IO
