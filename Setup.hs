@@ -5,7 +5,7 @@ import Distribution.Simple.LocalBuildInfo   ( LocalBuildInfo(..), absoluteInstal
 import Distribution.Verbosity               ( Verbosity ) 
 import Distribution.Simple.InstallDirs      ( mandir, CopyDest (NoCopyDest) )
 import Distribution.Simple.Utils            ( installOrdinaryFiles  )
-import System.FilePath                      ( (</>) )
+import System.FilePath                      ( splitDirectories, joinPath )
 import System.Exit
 
 main :: IO ()
@@ -20,14 +20,7 @@ main = do
     }
   exitWith ExitSuccess
 
-manpages :: [FilePath]
-manpages = map ("man1" </>) ["bam-rmdup.1"]
-
-manDir :: FilePath
-manDir = "man"
-
 installManpages :: PackageDescription -> LocalBuildInfo -> Verbosity -> CopyDest -> IO ()
 installManpages pkg lbi verbosity copy =
-    installOrdinaryFiles verbosity
-            (mandir (absoluteInstallDirs pkg lbi copy))
-            (zip (repeat manDir) manpages)
+    installOrdinaryFiles verbosity (mandir (absoluteInstallDirs pkg lbi copy)) $
+        [ ("man", joinPath mp) | ("man":mp) <- map splitDirectories $ extraSrcFiles pkg ]

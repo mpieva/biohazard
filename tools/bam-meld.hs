@@ -50,7 +50,8 @@ enum_bam_files _etee [    ] = return . ($ mempty)
 enum_bam_files  etee (f1:fs1) = go (decodeAnyBamOrSamFile f1 $== find_pairs $== I.mapStream (:[])) fs1
   where
     go e1 [    ] k = e1 k
-    go e1 (f:fs) k = e1 $ \h1 -> (decodeAnyBamOrSamFile f $== adjust h1 $== find_pairs)
+    go e1 (f:fs) k = go e1 fs $
+                          \h1 -> (decodeAnyBamOrSamFile f $== adjust h1 $== find_pairs)
                          (\h2 -> joinI . etee $ ilift lift (k $ h1 `mappend` h2)) >>= run
 
       -- How to merge?  We keep the stream from e1 as is, the refids in

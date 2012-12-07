@@ -24,7 +24,7 @@ Homepage:            http://biofs04/svn/bioinf/biohazard
 License:             BSD3
 
 -- The file containing the license text.
-License-file:        LICENSE
+License-File:        LICENSE
 
 -- The package author(s).
 Author:              Udo Stenzel
@@ -40,7 +40,9 @@ Category:            Development
 
 Build-type:          Custom
 
-Extra-Source-Files:  man/man1/bam-rmdup.1
+Extra-Source-Files:  man/man1/bam-meld.1
+                     man/man1/bam-rmdup.1
+                     man/man7/biohazard.7
 
 -- Extra files to be distributed with the package, such as examples or
 -- a README.
