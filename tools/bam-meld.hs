@@ -97,11 +97,11 @@ set_mapq :: BamPair -> Int -> BamPair
 set_mapq (Single a) q = Single (a { b_mapq = q })
 set_mapq (Pair a b) q = Pair (a { b_mapq = q }) (b { b_mapq = q })
 
-meld :: (BamPair -> Int) -> [BamPair] -> BamPair
-meld score rs | all p_is_unmapped rs = head rs
-              | all_equal (map p_qname rs) = set_mapq best' mapq 
-              | otherwise = error $ "BAMs are not in the same order or sequences are missing: " 
-                                  ++ show (map p_qname rs)
+meld :: BamMeta -> (BamPair -> Int) -> [BamPair] -> BamPair
+meld hdr score rs | all p_is_unmapped rs = head rs
+                  | all_equal (map p_qname rs) = set_mapq best' mapq 
+                  | otherwise = error $ "BAMs are not in the same order or sequences are missing: " 
+                                     ++ show (map p_qname rs)
   where
     all_equal [] = error "no input (not supposed to happen)"
     all_equal (x:xs) = all ((==) x) xs
@@ -127,12 +127,12 @@ meld score rs | all p_is_unmapped rs = head rs
     enc_xas (Pair a b) (one,two) = (encode a one,encode b two)
 
     encode b xas | isUnmapped b = xas
-                 | otherwise = S.pack (intercalate "," [ rnm, pos, cig, nm ]) : xas
+                 | otherwise = S.intercalate (S.singleton ',') [ rnm, pos, cig, nm ] : xas
       where
-        nm =  show $ extAsInt 0 "NM" b
-        pos = (if isReversed b then '-' else '+') : show (b_pos b)
-        rnm = show $ b_rname b
-        cig = show $ b_cigar b
+        nm =  S.pack $ show $ extAsInt 0 "NM" b
+        pos = S.pack $ (if isReversed b then '-' else '+') : show (b_pos b)
+        rnm = sq_name $ getRef (meta_refs hdr) (b_rname b)
+        cig = S.pack $ show $ b_cigar b
 
 
 options :: [OptDescr (Conf -> IO Conf)]
@@ -188,8 +188,8 @@ main = do
         mapM_ (hPutStrLn stderr) errors'
         exitFailure
 
-    enum_bam_files (c_merge conf) files >=> run                         $ \hdr ->
-        joinI $ mapStream (meld $ maybe defaultScore id $ c_score conf) $
+    enum_bam_files (c_merge conf) files >=> run                             $ \hdr ->
+        joinI $ mapStream (meld hdr $ maybe defaultScore id $ c_score conf) $
         joinI $ unpair $ c_output conf hdr 
 
 
