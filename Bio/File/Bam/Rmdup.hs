@@ -65,12 +65,12 @@ import qualified Data.Vector.Generic    as V
 -- duplicates of each other.  The typical label function would extract
 -- read groups, libraries or samples.
 
-rmdup :: (Monad m, Ord l) => (BamRec -> l) -> Bool -> Word8 -> Enumeratee [BamRec] [BamRec] m a 
-rmdup label strand_preserved maxq =
+rmdup :: (Monad m, Ord l) => (BamRec -> l) -> Bool -> Bool -> Word8 -> Enumeratee [BamRec] [BamRec] m a 
+rmdup label strand_preserved cheap maxq =
     -- Easiest way to go about this:  We simply collect everything that
     -- starts at some specific coordinate and group it appropriately.
     -- Treat the groups separately, output, go on.
-    check_flags ><> check_sort ><> mapGroups (do_rmdup label strand_preserved maxq) ><> check_sort
+    check_flags ><> check_sort ><> mapGroups (do_rmdup label strand_preserved cheap maxq) ><> check_sort
   where
     same_pos u v = b_cpos u == b_cpos v
     b_cpos br = (b_rname br, b_pos br)
@@ -131,9 +131,11 @@ check_flags = mapStreamM check
    with an appropriately filtered stream.
 -}
 
-do_rmdup :: Ord l => (BamRec -> l) -> Bool -> Word8 -> [BamRec] -> [BamRec]
-do_rmdup label strand_preserved maxq rds = map (collapse maxq) $ filter (not . null) groups
+do_rmdup :: Ord l => (BamRec -> l) -> Bool -> Bool -> Word8 -> [BamRec] -> [BamRec]
+do_rmdup label strand_preserved cheap maxq rds = do_collapse $ filter (not . null) groups
   where
+    do_collapse = if cheap then map cheap_collapse else map (collapse maxq)
+
     (pairs, singles) = partition isPaired rds
     (merged, true_singles) = partition isMergeTrimmed singles
 
@@ -291,4 +293,16 @@ consensus maxq nqs = if qr > 3 then (n0, qr) else (nucN,0)
     (n0,q0) : (_,q1) : _ = sortBy (flip $ comparing snd) $ assocs accs
     qr = fromIntegral $ (q0-q1) `min` fromIntegral maxq
 
+
+-- Cheap version: simply takes the lexically first record, adds XP field
+cheap_collapse :: [BamRec] -> BamRec
+cheap_collapse bs = b0 { b_exts = new_xp $ b_exts b0 }
+  where
+    b0 = minimumBy (comparing b_qname) bs
+
+    new_xp = M.insert "XP" $! Int (foldl' (\a b -> a `oplus` extAsInt 1 "XP" b) 0 bs)
+
+    _ `oplus` (-1) = -1
+    (-1) `oplus` _ = -1
+    a `oplus` b = a + b
 

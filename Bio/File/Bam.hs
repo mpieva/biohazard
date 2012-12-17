@@ -74,6 +74,11 @@ module Bio.File.Bam (
     br_flag,
     br_isFirstMate,
     br_isPaired,
+    br_rname,
+    br_pos,
+    br_mrnm,
+    br_mpos,
+    br_isize,
 
     BamRec(..),
     nullBamRec,
@@ -147,7 +152,7 @@ import Data.Array.Unsafe            ( unsafeFreeze )
 import Data.Attoparsec              ( anyWord8 )
 import Data.Attoparsec.Iteratee
 import Data.Binary.Put
-import Data.Bits                    ( testBit, shiftL, shiftR, (.&.), (.|.), complement )
+import Data.Bits                    ( Bits, testBit, shiftL, shiftR, (.&.), (.|.), complement )
 import Data.Char                    ( ord, isDigit, digitToInt )
 import Data.Int                     ( Int64, Int32 )
 import Data.Monoid
@@ -190,7 +195,7 @@ data CigOp = Mat | Ins | Del | Nop | SMa | HMa | Pad
 
 instance Show Cigar where
     show (Cigar cs) = concat [ shows l (toChr op) | (op,l) <- cs ]
-      where toChr = (:[]) . B.index "MIDNSHPMM" . fromEnum
+      where toChr = (:[]) . B.index "MIDNSHP=X" . fromEnum
 
 -- | extracts the aligned length from a cigar line
 -- This gives the length of an alignment as measured on the reference,
@@ -280,22 +285,32 @@ type BamEnumeratee m b = Enumeratee' BamMeta S.ByteString [BamRec] m b
 -- | Tests if a data stream is a Bam file.
 -- Recognizes plain Bam, gzipped Bam and bgzf'd Bam.  If a file is
 -- recognized as Bam, a decoder (suitable Iteratee) for it is returned.
-isBam, isPlainBam, isBgzfBam, isGzipBam :: MonadIO m => Iteratee S.ByteString m (Maybe (BamrawEnumeratee m a))
-isBam = msum `liftM` sequence [ isPlainBam, isBgzfBam, isGzipBam ]
+isBam, isEmptyBam, isPlainBam, isBgzfBam, isGzipBam :: MonadIO m => Iteratee S.ByteString m (Maybe (BamrawEnumeratee m a))
+isBam = firstOf [ isEmptyBam, isPlainBam, isBgzfBam, isGzipBam ]
+  where
+    firstOf [] = return Nothing
+    firstOf (k:ks) = k >>= maybe (firstOf ks) (return . Just)
 
-isPlainBam = (\n -> if n == 4 then Just ((>>= lift . run) . decompressPlain . decodeBam) else Nothing) 
+isEmptyBam = (\e -> if e then Just (\k -> return $ k mempty) else Nothing) `liftM` I.isFinished
+
+isPlainBam = (\n -> if n == 4 then Just (joinI . decompressPlain . decodeBam) else Nothing) 
              `liftM` i'lookAhead (I.heads "BAM\SOH")
 
-isBgzfBam = (\n -> if n == 4 then Just ((>>= lift . run) . decompressBgzf . decodeBam) else Nothing)
-            `liftM` do b <- isBgzf
-                       if b then i'lookAhead $ joinI $ decompressBgzf $ joinI $
-                                 mapChunks block_contents $ I.heads "BAM\SOH"
-                            else return 0
+-- Interesting... i'lookAhead interacts badly with the parallel
+-- decompression of BGZF.  (The chosen interface doesn't allow the EOF
+-- signal to be passed on.)  One workaround would be to run sequential
+-- BGZF decompression to check if the content is BAM, but since BGZF is
+-- actually GZip in disguise, the easier workaround if to use the
+-- ordinary GZip decompressor.
+isBgzfBam  = do b <- isBgzf
+                k <- if b then i'lookAhead $ joinI $ enumInflate GZip defaultDecompressParams isPlainBam
+                          else return Nothing
+                return $ (\_ -> (joinI . decompressBgzf . decodeBam)) `fmap` k
 
 isGzipBam  = do b <- isGzip
                 k <- if b then i'lookAhead $ joinI $ enumInflate GZip defaultDecompressParams isPlainBam
                           else return Nothing
-                return $ (((>>= lift . run) . enumInflate GZip defaultDecompressParams) .) `fmap` k
+                return $ ((joinI . enumInflate GZip defaultDecompressParams) .) `fmap` k
                 
 isBamOrSam :: MonadIO m => Iteratee S.ByteString m (BamEnumeratee m a)
 isBamOrSam = maybe decodeSam wrap `liftM` isBam
@@ -491,22 +506,22 @@ getByteStringNul = S.init <$> (G.lookAhead (get_len 1) >>= G.getByteString)
 -- It would be nice if we were able to write an index on the side.  That
 -- hasn't been designed in, yet.
 
-encodeBam :: MonadIO m => BamMeta -> Enumeratee [S.ByteString] S.ByteString m a
+encodeBam :: MonadIO m => BamMeta -> Enumeratee [BamRaw] S.ByteString m a
 encodeBam = encodeBamWith 6 -- sensible default compression level
 
-encodeBamUncompressed :: MonadIO m => BamMeta -> Enumeratee [S.ByteString] S.ByteString m a
+encodeBamUncompressed :: MonadIO m => BamMeta -> Enumeratee [BamRaw] S.ByteString m a
 encodeBamUncompressed = encodeBamWith 0
 
-encodeBamWith :: MonadIO m => Int -> BamMeta -> Enumeratee [S.ByteString] S.ByteString m a
+encodeBamWith :: MonadIO m => Int -> BamMeta -> Enumeratee [BamRaw] S.ByteString m a
 encodeBamWith lv meta = eneeBam ><> compressBgzf lv
   where
     eneeBam = eneeCheckIfDone (\k -> eneeBam2 . k $ Chunk header)
     eneeBam2 = eneeCheckIfDone (\k -> eneeBam3 . k $ Chunk S.empty)
     eneeBam3 = eneeCheckIfDone (liftI . put)
 
-    put k (EOF mx) = idone (liftI k) $ EOF mx
-    put k (Chunk [    ]) = liftI $ put k
-    put k (Chunk (r:rs)) = eneeCheckIfDone (\k' -> put k' (Chunk rs)) . k $ Chunk r'
+    put k (EOF                mx) = idone (liftI k) $ EOF mx
+    put k (Chunk [             ]) = liftI $ put k
+    put k (Chunk (BamRaw _ r:rs)) = eneeCheckIfDone (\k' -> put k' (Chunk rs)) . k $ Chunk r'
       where
         l  = S.length r
         r' = S.cons (fromIntegral (l `shiftR`  0 .&. 0xff)) $
@@ -529,8 +544,8 @@ encodeBamWith lv meta = eneeBam ><> compressBgzf lv
                    put_int_32 $ sq_length bs
 
 
-encodeBamEntry :: BamRec -> S.ByteString
-encodeBamEntry = S.concat . L.toChunks . runPut . putEntry
+encodeBamEntry :: BamRec -> BamRaw
+encodeBamEntry = BamRaw 0 . S.concat . L.toChunks . runPut . putEntry
   where
     putEntry  b = do putWord32le   $ unRefseq $ b_rname b
                      put_int_32    $ b_pos b
@@ -824,7 +839,7 @@ data BamHeader = BamHeader {
     } deriving Show
 
 instance Monoid BamHeader where
-    mempty = BamHeader (0,0) Unsorted []
+    mempty = BamHeader (1,0) Unsorted []
     a `mappend` b = BamHeader { hdr_version = hdr_version a `min` hdr_version b
                               , hdr_sorting = let u = hdr_sorting a ; v = hdr_sorting b in if u == v then u else Unsorted
                               , hdr_other_shit = hdr_other_shit a ++ hdr_other_shit b }
@@ -943,9 +958,11 @@ br_l_read_name :: BamRaw -> Int
 br_l_read_name (BamRaw _ raw) = fromIntegral $ S.unsafeIndex raw 8 - 1
 
 br_l_seq :: BamRaw -> Int
-br_l_seq (BamRaw _ raw) = 
-    fromIntegral (S.unsafeIndex raw 16)             .|. fromIntegral (S.unsafeIndex raw 17) `shiftL`  8 .|.
-    fromIntegral (S.unsafeIndex raw 18) `shiftL` 16 .|. fromIntegral (S.unsafeIndex raw 19) `shiftL` 24
+br_l_seq (BamRaw _ raw) = getInt raw 16
+
+getInt :: (Num a, Bits a) => S.ByteString -> Int -> a
+getInt s o = fromIntegral (S.unsafeIndex s $ o+0)             .|. fromIntegral (S.unsafeIndex s $ o+1) `shiftL`  8 .|.
+             fromIntegral (S.unsafeIndex s $ o+2) `shiftL` 16 .|. fromIntegral (S.unsafeIndex s $ o+3) `shiftL` 24
 
 br_n_cigar_op :: BamRaw -> Int
 br_n_cigar_op (BamRaw _ raw) =
@@ -961,6 +978,20 @@ br_isFirstMate r = (br_flag r .&. flagFirstMate) /= 0
 br_isPaired :: BamRaw -> Bool
 br_isPaired r = (br_flag r .&. flagPaired) /= 0
 
+br_rname :: BamRaw -> Refseq
+br_rname (BamRaw _ raw) = Refseq $ getInt raw 0
+
+br_pos :: BamRaw -> Int
+br_pos (BamRaw _ raw) = getInt raw 4
+
+br_mrnm :: BamRaw -> Refseq
+br_mrnm (BamRaw _ raw) = Refseq $ getInt raw 20
+
+br_mpos :: BamRaw -> Int
+br_mpos (BamRaw _ raw) = getInt raw 24
+
+br_isize :: BamRaw -> Int
+br_isize (BamRaw _ raw) = getInt raw 28
 
 -- | Decode a BAM stream into raw entries.  Note that the entries can be
 -- unpacked using @decodeBamEntry@.  Also note that this is an
@@ -1125,7 +1156,6 @@ bam2bam_test = withFile "foo.bam" WriteMode $       \hdl ->
                flip fileDriver some_file    $
                joinI $ decompressBgzf       $
                joinI $ decodeBam            $       \meta ->
-               joinI $ I.mapStream raw_data $
                joinI $ encodeBam meta       $
                mapChunksM_ (S.hPut hdl)
 

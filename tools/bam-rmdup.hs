@@ -17,6 +17,7 @@ data Conf = Conf {
     output :: BamMeta -> Iteratee [BamRec] IO (),
     max_qual :: Int,
     strand_preserved :: Bool,
+    cheap :: Bool,
     filter_enee :: BamRec -> Maybe BamRec,
     debug :: String -> IO () }
 
@@ -24,6 +25,7 @@ defaults :: Conf
 defaults = Conf { output = writeBamHandle stdout
                 , max_qual = 60
                 , strand_preserved = True
+                , cheap = False
                 , filter_enee = is_aligned
                 , debug = \_ -> return () }
 
@@ -32,6 +34,7 @@ options = [
     Option  "o" ["output"]       (ReqArg set_output "FILE") "Write to FILE (default: stdout)",
     Option  "p" ["improper-pairs"] (NoArg  set_improper)    "Include improper pairs",
     Option  "1" ["single-read"]  (NoArg  set_single)        "Pretend there is no second mate",
+    Option  "c" ["cheap"]        (NoArg  set_cheap)         "Cheap computation: skip the consensus calling",
     Option  "Q" ["max-qual"]     (ReqArg set_qual "QUAL")   "Set maximum quality after consensus call to QUAL",
     Option  "s" ["no-strand"]    (NoArg  set_no_strand)     "Strand of alignments is uninformative",
     Option  "v" ["verbose"]      (NoArg  set_verbose)       "Print more diagnostics",
@@ -43,6 +46,7 @@ options = [
     set_verbose   c =                    return $ c { debug = hPutStr stderr }
     set_improper  c =                    return $ c { filter_enee = Just }
     set_single    c =                    return $ c { filter_enee = make_single }
+    set_cheap     c =                    return $ c { cheap = True }
 
     usage _ = do p <- getProgName
                  hPutStrLn stderr $ usageInfo (p ++ info)  options 
@@ -90,10 +94,11 @@ main = do
        unless (M.null tbl) $ liftIO $ do
                 debug "mapping of read groups to libraries:\n"
                 mapM_ debug [ unpackSeqid k ++ " --> " ++ unpackSeqid v ++ "\n" | (k,v) <- M.toList tbl ]
+       liftIO $ debug "got header"
 
        joinI $ mapChunks (mapMaybe filter_enee) $
            joinI $ progress debug (meta_refs hdr) $
-           joinI $ rmdup (get_library tbl) strand_preserved (fromIntegral $ min 93 max_qual) $
+           joinI $ rmdup (get_library tbl) strand_preserved cheap (fromIntegral $ min 93 max_qual) $
            output hdr
 
 is_halfway_aligned :: BamRec -> Bool

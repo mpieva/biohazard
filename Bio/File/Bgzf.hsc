@@ -203,7 +203,7 @@ bgzfEofMarker = "\x1f\x8b\x8\x4\0\0\0\0\0\xff\x6\0\x42\x43\x2\0\x1b\0\x3\0\0\0\0
 -- XXX Need a way to write an index "on the side".  Additional output
 -- streams?  (Implicitly) pair two @Iteratee@s, similar to @I.pair@?
 compressBgzf :: MonadIO m => Int -> Enumeratee S.ByteString S.ByteString m a
-compressBgzf lv = eneeCheckIfDone (liftI . step 0 []) ><> mapChunksMP (liftIO . compress1 lv)
+compressBgzf lv = eneeCheckIfDone (liftI . step 0 []) ><> mapChunksM (liftIO . compress1 lv)
   where
     step    _ acc it c@(EOF _) = step1 it
       where

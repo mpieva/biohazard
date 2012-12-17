@@ -32,7 +32,6 @@ main = do
              joinI $ decodeAnyBam $ \hdr ->
              joinI $ groupOn br_qname $
              joinI $ resample num total $
-             joinI $ mapStream raw_data $
              joinI $ encodeBam hdr $
              mapChunksM_ (S.hPut stdout)
 

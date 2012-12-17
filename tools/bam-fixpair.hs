@@ -28,8 +28,8 @@ nice pqueue didn't work out.  The flags should also be sanitized,
 especially reversed/mate reverses and unmapped/mate unmapped need to go
 together, and QC fail should be set for both mates or not at all.
 
-We will need read/write access to RNAME, POS, MRNM, MPOS, ISIZE, FLAGS
-on raw records.
+We may need write access to RNAME, POS, MRNM, MPOS, ISIZE, FLAGS on raw
+records, too.
 -}
 
 import Bio.File.Bam
@@ -43,7 +43,6 @@ main :: IO ()
 main = enumDefaultInputs >=> run $
        joinI $ decodeAnyBam $ \hdr ->
        joinI $ re_pair $
-       joinI $ mapStream raw_data $
        joinI $ encodeBamUncompressed hdr $
        mapChunksM_ (liftIO . S.hPut stdout)
 
