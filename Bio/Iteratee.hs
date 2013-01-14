@@ -44,7 +44,6 @@ module Bio.Iteratee (
     module Data.Iteratee.Parallel
                     ) where
 
-
 import Bio.Base ( findAuxFile )
 import Control.Concurrent
 import Control.Monad
@@ -141,6 +140,9 @@ i'lookAhead = go mempty
   where 
     go acc it = Iteratee $ \od oc -> runIter it (\x _ -> od x (Chunk acc)) (oc . step acc)
     
+    -- step acc k (Chunk s) | trace (show ("lookahead", msg, S.length acc, S.length s)) False = undefined
+    -- step acc k (EOF _) | trace (show ("lookahead", msg, S.length acc, "EOF")) False = undefined
+
     step acc k c@(Chunk str) = go (acc `mappend` str) (k c)
     step acc k c@(EOF     _) = Iteratee $ \od1 -> runIter (k c) (\x _ -> od1 x (Chunk acc))
                                       
