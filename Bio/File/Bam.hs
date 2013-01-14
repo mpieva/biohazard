@@ -131,6 +131,7 @@ module Bio.File.Bam (
     BamMeta(..),
     parseBamMeta,
     showBamMeta,
+    addPG,
 
     BamHeader(..),
     BamSQ(..),
@@ -155,15 +156,18 @@ import Data.Binary.Put
 import Data.Bits                    ( Bits, testBit, shiftL, shiftR, (.&.), (.|.), complement )
 import Data.Char                    ( ord, isDigit, digitToInt )
 import Data.Int                     ( Int64, Int32 )
+import Data.List                    ( (\\) )
 import Data.Monoid
 import Data.Sequence                ( (<|), (|>), (><) )
+import Data.Vector.Generic          ( (!?) )
+import Data.Version                 ( Version, showVersion )
 import Data.Word                    ( Word32, Word8 )
 import Foreign.Marshal.Alloc        ( alloca )
 import Foreign.Ptr                  ( castPtr )
 import Foreign.Storable             ( peek, poke )
+import System.Environment           ( getArgs, getProgName )
 import System.IO
 import System.IO.Unsafe             ( unsafePerformIO )
-import Data.Vector.Generic          ( (!?) )
 
 import qualified Control.Monad.CatchIO          as CIO
 import qualified Data.Attoparsec.Char8          as P
@@ -824,6 +828,31 @@ data BamMeta = BamMeta {
         meta_other_shit :: [(Char, Char, BamOtherShit)],
         meta_comment :: [S.ByteString]
     } deriving Show
+
+
+addPG :: Maybe Version -> IO (BamMeta -> BamMeta)
+addPG vn = do 
+    args <- getArgs
+    pn   <- getProgName
+    return $ go args pn
+  where
+    go args pn bm = bm { meta_other_shit = ('P','G',pg_line) : meta_other_shit bm }
+      where
+        pg_line = concat [ [ ('I','D', pg_id) ]
+                         , [ ('P','N', B.pack pn) ]
+                         , [ ('C','L', B.pack $ unwords args) ]
+                         , maybe [] (\v -> [('V','N',B.pack (showVersion v))]) vn
+                         , map (\p -> ('P','P',p)) (take 1 pg_pp)
+                         , map (\p -> ('p','p',p)) (drop 1 pg_pp) ]
+
+        pg_id : _ = filter (not . flip elem pg_ids) . map B.pack $
+                      pn : [ pn ++ '-' : show i | i <- [(1::Int)..] ]
+
+        pg_ids = [ pgid | ('P','G',fs) <- meta_other_shit bm, ('I','D',pgid) <- fs ]
+        pg_pps = [ pgid | ('P','G',fs) <- meta_other_shit bm, ('P','P',pgid) <- fs ]
+
+        pg_pp  = pg_ids \\ pg_pps
+
 
 instance Monoid BamMeta where
     mempty = BamMeta mempty noRefs [] []

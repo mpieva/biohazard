@@ -14,6 +14,7 @@ import Bio.Iteratee
 import Control.Monad                            ( unless, foldM )
 import Data.List                                ( sortBy, intercalate )
 import Data.Monoid
+import Paths_biohazard                          ( version )
 import System.Console.GetOpt
 import System.Environment                       ( getArgs )
 import System.Exit                              ( exitSuccess, exitFailure )
@@ -188,9 +189,10 @@ main = do
         mapM_ (hPutStrLn stderr) errors'
         exitFailure
 
+    add_pg <- addPG (Just version)
     enum_bam_files (c_merge conf) files >=> run                             $ \hdr ->
         joinI $ mapStream (meld hdr $ maybe defaultScore id $ c_score conf) $
-        joinI $ unpair $ c_output conf hdr 
+        joinI $ unpair $ c_output conf (add_pg hdr)
 
 
 iter_transpose :: Monad m => Enumeratee [BamPair] [[BamPair]] (Iteratee [[BamPair]] m) a

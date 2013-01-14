@@ -9,6 +9,7 @@
 
 import Bio.File.Bam
 import Bio.Iteratee
+import Paths_biohazard ( version )
 import System.Environment
 import System.IO
 import System.Random
@@ -28,11 +29,12 @@ main = do
              foldStream (\a _ -> 1+a) 0
     hPutStr stderr $ shows total " records.\n"
 
+    add_pg <- addPG (Just version)
     enumInputs files >=> run $
              joinI $ decodeAnyBam $ \hdr ->
              joinI $ groupOn br_qname $
              joinI $ resample num total $
-             joinI $ encodeBam hdr $
+             joinI $ encodeBam (add_pg hdr) $
              mapChunksM_ (S.hPut stdout)
 
 

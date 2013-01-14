@@ -3,6 +3,7 @@ import Bio.File.Bam.Trim
 import Bio.Iteratee
 import Control.Monad                        ( unless, foldM )
 import Data.Word                            ( Word8 )
+import Paths_biohazard                      ( version )
 import System.Console.GetOpt
 import System.Environment                   ( getArgs )
 import System.Exit                          ( exitFailure, exitSuccess )
@@ -43,10 +44,11 @@ main = do
                   | otherwise        = encodeBamEntry $ trim_3' (c_trim_pred c) r'
             where r' = decodeBamEntry r
 
+    add_pg <- addPG (Just version)
     enumInputs files >=> run                $                   -- IO ()
         joinI $ decompressBgzf              $                   -- Iteratee ByteString   IO ()
         joinI $ decodeBam                   $ \hdr ->           -- Iteratee Block        IO ()
         joinI $ mapStream do_trim           $                   -- Iteratee [BamRaw]     IO ()
-        joinI $ encodeBam hdr               $                   -- Iteratee [ByteString] IO ()
+        joinI $ encodeBam (add_pg hdr)      $                   -- Iteratee [ByteString] IO ()
         mapChunksM_ (S.hPut stdout)                             -- Iteratee ByteString   IO ()
 
