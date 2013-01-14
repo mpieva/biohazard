@@ -73,6 +73,7 @@ module Bio.File.Bam (
     br_n_cigar_op,
     br_flag,
     br_isFirstMate,
+    br_isSecondMate,
     br_isPaired,
     br_rname,
     br_pos,
@@ -1003,6 +1004,9 @@ br_flag (BamRaw _ raw) =
 
 br_isFirstMate :: BamRaw -> Bool
 br_isFirstMate r = (br_flag r .&. flagFirstMate) /= 0
+
+br_isSecondMate :: BamRaw -> Bool
+br_isSecondMate r = (br_flag r .&. flagSecondMate) /= 0
 
 br_isPaired :: BamRaw -> Bool
 br_isPaired r = (br_flag r .&. flagPaired) /= 0

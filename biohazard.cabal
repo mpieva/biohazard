@@ -65,6 +65,7 @@ Library
                        Bio.File.TwoBit,
                        Bio.Iteratee,
                        Bio.Iteratee.ZLib,
+                       Bio.PriorityQueue,
                        Bio.Util
   
   -- Packages needed in order to build this package.
