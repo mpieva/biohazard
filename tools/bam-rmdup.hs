@@ -6,6 +6,7 @@ import Bio.Iteratee
 import Control.Monad
 import Data.Bits
 import Data.Maybe
+import Paths_biohazard ( version )
 import System.Console.GetOpt
 import System.Environment ( getArgs, getProgName )
 import System.Exit
@@ -89,17 +90,17 @@ main = do
     (opts, files, errors) <- getOpt Permute options `fmap` getArgs
     unless (null errors) $ mapM_ (hPutStrLn stderr) errors >> exitFailure
     Conf{..} <- foldr (>=>) return opts defaults
+    add_pg <- addPG $ Just version
     enum_all_input_files files >=> run $ \hdr -> do
        let tbl = mk_rg_tbl hdr
        unless (M.null tbl) $ liftIO $ do
                 debug "mapping of read groups to libraries:\n"
                 mapM_ debug [ unpackSeqid k ++ " --> " ++ unpackSeqid v ++ "\n" | (k,v) <- M.toList tbl ]
-       liftIO $ debug "got header"
 
        joinI $ mapChunks (mapMaybe filter_enee) $
            joinI $ progress debug (meta_refs hdr) $
            joinI $ rmdup (get_library tbl) strand_preserved cheap (fromIntegral $ min 93 max_qual) $
-           output hdr
+           output (add_pg hdr)
 
 is_halfway_aligned :: BamRec -> Bool
 is_halfway_aligned br = not (isUnmapped br) || not (isMateUnmapped br)

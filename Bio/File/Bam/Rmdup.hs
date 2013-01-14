@@ -24,9 +24,9 @@ import qualified Data.Vector.Generic    as V
 -- but have different length or different strand.
 --
 -- We are looking at three different kinds of reads:  paired reads, true
--- single ended reads, merged or trimmed reads.  They do not overlap, by
--- definition, and are treated separately.  These conditions define a
--- set of duplicates:
+-- single ended reads, merged or trimmed reads.  They are somewhat
+-- different, but here's the situation if we wanted to treat them
+-- separately.  These conditions define a set of duplicates:
 --
 -- Merged or trimmed:  We compare the leftmost coordinates and the
 -- aligned length.  If the library prep is strand-preserving, we also
@@ -35,17 +35,32 @@ import qualified Data.Vector.Generic    as V
 -- Paired: We compare both left-most coordinates (b_pos and b_mpos).  If
 -- the library prep is strand-preserving, only first-mates can be
 -- duplicates of first-mates.  Else a first-mate can be the duplicate of
--- a second-mate.  In principle, pairs can be duplicates of merged
--- reads.  We do not handle this case, it should be solved externally by
--- merging those pairs that overlap in coordinate space.  Also, there
--- may be pairs with one unmapped mate.  This is not a problem as they
--- get assigned synthetic coordinates and will be handled smoothly.
+-- a second-mate.  There may be pairs with one unmapped mate.  This is
+-- not a problem as they get assigned synthetic coordinates and will be
+-- handled smoothly.
 --
 -- True singles:  We compare only the leftmost coordinate.  It does not
--- matter if the library prep is strand-preserving.  Technically, a true
--- single could be the duplicate of a trimmed single, if the trimming is
--- unreliable.  We do not consider this possibility... some losses are
--- simply inevitable.
+-- matter if the library prep is strand-preserving, the strand always
+-- matters.
+--
+-- Across these classes, we can see more duplicates:
+--
+-- Merged/trimmed and paired:  these can be duplicates if the merging
+-- failed for the pair.  We would need to compare the outer coordinates
+-- of the merged reads to the two 5' coordinates of the pair.  However,
+-- since we don't have access to the mate, we cannot actually do
+-- anything right here.  This case should be solved externally by
+-- merging those pairs that overlap in coordinate space.
+--
+-- Single and paired:  in the single case, we only have one coordinate
+-- to compare.  This will inevitably lead to trouble, as we could find
+-- that the single might be the duplicate of two pairs, but those two
+-- pairs are definitely not duplicates of each other.  We solve it by
+-- removing the single read(s).
+--
+-- Single and merged/trimmed:  same trouble as in the single+paired
+-- case.  We remove the single to solve it.
+--
 --
 -- In principle, we might want to allow some wiggle room in the
 -- coordinates.  So far, this has not been implemented.  It adds the
@@ -107,7 +122,7 @@ check_flags = mapStreamM check
    removal now relies on correct "unmapped" and "mate unmapped" flags,
    and we didn't have those until four hours ago...)
    
-   . Other definitions (e.g. lack of CIGAR) don't workj, because that
+   . Other definitions (e.g. lack of CIGAR) don't work, because that
      information won't be available for the mate.
 
    . This would amount to making the "unmapped" flag part of the
@@ -132,24 +147,49 @@ check_flags = mapStreamM check
 -}
 
 do_rmdup :: Ord l => (BamRec -> l) -> Bool -> Bool -> Word8 -> [BamRec] -> [BamRec]
-do_rmdup label strand_preserved cheap maxq rds = do_collapse $ filter (not . null) groups
+do_rmdup label strand_preserved cheap maxq = 
+   concatMap do_rmdup1 . M.elems . accumMap label
   where
-    do_collapse = if cheap then map cheap_collapse else map (collapse maxq)
+    do_rmdup1 :: [BamRec] -> [BamRec]
+    do_rmdup1 rds = results
+      where
+        (pairs, singles) = partition isPaired rds
+        (merged, true_singles) = partition isMergeTrimmed singles
 
-    (pairs, singles) = partition isPaired rds
-    (merged, true_singles) = partition isMergeTrimmed singles
+        mkMap f = M.map do_collapse . accumMap f
 
-    isMergeTrimmed br = case M.lookup "XF" (b_exts br) of
-        Just (Int i) -> rem i 4 /= 0 ; _ -> False
+        pairs'        = mkMap (\b -> (b_mate_pos b, strand_preserved && isReversed  b 
+                                                  , strand_preserved && isFirstMate b)) pairs
+        merged'       = mkMap (\b -> (b_aln_len b,  strand_preserved && isReversed  b)) merged
+
+        true_singles' = mkMap (\b -> (              strand_preserved && isReversed  b)) true_singles
+
+        -- Hrm.  Must fold the XP values of the removed true_singles into
+        -- others.
+        results = merge_singles true_singles' 
+                    (  [ (rev, v) | ((_, rev),        v) <- M.toList merged' ]
+                    ++ [ (rev, v) | ((_, rev, False), v) <- M.toList pairs'  ] )
+                  ++ [ v | ((_, _, True), v) <- M.toList pairs' ]
+
+
+    merge_singles m [] = M.elems m
+    merge_singles m ((k,v) : kvs) = case M.lookup k m of
+            Nothing -> v : merge_singles m kvs
+            Just  w -> addXPOf w v : merge_singles (M.delete k m) kvs
+
+    do_collapse = if cheap then cheap_collapse else collapse maxq
+    addXPOf w v = v { b_exts = M.insert "XP" (Int $ extAsInt 1 "XP" w `oplus` extAsInt 1 "XP" v) (b_exts v) }
 
     b_aln_len = cigarToAlnLen . b_cigar
     b_mate_pos br = (b_mrnm br, b_mpos br, isUnmapped br, isMateUnmapped br)
+    isMergeTrimmed br = isMerged br || isTrimmed br
 
-    group'sort f = groupBy (\a b -> compare (f a) (f b) == EQ) . sortBy (comparing f)
-
-    groups = group'sort (\b -> (label b,               strand_preserved && isReversed  b)) true_singles ++
-             group'sort (\b -> (label b, b_aln_len b,  strand_preserved && isReversed  b)) merged ++ 
-             group'sort (\b -> (label b, b_mate_pos b, strand_preserved && isFirstMate b)) pairs
+accumMap :: Ord b => (a -> b) -> [a] -> M.Map b [a]
+accumMap f = go M.empty    
+  where    
+    go m [    ] = m
+    go m (v:vs) = let ws = M.findWithDefault [] (f v) m 
+                  in ws `seq` go (M.insert (f v) (v:ws) m) vs
 
 
 {- We need to deal sensibly with each field, but different fields have
@@ -192,10 +232,6 @@ collapse maxq  brs = b0 { b_exts  = modify_extensions $ b_exts b0
                         , b_qual  = B.pack cons_qual
                         , b_virtual_offset = 0 }
   where
-    _ `oplus` (-1) = -1
-    (-1) `oplus` _ = -1
-    a `oplus` b = a + b
-
     b0 = minimumBy (comparing b_qname) brs
     most_fail = 2 * length (filter isFailsQC brs) > length brs 
     failflag | most_fail = b_flag b0 .|. flagFailsQC
@@ -299,10 +335,10 @@ cheap_collapse :: [BamRec] -> BamRec
 cheap_collapse bs = b0 { b_exts = new_xp $ b_exts b0 }
   where
     b0 = minimumBy (comparing b_qname) bs
-
     new_xp = M.insert "XP" $! Int (foldl' (\a b -> a `oplus` extAsInt 1 "XP" b) 0 bs)
 
-    _ `oplus` (-1) = -1
-    (-1) `oplus` _ = -1
-    a `oplus` b = a + b
+oplus :: Int -> Int -> Int
+_ `oplus` (-1) = -1
+(-1) `oplus` _ = -1
+a `oplus` b = a + b
 
