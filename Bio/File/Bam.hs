@@ -74,6 +74,8 @@ module Bio.File.Bam (
     br_flag,
     br_isFirstMate,
     br_isSecondMate,
+    br_isReversed,
+    br_isMateReversed,
     br_isPaired,
     br_rname,
     br_pos,
@@ -1007,6 +1009,12 @@ br_isFirstMate r = (br_flag r .&. flagFirstMate) /= 0
 
 br_isSecondMate :: BamRaw -> Bool
 br_isSecondMate r = (br_flag r .&. flagSecondMate) /= 0
+
+br_isReversed :: BamRaw -> Bool
+br_isReversed r = (br_flag r .&. flagMateReversed) /= 0
+
+br_isMateReversed :: BamRaw -> Bool
+br_isMateReversed r = (br_flag r .&. flagMateReversed) /= 0
 
 br_isPaired :: BamRaw -> Bool
 br_isPaired r = (br_flag r .&. flagPaired) /= 0

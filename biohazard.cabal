@@ -97,9 +97,9 @@ Executable bam-fixpair
   Main-is:             tools/bam-fixpair.hs
   Build-depends:       bytestring, containers, base >=4, binary, array,
                        zlib, attoparsec-iteratee, attoparsec, iteratee,
-                       transformers, binary-strict, ListLike,
+                       transformers, binary-strict, ListLike, vector,
                        MonadCatchIO-transformers, filepath, directory,
-                       biohazard, vector, unordered-containers
+                       biohazard, unordered-containers, hashable
 
 Executable bam-meld
   Main-is:             tools/bam-meld.hs

@@ -16,6 +16,8 @@ module Bio.Iteratee (
 
     I.mapStream,
     I.takeWhileE,
+    I.tryHead,
+    I.isFinished,
 
     ($==),
     ListLike,
