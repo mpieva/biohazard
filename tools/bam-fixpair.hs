@@ -8,28 +8,32 @@ same time deal with broken files where that doesn't actually work.
 Whenever we join mates, we also check if the flags are consistent and
 fix them if they aren't.
 
-Quick joining can use a priority queue:  if we have a lone mate and the
-mate maps to a later position, we enter it into the pqueue with the
-mate's coordinates.  If the mate maps to an earlier position, we can
-take it from the pqueue's head.  (Needs some fiddling to work with
-multiple reads mapping to the same spot.)
+In the end, the code will work...
 
-If that fails, it's because a mate is missing or the mate information is
-fouled up.  So whenever the head of the pqueue has coordinates in the
-past, we take it out and print a warning.  We can still keep this junk
-(mem or disk?) or we could discard it.  What hasn't found a mate at the
-end can still be discarded or flagged as unpaired.
+ - splendidly if mates are already adjacent, in which case everything is
+   streamed.
+ - well if the input is sorted properly, in which case most reads
+   stream, but improper pairs need to queue until the mate is reached.
+ - reasonably if there are occasional lone mates, which will be queued
+   to the very end and sorted by hashed-qname before they are recognized
+   and repaired.
+ - awkwardly if sorting is violated, flags are wrong or lone mates are
+   the rule, because then it degenerates to a full sort by qname.
 
-
-What to fix:  To make paired records consistent, the MRNM, MPOS and
-ISIZE fields should reflect the actual mate's alignment.  This is easy
-to fix, but only relevant when that info was wrong to begin with and our
-nice pqueue didn't work out.  The flags should also be sanitized,
-especially reversed/mate reverses and unmapped/mate unmapped need to go
-together, and QC fail should be set for both mates or not at all.
-
-We may need write access to RNAME, POS, MRNM, MPOS, ISIZE, FLAGS on raw
-records, too.
+TODO:
+ . actually fix the found pairs
+ . actually fix the lone mates
+ . deal with consecutive pairs that violate sorting
+   (short cut logic:  if consecutive reads form a pair, fix it and pass
+   it on; don't fiddle with queues)
+ . upgrade to pqueue in external memory
+ . better diagnostics
+ . useful command line
+ . need write access to POS, MRNM, MPOS, ISIZE, FLAGS on raw records
+ . a companion that sorts would be cool, but it should be an
+   opportunistic sort that is fast on almost sorted files.
+ . optional repair:  if 'u' or 'U', but not 'uU' and the mate is
+   missing, throw read away  
 -}
 
 import Bio.File.Bam

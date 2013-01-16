@@ -28,77 +28,28 @@
 
 module Bio.File.Bam (
     module Bio.Base,
+    module Bio.File.Bam.Header,
+    module Bio.File.Bam.Raw,
 
     Block(..),
-    decompressBgzf,
-    compressBgzf,
-
-    BamrawEnumeratee,
     BamEnumeratee,
-
-    isBam,
-    isPlainBam,
-    isGzipBam,
-    isBgzfBam,
     isBamOrSam,
 
-    decodeBam,
     decodeBamEntry,
-    decodeBamSequence,
+    encodeBamEntry,
 
     decodeSam,
     decodeSam',
 
-    decodeAnyBam,
-    decodeAnyBamFile,
     decodeAnyBamOrSam,
     decodeAnyBamOrSamFile,
-
-    encodeBam,
-    encodeBamWith,
-    encodeBamUncompressed,
-    encodeBamEntry,
 
     writeBamFile,
     writeBamHandle,
     pipeBamOutput,
 
-    BamRaw,
-    bamRaw,
-    virt_offset,
-    raw_data,
-    br_qname,
-    br_l_read_name,
-    br_l_seq,
-    br_n_cigar_op,
-    br_flag,
-    br_isFirstMate,
-    br_isSecondMate,
-    br_isReversed,
-    br_isMateReversed,
-    br_isPaired,
-    br_rname,
-    br_pos,
-    br_mrnm,
-    br_mpos,
-    br_isize,
-
     BamRec(..),
     nullBamRec,
-    Refs,
-    noRefs,
-    getRef,
-
-    Refseq(..),
-    invalidRefseq,
-    isValidRefseq,
-    invalidPos,
-    isValidPos,
-    unknownMapq,
-    compareNames,
-
-    combineCoordinates,
-    combineNames,
 
     MdOp(..),
     getMd,
@@ -112,63 +63,42 @@ module Bio.File.Bam (
     Extensions, Ext(..),
     extAsInt, extAsString, setQualFlag,
 
-    flagPaired,         isPaired,
-    flagProperlyPaired, isProperlyPaired,
-    flagUnmapped,       isUnmapped,
-    flagMateUnmapped,   isMateUnmapped,
-    flagReversed,       isReversed,
-    flagMateReversed,   isMateReversed,
-    flagFirstMate,      isFirstMate,
-    flagSecondMate,     isSecondMate,
-    flagAuxillary,      isAuxillary,
-    flagFailsQC,        isFailsQC,
-    flagDuplicate,      isDuplicate,
-    flagTrimmed,        isTrimmed,   
-    flagMerged,         isMerged,       
-    type_mask,
-
-    BamIndex,
-    readBamIndex,
-    readBamIndex',
-
-    BamMeta(..),
-    parseBamMeta,
-    showBamMeta,
-    addPG,
-
-    BamHeader(..),
-    BamSQ(..),
-    BamSorting(..),
-    BamOtherShit
+    isPaired,
+    isProperlyPaired,
+    isUnmapped,
+    isMateUnmapped,
+    isReversed,
+    isMateReversed,
+    isFirstMate,
+    isSecondMate,
+    isAuxillary,
+    isFailsQC,
+    isDuplicate,
+    isTrimmed,
+    isMerged,
+    type_mask
 ) where
 
 import Bio.Base
-import Bio.File.Bgzf
+import Bio.File.Bam.Header
+import Bio.File.Bam.Raw
 import Bio.Iteratee
-import Bio.Iteratee.ZLib hiding ( CompressionLevel )
 
 import Control.Monad
 import Control.Applicative
 import Data.Array.IArray
-import Data.Array.IO                ( IOUArray, newArray_, writeArray )
 import Data.Array.Unboxed
-import Data.Array.Unsafe            ( unsafeFreeze )
 import Data.Attoparsec              ( anyWord8 )
-import Data.Attoparsec.Iteratee
 import Data.Binary.Put
 import Data.Bits                    ( Bits, testBit, shiftL, shiftR, (.&.), (.|.), complement )
 import Data.Char                    ( ord, isDigit, digitToInt )
-import Data.Int                     ( Int64, Int32 )
-import Data.List                    ( (\\) )
-import Data.Monoid
-import Data.Sequence                ( (<|), (|>), (><) )
+import Data.Int                     ( Int32 )
+import Data.Monoid                  ( mempty )
 import Data.Vector.Generic          ( (!?) )
-import Data.Version                 ( Version, showVersion )
 import Data.Word                    ( Word32, Word8 )
 import Foreign.Marshal.Alloc        ( alloca )
 import Foreign.Ptr                  ( castPtr )
 import Foreign.Storable             ( peek, poke )
-import System.Environment           ( getArgs, getProgName )
 import System.IO
 import System.IO.Unsafe             ( unsafePerformIO )
 
@@ -176,13 +106,11 @@ import qualified Control.Monad.CatchIO          as CIO
 import qualified Data.Attoparsec.Char8          as P
 import qualified Data.Binary.Strict.Get         as G
 import qualified Data.ByteString                as S
-import qualified Data.ByteString.Unsafe         as S
 import qualified Data.ByteString.Char8          as B
 import qualified Data.ByteString.Lazy.Char8     as L
 import qualified Data.Foldable                  as F
 import qualified Data.Iteratee                  as I
 import qualified Data.Map                       as M
-import qualified Data.Sequence                  as Z
 import qualified Data.Vector.Generic            as V
 
 -- ^ Parsers and Printers for BAM and SAM.  We employ an @Iteratee@
@@ -212,45 +140,6 @@ cigarToAlnLen :: Cigar -> Int
 cigarToAlnLen (Cigar cig) = sum $ map l cig
   where l (op,n) = if op == Mat || op == Del || op == Nop then n else 0
     
-
--- | Reference sequence in Bam
--- Bam enumerates the reference sequences and then sorts by index.  We
--- need to track that index if we want to reproduce the sorting order.
-newtype Refseq = Refseq { unRefseq :: Word32 } deriving (Show, Eq, Ord, Ix)
-
-instance Enum Refseq where
-    succ = Refseq . succ . unRefseq
-    pred = Refseq . pred . unRefseq
-    toEnum = Refseq . fromIntegral
-    fromEnum = fromIntegral . unRefseq
-    enumFrom = map Refseq . enumFrom . unRefseq
-    enumFromThen (Refseq a) (Refseq b) = map Refseq $ enumFromThen a b
-    enumFromTo (Refseq a) (Refseq b) = map Refseq $ enumFromTo a b
-    enumFromThenTo (Refseq a) (Refseq b) (Refseq c) = map Refseq $ enumFromThenTo a b c
-
-
--- | Tests whether a reference sequence is valid.
--- Returns true unless the the argument equals @invalidRefseq@.
-isValidRefseq :: Refseq -> Bool
-isValidRefseq = (/=) invalidRefseq
-
--- | The invalid Refseq.
--- Bam uses this value to encode a missing reference sequence.
-invalidRefseq :: Refseq
-invalidRefseq = Refseq 0xffffffff
-
--- | The invalid Refseq.
--- Bam uses this value to encode a missing position.
-invalidPos :: Int
-invalidPos = -1
-
--- | Tests whether a position is valid.
--- Returns true unless the the argument equals @invalidPos@.
-isValidPos :: Int -> Bool
-isValidPos = (/=) invalidPos
-
-unknownMapq :: Int
-unknownMapq = 255
 
 -- | internal representation of a BAM record
 data BamRec = BamRec {
@@ -286,60 +175,12 @@ nullBamRec = BamRec {
         b_virtual_offset = 0
     }
 
-type BamrawEnumeratee m b = Enumeratee' BamMeta S.ByteString [BamRaw] m b
 type BamEnumeratee m b = Enumeratee' BamMeta S.ByteString [BamRec] m b
 
--- | Tests if a data stream is a Bam file.
--- Recognizes plain Bam, gzipped Bam and bgzf'd Bam.  If a file is
--- recognized as Bam, a decoder (suitable Iteratee) for it is returned.
-isBam, isEmptyBam, isPlainBam, isBgzfBam, isGzipBam :: MonadIO m => Iteratee S.ByteString m (Maybe (BamrawEnumeratee m a))
-isBam = firstOf [ isEmptyBam, isPlainBam, isBgzfBam, isGzipBam ]
-  where
-    firstOf [] = return Nothing
-    firstOf (k:ks) = k >>= maybe (firstOf ks) (return . Just)
-
-isEmptyBam = (\e -> if e then Just (\k -> return $ k mempty) else Nothing) `liftM` I.isFinished
-
-isPlainBam = (\n -> if n == 4 then Just (joinI . decompressPlain . decodeBam) else Nothing) 
-             `liftM` i'lookAhead (I.heads "BAM\SOH")
-
--- Interesting... i'lookAhead interacts badly with the parallel
--- decompression of BGZF.  (The chosen interface doesn't allow the EOF
--- signal to be passed on.)  One workaround would be to run sequential
--- BGZF decompression to check if the content is BAM, but since BGZF is
--- actually GZip in disguise, the easier workaround if to use the
--- ordinary GZip decompressor.
-isBgzfBam  = do b <- isBgzf
-                k <- if b then i'lookAhead $ joinI $ enumInflate GZip defaultDecompressParams isPlainBam
-                          else return Nothing
-                return $ (\_ -> (joinI . decompressBgzf . decodeBam)) `fmap` k
-
-isGzipBam  = do b <- isGzip
-                k <- if b then i'lookAhead $ joinI $ enumInflate GZip defaultDecompressParams isPlainBam
-                          else return Nothing
-                return $ ((joinI . enumInflate GZip defaultDecompressParams) .) `fmap` k
-                
 isBamOrSam :: MonadIO m => Iteratee S.ByteString m (BamEnumeratee m a)
 isBamOrSam = maybe decodeSam wrap `liftM` isBam
   where
     wrap enee it' = enee (\hdr -> I.mapStream decodeBamEntry (it' hdr)) >>= lift . run
-
-
--- | Checks if a file contains BAM in any of the common forms, then
--- decompresses it appropriately.  We support plain BAM, Bgzf'd BAM,
--- and Gzip'ed BAM.
---
--- The recommendation for these functions is to use @decodeAnyBam@ (or
--- @decodeAnyBamFile@) for any code that can handle @BamRaw@ input, but
--- @decodeAnyBamOrSam@ (or @decodeAnyBamOrSamFile@) for code that needs
--- @BamRec@.  That way, SAM is supported automatically, and seeking will
--- be supported if possible.
-decodeAnyBam :: MonadIO m => BamrawEnumeratee m a
-decodeAnyBam it = do mk <- isBam ; case mk of Just  k -> k it 
-                                              Nothing -> fail "this isn't BAM."
-
-decodeAnyBamFile :: MonadCatchIO m => FilePath -> (BamMeta -> Iteratee [BamRaw] m a) -> m (Iteratee [BamRaw] m a)
-decodeAnyBamFile fn k = enumFileRandom defaultBufSize fn (decodeAnyBam k) >>= run
 
 
 -- | Checks if a file contains BAM in any of the common forms,
@@ -354,42 +195,12 @@ decodeAnyBamOrSamFile :: MonadCatchIO m => FilePath -> (BamMeta -> Iteratee [Bam
 decodeAnyBamOrSamFile fn k = enumFileRandom defaultBufSize fn (decodeAnyBamOrSam k) >>= run
 
 
--- Seek to a given sequence in a Bam file, read those records.  This
--- requires an appropriate index (read separately), and the file must
--- have been opened in such a way as to allow seeking.  Enumerates over
--- the @BamRaw@ records of the correct sequence only, doesn't enumerate
--- at all if the sequence isn't found.
-
-decodeBamSequence :: Monad m => BamIndex -> Refseq -> Enumeratee Block [BamRaw] m a
-decodeBamSequence idx refseq iter = case idx ! refseq of
-        _ | not (bounds idx `inRange` refseq) -> return iter
-        0                                     -> return iter
-        virtoff -> do seek $ fromIntegral virtoff
-                      (decodeBamLoop ><> I.breakE wrong_ref) iter
-  where
-    wrong_ref br = let a = fromIntegral $ raw_data br `S.index` 0
-                       b = fromIntegral $ raw_data br `S.index` 1
-                       c = fromIntegral $ raw_data br `S.index` 2
-                       d = fromIntegral $ raw_data br `S.index` 3
-                       r = a `shiftL`  0 .|.  b `shiftL`  8 .|. 
-                           c `shiftL` 16 .|.  d `shiftL` 24
-                   in r /= unRefseq refseq
     
-
--- | A list of reference sequences.
-type Refs = Z.Seq BamSQ
-
--- | The empty list of references.  Needed for BAM files that don't really store alignments.
-noRefs :: Refs
-noRefs = Z.empty
-
-getRef :: Refs -> Refseq -> BamSQ
-getRef refs (Refseq i) = Z.index refs (fromIntegral i)
 
 
 -- | Decodes a raw block into a @BamRec@.
 decodeBamEntry :: BamRaw -> BamRec
-decodeBamEntry (BamRaw offs s) = either error fixup . fst $ G.runGet go s
+decodeBamEntry br = either error fixup . fst . G.runGet go $ raw_data br
   where
     go = do !rid       <- Refseq       <$> G.getWord32le
             !start     <- fromIntegral <$> G.getWord32le
@@ -409,7 +220,7 @@ decodeBamEntry (BamRaw offs s) = either error fixup . fst $ G.runGet go s
             !exts <- getExtensions M.empty
 
             return $ BamRec read_name flag rid start mapq cigar
-                            mate_rid mate_pos ins_size (V.fromListN read_len $ expand qry_seq) qual exts offs
+                            mate_rid mate_pos ins_size (V.fromListN read_len $ expand qry_seq) qual exts (virt_offset br)
   
     bases = listArray (0,15) (map toNucleotide "NACNGNNNTNNNNNNN") :: Array Word8 Nucleotide
     expand t = if S.null t then [] else let x = S.head t in bases ! (x `shiftR` 4) : bases ! (x .&. 0xf) : expand (S.tail t)
@@ -505,54 +316,10 @@ getByteStringNul = S.init <$> (G.lookAhead (get_len 1) >>= G.getByteString)
     get_len l = G.getWord8 >>= \w -> if w == 0 then return l else get_len $! l+1
 
 
--- | Encode stuff into a BAM stream.
--- We send the encoded header and reference list to output through the
--- Bgzf compressor, then receive a list of records, which we concatenate
--- and send to output, too.
---
--- It would be nice if we were able to write an index on the side.  That
--- hasn't been designed in, yet.
-
-encodeBam :: MonadIO m => BamMeta -> Enumeratee [BamRaw] S.ByteString m a
-encodeBam = encodeBamWith 6 -- sensible default compression level
-
-encodeBamUncompressed :: MonadIO m => BamMeta -> Enumeratee [BamRaw] S.ByteString m a
-encodeBamUncompressed = encodeBamWith 0
-
-encodeBamWith :: MonadIO m => Int -> BamMeta -> Enumeratee [BamRaw] S.ByteString m a
-encodeBamWith lv meta = eneeBam ><> compressBgzf lv
-  where
-    eneeBam = eneeCheckIfDone (\k -> eneeBam2 . k $ Chunk header)
-    eneeBam2 = eneeCheckIfDone (\k -> eneeBam3 . k $ Chunk S.empty)
-    eneeBam3 = eneeCheckIfDone (liftI . put)
-
-    put k (EOF                mx) = idone (liftI k) $ EOF mx
-    put k (Chunk [             ]) = liftI $ put k
-    put k (Chunk (BamRaw _ r:rs)) = eneeCheckIfDone (\k' -> put k' (Chunk rs)) . k $ Chunk r'
-      where
-        l  = S.length r
-        r' = S.cons (fromIntegral (l `shiftR`  0 .&. 0xff)) $
-             S.cons (fromIntegral (l `shiftR`  8 .&. 0xff)) $
-             S.cons (fromIntegral (l `shiftR` 16 .&. 0xff)) $
-             S.cons (fromIntegral (l `shiftR` 24 .&. 0xff)) r
-    
-    header = S.concat . L.toChunks $ runPut putHeader
-
-    putHeader = do putByteString "BAM\1"
-                   let hdr = showBamMeta meta L.empty
-                   putWord32le $ fromIntegral $ L.length hdr
-                   putLazyByteString hdr
-                   put_int_32 . Z.length $ meta_refs meta
-                   F.mapM_ putRef $ meta_refs meta
-
-    putRef bs = do put_int_32 $ S.length (sq_name bs) + 1
-                   putByteString $ sq_name bs
-                   putWord8 0
-                   put_int_32 $ sq_length bs
 
 
 encodeBamEntry :: BamRec -> BamRaw
-encodeBamEntry = BamRaw 0 . S.concat . L.toChunks . runPut . putEntry
+encodeBamEntry = bamRaw 0 . S.concat . L.toChunks . runPut . putEntry
   where
     putEntry  b = do putWord32le   $ unRefseq $ b_rname b
                      put_int_32    $ b_pos b
@@ -697,23 +464,6 @@ showMd = B.pack . flip s1 []
     s1 (MdDel ns            : ms) = (:) '^' . shows ns . s1 ms
     s1 [                        ] = id
 
-flagPaired, flagProperlyPaired, flagUnmapped, flagMateUnmapped, flagReversed, flagMateReversed, flagFirstMate, flagSecondMate,
- flagAuxillary, flagFailsQC, flagDuplicate, flagTrimmed, flagMerged :: Int
-
-flagPaired = 0x1
-flagProperlyPaired = 0x2
-flagUnmapped = 0x4
-flagMateUnmapped = 0x8
-flagReversed = 0x10
-flagMateReversed = 0x20
-flagFirstMate = 0x40
-flagSecondMate = 0x80
-flagAuxillary = 0x100
-flagFailsQC = 0x200
-flagDuplicate = 0x400
-
-flagTrimmed = 0x10000
-flagMerged  = 0x20000
 
 isPaired, isProperlyPaired, isUnmapped, isMateUnmapped, isReversed,
     isMateReversed, isFirstMate, isSecondMate, isAuxillary, isFailsQC,
@@ -738,43 +488,6 @@ type_mask :: Int
 type_mask = flagFirstMate .|. flagSecondMate .|. flagPaired
 
 
--- | Compares two sequence names the way samtools does.
--- samtools sorts by "strnum_cmp":
--- . if both strings start with a digit, parse the initial
---   sequence of digits and compare numerically, if equal,
---   continue behind the numbers
--- . else compare the first characters (possibly NUL), if equal
---   continue behind them
--- . else both strings ended and the shorter one counts as
---   smaller (and that part is stupid)
-
-compareNames :: Seqid -> Seqid -> Ordering
-compareNames n m = case (B.uncons n, B.uncons m) of
-        ( Nothing, Nothing ) -> EQ
-        ( Just  _, Nothing ) -> GT
-        ( Nothing, Just  _ ) -> LT
-        ( Just (c,n'), Just (d,m') )
-            | isDigit c && isDigit d -> 
-                let Just (u,n'') = B.readInt n
-                    Just (v,m'') = B.readInt m
-                in case u `compare` v of 
-                    LT -> LT
-                    GT -> GT
-                    EQ -> n'' `compareNames` m''
-            | otherwise -> case c `compare` d of 
-                    LT -> LT
-                    GT -> GT
-                    EQ -> n' `compareNames` m'
-                                         
-combineCoordinates :: Monad m => Enumeratee [BamRec] [BamRec] (Iteratee [BamRec] m) a
-combineCoordinates = mergeSortStreams comp
-  where comp u v = if (b_rname u, b_pos u) < (b_rname v, b_pos v) then Less else NotLess
-
-combineNames :: Monad m => Enumeratee [BamRec] [BamRec] (Iteratee [BamRec] m) a
-combineNames = mergeSortStreams comp
-  where comp u v = case b_qname u `compareNames` b_qname v of LT -> Less ; _ -> NotLess
-
-
 extAsInt :: Int -> String -> BamRec -> Int
 extAsInt d nm br = case M.lookup nm (b_exts br) of Just (Int i) -> i ; _ -> d
 
@@ -790,295 +503,6 @@ setQualFlag c br = br { b_exts = M.insert "ZQ" (Text s') $ b_exts br }
   where
     s  = extAsString "ZQ" br
     s' = if c `B.elem` s then s else c `B.cons` s
-
---
--- | Stop gap solution for a cheap index.  We only get the first offset
--- from the linear index, which allows us to navigate to a target
--- sequence.  Will do the rest when I need it.
-type BamIndex = UArray Refseq Int64
-
-readBamIndex :: FilePath -> IO BamIndex
-readBamIndex = fileDriver readBamIndex'
-
-readBamIndex' :: MonadIO m => Iteratee S.ByteString m BamIndex
-readBamIndex' = do magic <- I.heads "BAI\1"
-                   when (magic /= 4) $ fail "BAI signature not found"
-                   nref <- fromIntegral `liftM` endianRead4 LSB
-                   if nref < 1 then return (array (toEnum 1, toEnum 0) [])
-                               else get_array nref
-  where
-    get_array nref = do 
-        arr <- liftIO $ ( newArray_ (toEnum 0, toEnum (nref-1)) :: IO (IOUArray Refseq Int64) )
-        forM_ [toEnum 0 .. toEnum (nref-1)] $ \r -> do
-            nbins <- fromIntegral `liftM` endianRead4 LSB
-            replicateM_ nbins $ do
-                _bin <- endianRead4 LSB -- "distinct bin", whatever that means
-                nchunks <- fromIntegral `liftM` endianRead4 LSB
-                replicateM_ nchunks $ endianRead8 LSB >> endianRead8 LSB
-
-            nintv <- endianRead4 LSB
-            o <- let loop acc 0 = return acc
-                     loop acc n = do oo <- fromIntegral `liftM` endianRead8 LSB
-                                     let !acc' = if oo == 0 then acc else min acc oo
-                                     loop acc' (n-1)
-                 in loop maxBound nintv                    
-            liftIO $ writeArray arr r o 
-        liftIO $ unsafeFreeze arr
-
-data BamMeta = BamMeta {
-        meta_hdr :: BamHeader,
-        meta_refs :: Refs,
-        meta_other_shit :: [(Char, Char, BamOtherShit)],
-        meta_comment :: [S.ByteString]
-    } deriving Show
-
-
-addPG :: Maybe Version -> IO (BamMeta -> BamMeta)
-addPG vn = do 
-    args <- getArgs
-    pn   <- getProgName
-    return $ go args pn
-  where
-    go args pn bm = bm { meta_other_shit = ('P','G',pg_line) : meta_other_shit bm }
-      where
-        pg_line = concat [ [ ('I','D', pg_id) ]
-                         , [ ('P','N', B.pack pn) ]
-                         , [ ('C','L', B.pack $ unwords args) ]
-                         , maybe [] (\v -> [('V','N',B.pack (showVersion v))]) vn
-                         , map (\p -> ('P','P',p)) (take 1 pg_pp)
-                         , map (\p -> ('p','p',p)) (drop 1 pg_pp) ]
-
-        pg_id : _ = filter (not . flip elem pg_ids) . map B.pack $
-                      pn : [ pn ++ '-' : show i | i <- [(1::Int)..] ]
-
-        pg_ids = [ pgid | ('P','G',fs) <- meta_other_shit bm, ('I','D',pgid) <- fs ]
-        pg_pps = [ pgid | ('P','G',fs) <- meta_other_shit bm, ('P','P',pgid) <- fs ]
-
-        pg_pp  = pg_ids \\ pg_pps
-
-
-instance Monoid BamMeta where
-    mempty = BamMeta mempty noRefs [] []
-    a `mappend` b = BamMeta { meta_hdr = meta_hdr a `mappend` meta_hdr b
-                            , meta_refs = meta_refs a >< meta_refs b
-                            , meta_other_shit = meta_other_shit a ++ meta_other_shit b
-                            , meta_comment = meta_comment a ++ meta_comment b }
-
-data BamHeader = BamHeader {
-        hdr_version :: (Int, Int),
-        hdr_sorting :: BamSorting,
-        hdr_other_shit :: BamOtherShit
-    } deriving Show
-
-instance Monoid BamHeader where
-    mempty = BamHeader (1,0) Unsorted []
-    a `mappend` b = BamHeader { hdr_version = hdr_version a `min` hdr_version b
-                              , hdr_sorting = let u = hdr_sorting a ; v = hdr_sorting b in if u == v then u else Unsorted
-                              , hdr_other_shit = hdr_other_shit a ++ hdr_other_shit b }
-
-data BamSQ = BamSQ {
-        sq_name :: Seqid,
-        sq_length :: Int,
-        sq_other_shit :: BamOtherShit
-    } deriving Show
-
-bad_seq :: BamSQ
-bad_seq = BamSQ (error "no SN field") (error "no LN field") []
-
-data BamSorting = Unsorted | Grouped | Queryname | Coordinate | GroupSorted 
-    deriving (Show, Eq)
-
-type BamOtherShit = [(Char, Char, S.ByteString)]
-
-parseBamMeta :: P.Parser BamMeta
-parseBamMeta = foldr ($) mempty <$> P.sepBy parseBamMetaLine (P.char '\n')
-
-parseBamMetaLine :: P.Parser (BamMeta -> BamMeta)
-parseBamMetaLine = P.char '@' >> P.choice [hdLine, sqLine, coLine, otherLine]
-  where
-    hdLine = P.string "HD\t" >> 
-             (\fns meta -> meta { meta_hdr = foldr ($) (meta_hdr meta) fns })
-               <$> P.sepBy1 (P.choice [hdvn, hdso, hdother]) (P.char '\t')
-    
-    sqLine = P.string "SQ\t" >> 
-             (\fns meta -> meta { meta_refs = foldr ($) bad_seq fns <| meta_refs meta })
-               <$> P.sepBy1 (P.choice [sqnm, sqln, sqother]) (P.char '\t')
-    
-    hdvn = P.string "VN:" >>
-           (\a b hdr -> hdr { hdr_version = (a,b) })
-             <$> P.decimal <*> ((P.char '.' <|> P.char ':') >> P.decimal)
-
-    hdso = P.string "SO:" >>
-           (\s hdr -> hdr { hdr_sorting = s })
-             <$> P.choice [ Grouped  <$ P.string "grouped"
-                          , Queryname <$ P.string "queryname"
-                          , Coordinate <$ P.string "coordinate"
-                          , GroupSorted <$ P.string "groupsort"
-                          , Unsorted <$ P.skipWhile (\c -> c/='\t' && c/='\n') ]
-
-    sqnm = P.string "SN:" >> (\s sq -> sq { sq_name = s }) <$> pall
-    sqln = P.string "LN:" >> (\i sq -> sq { sq_length = i }) <$> P.decimal
-
-    hdother = (\t hdr -> hdr { hdr_other_shit = t : hdr_other_shit hdr }) <$> tagother
-    sqother = (\t sq  -> sq  { sq_other_shit = t : sq_other_shit sq }) <$> tagother
-    
-    coLine = P.string "CO\t" >>
-             (\s meta -> meta { meta_comment = s : meta_comment meta })
-               <$> P.takeWhile (/= 'n')
-
-    otherLine = (\a b ts meta -> meta { meta_other_shit = (a,b,ts) : meta_other_shit meta })
-                  <$> P.anyChar <*> P.anyChar <*> (P.char '\t' >> P.sepBy1 tagother (P.char '\t'))
-
-    tagother :: P.Parser (Char,Char,S.ByteString)
-    tagother = (,,) <$> P.anyChar <*> P.anyChar <*> (P.char ':' >> pall)
-    
-    pall :: P.Parser S.ByteString
-    pall = P.takeWhile (\c -> c/='\t' && c/='\n')
-
-showBamMeta :: BamMeta -> L.ByteString -> L.ByteString
-showBamMeta (BamMeta h ss os cs) = 
-    show_bam_meta_hdr h .
-    F.foldr ((.) . show_bam_meta_seq) id ss .
-    foldr ((.) . show_bam_meta_other) id os .
-    foldr ((.) . show_bam_meta_comment) id cs
-  where
-    show_bam_meta_hdr (BamHeader (major,minor) so os') = 
-        L.append "@HD\tVN:" . L.append (L.pack (show major ++ '.' : show minor)) .
-        L.append (case so of Unsorted -> L.empty
-                             Grouped  -> "\tSO:grouped"
-                             Queryname  -> "\tSO:queryname"
-                             Coordinate  -> "\tSO:coordinate"
-                             GroupSorted  -> "\tSO:groupsort") .
-        show_bam_others os'
-
-    show_bam_meta_seq (BamSQ  _  _ []) = id
-    show_bam_meta_seq (BamSQ nm ln ts) =
-        L.append "@SQ\tSN:" . L.append (L.fromChunks [nm]) . L.append "\tLN:" .
-        L.append (L.pack (show ln)) . show_bam_others ts
-
-    show_bam_meta_comment cm = L.append "@CO\t" . L.append (L.fromChunks [cm]) . L.cons '\n'
-
-    show_bam_meta_other (a,b,ts) = 
-        L.cons '@' . L.cons a . L.cons b . show_bam_others ts
-
-    show_bam_others ts =         
-        foldr ((.) . show_bam_other) id ts . L.cons '\n'
-
-    show_bam_other (a,b,v) = 
-        L.cons '\t' . L.cons a . L.cons b . L.cons ':' . L.append (L.fromChunks [v])
-
-
--- | Bam record in its native encoding along with virtual address.
-data BamRaw = BamRaw { virt_offset :: {-# UNPACK #-} !FileOffset
-                     , raw_data :: {-# UNPACK #-} !S.ByteString }
-
--- | Smart constructor.  Makes sure we got a at least a full record.
-bamRaw :: FileOffset -> S.ByteString -> BamRaw
-bamRaw o s = if good then r else error $ "broken BAM record " ++ show (S.length s, m) ++
-    show [ 32, br_l_read_name r, br_l_seq r, (br_l_seq r+1) `div` 2, br_n_cigar_op r * 4 ] 
-  where
-    r = BamRaw o s 
-    good | S.length s < 32 = False
-         | otherwise       = S.length s >= m
-    m = sum [ 32, br_l_read_name r, br_l_seq r, (br_l_seq r+1) `div` 2, br_n_cigar_op r * 4 ] 
-
--- | Accessor for raw bam.
-br_qname :: BamRaw -> S.ByteString
-br_qname r@(BamRaw _ raw) = S.unsafeTake (br_l_read_name r) $ S.unsafeDrop 32 raw
-
-br_l_read_name :: BamRaw -> Int  
-br_l_read_name (BamRaw _ raw) = fromIntegral $ S.unsafeIndex raw 8 - 1
-
-br_l_seq :: BamRaw -> Int
-br_l_seq (BamRaw _ raw) = getInt raw 16
-
-getInt :: (Num a, Bits a) => S.ByteString -> Int -> a
-getInt s o = fromIntegral (S.unsafeIndex s $ o+0)             .|. fromIntegral (S.unsafeIndex s $ o+1) `shiftL`  8 .|.
-             fromIntegral (S.unsafeIndex s $ o+2) `shiftL` 16 .|. fromIntegral (S.unsafeIndex s $ o+3) `shiftL` 24
-
-br_n_cigar_op :: BamRaw -> Int
-br_n_cigar_op (BamRaw _ raw) =
-    fromIntegral (S.unsafeIndex raw 12) .|. fromIntegral (S.unsafeIndex raw 13) `shiftL`  8
-
-br_flag :: BamRaw -> Int
-br_flag (BamRaw _ raw) =
-    fromIntegral (S.unsafeIndex raw 14) .|. fromIntegral (S.unsafeIndex raw 15) `shiftL`  8
-
-br_isFirstMate :: BamRaw -> Bool
-br_isFirstMate r = (br_flag r .&. flagFirstMate) /= 0
-
-br_isSecondMate :: BamRaw -> Bool
-br_isSecondMate r = (br_flag r .&. flagSecondMate) /= 0
-
-br_isReversed :: BamRaw -> Bool
-br_isReversed r = (br_flag r .&. flagMateReversed) /= 0
-
-br_isMateReversed :: BamRaw -> Bool
-br_isMateReversed r = (br_flag r .&. flagMateReversed) /= 0
-
-br_isPaired :: BamRaw -> Bool
-br_isPaired r = (br_flag r .&. flagPaired) /= 0
-
-br_rname :: BamRaw -> Refseq
-br_rname (BamRaw _ raw) = Refseq $ getInt raw 0
-
-br_pos :: BamRaw -> Int
-br_pos (BamRaw _ raw) = getInt raw 4
-
-br_mrnm :: BamRaw -> Refseq
-br_mrnm (BamRaw _ raw) = Refseq $ getInt raw 20
-
-br_mpos :: BamRaw -> Int
-br_mpos (BamRaw _ raw) = getInt raw 24
-
-br_isize :: BamRaw -> Int
-br_isize (BamRaw _ raw) = getInt raw 28
-
--- | Decode a BAM stream into raw entries.  Note that the entries can be
--- unpacked using @decodeBamEntry@.  Also note that this is an
--- Enumeratee in spirit, only the @BamMeta@ and @Refs@ need to get
--- passed separately.
-decodeBam :: Monad m => (BamMeta -> Iteratee [BamRaw] m a) -> Iteratee Block m (Iteratee [BamRaw] m a)
-decodeBam inner = do meta <- liftBlock get_bam_header
-                     refs <- liftBlock get_ref_array
-                     decodeBamLoop $ inner $! merge meta refs
-  where
-    get_bam_header  = do magic <- I.heads "BAM\SOH"
-                         when (magic /= 4) $ fail "BAM signature not found"
-                         hdr_len <- endianRead4 LSB
-                         joinI $ I.take (fromIntegral hdr_len) $ parserToIteratee parseBamMeta
-
-    get_ref_array = do nref <- endianRead4 LSB
-                       foldM (\acc _ -> do 
-                           nm <- endianRead4 LSB >>= i'getString . fromIntegral
-                           ln <- endianRead4 LSB
-                           return $! acc |> BamSQ (S.init nm) (fromIntegral ln) []
-                             ) Z.empty $ [1..nref]
-
-    -- Need to merge information from header into actual reference list.
-    -- The latter is the authoritative source for the *order* of the
-    -- sequences, so leftovers from the header are discarded.  Merging
-    -- is by name.  So we merge information from the header into the
-    -- list, then replace the header information.
-    merge meta refs = 
-        let tbl = M.fromList [ (sq_name sq, sq) | sq <- F.toList (meta_refs meta) ]
-        in meta { meta_refs = fmap (\s -> maybe s (merge' s) (M.lookup (sq_name s) tbl)) refs }
-
-    merge' l r | sq_length l == sq_length r = l { sq_other_shit = sq_other_shit l ++ sq_other_shit r }
-               | otherwise                  = l -- contradiction in header, but we'll just ignore it
-
-
-decodeBamLoop :: Monad m => Enumeratee Block [BamRaw] m a
-decodeBamLoop = eneeCheckIfDone loop
-  where
-    loop k = I.isFinished >>= loop' k
-    loop' k True = return $ liftI k
-    loop' k False = do off <- getOffset
-                       raw <- liftBlock $ do
-                                bsize <- endianRead4 LSB
-                                when (bsize < 32) $ fail "short BAM record"
-                                i'getString (fromIntegral bsize)
-                       eneeCheckIfDone loop . k $ Chunk [bamRaw off raw]
 
 
 -- | Iteratee-style parser for SAM files, designed to be compatible with

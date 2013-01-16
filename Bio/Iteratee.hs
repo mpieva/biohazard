@@ -7,6 +7,7 @@ module Bio.Iteratee (
     groupStreamOn,
     i'getString,
     i'lookAhead,
+    i'take,
     mapStreamM,
     filterStream,
     filterStreamM,
@@ -18,6 +19,8 @@ module Bio.Iteratee (
     I.takeWhileE,
     I.tryHead,
     I.isFinished,
+    I.heads,
+    I.breakE,
 
     ($==),
     ListLike,
@@ -133,6 +136,10 @@ groupStreamBy cmp inner = eneeCheckIfDone (liftI . step)
         lift (run it) >>= \b -> eneeCheckIfDone (\k -> step k str) . outer $ Chunk [b]
 
 
+i'take :: (Monad m, Nullable s, ListLike s el) => Int -> Enumeratee s s m a
+i'take = I.take
+
+
 -- | Run an Iteratee, collect the input.  When it finishes, return the
 -- result along with *all* input.  Effectively allows lookahead.  Be
 -- careful, this will eat memory if the @Iteratee@ doesn't return
@@ -171,6 +178,10 @@ infixl 1 $==
 -- | Merge two @Enumerator'@s into one.  The header provided by the
 -- inner @Enumerator'@ is passed to the output iterator, the header
 -- provided by the outer @Enumerator'@ is passed to the merging iteratee
+--
+-- XXX  Something about those headers is unsatisfactory... there should
+--      be an unobtrusive way to combine headers.
+
 mergeEnums' :: (Nullable s2, Nullable s1, Monad m)
             => Enumerator' hi s1 m a                            -- ^ inner enumerator
             -> Enumerator' ho s2 (Iteratee s1 m) a              -- ^ outer enumerator
@@ -223,8 +234,13 @@ enumInputs xs = go xs
         go ( f :fs) = enumFile defaultBufSize f >=> go fs
         go [      ] = return
 
+-- | Default buffer size in elements.  This is 1024 in @Iteratee@, which
+-- is obviously too small.  Since we want to merge many files, a read
+-- should take more time than a seek.  This sets the sensible buffer
+-- size to more than about one MB.
 defaultBufSize :: Int
-defaultBufSize = 32768
+defaultBufSize = 2*1024*1024
+
 
 data Ordering' a = Less | Equal a | NotLess
 
