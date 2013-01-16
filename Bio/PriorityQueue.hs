@@ -9,9 +9,10 @@ module Bio.PriorityQueue (
         deletePQ,
         enqueuePQ,
         dequeuePQ,
-        minimumPQ,
+        getMinPQ,
+        peekMinPQ,
         sizePQ
-        ) where
+) where
 
 -- | A Priority Queue that can fall back to external storage.  
 -- 
@@ -97,16 +98,20 @@ enqueuePQ a (PQ pq) = liftIO $ do (p,s) <- readIORef pq
 dequeuePQ :: (Binary a, Ord a, Sizeable a, MonadIO m) => PQ a -> m ()
 dequeuePQ (PQ pq) = liftIO $ do (p,s) <- readIORef pq
                                 let !p' = dropMin p
-                                    !s' = s - 1
+                                    !s' = max 0 (s - 1)
                                 writeIORef pq (p',s')
 
 
 -- | Returns the minimum element from the queue.  
 -- If the queue is empty, Nothing is returned.  Else the minimum element
 -- currently in the queue.
-minimumPQ :: (Binary a, Ord a, Sizeable a, MonadIO m) => PQ a -> m (Maybe a)
-minimumPQ (PQ pq) = liftIO $ (getMin . fst) `fmap` readIORef pq
+peekMinPQ :: (Binary a, Ord a, Sizeable a, MonadIO m) => PQ a -> m (Maybe a)
+peekMinPQ (PQ pq) = liftIO $ (getMin . fst) `fmap` readIORef pq
 
+getMinPQ :: (Binary a, Ord a, Sizeable a, MonadIO m) => PQ a -> m (Maybe a)
+getMinPQ (PQ pq) = liftIO $ do r <- (getMin . fst) `fmap` readIORef pq
+                               case r of Nothing -> return () ; Just _ -> dequeuePQ  (PQ pq)
+                               return r
 
 sizePQ :: (Binary a, Ord a, Sizeable a, MonadIO m) => PQ a -> m Int
 sizePQ (PQ pq) = liftIO $ snd `fmap` readIORef pq
@@ -133,5 +138,6 @@ getMin Empty        = Nothing
 getMin (Node x _ _) = Just x
  
 dropMin :: Ord a => SkewHeap a -> SkewHeap a
-dropMin Empty        = Empty
+dropMin Empty        = error "dropMin on empty queue... are you sure?!"
 dropMin (Node _ l r) = l `union` r
+

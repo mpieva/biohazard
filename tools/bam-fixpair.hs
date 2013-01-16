@@ -120,7 +120,8 @@ re_pair right_here in_order messed_up = eneeCheckIfDone $ go (0::Int) (0::Int)
     warn msg = liftIO $ hPutStrLn stderr $ "[re_pair] warning: " ++ msg
     err  msg = liftIO $ hPutStrLn stderr $ "[re_pair] error:   " ++ msg
 
-    no_mate_here l b = do warn $ "[" ++ l ++ "] record " ++ show (br_qname b)
+    no_mate_here l b = do warn $ "[" ++ l ++ "] record "
+                              ++ shows (br_qname b) (if br_isFirstMate b then "/1" else "/2")
                               ++ " did not have a mate at the right location."
                           let !b' = force_copy b
                           enqueuePQ (byQName b') messed_up
@@ -139,7 +140,6 @@ re_pair right_here in_order messed_up = eneeCheckIfDone $ go (0::Int) (0::Int)
 
     go !num_in !num_out !k = tryHead >>= report num_in num_out >>= go' num_in num_out k
     
-    
     -- At EOF, flush everything.
     go' !num_in !num_out !k Nothing = flush_in_order num_in num_out k
 
@@ -147,8 +147,8 @@ re_pair right_here in_order messed_up = eneeCheckIfDone $ go (0::Int) (0::Int)
     -- Paired read?  Does it belong 'here'?
     go' !num_in !num_out !k (Just r) 
         | not (br_isPaired r) = eneeCheckIfDone (go (num_in+1) (num_out+1)) . k $ Chunk [r]
-        | otherwise = minimumPQ right_here >>= \mm -> case mm of
-            -- there's nothing else here, so here is redefined
+        | otherwise = peekMinPQ right_here >>= \mm -> case mm of
+            -- there's nothing else here, so here becomes redefined
             Nothing             -> enqueue_and_go (num_in+1) num_out k r 
 
             Just (ByQName _ qq) -> case compare (br_self_pos r) (br_self_pos qq) of
@@ -176,53 +176,48 @@ re_pair right_here in_order messed_up = eneeCheckIfDone $ go (0::Int) (0::Int)
     -- Flush the in_order queue to messed_up, since those didn't find
     -- their mate the ordinary way.  Afterwards, flush the messed_up
     -- queue.
-    flush_in_order num_in num_out k = minimumPQ in_order >>= \zz -> case zz of
-        Just (ByMatePos b) -> do dequeuePQ in_order
-                                 no_mate_here "flush_in_order" b
+    flush_in_order num_in num_out k = getMinPQ in_order >>= \zz -> case zz of
+        Just (ByMatePos b) -> do no_mate_here "flush_in_order" b
                                  flush_in_order num_in num_out k
         Nothing -> flush_messed_up num_in num_out k
 
     -- Flush the messed up queue.  Everything should come off in pairs,
     -- unless something is broken.
-    flush_messed_up  num_in num_out k = minimumPQ messed_up >>= flush_mess1 num_in num_out k
+    flush_messed_up  num_in num_out k = getMinPQ messed_up >>= flush_mess1 num_in num_out k
 
     flush_mess1 num_in num_out k Nothing              = return (liftI k)
-    flush_mess1 num_in num_out k (Just (ByQName _ a)) = dequeuePQ messed_up >> minimumPQ messed_up >>= flush_mess2 num_in num_out k a
+    flush_mess1 num_in num_out k (Just (ByQName _ a)) = getMinPQ messed_up >>= flush_mess2 num_in num_out k a
 
     flush_mess2 num_in num_out k a Nothing = do a' <- no_mate_ever a
                                                 return (k $ Chunk [a'])
                                                 
     flush_mess2 num_in num_out k a b'@(Just (ByQName _ b)) 
-        | br_qname a /= br_qname b = do dequeuePQ messed_up
-                                        a' <- no_mate_ever a
+        | br_qname a /= br_qname b = do a' <- no_mate_ever a
                                         eneeCheckIfDone (\k' -> flush_mess1 num_in num_out k' b') . k $ Chunk [a']
 
-        | otherwise = do dequeuePQ messed_up
-                         eneeCheckIfDone (flush_messed_up num_in (num_out+2)) . k . Chunk $ fixmate a b
+        | otherwise = eneeCheckIfDone (flush_messed_up num_in (num_out+2)) . k . Chunk $ fixmate a b
 
 
     -- Flush the right_here queue.  Everything should come off in pairs,
     -- if not, it goes to messed_up.  When done, loop back to 'go'
-    flush_here  num_in num_out r k = minimumPQ right_here >>= flush_here1 num_in num_out r k
+    flush_here  num_in num_out r k = getMinPQ right_here >>= flush_here1 num_in num_out r k
 
     flush_here1 num_in num_out r k Nothing = go' num_in num_out k (Just r)
-    flush_here1 num_in num_out r k (Just a) = dequeuePQ right_here >> minimumPQ right_here >>= flush_here2 num_in num_out r k a
+    flush_here1 num_in num_out r k (Just a) = getMinPQ right_here >>= flush_here2 num_in num_out r k a
 
     flush_here2 num_in num_out r k (ByQName _ a) Nothing = do no_mate_here "flush_here2/Nothing" a
                                                               flush_here num_in num_out r k
                                                 
     flush_here2 num_in num_out r k (ByQName _ a) b'@(Just (ByQName _ b)) 
-        | br_qname a /= br_qname b = do dequeuePQ right_here
-                                        no_mate_here "flush_here2/Just" a
+        | br_qname a /= br_qname b = do no_mate_here "flush_here2/Just" a
                                         flush_here1 num_in num_out r k b'
 
-        | otherwise = do dequeuePQ right_here
-                         eneeCheckIfDone (flush_here num_in (num_out+2) r) . k . Chunk $ fixmate a b
+        | otherwise = eneeCheckIfDone (flush_here num_in (num_out+2) r) . k . Chunk $ fixmate a b
 
 
     -- add stuff coming from 'in_order' to 'right_here'
     complete_here pivot = do
-            zz <- minimumPQ in_order
+            zz <- peekMinPQ in_order
             case zz of
                 Nothing -> return ()
                 Just (ByMatePos b) 
