@@ -53,15 +53,13 @@ pqconf :: PQ_Conf
 pqconf = PQ_Conf 1000 "/var/tmp/"
 
 main :: IO ()
-main = addPG (Just version)         >>= \add_pg ->
-       withPQ pqconf                 $ \right_here ->
-       withPQ pqconf                 $ \in_order   ->
-       withPQ pqconf                 $ \messed_up  ->
-       enumDefaultInputs >=> run     $
-       joinI $ decodeAnyBam          $  \hdr ->
-       re_pair right_here in_order messed_up =$
-       encodeBamUncompressed (add_pg hdr) =$
-       mapChunksM_ (liftIO . S.hPut stdout)
+main = addPG (Just version)                               >>= \add_pg ->
+       withPQ pqconf                                        $ \right_here ->
+       withPQ pqconf                                        $ \in_order   ->
+       withPQ pqconf                                        $ \messed_up  ->
+       mergeDefaultInputs combineCoordinates >=> run        $ \hdr ->
+       re_pair right_here in_order messed_up               =$
+       pipeRawBamOutput (add_pg hdr)
 
 
 -- | Fix a pair of reads.  Right now fixes their order and checks that

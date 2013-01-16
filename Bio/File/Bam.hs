@@ -102,7 +102,6 @@ import Foreign.Storable             ( peek, poke )
 import System.IO
 import System.IO.Unsafe             ( unsafePerformIO )
 
-import qualified Control.Monad.CatchIO          as CIO
 import qualified Data.Attoparsec.Char8          as P
 import qualified Data.Binary.Strict.Get         as G
 import qualified Data.ByteString                as S
@@ -361,31 +360,20 @@ encodeBamEntry = bamRaw 0 . S.concat . L.toChunks . runPut . putEntry
     num :: Nucleotide -> Word8
     num (N x) = x .&. 15
 
--- | writes stuff to a BAM file                     
--- We generate BAM with dynamic blocks, then stream them out to the
--- file.
+-- | writes BAM encoded stuff to a @Handle@
+-- We generate BAM with dynamic blocks, then stream them out to the file.
 --
 -- XXX This could write indexes on the side---a simple block index
 -- for MapReduce style slicing, a standard BAM index or a name index
 -- would be possible.
-writeBamFile :: CIO.MonadCatchIO m => FilePath -> BamMeta -> Iteratee [BamRec] m ()
-writeBamFile fp meta =
-    CIO.bracket (liftIO $ openBinaryFile fp WriteMode)
-                (liftIO . hClose)
-                (flip writeBamHandle meta) 
+writeBamHandle :: MonadIO m => Handle -> BamMeta -> Iteratee [BamRec] m ()
+writeBamHandle hdl meta = I.mapStream encodeBamEntry =$ writeRawBamHandle hdl meta
+
+writeBamFile :: MonadCatchIO m => FilePath -> BamMeta -> Iteratee [BamRec] m ()
+writeBamFile fp meta = I.mapStream encodeBamEntry =$ writeRawBamFile fp meta
 
 pipeBamOutput :: MonadIO m => BamMeta -> Iteratee [BamRec] m ()
-pipeBamOutput meta = 
-    joinI $ I.mapStream encodeBamEntry $
-    joinI $ encodeBamUncompressed meta $
-    mapChunksM_ (liftIO . S.hPut stdout)
-
-
-writeBamHandle :: MonadIO m => Handle -> BamMeta -> Iteratee [BamRec] m ()
-writeBamHandle hdl meta = 
-    joinI $ I.mapStream encodeBamEntry $
-    joinI $ encodeBam meta $
-    mapChunksM_ (liftIO . S.hPut hdl)
+pipeBamOutput meta = I.mapStream encodeBamEntry =$ pipeRawBamOutput meta
 
 
 put_int_32, put_int_16, put_int_8 :: Integral a => a -> Put

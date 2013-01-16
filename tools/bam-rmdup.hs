@@ -91,19 +91,21 @@ main = do
     unless (null errors) $ mapM_ (hPutStrLn stderr) errors >> exitFailure
     Conf{..} <- foldr (>=>) return opts defaults
     add_pg <- addPG $ Just version
-    enum_all_input_files files >=> run $ \hdr -> do
+    mergeInputs combineCoordinates files >=> run $ \hdr -> do
        let tbl = mk_rg_tbl hdr
        unless (M.null tbl) $ liftIO $ do
                 debug "mapping of read groups to libraries:\n"
                 mapM_ debug [ unpackSeqid k ++ " --> " ++ unpackSeqid v ++ "\n" | (k,v) <- M.toList tbl ]
 
-       joinI $ mapChunks (mapMaybe filter_enee) $
+       joinI $ takeWhileE is_halfway_aligned $
+           joinI $ mapStream (removeWarts . decodeBamEntry) $
+           joinI $ mapChunks (mapMaybe filter_enee) $
            joinI $ progress debug (meta_refs hdr) $
            joinI $ rmdup (get_library tbl) strand_preserved cheap (fromIntegral $ min 93 max_qual) $
            output (add_pg hdr)
 
-is_halfway_aligned :: BamRec -> Bool
-is_halfway_aligned br = not (isUnmapped br) || not (isMateUnmapped br)
+is_halfway_aligned :: BamRaw -> Bool
+is_halfway_aligned br = not (br_isUnmapped br) || not (br_isMateUnmapped br)
 
 is_aligned :: BamRec -> Maybe BamRec
 is_aligned br | isUnmapped br || not (isValidRefseq (b_rname br)) = Nothing
@@ -124,6 +126,7 @@ make_single br | isPaired br && isSecondMate br = Nothing
                  flagMateUnmapped
                                 
 
+{-
 enum_all_input_files :: [FilePath] -> Enumerator' BamMeta [BamRec] IO a
 enum_all_input_files [        ] = enum_input_file "-"
 enum_all_input_files (fp0:fps0) = go fp0 fps0
@@ -133,7 +136,7 @@ enum_all_input_files (fp0:fps0) = go fp0 fps0
     a ? b = mergeEnums' a b (const combineCoordinates)
 
 basicFilters :: Monad m => Enumeratee [BamRec] [BamRec] m a
-basicFilters = mapStream removeWarts ><> takeWhileE is_halfway_aligned
+basicFilters = 
 
 enum_input_file :: MonadCatchIO m => FilePath -> Enumerator' BamMeta [BamRec] m a
 enum_input_file f it = enum_input_file' f >=> run $ \hdr -> basicFilters $ it hdr
@@ -141,7 +144,7 @@ enum_input_file f it = enum_input_file' f >=> run $ \hdr -> basicFilters $ it hd
 enum_input_file' :: MonadCatchIO m => FilePath -> Enumerator' BamMeta [BamRec] m a
 enum_input_file' "-"  = (enumHandle defaultBufSize stdin >=> run) . decodeAnyBamOrSam
 enum_input_file' path = decodeAnyBamOrSamFile path
-
+-}
 
 progress :: MonadIO m => (String -> IO ()) -> Refs -> Enumeratee [BamRec] [BamRec] m a
 progress put refs = eneeCheckIfDone (liftI . go 0)

@@ -25,9 +25,9 @@ module Bio.File.Bam.Raw (
     encodeBamWith,
     encodeBamUncompressed,
 
-    -- writeBamFile,
-    -- writeBamHandle,
-    -- pipeBamOutput,
+    writeRawBamFile,
+    writeRawBamHandle,
+    pipeRawBamOutput,
 
     BamrawEnumeratee,
     BamRaw,
@@ -43,6 +43,8 @@ module Bio.File.Bam.Raw (
     br_isSecondMate,
     br_isReversed,
     br_isMateReversed,
+    br_isUnmapped,
+    br_isMateUnmapped,
     br_isPaired,
     br_rname,
     br_pos,
@@ -83,8 +85,9 @@ import Data.Int                     ( Int64 )
 import Data.Monoid
 import Data.Sequence                ( (|>) )
 import System.Environment           ( getArgs )
-import System.IO                    ( stdin )
+import System.IO
 
+import qualified Control.Monad.CatchIO          as CIO
 import qualified Data.ByteString                as S
 import qualified Data.ByteString.Lazy.Char8     as L
 import qualified Data.ByteString.Unsafe         as S
@@ -200,12 +203,12 @@ mergeInputs (?) (fp0:fps0) = go fp0 fps0
     go fp [       ] = enum1 fp
     go fp (fp1:fps) = mergeEnums' (go fp1 fps) (enum1 fp) (?)
 
-combineCoordinates :: Monad m => Enumeratee [BamRaw] [BamRaw] (Iteratee [BamRaw] m) a
-combineCoordinates = mergeSortStreams (?)
+combineCoordinates :: Monad m => BamMeta -> Enumeratee [BamRaw] [BamRaw] (Iteratee [BamRaw] m) a
+combineCoordinates _ = mergeSortStreams (?)
   where u ? v = if (br_rname u, br_pos u) < (br_rname v, br_pos v) then Less else NotLess
 
-combineNames :: Monad m => Enumeratee [BamRaw] [BamRaw] (Iteratee [BamRaw] m) a
-combineNames = mergeSortStreams (?)
+combineNames :: Monad m => BamMeta -> Enumeratee [BamRaw] [BamRaw] (Iteratee [BamRaw] m) a
+combineNames _ = mergeSortStreams (?)
   where u ? v = case br_qname u `compareNames` br_qname v of LT -> Less ; _ -> NotLess
 
 
@@ -304,6 +307,12 @@ br_isReversed r = (br_flag r .&. flagMateReversed) /= 0
 br_isMateReversed :: BamRaw -> Bool
 br_isMateReversed r = (br_flag r .&. flagMateReversed) /= 0
 
+br_isUnmapped :: BamRaw -> Bool
+br_isUnmapped r = (br_flag r .&. flagMateUnmapped) /= 0
+
+br_isMateUnmapped :: BamRaw -> Bool
+br_isMateUnmapped r = (br_flag r .&. flagMateUnmapped) /= 0
+
 br_isPaired :: BamRaw -> Bool
 br_isPaired r = (br_flag r .&. flagPaired) /= 0
 
@@ -400,3 +409,16 @@ readBamIndex' = do magic <- heads "BAI\1"
                  in loop maxBound nintv                    
             liftIO $ writeArray arr r o 
         liftIO $ unsafeFreeze arr
+
+
+writeRawBamFile :: MonadCatchIO m => FilePath -> BamMeta -> Iteratee [BamRaw] m ()
+writeRawBamFile fp meta = 
+    CIO.bracket (liftIO $ openBinaryFile fp WriteMode)
+                (liftIO . hClose)
+                (flip writeRawBamHandle meta) 
+
+pipeRawBamOutput :: MonadIO m => BamMeta -> Iteratee [BamRaw] m ()
+pipeRawBamOutput meta = encodeBamUncompressed meta =$ mapChunksM_ (liftIO . S.hPut stdout)
+
+writeRawBamHandle :: MonadIO m => Handle -> BamMeta -> Iteratee [BamRaw] m ()
+writeRawBamHandle hdl meta = encodeBam meta =$ mapChunksM_ (liftIO . S.hPut hdl)
