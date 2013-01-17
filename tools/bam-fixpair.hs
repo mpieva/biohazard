@@ -1,12 +1,14 @@
 {-# LANGUAGE BangPatterns, OverloadedStrings #-}
 
 {- 
-How to turn this into a useful validator?
+This is a validator/fixup for paired end BAM files, that is more
+efficient than 'samtools sort -n' followed by 'samtools fixmate'.
 
-We want both: quickly join separate mates together again, but at the
-same time deal with broken files where that doesn't actually work.
-Whenever we join mates, we also check if the flags are consistent and
-fix them if they aren't.
+We want both: to quickly join separate mates together again from the
+information about the mate's mapping coordinate, but at the same time
+deal with broken files where that doesn't actually work.  Whenever we
+join mates, we also check if the flags are consistent and fix them if
+they aren't.
 
 In the end, the code will work...
 
@@ -21,15 +23,11 @@ In the end, the code will work...
    the rule, because then it degenerates to a full sort by qname.
 
 TODO:
- . actually fix the found pairs
- . actually fix the lone mates
  . deal with consecutive pairs that violate sorting
    (short cut logic:  if consecutive reads form a pair, fix it and pass
    it on; don't fiddle with queues)
  . upgrade to pqueue in external memory
- . better diagnostics
- . useful command line
- . need write access to POS, MRNM, MPOS, ISIZE, FLAGS on raw records
+ . useful command line w/ better control over diagnostics
  . a companion that sorts would be cool, but it should be an
    opportunistic sort that is fast on almost sorted files.
  . optional repair:  if 'u' or 'U', but not 'uU' and the mate is
@@ -39,8 +37,11 @@ TODO:
 import Bio.File.Bam
 import Bio.Iteratee
 import Bio.PriorityQueue
+import Control.Monad
 import Data.Binary
+import Data.Bits
 import Data.Hashable
+import Data.List
 import Paths_biohazard                          ( version )
 import System.IO
 import Text.Printf
@@ -48,7 +49,7 @@ import Text.Printf
 import qualified Data.HashMap.Strict as M
 import qualified Data.ByteString as S
 
--- placeholder...
+-- XXX placeholder...
 pqconf :: PQ_Conf
 pqconf = PQ_Conf 1000 "/var/tmp/"
 
@@ -64,31 +65,56 @@ main = addPG (Just version)                               >>= \add_pg ->
 
 -- | Fix a pair of reads.  Right now fixes their order and checks that
 -- one is 1st mate, the other 2nd mate.  More fixes to come.
---
--- To do:
--- . set 'unmapped' if missing rname
--- . set 'mate reversed', 'mate unmapped' to value of mate
--- . set 'qc failed' to logical OR of both
--- . unset 'properly paired' if 'unmapped' or 'mate unmapped'
--- . set mrnm to rname of mate
--- . set mpos to pos of mate
--- . set isize
 
-fixmate :: BamRaw -> BamRaw -> [BamRaw]
-fixmate r s | br_isFirstMate r && br_isSecondMate s = [r,s]
-            | br_isSecondMate r && br_isFirstMate s = [s,r]
+fixmate :: BamRaw -> BamRaw -> IO [BamRaw]
+fixmate r s | br_isFirstMate r && br_isSecondMate s = sequence [go r s, go s r]
+            | br_isSecondMate r && br_isFirstMate s = sequence [go s r, go r s]
             | otherwise = error "names match, but 1st mate / 2nd mate flags do not"
+  where
+    -- position of 5' end
+    pos5 a = if br_isReversed a then br_pos a + br_aln_length a else br_pos a
 
--- | Turns a lone mate into a single.  Right now does nothing, but it
--- should definitely fix some flags.
---
--- To do:
--- . unset 'paired', 'properly paired', '1st mate', '2nd mate', 'mate
---   unmapped', 'mate reversed'
--- . invalidate mrnm, mpos, isize  
+    -- transfer info from b to a
+    go a b | null problems = return a
+           | otherwise = do unless (null infos) $ liftIO $ hPutStrLn stderr message
+                            return $ mutateBamRaw a $ sequence_ [ m | (_,m,_) <- problems ]
+      where
+        problems = filter (\(p,_,_) -> not p) checks
+        checks = [ (br_mrnm a  == br_rname b,    setMrnm  (br_rname b),  printf "MRNM %d is wrong (%d)" ra rb)
+                 , (br_mpos a  == br_pos b,      setMpos  (br_pos b),    printf "MPOS %d is wrong (%d)" (br_mpos a) (br_pos b))
+                 , (br_isize a == computedIsize, setIsize computedIsize, printf "ISIZE %d is wrong (%d)" (br_isize a) computedIsize)
+                 , (br_flag a  == computedFlag,  setFlag  computedFlag,  [] ) ] -- printf "FLAG %03X is wrong (+%03X,-%03X)" (br_flag a) fp fm) ]
+          where ra = unRefseq (br_mrnm a); rb = unRefseq (br_rname b)
 
+        message = "fixing " ++ shows (br_qname a `S.append` if br_isFirstMate a then "/1" else "/2") 
+                  ": \t" ++ intercalate ", " infos
+        infos   = [ m | (_,_,m) <- problems, not (null m) ]
+    
+        fp = computedFlag .&. complement (br_flag a)
+        fm = br_flag a .&. complement computedFlag
+
+        !computedFlag' = (if br_rname a == invalidRefseq then (.|. flagUnmapped) else id) .
+                         (if br_rname b == invalidRefseq then (.|. flagMateUnmapped) else id) .
+                         (if br_isReversed b then (.|. flagMateReversed) else (.&. complement flagMateReversed)) .
+                         (if br_isUnmapped b then (.|. flagMateUnmapped) else (.&. complement flagMateUnmapped)) .
+                         (if br_isFailsQC  b then (.|. flagFailsQC) else id) $
+                         br_flag a 
+
+        !properly_paired = computedFlag' .&. (flagUnmapped .|. flagMateUnmapped) == 0 && br_rname a == br_rname b
+        !computedFlag    = if properly_paired then computedFlag' else computedFlag' .&. complement flagProperlyPaired 
+        !computedIsize   = if properly_paired then pos5 b - pos5 a else 0
+
+-- | Turns a lone mate into a single.  Basically removes the pairing
+-- related flags and clear the information concerning the mate. 
 divorce :: BamRaw -> BamRaw
-divorce b = b
+divorce b = mutateBamRaw b $ do setFlag $ br_flag b .&. complement pair_flags
+                                setMrnm invalidRefseq
+                                setMpos invalidPos
+                                setIsize 0
+  where
+    pair_flags = flagPaired .|. flagProperlyPaired .|. 
+                 flagFirstMate .|. flagSecondMate .|.
+                 flagMateUnmapped .|. flagMateReversed
 
 -- I think this can work with priority queues alone:
 --
@@ -127,7 +153,7 @@ re_pair right_here in_order messed_up = eneeCheckIfDone $ go (0::Int) (0::Int)
                           enqueuePQ (byQName b') messed_up
 
     no_mate_ever b = do err  $ "record " ++ show (br_qname b) ++ " did not have a mate at all."
-                        return $ divorce b
+                        return [divorce b]
 
     report i o br | (i+o) `mod` 0x20000 /= 0 = return br
                   | otherwise = do hs <- sizePQ right_here
@@ -141,7 +167,10 @@ re_pair right_here in_order messed_up = eneeCheckIfDone $ go (0::Int) (0::Int)
     go !num_in !num_out !k = tryHead >>= report num_in num_out >>= go' num_in num_out k
     
     -- At EOF, flush everything.
-    go' !num_in !num_out !k Nothing = flush_in_order num_in num_out k
+    go' !num_in !num_out !k Nothing = peekMinPQ right_here >>= \mm -> case mm of
+            Just (ByQName _ qq) -> do complete_here (br_self_pos qq)
+                                      flush_here num_in num_out Nothing k -- flush_here loops back here
+            Nothing             -> flush_in_order num_in num_out k -- this ends the whole operation
 
     -- Single read?  Pass through and go on.
     -- Paired read?  Does it belong 'here'?
@@ -160,7 +189,7 @@ re_pair right_here in_order messed_up = eneeCheckIfDone $ go (0::Int) (0::Int)
 
                 -- nope, r comes later.  we need to finish our business here
                 GT -> do complete_here (br_self_pos qq)
-                         flush_here num_in num_out r k
+                         flush_here num_in num_out (Just r) k
 
                 -- it belongs here or there is nothing else here
                 EQ -> enqueue_and_go (num_in+1) num_out k r 
@@ -188,21 +217,19 @@ re_pair right_here in_order messed_up = eneeCheckIfDone $ go (0::Int) (0::Int)
     flush_mess1 num_in num_out k Nothing              = return (liftI k)
     flush_mess1 num_in num_out k (Just (ByQName _ a)) = getMinPQ messed_up >>= flush_mess2 num_in num_out k a
 
-    flush_mess2 num_in num_out k a Nothing = do a' <- no_mate_ever a
-                                                return (k $ Chunk [a'])
+    flush_mess2 num_in num_out k a Nothing = no_mate_ever a >>= return . k . Chunk
                                                 
     flush_mess2 num_in num_out k a b'@(Just (ByQName _ b)) 
-        | br_qname a /= br_qname b = do a' <- no_mate_ever a
-                                        eneeCheckIfDone (\k' -> flush_mess1 num_in num_out k' b') . k $ Chunk [a']
+        | br_qname a /= br_qname b = no_mate_ever a >>= eneeCheckIfDone (\k' -> flush_mess1 num_in num_out k' b') . k . Chunk
 
-        | otherwise = eneeCheckIfDone (flush_messed_up num_in (num_out+2)) . k . Chunk $ fixmate a b
+        | otherwise = liftIO (fixmate a b) >>= eneeCheckIfDone (flush_messed_up num_in (num_out+2)) . k . Chunk
 
 
     -- Flush the right_here queue.  Everything should come off in pairs,
     -- if not, it goes to messed_up.  When done, loop back to 'go'
     flush_here  num_in num_out r k = getMinPQ right_here >>= flush_here1 num_in num_out r k
 
-    flush_here1 num_in num_out r k Nothing = go' num_in num_out k (Just r)
+    flush_here1 num_in num_out r k Nothing = go' num_in num_out k r
     flush_here1 num_in num_out r k (Just a) = getMinPQ right_here >>= flush_here2 num_in num_out r k a
 
     flush_here2 num_in num_out r k (ByQName _ a) Nothing = do no_mate_here "flush_here2/Nothing" a
@@ -212,7 +239,7 @@ re_pair right_here in_order messed_up = eneeCheckIfDone $ go (0::Int) (0::Int)
         | br_qname a /= br_qname b = do no_mate_here "flush_here2/Just" a
                                         flush_here1 num_in num_out r k b'
 
-        | otherwise = eneeCheckIfDone (flush_here num_in (num_out+2) r) . k . Chunk $ fixmate a b
+        | otherwise = liftIO (fixmate a b) >>= eneeCheckIfDone (flush_here num_in (num_out+2) r) . k . Chunk
 
 
     -- add stuff coming from 'in_order' to 'right_here'

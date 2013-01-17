@@ -38,14 +38,21 @@ module Bio.File.Bam.Raw (
     br_l_read_name,
     br_l_seq,
     br_n_cigar_op,
+    br_aln_length,
     br_flag,
-    br_isFirstMate,
-    br_isSecondMate,
-    br_isReversed,
-    br_isMateReversed,
+
+    br_isPaired,
+    br_isProperlyPaired,
     br_isUnmapped,
     br_isMateUnmapped,
-    br_isPaired,
+    br_isReversed,
+    br_isMateReversed,
+    br_isFirstMate,
+    br_isSecondMate,
+    br_isAuxillary,
+    br_isFailsQC,
+    br_isDuplicate,
+
     br_rname,
     br_pos,
     br_mrnm,
@@ -65,7 +72,14 @@ module Bio.File.Bam.Raw (
 
     BamIndex,
     readBamIndex,
-    readBamIndex'
+    readBamIndex',
+
+    Mutator,
+    mutateBamRaw,
+    setFlag,
+    setMrnm,
+    setMpos,
+    setIsize
 ) where
 
 import Bio.Base
@@ -80,12 +94,15 @@ import Data.Array.Unboxed
 import Data.Array.Unsafe            ( unsafeFreeze )
 import Data.Attoparsec.Iteratee
 import Data.Binary.Put
-import Data.Bits                    ( Bits, shiftL, shiftR, (.&.), (.|.) )
+import Data.Bits                    ( Bits, shiftL, shiftR, (.&.), (.|.), testBit )
 import Data.Int                     ( Int64 )
 import Data.Monoid
 import Data.Sequence                ( (|>) )
+import Foreign.C.String             ( CString )
+import Foreign.Storable             ( pokeElemOff )
 import System.Environment           ( getArgs )
 import System.IO
+import System.IO.Unsafe
 
 import qualified Control.Monad.CatchIO          as CIO
 import qualified Data.ByteString                as S
@@ -283,38 +300,34 @@ br_l_read_name (BamRaw _ raw) = fromIntegral $ S.unsafeIndex raw 8 - 1
 br_l_seq :: BamRaw -> Int
 br_l_seq (BamRaw _ raw) = getInt raw 16
 
+getInt16 :: (Num a, Bits a) => S.ByteString -> Int -> a
+getInt16 s o = fromIntegral (S.unsafeIndex s o) .|. fromIntegral (S.unsafeIndex s $ o+1) `shiftL`  8
+
 getInt :: (Num a, Bits a) => S.ByteString -> Int -> a
 getInt s o = fromIntegral (S.unsafeIndex s $ o+0)             .|. fromIntegral (S.unsafeIndex s $ o+1) `shiftL`  8 .|.
              fromIntegral (S.unsafeIndex s $ o+2) `shiftL` 16 .|. fromIntegral (S.unsafeIndex s $ o+3) `shiftL` 24
 
 br_n_cigar_op :: BamRaw -> Int
-br_n_cigar_op (BamRaw _ raw) =
-    fromIntegral (S.unsafeIndex raw 12) .|. fromIntegral (S.unsafeIndex raw 13) `shiftL`  8
+br_n_cigar_op (BamRaw _ raw) = getInt16 raw 12
 
 br_flag :: BamRaw -> Int
-br_flag (BamRaw _ raw) =
-    fromIntegral (S.unsafeIndex raw 14) .|. fromIntegral (S.unsafeIndex raw 15) `shiftL`  8
+br_flag (BamRaw _ raw) = getInt16 raw 14
 
-br_isFirstMate :: BamRaw -> Bool
-br_isFirstMate r = (br_flag r .&. flagFirstMate) /= 0
+br_isPaired, br_isProperlyPaired, br_isUnmapped, br_isMateUnmapped, br_isReversed,
+    br_isMateReversed, br_isFirstMate, br_isSecondMate, br_isAuxillary, br_isFailsQC,
+    br_isDuplicate :: BamRaw -> Bool
 
-br_isSecondMate :: BamRaw -> Bool
-br_isSecondMate r = (br_flag r .&. flagSecondMate) /= 0
-
-br_isReversed :: BamRaw -> Bool
-br_isReversed r = (br_flag r .&. flagMateReversed) /= 0
-
-br_isMateReversed :: BamRaw -> Bool
-br_isMateReversed r = (br_flag r .&. flagMateReversed) /= 0
-
-br_isUnmapped :: BamRaw -> Bool
-br_isUnmapped r = (br_flag r .&. flagMateUnmapped) /= 0
-
-br_isMateUnmapped :: BamRaw -> Bool
-br_isMateUnmapped r = (br_flag r .&. flagMateUnmapped) /= 0
-
-br_isPaired :: BamRaw -> Bool
-br_isPaired r = (br_flag r .&. flagPaired) /= 0
+br_isPaired         = flip testBit  0 . br_flag
+br_isProperlyPaired = flip testBit  1 . br_flag
+br_isUnmapped       = flip testBit  2 . br_flag
+br_isMateUnmapped   = flip testBit  3 . br_flag
+br_isReversed       = flip testBit  4 . br_flag
+br_isMateReversed   = flip testBit  5 . br_flag
+br_isFirstMate      = flip testBit  6 . br_flag
+br_isSecondMate     = flip testBit  7 . br_flag
+br_isAuxillary      = flip testBit  8 . br_flag
+br_isFailsQC        = flip testBit  9 . br_flag
+br_isDuplicate      = flip testBit 10 . br_flag
 
 br_rname :: BamRaw -> Refseq
 br_rname (BamRaw _ raw) = Refseq $ getInt raw 0
@@ -329,7 +342,19 @@ br_mpos :: BamRaw -> Int
 br_mpos (BamRaw _ raw) = getInt raw 24
 
 br_isize :: BamRaw -> Int
-br_isize (BamRaw _ raw) = getInt raw 28
+br_isize (BamRaw _ raw) | i >= 0x80000000 = i - 0x100000000
+                        | otherwise       = i
+    where i :: Int
+          i = getInt raw 28
+
+br_aln_length :: BamRaw -> Int
+br_aln_length br@(BamRaw _ raw) 
+    | ncig == 0 = br_l_seq br
+    | otherwise = sum [ x `shiftR` 4 | x <- map (getInt raw) $ take ncig [cig_off, cig_off+4 ..]
+                                     , x .&. 0xF == 0 || x .&. 0xF == 2 || x .&. 0xF == 3 ]
+    where
+        !ncig    = br_n_cigar_op br
+        !cig_off = 33 + br_l_read_name br
 
 -- | Decode a BAM stream into raw entries.  Note that the entries can be
 -- unpacked using @decodeBamEntry@.  Also note that this is an
@@ -422,3 +447,35 @@ pipeRawBamOutput meta = encodeBamUncompressed meta =$ mapChunksM_ (liftIO . S.hP
 
 writeRawBamHandle :: MonadIO m => Handle -> BamMeta -> Iteratee [BamRaw] m ()
 writeRawBamHandle hdl meta = encodeBam meta =$ mapChunksM_ (liftIO . S.hPut hdl)
+
+
+mutateBamRaw :: BamRaw -> Mutator () -> BamRaw
+mutateBamRaw (BamRaw vo br) mut = unsafePerformIO $ do
+        S.useAsCStringLen br $ \(p,l) -> do
+            runMutator mut p l
+            bamRaw vo `fmap` S.packCStringLen (p,l)
+
+newtype Mutator a = Mut { runMutator :: CString -> Int -> IO a }
+
+instance Monad Mutator where
+    return a = Mut $ \_ _ -> return a
+    m >>= k  = Mut $ \p l -> runMutator m p l >>= \a -> runMutator (k a) p l
+
+setFlag, setMpos, setIsize :: Int -> Mutator ()
+setFlag  f = Mut $ \p _ -> pokeInt16 p 14 f
+setMpos  x = Mut $ \p _ -> pokeInt32 p 24 x
+setIsize x = Mut $ \p _ -> pokeInt32 p 28 x
+
+setMrnm :: Refseq -> Mutator ()
+setMrnm r = Mut $ \p _ -> pokeInt32 p 20 (unRefseq r)
+
+pokeInt16 :: (Bits a, Integral a) => CString -> Int -> a -> IO ()
+pokeInt16 p o x = do pokeElemOff p  o    . fromIntegral $        x   .&. 0xff
+                     pokeElemOff p (o+1) . fromIntegral $ shiftR x 8 .&. 0xff
+
+pokeInt32 :: (Bits a, Integral a) => CString -> Int -> a -> IO ()
+pokeInt32 p o x = do pokeElemOff p  o    . fromIntegral $        x    .&. 0xff
+                     pokeElemOff p (o+1) . fromIntegral $ shiftR x  8 .&. 0xff
+                     pokeElemOff p (o+2) . fromIntegral $ shiftR x 16 .&. 0xff
+                     pokeElemOff p (o+3) . fromIntegral $ shiftR x 24 .&. 0xff
+
