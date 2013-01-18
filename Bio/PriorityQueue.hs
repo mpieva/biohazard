@@ -56,7 +56,6 @@ module Bio.PriorityQueue (
 --          temporary:System.IO.Temp.openBinaryTempFile
 --          lz4:Codec.Compression.LZ4
 
-import Control.Monad.IO.Class
 import Data.Binary
 import Data.IORef
 import qualified Control.Exception as CE
@@ -86,35 +85,35 @@ withPQ conf = CE.bracket (makePQ conf) deletePQ
 -- | Enqueues an element.
 -- This operation may result in the creation of a file or in an enormous
 -- merge of already created files.
-enqueuePQ :: (Binary a, Ord a, Sizeable a, MonadIO m) => a -> PQ a -> m ()
-enqueuePQ a (PQ pq) = liftIO $ do (p,s) <- readIORef pq
-                                  let !p' = insert a p
-                                      !s' = 1 + s
-                                  writeIORef pq (p',s')
+enqueuePQ :: (Binary a, Ord a, Sizeable a) => a -> PQ a -> IO ()
+enqueuePQ a (PQ pq) = do (p,s) <- readIORef pq
+                         let !p' = insert a p
+                             !s' = 1 + s
+                         writeIORef pq (p',s')
 
 -- | Removes the minimum element from the queue.
 -- If the queue is already empty, nothing happens.  As a result, it is
 -- possible that one or more file become empty and are deleted.
-dequeuePQ :: (Binary a, Ord a, Sizeable a, MonadIO m) => PQ a -> m ()
-dequeuePQ (PQ pq) = liftIO $ do (p,s) <- readIORef pq
-                                let !p' = dropMin p
-                                    !s' = max 0 (s - 1)
-                                writeIORef pq (p',s')
+dequeuePQ :: (Binary a, Ord a, Sizeable a ) => PQ a -> IO ()
+dequeuePQ (PQ pq) = do (p,s) <- readIORef pq
+                       let !p' = dropMin p
+                           !s' = max 0 (s - 1)
+                       writeIORef pq (p',s')
 
 
 -- | Returns the minimum element from the queue.  
 -- If the queue is empty, Nothing is returned.  Else the minimum element
 -- currently in the queue.
-peekMinPQ :: (Binary a, Ord a, Sizeable a, MonadIO m) => PQ a -> m (Maybe a)
-peekMinPQ (PQ pq) = liftIO $ (getMin . fst) `fmap` readIORef pq
+peekMinPQ :: (Binary a, Ord a, Sizeable a) => PQ a -> IO (Maybe a)
+peekMinPQ (PQ pq) = (getMin . fst) `fmap` readIORef pq
 
-getMinPQ :: (Binary a, Ord a, Sizeable a, MonadIO m) => PQ a -> m (Maybe a)
-getMinPQ (PQ pq) = liftIO $ do r <- (getMin . fst) `fmap` readIORef pq
-                               case r of Nothing -> return () ; Just _ -> dequeuePQ  (PQ pq)
-                               return r
+getMinPQ :: (Binary a, Ord a, Sizeable a) => PQ a -> IO (Maybe a)
+getMinPQ (PQ pq) = do r <- (getMin . fst) `fmap` readIORef pq
+                      case r of Nothing -> return () ; Just _ -> dequeuePQ  (PQ pq)
+                      return r
 
-sizePQ :: (Binary a, Ord a, Sizeable a, MonadIO m) => PQ a -> m Int
-sizePQ (PQ pq) = liftIO $ snd `fmap` readIORef pq
+sizePQ :: (Binary a, Ord a, Sizeable a) => PQ a -> IO Int
+sizePQ (PQ pq) = snd `fmap` readIORef pq
 
 
 -- We need an in-memory heap anyway.  Here's a skew heap.

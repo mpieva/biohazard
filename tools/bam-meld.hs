@@ -12,7 +12,7 @@
 import Bio.File.Bam
 import Bio.Iteratee
 import Control.Monad                            ( unless, foldM )
-import Data.List                                ( sortBy, intercalate )
+import Data.List                                ( sortBy )
 import Data.Monoid
 import Paths_biohazard                          ( version )
 import System.Console.GetOpt

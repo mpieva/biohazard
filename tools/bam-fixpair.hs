@@ -38,6 +38,7 @@ import Bio.File.Bam
 import Bio.Iteratee
 import Bio.PriorityQueue
 import Control.Monad
+import Control.Monad.Trans.Class
 import Data.Binary
 import Data.Bits
 import Data.Hashable
@@ -46,7 +47,6 @@ import Paths_biohazard                          ( version )
 import System.IO
 import Text.Printf
 
-import qualified Data.HashMap.Strict as M
 import qualified Data.ByteString as S
 
 -- XXX placeholder...
@@ -55,11 +55,9 @@ pqconf = PQ_Conf 1000 "/var/tmp/"
 
 main :: IO ()
 main = addPG (Just version)                               >>= \add_pg ->
-       withPQ pqconf                                        $ \right_here ->
-       withPQ pqconf                                        $ \in_order   ->
-       withPQ pqconf                                        $ \messed_up  ->
+       withMating                                           $ \mating_state ->
        mergeDefaultInputs combineCoordinates >=> run        $ \hdr ->
-       re_pair right_here in_order messed_up               =$
+       re_pair mating_state                                =$
        pipeRawBamOutput (add_pg hdr)
 
 
@@ -82,7 +80,7 @@ fixmate r s | br_isFirstMate r && br_isSecondMate s = sequence [go r s, go s r]
         problems = filter (\(p,_,_) -> not p) checks
         checks = [ (br_mrnm a  == br_rname b,    setMrnm  (br_rname b),  printf "MRNM %d is wrong (%d)" ra rb)
                  , (br_mpos a  == br_pos b,      setMpos  (br_pos b),    printf "MPOS %d is wrong (%d)" (br_mpos a) (br_pos b))
-                 , (br_isize a == computedIsize, setIsize computedIsize, printf "ISIZE %d is wrong (%d)" (br_isize a) computedIsize)
+                 , (br_isize a == computedIsize, setIsize computedIsize, [] )   -- printf "ISIZE %d is wrong (%d)" (br_isize a) computedIsize)
                  , (br_flag a  == computedFlag,  setFlag  computedFlag,  [] ) ] -- printf "FLAG %03X is wrong (+%03X,-%03X)" (br_flag a) fp fm) ]
           where ra = unRefseq (br_mrnm a); rb = unRefseq (br_rname b)
 
@@ -90,9 +88,6 @@ fixmate r s | br_isFirstMate r && br_isSecondMate s = sequence [go r s, go s r]
                   ": \t" ++ intercalate ", " infos
         infos   = [ m | (_,_,m) <- problems, not (null m) ]
     
-        fp = computedFlag .&. complement (br_flag a)
-        fm = br_flag a .&. complement computedFlag
-
         !computedFlag' = (if br_rname a == invalidRefseq then (.|. flagUnmapped) else id) .
                          (if br_rname b == invalidRefseq then (.|. flagMateUnmapped) else id) .
                          (if br_isReversed b then (.|. flagMateReversed) else (.&. complement flagMateReversed)) .
@@ -134,126 +129,208 @@ divorce b = mutateBamRaw b $ do setFlag $ br_flag b .&. complement pair_flags
 --   pull them out in pairs.  Stuff that comes off as anything else than
 --   a pair gets queued up again.
 
--- To ensure proper cleanup, we require the priority ques to be created
+data MatingState = MS { total_in   :: !Int
+                      , total_out  :: !Int 
+                      , right_here :: !(PQ ByQName)
+                      , in_order   :: !(PQ ByMatePos)
+                      , messed_up  :: !(PQ ByQName) }
+
+withMating :: (MatingState -> IO r) -> IO r
+withMating k = withPQ pqconf $ \h ->
+               withPQ pqconf $ \o   ->
+               withPQ pqconf $ \m  ->
+               k $ ms0 h o m
+  where
+    ms0 = MS 0 0 
+
+
+
+getSize :: (MonadIO m, Ord a, Binary a, Sizeable a) => (MatingState -> PQ a) -> Mating r m Int
+getSize sel = gets sel >>= liftIO . sizePQ
+
+enqueue :: (MonadIO m, Ord a, Binary a, Sizeable a) => a -> (MatingState -> PQ a) -> Mating r m ()
+enqueue a sel = gets sel >>= liftIO . enqueuePQ a
+
+peekMin :: (MonadIO m, Ord a, Binary a, Sizeable a) => (MatingState -> PQ a) -> Mating r m (Maybe a)
+peekMin sel = gets sel >>= liftIO . peekMinPQ
+
+fetchMin :: (MonadIO m, Ord a, Binary a, Sizeable a) => (MatingState -> PQ a) -> Mating r m (Maybe a)
+fetchMin sel = gets sel >>= liftIO . getMinPQ
+
+discardMin :: (MonadIO m, Ord a, Binary a, Sizeable a) => (MatingState -> PQ a) -> Mating r m ()
+discardMin sel = gets sel >>= liftIO . getMinPQ >>= \_ -> return ()
+
+
+note, warn, err :: MonadIO m => String -> Mating r m ()
+note msg = liftIO $ hPutStrLn stderr $ "[fixpair] info:    " ++ msg
+warn msg = liftIO $ hPutStrLn stderr $ "[fixpair] warning: " ++ msg
+err  msg = liftIO $ hPutStrLn stderr $ "[fixpair] error:   " ++ msg
+
+report :: MonadIO m => Maybe BamRaw -> Mating r m (Maybe BamRaw)
+report br = do i <- gets total_in
+               o <- gets total_out
+               when ((i+o) `mod` 0x20000 == 0) $ do
+                     hs <- getSize right_here
+                     os <- getSize in_order
+                     ms <- getSize messed_up
+                     let rs = maybe 0 (unRefseq . br_rname) br
+                     let p  = maybe 0 br_pos br
+                     note $ printf "@%d/%d, in: %d, out: %d, here: %d, wait: %d, mess: %d" rs p i o hs os ms
+               return br
+
+no_mate_here :: MonadIO m => String -> BamRaw -> Mating r m ()
+no_mate_here l b = do warn $ "[" ++ l ++ "] record "
+                          ++ shows (br_qname b) (if br_isFirstMate b then "/1" else "/2")
+                          ++ " did not have a mate at the right location."
+                      let !b' = force_copy b
+                      enqueue (byQName b') messed_up
+
+no_mate_ever :: MonadIO m => BamRaw -> Mating r m [BamRaw]
+no_mate_ever b = do err  $ "record " ++ show (br_qname b) ++ " did not have a mate at all."
+                    return [divorce b]
+
+-- Basically the CPS version of the State Monad.  CPS is necessary to be
+-- able to call 'eneeCheckIfDone' in the middle, and that fixes the
+-- underlying monad to an 'Iteratee' and the ultimate return type to an
+-- 'Iteratee', too.  Pretty to work with, not pretty to look at.
+type Sink r m = Stream [BamRaw] -> Iteratee [BamRaw] m r
+newtype Mating r m a = Mating { runMating ::       MatingState -> Sink r m
+                                          -> (a -> MatingState -> Sink r m -> Iteratee [BamRaw] m (Iteratee [BamRaw] m r))
+                                          -> Iteratee [BamRaw] m (Iteratee [BamRaw] m r) }
+
+instance Monad m => Monad (Mating r m) where
+    return a = Mating $ \s o k  -> k a s o
+    m >>=  k = Mating $ \s o k2 -> runMating m s o (\a s' o' -> runMating (k a) s' o' k2)
+
+instance Functor (Mating r m) where
+    fmap f m = Mating $ \s o k -> runMating m s o (k . f)
+
+instance MonadIO m => MonadIO (Mating r m) where
+    liftIO f = Mating $ \s o k -> liftIO f >>= \a -> k a s o
+
+instance MonadTrans (Mating r) where
+    lift m = Mating $ \s o k -> lift m >>= \a -> k a s o
+
+lift'it :: Monad m => Iteratee [BamRaw] m a -> Mating r m a
+lift'it m = Mating $ \s o k -> m >>= \a -> k a s o
+
+gets :: (MatingState -> a) -> Mating r m a
+gets f = Mating $ \s o k -> k (f s) s o
+
+modify :: (MatingState -> MatingState) -> Mating r m ()
+modify f = Mating $ \s o k -> (k () $! f s) o
+
+
+fetchNext :: Monad m => Mating r m (Maybe BamRaw)
+fetchNext = do r <- lift'it tryHead
+               case r of Nothing -> return ()
+                         Just  _ -> modify $ \s -> s { total_in = 1 + total_in s }
+               return r
+
+yield :: Monad m => [BamRaw] -> Mating r m ()
+yield rs = Mating $ \s o k -> let !s' = s { total_out = length rs + total_out s }
+                              in eneeCheckIfDone (k () s') . o $ Chunk rs
+
+-- To ensure proper cleanup, we require the priority queues to be created
 -- outside.  Since one is continually reused, it is important that a PQ
 -- that is emptied no longer holds on to files on disk.
 re_pair :: MonadIO m
-        => PQ ByQName -> PQ ByMatePos -> PQ ByQName 
-        -> Enumeratee [BamRaw] [BamRaw] m a
-re_pair right_here in_order messed_up = eneeCheckIfDone $ go (0::Int) (0::Int)
-  where
-    note msg = liftIO $ hPutStrLn stderr $ "[re_pair] info:    " ++ msg
-    warn msg = liftIO $ hPutStrLn stderr $ "[re_pair] warning: " ++ msg
-    err  msg = liftIO $ hPutStrLn stderr $ "[re_pair] error:   " ++ msg
+        => MatingState -> Enumeratee [BamRaw] [BamRaw] m a
+re_pair st = eneeCheckIfDone $ \out -> runMating go st out $ \() _st k -> return (liftI k)
 
-    no_mate_here l b = do warn $ "[" ++ l ++ "] record "
-                              ++ shows (br_qname b) (if br_isFirstMate b then "/1" else "/2")
-                              ++ " did not have a mate at the right location."
-                          let !b' = force_copy b
-                          enqueuePQ (byQName b') messed_up
-
-    no_mate_ever b = do err  $ "record " ++ show (br_qname b) ++ " did not have a mate at all."
-                        return [divorce b]
-
-    report i o br | (i+o) `mod` 0x20000 /= 0 = return br
-                  | otherwise = do hs <- sizePQ right_here
-                                   os <- sizePQ in_order
-                                   ms <- sizePQ messed_up
-                                   let rs = maybe 0 (unRefseq . br_rname) br
-                                   let p = maybe 0 br_pos br
-                                   note $ printf "@%d/%d, in: %d, out: %d, here: %d, wait: %d, mess: %d" rs p i o hs os ms
-                                   return br
-
-    go !num_in !num_out !k = tryHead >>= report num_in num_out >>= go' num_in num_out k
-    
+go :: MonadIO m => Mating r m ()
+go = fetchNext >>= report >>= go' 
+   where   
     -- At EOF, flush everything.
-    go' !num_in !num_out !k Nothing = peekMinPQ right_here >>= \mm -> case mm of
+    go' Nothing = peekMin right_here >>= \mm -> case mm of
             Just (ByQName _ qq) -> do complete_here (br_self_pos qq)
-                                      flush_here num_in num_out Nothing k -- flush_here loops back here
-            Nothing             -> flush_in_order num_in num_out k -- this ends the whole operation
+                                      flush_here Nothing  -- flush_here loops back here
+            Nothing             -> flush_in_order  -- this ends the whole operation
 
     -- Single read?  Pass through and go on.
     -- Paired read?  Does it belong 'here'?
-    go' !num_in !num_out !k (Just r) 
-        | not (br_isPaired r) = eneeCheckIfDone (go (num_in+1) (num_out+1)) . k $ Chunk [r]
-        | otherwise = peekMinPQ right_here >>= \mm -> case mm of
+    go' (Just r) 
+        | not (br_isPaired r) = -- eneeCheckIfDone (go (num_out+1)) . k $ Chunk [r]
+                                yield [r] >> go
+        | otherwise = peekMin right_here >>= \mm -> case mm of
             -- there's nothing else here, so here becomes redefined
-            Nothing             -> enqueue_and_go (num_in+1) num_out k r 
+            Nothing             -> enqueueThis r >> go
 
             Just (ByQName _ qq) -> case compare (br_self_pos r) (br_self_pos qq) of
                 -- nope, r is out of order and goes to 'messed_up'
                 LT -> do warn $ "record " ++ show (br_qname r) ++ " is out of order."
                          let !r' = force_copy r
-                         enqueuePQ (byQName r') messed_up 
-                         go (num_in+1) num_out k
+                         enqueue (byQName r') messed_up 
+                         go
 
                 -- nope, r comes later.  we need to finish our business here
                 GT -> do complete_here (br_self_pos qq)
-                         flush_here num_in num_out (Just r) k
+                         flush_here (Just r) 
 
                 -- it belongs here or there is nothing else here
-                EQ -> enqueue_and_go (num_in+1) num_out k r 
+                EQ -> enqueueThis r >> go
 
 
     -- lonely guy, belongs either here or needs to wait for the mate
-    enqueue_and_go num_in num_out k r = do
-        if br_self_pos r < br_mate_pos r 
-          then let !r' = force_copy r in enqueuePQ (ByMatePos r') in_order
-          else enqueuePQ (byQName r) right_here
-        go num_in num_out k
+    enqueueThis r | br_self_pos r >= br_mate_pos r = enqueue (byQName r) right_here
+                  | otherwise             = r' `seq` enqueue (ByMatePos r') in_order
+        where r' = force_copy r
 
     -- Flush the in_order queue to messed_up, since those didn't find
     -- their mate the ordinary way.  Afterwards, flush the messed_up
     -- queue.
-    flush_in_order num_in num_out k = getMinPQ in_order >>= \zz -> case zz of
+    flush_in_order = fetchMin in_order >>= \zz -> case zz of
         Just (ByMatePos b) -> do no_mate_here "flush_in_order" b
-                                 flush_in_order num_in num_out k
-        Nothing -> flush_messed_up num_in num_out k
+                                 flush_in_order 
+        Nothing -> flush_messed_up 
 
     -- Flush the messed up queue.  Everything should come off in pairs,
     -- unless something is broken.
-    flush_messed_up  num_in num_out k = getMinPQ messed_up >>= flush_mess1 num_in num_out k
+    flush_messed_up = fetchMin messed_up >>= flush_mess1 
 
-    flush_mess1 num_in num_out k Nothing              = return (liftI k)
-    flush_mess1 num_in num_out k (Just (ByQName _ a)) = getMinPQ messed_up >>= flush_mess2 num_in num_out k a
+    flush_mess1 Nothing              = return ()
+    flush_mess1 (Just (ByQName _ a)) = fetchMin messed_up >>= flush_mess2 a
 
-    flush_mess2 num_in num_out k a Nothing = no_mate_ever a >>= return . k . Chunk
+    flush_mess2 a Nothing = no_mate_ever a >>= yield 
                                                 
-    flush_mess2 num_in num_out k a b'@(Just (ByQName _ b)) 
-        | br_qname a /= br_qname b = no_mate_ever a >>= eneeCheckIfDone (\k' -> flush_mess1 num_in num_out k' b') . k . Chunk
+    flush_mess2 a b'@(Just (ByQName _ b)) 
+        | br_qname a /= br_qname b = no_mate_ever a >>= yield >> flush_mess1 b' 
+                                    -- eneeCheckIfDone (\k' -> flush_mess1 k' b') . k . Chunk
 
-        | otherwise = liftIO (fixmate a b) >>= eneeCheckIfDone (flush_messed_up num_in (num_out+2)) . k . Chunk
+        | otherwise = liftIO (fixmate a b) >>= yield >> flush_messed_up 
+                                  -- eneeCheckIfDone (flush_messed_up (num_out+2)) . k . Chunk
 
 
     -- Flush the right_here queue.  Everything should come off in pairs,
     -- if not, it goes to messed_up.  When done, loop back to 'go'
-    flush_here  num_in num_out r k = getMinPQ right_here >>= flush_here1 num_in num_out r k
+    flush_here  r = fetchMin right_here >>= flush_here1 r
 
-    flush_here1 num_in num_out r k Nothing = go' num_in num_out k r
-    flush_here1 num_in num_out r k (Just a) = getMinPQ right_here >>= flush_here2 num_in num_out r k a
+    flush_here1 r Nothing = go' r
+    flush_here1 r (Just a) = fetchMin right_here >>= flush_here2 r a
 
-    flush_here2 num_in num_out r k (ByQName _ a) Nothing = do no_mate_here "flush_here2/Nothing" a
-                                                              flush_here num_in num_out r k
+    flush_here2 r (ByQName _ a) Nothing = do no_mate_here "flush_here2/Nothing" a
+                                             flush_here r
                                                 
-    flush_here2 num_in num_out r k (ByQName _ a) b'@(Just (ByQName _ b)) 
+    flush_here2 r (ByQName _ a) b'@(Just (ByQName _ b)) 
         | br_qname a /= br_qname b = do no_mate_here "flush_here2/Just" a
-                                        flush_here1 num_in num_out r k b'
+                                        flush_here1 r b'
 
-        | otherwise = liftIO (fixmate a b) >>= eneeCheckIfDone (flush_here num_in (num_out+2) r) . k . Chunk
+        | otherwise = liftIO (fixmate a b) >>= yield >> flush_here r
+                        -- eneeCheckIfDone (flush_here (num_out+2) r) . k . Chunk
 
 
     -- add stuff coming from 'in_order' to 'right_here'
     complete_here pivot = do
-            zz <- peekMinPQ in_order
+            zz <- peekMin in_order
             case zz of
                 Nothing -> return ()
                 Just (ByMatePos b) 
-                       | pivot  > br_mate_pos b -> do dequeuePQ in_order
+                       | pivot  > br_mate_pos b -> do discardMin in_order
                                                       no_mate_here "complete_here" b
                                                       complete_here pivot
                     
-                       | pivot == br_mate_pos b -> do dequeuePQ in_order
-                                                      enqueuePQ (byQName b) right_here
+                       | pivot == br_mate_pos b -> do discardMin in_order
+                                                      enqueue (byQName b) right_here
                                                       complete_here pivot
 
                        | otherwise -> return ()

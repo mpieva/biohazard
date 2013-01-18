@@ -77,7 +77,7 @@ Library
                        MonadCatchIO-transformers, random, erf,
                        filepath, directory, vector
   
-  Ghc-options:         -Wall -auto-all
+  Ghc-options:         -Wall
 
   -- Modules not exported by this package.
   -- Other-modules:       
@@ -87,6 +87,7 @@ Library
   
 
 Test-Suite test-biohazard
+  Ghc-options:         -Wall -auto-all -threaded -rtsopts
   Type:                exitcode-stdio-1.0
   Main-is:             test-biohazard.hs
   Build-depends:       bytestring, containers, base >=4, binary, array,
@@ -96,6 +97,7 @@ Test-Suite test-biohazard
 
 
 Executable bam-fixpair
+  Ghc-options:         -Wall -auto-all -threaded -rtsopts
   Main-is:             tools/bam-fixpair.hs
   Build-depends:       bytestring, containers, base >=4, binary, array,
                        zlib, attoparsec-iteratee, attoparsec, iteratee,
@@ -104,6 +106,7 @@ Executable bam-fixpair
                        biohazard, unordered-containers, hashable
 
 Executable bam-meld
+  Ghc-options:         -Wall -auto-all -threaded -rtsopts
   Main-is:             tools/bam-meld.hs
   Build-depends:       bytestring, containers, base >=4, binary, array,
                        zlib, attoparsec-iteratee, attoparsec, iteratee,
@@ -112,6 +115,7 @@ Executable bam-meld
                        biohazard, vector
 
 Executable bam-resample
+  Ghc-options:         -Wall -auto-all -threaded -rtsopts
   Main-is:             tools/bam-resample.hs
   Build-depends:       bytestring, containers, base >=4, binary, array,
                        zlib, attoparsec-iteratee, attoparsec, iteratee,
@@ -120,15 +124,16 @@ Executable bam-resample
                        filepath, directory, biohazard, random, vector
 
 Executable bam-rmdup
+  Ghc-options:         -Wall -auto-all -threaded -rtsopts
   Main-is:             tools/bam-rmdup.hs
   Build-depends:       bytestring, containers, base >=4, binary, array,
                        zlib, attoparsec-iteratee, attoparsec, iteratee,
                        transformers, binary-strict, ListLike,
                        MonadCatchIO-transformers, 
                        filepath, directory, biohazard, vector
-  Ghc-options:         -threaded -rtsopts
 
 Executable bam-trim
+  Ghc-options:         -Wall -auto-all -threaded -rtsopts
   Main-is:             tools/bam-trim.hs
   Build-depends:       bytestring, containers, base >=4, binary, array,
                        zlib, attoparsec-iteratee, attoparsec, iteratee,
@@ -137,6 +142,7 @@ Executable bam-trim
                        filepath, directory, biohazard, vector
 
 Executable count-coverage
+  Ghc-options:         -Wall -auto-all -threaded -rtsopts
   Main-is:             tools/count-coverage.hs
   Build-depends:       bytestring, containers, base >=4, binary, array,
                        zlib, attoparsec-iteratee, attoparsec, iteratee,
@@ -145,6 +151,7 @@ Executable count-coverage
                        filepath, directory, biohazard, vector
 
 Executable glf-consensus
+  Ghc-options:         -Wall -auto-all -threaded -rtsopts
   Main-is:             tools/glf-consensus.hs
   Build-depends:       bytestring, containers, base >=4, binary, array,
                        zlib, attoparsec-iteratee, attoparsec, iteratee,
@@ -153,6 +160,7 @@ Executable glf-consensus
                        filepath, directory, biohazard, vector
 
 Executable wiggle-coverage
+  Ghc-options:         -Wall -auto-all -threaded -rtsopts
   Main-is:             tools/wiggle-coverage.hs
   Build-depends:       bytestring, containers, base >=4, binary, array,
                        zlib, attoparsec-iteratee, attoparsec, iteratee,
