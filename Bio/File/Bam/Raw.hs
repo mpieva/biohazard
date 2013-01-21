@@ -121,7 +121,7 @@ import qualified Data.Sequence                  as Z
 -- | The invalid position.
 -- Bam uses this value to encode a missing position.
 invalidPos :: Int
-invalidPos = -1
+invalidPos = 0xFFFFFFFF
 
 -- | Tests whether a position is valid.
 -- Returns true unless the the argument equals @invalidPos@.

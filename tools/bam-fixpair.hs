@@ -23,9 +23,6 @@ In the end, the code will work...
    the rule, because then it degenerates to a full sort by qname.
 
 TODO:
- . deal with consecutive pairs that violate sorting
-   (short cut logic:  if consecutive reads form a pair, fix it and pass
-   it on; don't fiddle with queues)
  . upgrade to pqueue in external memory
  . useful command line w/ better control over diagnostics
  . a companion that sorts would be cool, but it should be an
@@ -34,7 +31,7 @@ TODO:
    missing, throw read away  
 -}
 
-import Bio.File.Bam
+import Bio.File.Bam             hiding ( mergeInputs, combineCoordinates )
 import Bio.Iteratee
 import Bio.PriorityQueue
 import Control.Monad
@@ -44,19 +41,43 @@ import Data.Bits
 import Data.Hashable
 import Data.List
 import Paths_biohazard                          ( version )
+-- import System.Console.Getopt
+import System.Environment                       ( getArgs )
 import System.IO
 import Text.Printf
 
 import qualified Data.ByteString as S
+
+{-
+data Config = Config { }
+
+options :: [OptDescr (Config -> IO Config)]
+options = [
+    Option "o" ["output"] (ReqArg set_output FILE) "Write output to FILE",
+    Option "u" ["kill-unmap"] (NoArg set_kill "Delete unmapped lone mates",
+    Option "k" ["kill-all"] s(NoArg et_kill "Delete all lone mates",
+    Option "n" ["dry-run","validate"] (NoArg set_validate "No output, validate only",
+    Option "v" ["verbose"] (NoArg set_verbose "Print progress reports",
+    Option "q" ["quiet"] (NoArg set_quiet "Do not print errors",
+    Option "" ["warn-pos"] (NoArg set_warn_pos "Warn about wrong mate position",
+    Option "" ["warn-isize"] (NoArg set_warn_pos "Warn about wrong insert size",
+    Option "" ["warn-flags"] (NoArg set_warn_flags "Warn about mismatched flags",
+    Option "" ["warn-sort"] (NoArg set_warn_sort "Warn about violated sort order",
+        -- XXX not finding a mate is not a violation of the sort order;
+        -- finding the mate later is
+    Option "" ["warn-lone"] (NoArg set_warn_lone "Warn about lone mates"
+    Option "h?" ["help","usage"] (NoArg usage) "Print this helpful message" ]
+-}
 
 -- XXX placeholder...
 pqconf :: PQ_Conf
 pqconf = PQ_Conf 1000 "/var/tmp/"
 
 main :: IO ()
-main = addPG (Just version)                               >>= \add_pg ->
+main = getArgs                                            >>= \files ->
+       addPG (Just version)                               >>= \add_pg ->
        withMating                                           $ \mating_state ->
-       mergeDefaultInputs combineCoordinates >=> run        $ \hdr ->
+       mergeInputs files >=> run                            $ \hdr ->
        re_pair mating_state                                =$
        pipeRawBamOutput (add_pg hdr)
 
@@ -68,6 +89,7 @@ fixmate :: BamRaw -> BamRaw -> IO [BamRaw]
 fixmate r s | br_isFirstMate r && br_isSecondMate s = sequence [go r s, go s r]
             | br_isSecondMate r && br_isFirstMate s = sequence [go s r, go r s]
             | otherwise = error "names match, but 1st mate / 2nd mate flags do not"
+                -- XXX should be deal with differently
   where
     -- position of 5' end
     pos5 a = if br_isReversed a then br_pos a + br_aln_length a else br_pos a
@@ -166,17 +188,23 @@ note msg = liftIO $ hPutStrLn stderr $ "[fixpair] info:    " ++ msg
 warn msg = liftIO $ hPutStrLn stderr $ "[fixpair] warning: " ++ msg
 err  msg = liftIO $ hPutStrLn stderr $ "[fixpair] error:   " ++ msg
 
-report :: MonadIO m => Maybe BamRaw -> Mating r m (Maybe BamRaw)
+report' :: MonadIO m => Mating r m ()
+report' = do o <- gets total_out
+             when (o `mod` 0x40000 == 0) $ do
+                     ms <- getSize messed_up
+                     note $ printf "out: %d, mess: %d" o ms
+
+report :: MonadIO m => BamRaw -> Mating r m ()
 report br = do i <- gets total_in
                o <- gets total_out
-               when ((i+o) `mod` 0x20000 == 0) $ do
+               when (i `mod` 0x20000 == 0) $ do
                      hs <- getSize right_here
                      os <- getSize in_order
                      ms <- getSize messed_up
-                     let rs = maybe 0 (unRefseq . br_rname) br
-                     let p  = maybe 0 br_pos br
-                     note $ printf "@%d/%d, in: %d, out: %d, here: %d, wait: %d, mess: %d" rs p i o hs os ms
-               return br
+                     let rs = br_rname br ; p = br_pos br 
+                         at = if rs == invalidRefseq || p == invalidPos 
+                              then "" else printf "@%d/%d, " (unRefseq rs) p
+                     note $ printf "%sin: %d, out: %d, here: %d, wait: %d, mess: %d" (at::String) i o hs os ms
 
 no_mate_here :: MonadIO m => String -> BamRaw -> Mating r m ()
 no_mate_here l b = do warn $ "[" ++ l ++ "] record "
@@ -195,8 +223,8 @@ no_mate_ever b = do err  $ "record " ++ show (br_qname b) ++ " did not have a ma
 -- 'Iteratee', too.  Pretty to work with, not pretty to look at.
 type Sink r m = Stream [BamRaw] -> Iteratee [BamRaw] m r
 newtype Mating r m a = Mating { runMating ::       MatingState -> Sink r m
-                                          -> (a -> MatingState -> Sink r m -> Iteratee [BamRaw] m (Iteratee [BamRaw] m r))
-                                          -> Iteratee [BamRaw] m (Iteratee [BamRaw] m r) }
+                                          -> (a -> MatingState -> Sink r m -> Iteratee [BamPair] m (Iteratee [BamRaw] m r))
+                                          -> Iteratee [BamPair] m (Iteratee [BamRaw] m r) }
 
 instance Monad m => Monad (Mating r m) where
     return a = Mating $ \s o k  -> k a s o
@@ -211,7 +239,7 @@ instance MonadIO m => MonadIO (Mating r m) where
 instance MonadTrans (Mating r) where
     lift m = Mating $ \s o k -> lift m >>= \a -> k a s o
 
-lift'it :: Monad m => Iteratee [BamRaw] m a -> Mating r m a
+lift'it :: Monad m => Iteratee [BamPair] m a -> Mating r m a
 lift'it m = Mating $ \s o k -> m >>= \a -> k a s o
 
 gets :: (MatingState -> a) -> Mating r m a
@@ -221,26 +249,26 @@ modify :: (MatingState -> MatingState) -> Mating r m ()
 modify f = Mating $ \s o k -> (k () $! f s) o
 
 
-fetchNext :: Monad m => Mating r m (Maybe BamRaw)
+fetchNext :: MonadIO m => Mating r m (Maybe BamPair)
 fetchNext = do r <- lift'it tryHead
                case r of Nothing -> return ()
-                         Just  _ -> modify $ \s -> s { total_in = 1 + total_in s }
+                         Just (Singleton x) -> do modify $ \s -> s { total_in = 1 + total_in s } ; report x
+                         Just (Pair    _ x) -> do modify $ \s -> s { total_in = 2 + total_in s } ; report x
+                         Just (LoneMate  x) -> do modify $ \s -> s { total_in = 1 + total_in s } ; report x
                return r
 
-yield :: Monad m => [BamRaw] -> Mating r m ()
+yield :: MonadIO m => [BamRaw] -> Mating r m ()
 yield rs = Mating $ \s o k -> let !s' = s { total_out = length rs + total_out s }
                               in eneeCheckIfDone (k () s') . o $ Chunk rs
 
 -- To ensure proper cleanup, we require the priority queues to be created
 -- outside.  Since one is continually reused, it is important that a PQ
 -- that is emptied no longer holds on to files on disk.
-re_pair :: MonadIO m
-        => MatingState -> Enumeratee [BamRaw] [BamRaw] m a
+re_pair :: MonadIO m => MatingState -> Enumeratee [BamPair] [BamRaw] m a
 re_pair st = eneeCheckIfDone $ \out -> runMating go st out $ \() _st k -> return (liftI k)
-
-go :: MonadIO m => Mating r m ()
-go = fetchNext >>= report >>= go' 
    where   
+    go = fetchNext >>= go' 
+
     -- At EOF, flush everything.
     go' Nothing = peekMin right_here >>= \mm -> case mm of
             Just (ByQName _ qq) -> do complete_here (br_self_pos qq)
@@ -249,10 +277,10 @@ go = fetchNext >>= report >>= go'
 
     -- Single read?  Pass through and go on.
     -- Paired read?  Does it belong 'here'?
-    go' (Just r) 
-        | not (br_isPaired r) = -- eneeCheckIfDone (go (num_out+1)) . k $ Chunk [r]
-                                yield [r] >> go
-        | otherwise = peekMin right_here >>= \mm -> case mm of
+    go' (Just (Singleton x)) = yield [x] >> go
+    go' (Just (Pair    x y)) = liftIO (fixmate x y) >>= yield >> go
+    go' (Just (LoneMate  r)) = peekMin right_here >>= \mm -> case mm of
+
             -- there's nothing else here, so here becomes redefined
             Nothing             -> enqueueThis r >> go
 
@@ -265,7 +293,7 @@ go = fetchNext >>= report >>= go'
 
                 -- nope, r comes later.  we need to finish our business here
                 GT -> do complete_here (br_self_pos qq)
-                         flush_here (Just r) 
+                         flush_here (Just (LoneMate r)) 
 
                 -- it belongs here or there is nothing else here
                 EQ -> enqueueThis r >> go
@@ -280,9 +308,8 @@ go = fetchNext >>= report >>= go'
     -- their mate the ordinary way.  Afterwards, flush the messed_up
     -- queue.
     flush_in_order = fetchMin in_order >>= \zz -> case zz of
-        Just (ByMatePos b) -> do no_mate_here "flush_in_order" b
-                                 flush_in_order 
-        Nothing -> flush_messed_up 
+        Just (ByMatePos b) -> no_mate_here "flush_in_order" b >> flush_in_order 
+        Nothing            -> flush_messed_up 
 
     -- Flush the messed up queue.  Everything should come off in pairs,
     -- unless something is broken.
@@ -294,11 +321,8 @@ go = fetchNext >>= report >>= go'
     flush_mess2 a Nothing = no_mate_ever a >>= yield 
                                                 
     flush_mess2 a b'@(Just (ByQName _ b)) 
-        | br_qname a /= br_qname b = no_mate_ever a >>= yield >> flush_mess1 b' 
-                                    -- eneeCheckIfDone (\k' -> flush_mess1 k' b') . k . Chunk
-
-        | otherwise = liftIO (fixmate a b) >>= yield >> flush_messed_up 
-                                  -- eneeCheckIfDone (flush_messed_up (num_out+2)) . k . Chunk
+        | br_qname a /= br_qname b = no_mate_ever a       >>= yield >> report' >> flush_mess1 b' 
+        | otherwise                = liftIO (fixmate a b) >>= yield >> report' >> flush_messed_up 
 
 
     -- Flush the right_here queue.  Everything should come off in pairs,
@@ -312,11 +336,8 @@ go = fetchNext >>= report >>= go'
                                              flush_here r
                                                 
     flush_here2 r (ByQName _ a) b'@(Just (ByQName _ b)) 
-        | br_qname a /= br_qname b = do no_mate_here "flush_here2/Just" a
-                                        flush_here1 r b'
-
-        | otherwise = liftIO (fixmate a b) >>= yield >> flush_here r
-                        -- eneeCheckIfDone (flush_here (num_out+2) r) . k . Chunk
+        | br_qname a /= br_qname b = no_mate_here "flush_here2/Just" a >> flush_here1 r b'
+        | otherwise                = liftIO (fixmate a b) >>= yield    >> flush_here r
 
 
     -- add stuff coming from 'in_order' to 'right_here'
@@ -373,4 +394,59 @@ br_self_pos b = (br_rname b, br_pos b)
 
 force_copy :: BamRaw -> BamRaw
 force_copy br = bamRaw (virt_offset br) $! S.copy (raw_data br)
+
+
+
+-- | To catch pairs whose mates are adjacent (either because the file
+-- has never been sorted or because it has been group-sorted), we apply
+-- preprocessing.  The idea is that if we can catch these pairs early,
+-- the priority queues never fill up and we save a ton of processing.
+-- Now to make the re-pair algorithm work well, we need to merge-sort
+-- inputs.  But after that, the pairs have been separated.  So we apply
+-- the preprocessing to each input file, then merge then, then run
+-- re-pair.
+
+data BamPair = Singleton BamRaw | Pair BamRaw BamRaw | LoneMate BamRaw
+  
+
+mergeInputs :: MonadCatchIO m => [FilePath] -> Enumerator' BamMeta [BamPair] m a
+mergeInputs = go0
+  where
+    go0 [        ] = enumG $ enumHandle defaultBufSize stdin
+    go0 (fp0:fps0) = go fp0 fps0
+
+    go fp [       ] = enum1 fp
+    go fp (fp1:fps) = mergeEnums' (go fp1 fps) (enum1 fp) combineCoordinates
+
+    enum1 "-" = enumG $ enumHandle defaultBufSize stdin
+    enum1  fp = enumG $ enumFile   defaultBufSize    fp
+    
+    enumG ee k = ee >=> run $ joinI $ decodeAnyBam $ \h -> quick_pair (k h)
+
+
+quick_pair :: Monad m => Enumeratee [BamRaw] [BamPair] m a
+quick_pair = eneeCheckIfDone go0
+  where
+    go0 k = tryHead >>= maybe (return $ liftI k) (\x -> go1 x k)
+
+    go1 x k | not (br_isPaired x) = eneeCheckIfDone go0 . k $ Chunk [Singleton x]
+            | otherwise           = tryHead >>= maybe (return . k $ Chunk [LoneMate x]) (\y -> go2 x y k)
+
+    go2 x y k | br_qname x == br_qname y = eneeCheckIfDone go0 . k $ Chunk [Pair x y]
+              | otherwise                = eneeCheckIfDone (go1 y) . k $ Chunk [LoneMate x]
+
+
+combineCoordinates :: Monad m => BamMeta -> Enumeratee [BamPair] [BamPair] (Iteratee [BamPair] m) a
+combineCoordinates _ = mergeSortStreams (?)
+  where u ? v = if (bp_rname u, bp_pos u) < (bp_rname v, bp_pos v) then Less else NotLess
+
+bp_rname :: BamPair -> Refseq
+bp_rname (Singleton u) = br_rname u
+bp_rname (Pair    u _) = br_rname u
+bp_rname (LoneMate  u) = br_rname u
+
+bp_pos :: BamPair -> Int
+bp_pos (Singleton u) = br_pos u
+bp_pos (Pair    u _) = br_pos u
+bp_pos (LoneMate  u) = br_pos u
 
