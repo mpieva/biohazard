@@ -59,6 +59,10 @@ module Bio.File.Bam.Raw (
     br_mpos,
     br_isize,
 
+    br_findExtension,
+    br_extAsInt,
+    br_extAsString,
+
     Refs,
     noRefs,
     getRef,
@@ -95,9 +99,10 @@ import Data.Array.Unsafe            ( unsafeFreeze )
 import Data.Attoparsec.Iteratee
 import Data.Binary.Put
 import Data.Bits                    ( Bits, shiftL, shiftR, (.&.), (.|.), testBit )
-import Data.Int                     ( Int64 )
+import Data.Int                     ( Int64, Int32, Int16, Int8 )
 import Data.Monoid
 import Data.Sequence                ( (|>) )
+import Data.Word                    ( Word32, Word16 )
 import Foreign.C.String             ( CString )
 import Foreign.Storable             ( pokeElemOff )
 import System.Environment           ( getArgs )
@@ -106,6 +111,7 @@ import System.IO.Unsafe
 
 import qualified Control.Monad.CatchIO          as CIO
 import qualified Data.ByteString                as S
+import qualified Data.ByteString.Char8          as SC
 import qualified Data.ByteString.Lazy.Char8     as L
 import qualified Data.ByteString.Unsafe         as S
 import qualified Data.Foldable                  as F
@@ -478,4 +484,52 @@ pokeInt32 p o x = do pokeElemOff p  o    . fromIntegral $        x    .&. 0xff
                      pokeElemOff p (o+1) . fromIntegral $ shiftR x  8 .&. 0xff
                      pokeElemOff p (o+2) . fromIntegral $ shiftR x 16 .&. 0xff
                      pokeElemOff p (o+3) . fromIntegral $ shiftR x 24 .&. 0xff
+
+
+
+-- Find an extension field, return offset in BamRaw data.
+br_findExtension :: String -> BamRaw -> Maybe Int
+br_findExtension [u,v] br@(BamRaw _ r) = go off0
+  where
+    off0 = sum [ 33, br_l_read_name br, 4 * br_n_cigar_op br, br_l_seq br, (br_l_seq br +1) `div` 2 ]
+    go !o | o >= S.length r - 3                        = Nothing
+          | SC.index r o == u && SC.index r (o+1) == v = Just (o+2)
+         
+    go !o = case SC.index r (o+2) of 
+        'Z' -> go $ skipNul $ o + 3
+        'H' -> go $ skipNul $ o + 3
+        'B' -> go $ o + 7 + sizeof (SC.index r (o+3)) * getInt r (o+4)
+        x   -> go $ o + 3 + sizeof x
+
+    skipNul !o | S.length r  == o = o
+               | S.index r o == 0 = o+1
+               | otherwise        = skipNul (o+1)
+
+    sizeof 'A' = 1 
+    sizeof 'c' = 1 
+    sizeof 'C' = 1 
+    sizeof 's' = 2
+    sizeof 'S' = 2
+    sizeof 'i' = 4
+    sizeof 'I' = 4
+    sizeof 'f' = 4
+    sizeof  x  = error $ "unknown fields type: " ++ show x
+br_findExtension _ _ = error "illegal key, must be two characters"
+
+br_extAsInt :: Int -> String -> BamRaw -> Int
+br_extAsInt d k br@(BamRaw _ r) = case br_findExtension k br of
+        Just o | SC.index r o == 'c' -> fromIntegral               (S.index r (o+1))
+               | SC.index r o == 'C' -> fromIntegral (fromIntegral (S.index r (o+1)) :: Int8)
+               | SC.index r o == 's' -> fromIntegral (getInt16 r (o+1) :: Int16)
+               | SC.index r o == 'S' -> fromIntegral (getInt16 r (o+1) :: Word16)
+               | SC.index r o == 'i' -> fromIntegral (getInt   r (o+1) :: Int32)
+               | SC.index r o == 'I' -> fromIntegral (getInt   r (o+1) :: Word32)
+        _                            -> d
+
+br_extAsString :: String -> BamRaw -> S.ByteString
+br_extAsString k br@(BamRaw _ r) = case br_findExtension k br of
+        Just o | SC.index r o == 'A' -> S.singleton (S.index r (o+1))
+               | SC.index r o == 'Z' -> S.takeWhile (/= 0) $ S.drop (o+1) r
+               | SC.index r o == 'H' -> S.takeWhile (/= 0) $ S.drop (o+1) r
+        _                            -> S.empty
 

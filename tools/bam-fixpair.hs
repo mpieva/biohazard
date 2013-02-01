@@ -31,6 +31,7 @@ TODO:
 import Bio.File.Bam             hiding ( mergeInputs, combineCoordinates )
 import Bio.Iteratee
 import Bio.PriorityQueue
+import Bio.Util                                 ( showNum )
 import Control.Monad
 import Control.Monad.Trans.Class
 import Data.Binary
@@ -232,15 +233,6 @@ report_stats ms = unlines [
     "number of repaired ISIZE values: " ++ showNum (num_isize ms),
     "number of repaired FLAGS values: " ++ showNum (num_flags ms),
     "number of common FLAGS problem:  " ++ showNum (num_fflag ms) ]
-  where 
-    showNum = triplets [] . reverse . show
-
-    triplets acc [] = acc
-    triplets acc (a:[]) = a:acc
-    triplets acc (a:b:[]) = b:a:acc
-    triplets acc (a:b:c:[]) = c:b:a:acc
-    triplets acc (a:b:c:s) = triplets (',':c:b:a:acc) s
-             
 
 data Queues = QS { right_here :: !(PQ ByQName)
                  , in_order   :: !(PQ ByMatePos)

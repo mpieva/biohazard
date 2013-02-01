@@ -74,7 +74,7 @@ Library
   Build-depends:       bytestring, containers, base >=4, binary, array,
                        zlib, attoparsec-iteratee, attoparsec, iteratee,
                        transformers, binary-strict, ListLike,
-                       MonadCatchIO-transformers, random, erf,
+                       MonadCatchIO-transformers, random, 
                        filepath, directory, vector
   
   Ghc-options:         -Wall
@@ -129,7 +129,7 @@ Executable bam-rmdup
   Build-depends:       bytestring, containers, base >=4, binary, array,
                        zlib, attoparsec-iteratee, attoparsec, iteratee,
                        transformers, binary-strict, ListLike,
-                       MonadCatchIO-transformers, 
+                       MonadCatchIO-transformers,
                        filepath, directory, biohazard, vector
 
 Executable bam-trim

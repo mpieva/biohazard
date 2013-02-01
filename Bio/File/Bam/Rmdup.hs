@@ -1,19 +1,35 @@
-module Bio.File.Bam.Rmdup ( rmdup ) where
+{-# LANGUAGE ExistentialQuantification #-}
+module Bio.File.Bam.Rmdup(
+            rmdup, Collapse,
+            cons_collapse, cheap_collapse, very_cheap_collapse
+    ) where
 
 import Bio.File.Bam
+import Bio.File.Bam.Fastq               ( removeWarts )
 import Bio.Iteratee
-
 import Data.Array.Unboxed
 import Data.Bits
 import Data.List
-import Data.Ord
-import Data.Word ( Word8 )
+import Data.Ord                         ( comparing )
+import Data.Word                        ( Word8 )
 
 import qualified Data.ByteString        as B
 import qualified Data.ByteString.Char8  as T
 import qualified Data.Iteratee          as I
 import qualified Data.Map               as M
 import qualified Data.Vector.Generic    as V
+
+data Collapse = forall a . Collapse (BamRaw -> Either String a) ([a] -> a) (a -> a -> a) (a -> BamRaw)
+
+cons_collapse :: Word8 -> Collapse
+cons_collapse maxq = Collapse check_flags (do_collapse maxq) addXPOf encodeBamEntry
+
+cheap_collapse :: Collapse
+cheap_collapse = Collapse check_flags do_cheap_collapse addXPOf encodeBamEntry
+
+very_cheap_collapse :: Collapse
+very_cheap_collapse = Collapse Right do_very_cheap_collapse (const id) id
+
 
 -- | Removes duplicates from an aligned, sorted BAM stream.
 --
@@ -80,39 +96,39 @@ import qualified Data.Vector.Generic    as V
 -- duplicates of each other.  The typical label function would extract
 -- read groups, libraries or samples.
 
-rmdup :: (Monad m, Ord l) => (BamRec -> l) -> Bool -> Bool -> Word8 -> Enumeratee [BamRec] [BamRec] m a 
-rmdup label strand_preserved cheap maxq =
+rmdup :: (Monad m, Ord l) => (BamRaw -> l) -> Bool -> Collapse -> Enumeratee [BamRaw] [BamRaw] m r 
+rmdup label strand_preserved collapse_cfg =
     -- Easiest way to go about this:  We simply collect everything that
     -- starts at some specific coordinate and group it appropriately.
     -- Treat the groups separately, output, go on.
-    check_flags ><> check_sort ><> mapGroups (do_rmdup label strand_preserved cheap maxq) ><> check_sort
+    check_sort ><> mapGroups (either fail return . do_rmdup label strand_preserved collapse_cfg) ><> check_sort
   where
-    same_pos u v = b_cpos u == b_cpos v
-    b_cpos br = (b_rname br, b_pos br)
+    same_pos u v = br_cpos u == br_cpos v
+    br_cpos br = (br_rname br, br_pos br)
 
     mapGroups f o = I.tryHead >>= maybe (return o) (\a -> eneeCheckIfDone (mg1 f a []) o)
     mg1 f a acc k = I.tryHead >>= \mb -> case mb of
-                        Nothing -> return . k . Chunk . f $ a : acc
+                        Nothing -> f (a:acc) >>= return . k . Chunk
                         Just b | same_pos a b -> mg1 f a (b:acc) k
-                               | otherwise -> eneeCheckIfDone (mg1 f b []) . k . Chunk . f $ a : acc
+                               | otherwise -> f (a:acc) >>= eneeCheckIfDone (mg1 f b []) . k . Chunk
     
-check_sort :: Monad m => Enumeratee [BamRec] [BamRec] m a
+check_sort :: Monad m => Enumeratee [BamRaw] [BamRaw] m a
 check_sort out = I.tryHead >>= maybe (return out) (\a -> eneeCheckIfDone (step a) out)
   where
     step a k = I.tryHead >>= maybe (return . k $ Chunk [a]) (step' a k)
-    step' a k b | (b_rname a, b_pos a) > (b_rname b, b_pos b) = fail "sorting violated"
+    step' a k b | (br_rname a, br_pos a) > (br_rname b, br_pos b) = fail "sorting violated"
                 | otherwise = eneeCheckIfDone (step b) . k $ Chunk [a]
 
 -- To be perfectly honest, I do not understand what these flags mean.
 -- All I know it that if and when they are set, the duplicate removal
 -- will go very, very wrong.
-check_flags :: Monad m => Enumeratee [BamRec] [BamRec] m a
-check_flags = mapStreamM check
-  where
-    check br | extAsInt 1 "HI" br /= 1 = fail "cannot deal with HI /= 1"
-             | extAsInt 1 "IH" br /= 1 = fail "cannot deal with IH /= 1"
-             | extAsInt 1 "NH" br /= 1 = fail "cannot deal with NH /= 1"
-             | otherwise               = return br
+check_flags :: BamRaw -> Either String BamRec
+check_flags raw | extAsInt 1 "HI" b /= 1 = Left "cannot deal with HI /= 1"
+                | extAsInt 1 "IH" b /= 1 = Left "cannot deal with IH /= 1"
+                | extAsInt 1 "NH" b /= 1 = Left "cannot deal with NH /= 1"
+                | otherwise              = Right b
+  where b = removeWarts $ decodeBamEntry raw
+    
 
 {- Unmapped fragments should not be considered to be duplicates of
    mapped fragments.  The "unmapped" flag can serve for that:  while
@@ -146,43 +162,38 @@ check_flags = mapStreamM check
    with an appropriately filtered stream.
 -}
 
-do_rmdup :: Ord l => (BamRec -> l) -> Bool -> Bool -> Word8 -> [BamRec] -> [BamRec]
-do_rmdup label strand_preserved cheap maxq = 
-   concatMap do_rmdup1 . M.elems . accumMap label
+do_rmdup :: Ord l => (BamRaw -> l) -> Bool -> Collapse -> [BamRaw] -> Either String [BamRaw]
+do_rmdup label strand_preserved (Collapse inject collapse add_xp_of finish) = 
+    fmap concat . mapM do_rmdup1 . M.elems . accumMap label
   where
-    do_rmdup1 :: [BamRec] -> [BamRec]
-    do_rmdup1 rds = results
+    do_rmdup1 rds = do ss <- true_singles'
+                       ms <- merged'
+                       ps <- pairs'
+                       return $ map finish $ results ss ms ps
       where
-        (pairs, singles) = partition isPaired rds
-        (merged, true_singles) = partition isMergeTrimmed singles
+        (pairs,  singles)      = partition br_isPaired rds
+        (merged, true_singles) = partition br_isMergeTrimmed singles
 
-        mkMap f = M.map do_collapse . accumMap f
+        mkMap f = fmap (M.map collapse) . accumMapM f inject
 
-        pairs'        = mkMap (\b -> (b_mate_pos b, strand_preserved && isReversed  b 
-                                                  , strand_preserved && isFirstMate b)) pairs
-        merged'       = mkMap (\b -> (b_aln_len b,  strand_preserved && isReversed  b)) merged
+        pairs'        = mkMap (\b -> (br_mate_pos b,   strand_preserved && br_isReversed  b 
+                                                     , strand_preserved && br_isFirstMate b)) pairs
+        merged'       = mkMap (\b -> (br_aln_length b, strand_preserved && br_isReversed  b)) merged
 
-        true_singles' = mkMap (\b -> (              strand_preserved && isReversed  b)) true_singles
+        true_singles' = mkMap (\b -> (                 strand_preserved && br_isReversed  b)) true_singles
 
-        -- Hrm.  Must fold the XP values of the removed true_singles into
-        -- others.
-        results = merge_singles true_singles' 
-                    (  [ (rev, v) | ((_, rev),        v) <- M.toList merged' ]
-                    ++ [ (rev, v) | ((_, rev, False), v) <- M.toList pairs'  ] )
-                  ++ [ v | ((_, _, True), v) <- M.toList pairs' ]
+        results ss ms ps = merge_singles ss ( [ (rev, v) | ((_, rev),        v) <- M.toList ms ]
+                                           ++ [ (rev, v) | ((_, rev, False), v) <- M.toList ps ] )
+                                        ++ [ v | ((_, _, True), v) <- M.toList ps ]
 
-
-    merge_singles m [] = M.elems m
+    merge_singles m [           ] = M.elems m
     merge_singles m ((k,v) : kvs) = case M.lookup k m of
             Nothing -> v : merge_singles m kvs
-            Just  w -> addXPOf w v : merge_singles (M.delete k m) kvs
+            Just  w -> add_xp_of w v : merge_singles (M.delete k m) kvs
 
-    do_collapse = if cheap then cheap_collapse else collapse maxq
-    addXPOf w v = v { b_exts = M.insert "XP" (Int $ extAsInt 1 "XP" w `oplus` extAsInt 1 "XP" v) (b_exts v) }
-
-    b_aln_len = cigarToAlnLen . b_cigar
-    b_mate_pos br = (b_mrnm br, b_mpos br, isUnmapped br, isMateUnmapped br)
-    isMergeTrimmed br = isMerged br || isTrimmed br
+    br_mate_pos       br = (br_mrnm br, br_mpos br, br_isUnmapped br, br_isMateUnmapped br)
+    br_isMergeTrimmed br = let ef = br_extAsInt (br_extAsInt 0 "XF" br) "EF" br 
+                           in (ef .&. flagTrimmed .|. flagMerged) /= 0
 
 accumMap :: Ord b => (a -> b) -> [a] -> M.Map b [a]
 accumMap f = go M.empty    
@@ -190,6 +201,14 @@ accumMap f = go M.empty
     go m [    ] = m
     go m (v:vs) = let ws = M.findWithDefault [] (f v) m 
                   in ws `seq` go (M.insert (f v) (v:ws) m) vs
+
+accumMapM :: (Ord k, Monad m) => (a -> k) -> (a -> m v) -> [a] -> m (M.Map k [v])
+accumMapM f g = go M.empty
+  where    
+    go m [    ] = return m
+    go m (v:vs) = do v' <- g v
+                     let ws = M.findWithDefault [] (f v) m 
+                     ws `seq` go (M.insert (f v) (v':ws) m) vs
 
 
 {- We need to deal sensibly with each field, but different fields have
@@ -222,15 +241,18 @@ accumMap f = go M.empty
    X0, X1, XT, XS, XF, XE, BC, LB, RG
          majority vote -} 
 
-collapse :: Word8 -> [BamRec] -> BamRec
-collapse maxq [br] = br { b_qual  = B.map (min maxq) $ b_qual br, b_virtual_offset = 0 }
-collapse maxq  brs = b0 { b_exts  = modify_extensions $ b_exts b0
-                        , b_flag  = failflag .&. complement flagDuplicate
-                        , b_mapq  = rmsq $ map b_mapq brs'
-                        , b_cigar = Cigar cigar'
-                        , b_seq   = V.fromList $ cons_seq
-                        , b_qual  = B.pack cons_qual
-                        , b_virtual_offset = 0 }
+addXPOf :: BamRec -> BamRec -> BamRec
+addXPOf w v = v { b_exts = M.insert "XP" (Int $ extAsInt 1 "XP" w `oplus` extAsInt 1 "XP" v) (b_exts v) }
+
+do_collapse :: Word8 -> [BamRec] -> BamRec
+do_collapse maxq [br] = br { b_qual  = B.map (min maxq) $ b_qual br, b_virtual_offset = 0 }
+do_collapse maxq  brs = b0 { b_exts  = modify_extensions $ b_exts b0
+                           , b_flag  = failflag .&. complement flagDuplicate
+                           , b_mapq  = rmsq $ map b_mapq brs'
+                           , b_cigar = Cigar cigar'
+                           , b_seq   = V.fromList $ cons_seq
+                           , b_qual  = B.pack cons_qual
+                           , b_virtual_offset = 0 }
   where
     b0 = minimumBy (comparing b_qname) brs
     most_fail = 2 * length (filter isFailsQC brs) > length brs 
@@ -330,11 +352,15 @@ consensus maxq nqs = if qr > 3 then (n0, qr) else (nucN,0)
     qr = fromIntegral $ (q0-q1) `min` fromIntegral maxq
 
 
+-- Cheap version: simply takes the lexically first record
+do_very_cheap_collapse :: [BamRaw] -> BamRaw
+do_very_cheap_collapse bs = minimumBy (comparing br_qname) bs
+
 -- Cheap version: simply takes the lexically first record, adds XP field
-cheap_collapse :: [BamRec] -> BamRec
-cheap_collapse bs = b0 { b_exts = new_xp $ b_exts b0 }
+do_cheap_collapse :: [BamRec] -> BamRec
+do_cheap_collapse bs = b0 { b_exts = new_xp $ b_exts b0 }
   where
-    b0 = minimumBy (comparing b_qname) bs
+    b0     = minimumBy (comparing b_qname) bs
     new_xp = M.insert "XP" $! Int (foldl' (\a b -> a `oplus` extAsInt 1 "XP" b) 0 bs)
 
 oplus :: Int -> Int -> Int
