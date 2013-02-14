@@ -25,7 +25,7 @@ cons_collapse :: Word8 -> Collapse
 cons_collapse maxq = Collapse check_flags (do_collapse maxq) addXPOf encodeBamEntry
 
 cheap_collapse :: Collapse
-cheap_collapse = Collapse check_flags do_cheap_collapse addXPOf encodeBamEntry
+cheap_collapse = Collapse Right do_cheap_collapse addXPOf' id
 
 very_cheap_collapse :: Collapse
 very_cheap_collapse = Collapse Right do_very_cheap_collapse (const id) id
@@ -192,7 +192,7 @@ do_rmdup label strand_preserved (Collapse inject collapse add_xp_of finish) =
             Just  w -> add_xp_of w v : merge_singles (M.delete k m) kvs
 
     br_mate_pos       br = (br_mrnm br, br_mpos br, br_isUnmapped br, br_isMateUnmapped br)
-    br_isMergeTrimmed br = let ef = br_extAsInt (br_extAsInt 0 "XF" br) "EF" br 
+    br_isMergeTrimmed br = let ef = br_extAsInt (br_extAsInt 0 "XF" br) "FF" br 
                            in (ef .&. flagTrimmed .|. flagMerged) /= 0
 
 accumMap :: Ord b => (a -> b) -> [a] -> M.Map b [a]
@@ -243,6 +243,9 @@ accumMapM f g = go M.empty
 
 addXPOf :: BamRec -> BamRec -> BamRec
 addXPOf w v = v { b_exts = M.insert "XP" (Int $ extAsInt 1 "XP" w `oplus` extAsInt 1 "XP" v) (b_exts v) }
+
+addXPOf' :: BamRaw -> BamRaw -> BamRaw
+addXPOf' w v = replaceXP (br_extAsInt 1 "XP" w `oplus` br_extAsInt 1 "XP" v) v
 
 do_collapse :: Word8 -> [BamRec] -> BamRec
 do_collapse maxq [br] = br { b_qual  = B.map (min maxq) $ b_qual br, b_virtual_offset = 0 }
@@ -357,11 +360,28 @@ do_very_cheap_collapse :: [BamRaw] -> BamRaw
 do_very_cheap_collapse bs = minimumBy (comparing br_qname) bs
 
 -- Cheap version: simply takes the lexically first record, adds XP field
-do_cheap_collapse :: [BamRec] -> BamRec
-do_cheap_collapse bs = b0 { b_exts = new_xp $ b_exts b0 }
+do_cheap_collapse :: [BamRaw] -> BamRaw
+do_cheap_collapse [b] = b
+do_cheap_collapse bs = replaceXP new_xp (minimumBy (comparing br_qname) bs)
   where
-    b0     = minimumBy (comparing b_qname) bs
-    new_xp = M.insert "XP" $! Int (foldl' (\a b -> a `oplus` extAsInt 1 "XP" b) 0 bs)
+    new_xp = foldl' (\a b -> a `oplus` br_extAsInt 1 "XP" b) 0 bs
+
+replaceXP :: Int -> BamRaw -> BamRaw
+replaceXP new_xp b0 = bamRaw 0 . xpcode . raw_data . mutateBamRaw b0 $ removeExt "XP"
+  where
+    xpcode r | new_xp == 1 = r
+             | -0x80 <= new_xp && new_xp < 0 = r `B.append` B.pack [ c2w 'X', c2w 'P', c2w 'c', 
+                                                                     fromIntegral $ new_xp .&. 0xff ]
+             | new_xp < 0x100                = r `B.append` B.pack [ c2w 'X', c2w 'P', c2w 'C', 
+                                                                     fromIntegral $ new_xp .&. 0xff ]                                                                   
+             | new_xp < 0x10000              = r `B.append` B.pack [ c2w 'X', c2w 'P', c2w 'S', 
+                                                                     fromIntegral $ (new_xp `shiftR`  0).&. 0xff,
+                                                                     fromIntegral $ (new_xp `shiftR`  8) .&. 0xff ]
+             | otherwise   = r `B.append` B.pack [ c2w 'X', c2w 'P', c2w 'i', 
+                                                   fromIntegral $ (new_xp `shiftR`  0) .&. 0xff,
+                                                   fromIntegral $ (new_xp `shiftR`  8) .&. 0xff,
+                                                   fromIntegral $ (new_xp `shiftR` 16) .&. 0xff,
+                                                   fromIntegral $ (new_xp `shiftR` 24) .&. 0xff ]
 
 oplus :: Int -> Int -> Int
 _ `oplus` (-1) = -1

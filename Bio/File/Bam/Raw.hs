@@ -80,6 +80,7 @@ module Bio.File.Bam.Raw (
 
     Mutator,
     mutateBamRaw,
+    removeExt,
     setFlag,
     setMrnm,
     setMpos,
@@ -104,6 +105,8 @@ import Data.Monoid
 import Data.Sequence                ( (|>) )
 import Data.Word                    ( Word32, Word16 )
 import Foreign.C.String             ( CString )
+import Foreign.Ptr                  ( plusPtr )
+import Foreign.Marshal.Utils        ( moveBytes )
 import Foreign.Storable             ( pokeElemOff )
 import System.Environment           ( getArgs )
 import System.IO
@@ -458,22 +461,26 @@ writeRawBamHandle hdl meta = encodeBam meta =$ mapChunksM_ (liftIO . S.hPut hdl)
 mutateBamRaw :: BamRaw -> Mutator () -> BamRaw
 mutateBamRaw (BamRaw vo br) mut = unsafePerformIO $ do
         S.useAsCStringLen br $ \(p,l) -> do
-            runMutator mut p l
-            bamRaw vo `fmap` S.packCStringLen (p,l)
+            (l',()) <- runMutator mut p l
+            if l' <= l then bamRaw vo `fmap` S.packCStringLen (p,l')
+                       else error "broken Mutator: length must never increase"
 
-newtype Mutator a = Mut { runMutator :: CString -> Int -> IO a }
+newtype Mutator a = Mut { runMutator :: CString -> Int -> IO (Int,a) }
 
 instance Monad Mutator where
-    return a = Mut $ \_ _ -> return a
-    m >>= k  = Mut $ \p l -> runMutator m p l >>= \a -> runMutator (k a) p l
+    return a = Mut $ \_ l -> return (l,a)
+    m >>= k  = Mut $ \p l -> runMutator m p l >>= \(l',a) -> runMutator (k a) p l'
+
+passL :: IO a -> Int -> IO (Int,a)
+passL io = \l -> io >>= \a -> return (l,a)
 
 setFlag, setMpos, setIsize :: Int -> Mutator ()
-setFlag  f = Mut $ \p _ -> pokeInt16 p 14 f
-setMpos  x = Mut $ \p _ -> pokeInt32 p 24 x
-setIsize x = Mut $ \p _ -> pokeInt32 p 28 x
+setFlag  f = Mut $ \p -> passL $ pokeInt16 p 14 f
+setMpos  x = Mut $ \p -> passL $ pokeInt32 p 24 x
+setIsize x = Mut $ \p -> passL $ pokeInt32 p 28 x
 
 setMrnm :: Refseq -> Mutator ()
-setMrnm r = Mut $ \p _ -> pokeInt32 p 20 (unRefseq r)
+setMrnm r = Mut $ \p -> passL $ pokeInt32 p 20 (unRefseq r)
 
 pokeInt16 :: (Bits a, Integral a) => CString -> Int -> a -> IO ()
 pokeInt16 p o x = do pokeElemOff p  o    . fromIntegral $        x   .&. 0xff
@@ -488,18 +495,19 @@ pokeInt32 p o x = do pokeElemOff p  o    . fromIntegral $        x    .&. 0xff
 
 
 -- Find an extension field, return offset in BamRaw data.
-br_findExtension :: String -> BamRaw -> Maybe Int
+br_findExtension :: String -> BamRaw -> Maybe (Int,Int)
 br_findExtension [u,v] br@(BamRaw _ r) = go off0
   where
     off0 = sum [ 33, br_l_read_name br, 4 * br_n_cigar_op br, br_l_seq br, (br_l_seq br +1) `div` 2 ]
     go !o | o >= S.length r - 3                        = Nothing
-          | SC.index r o == u && SC.index r (o+1) == v = Just (o+2)
-         
-    go !o = case SC.index r (o+2) of 
-        'Z' -> go $ skipNul $ o + 3
-        'H' -> go $ skipNul $ o + 3
-        'B' -> go $ o + 7 + sizeof (SC.index r (o+3)) * getInt r (o+4)
-        x   -> go $ o + 3 + sizeof x
+          | SC.index r o == u && SC.index r (o+1) == v = Just (o+2, skip o)
+          | otherwise                                  = go (skip o)
+
+    skip !o = case SC.index r (o+2) of 
+        'Z' -> skipNul $ o + 3
+        'H' -> skipNul $ o + 3
+        'B' -> o + 7 + sizeof (SC.index r (o+3)) * getInt r (o+4)
+        xxx -> o + 3 + sizeof xxx
 
     skipNul !o | S.length r  == o = o
                | S.index r o == 0 = o+1
@@ -518,18 +526,26 @@ br_findExtension _ _ = error "illegal key, must be two characters"
 
 br_extAsInt :: Int -> String -> BamRaw -> Int
 br_extAsInt d k br@(BamRaw _ r) = case br_findExtension k br of
-        Just o | SC.index r o == 'c' -> fromIntegral               (S.index r (o+1))
-               | SC.index r o == 'C' -> fromIntegral (fromIntegral (S.index r (o+1)) :: Int8)
-               | SC.index r o == 's' -> fromIntegral (getInt16 r (o+1) :: Int16)
-               | SC.index r o == 'S' -> fromIntegral (getInt16 r (o+1) :: Word16)
-               | SC.index r o == 'i' -> fromIntegral (getInt   r (o+1) :: Int32)
-               | SC.index r o == 'I' -> fromIntegral (getInt   r (o+1) :: Word32)
-        _                            -> d
+        Just (o,_) | SC.index r o == 'c' -> fromIntegral               (S.index r (o+1))
+                   | SC.index r o == 'C' -> fromIntegral (fromIntegral (S.index r (o+1)) :: Int8)
+                   | SC.index r o == 's' -> fromIntegral (getInt16 r (o+1) :: Int16)
+                   | SC.index r o == 'S' -> fromIntegral (getInt16 r (o+1) :: Word16)
+                   | SC.index r o == 'i' -> fromIntegral (getInt   r (o+1) :: Int32)
+                   | SC.index r o == 'I' -> fromIntegral (getInt   r (o+1) :: Word32)
+        _                                -> d
 
 br_extAsString :: String -> BamRaw -> S.ByteString
 br_extAsString k br@(BamRaw _ r) = case br_findExtension k br of
-        Just o | SC.index r o == 'A' -> S.singleton (S.index r (o+1))
-               | SC.index r o == 'Z' -> S.takeWhile (/= 0) $ S.drop (o+1) r
-               | SC.index r o == 'H' -> S.takeWhile (/= 0) $ S.drop (o+1) r
-        _                            -> S.empty
+        Just (o,_) | SC.index r o == 'A' -> S.singleton (S.index r (o+1))
+                   | SC.index r o == 'Z' -> S.takeWhile (/= 0) $ S.drop (o+1) r
+                   | SC.index r o == 'H' -> S.takeWhile (/= 0) $ S.drop (o+1) r
+        _                                -> S.empty
+
+removeExt :: String -> Mutator ()
+removeExt key = Mut $ \p l -> do
+    r <- S.unsafePackCStringLen (p,l)
+    case br_findExtension key (bamRaw 0 r) of
+        Nothing    -> return (l,())
+        Just (a,b) -> do moveBytes (p `plusPtr` a) (p `plusPtr` b) (l-b)
+                         return $ (l-(b-a), ())
 

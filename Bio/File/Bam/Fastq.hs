@@ -32,8 +32,8 @@ import qualified Data.Map               as M
 -- * A name suffix of /1 or /2 is turned into the first mate or second
 --   mate flag and the read is flagged as paired.
 -- * Same for name prefixes of F_ or R_, respectively.
--- * A name prefix of M_ flags the sequence as unpaired and merged (XF:i:2) 
--- * A name prefix of T_ flags the sequence as unpaired and trimmed (XF:i:1) 
+-- * A name prefix of M_ flags the sequence as unpaired and merged
+-- * A name prefix of T_ flags the sequence as unpaired and trimmed
 -- * A name prefix of C_, either before or after any of the other
 --   prefixes, is turned into the extra flag XP:i:-1 (result of
 --   duplicate removal with unknown depth).

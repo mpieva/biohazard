@@ -231,7 +231,8 @@ decodeBamEntry br = either error fixup . fst . G.runGet go $ raw_data br
     -- fixups for changed conventions
     fixup b = (if b_flag b .&. flagLowQuality /= 0 then setQualFlag 'Q' else id) $          -- low qual, new convention
               (if b_flag b .&. flagLowComplexity /= 0 then setQualFlag 'C' else id) $       -- low complexity, new convention
-              b { b_flag = fixPP $ oflags .|. muflag .|. tflags .|. shiftL eflags 16 }      -- extended flags
+              b { b_flag = fixPP $ oflags .|. muflag .|. tflags .|. shiftL eflags 16        -- extended flags
+                , b_exts = cleaned_exts }
       where
         -- removes old flag abuse
         flags' = b_flag b .&. complement (flagLowQuality .|. flagLowComplexity)
@@ -253,8 +254,15 @@ decodeBamEntry br = either error fixup . fst . G.runGet go $ raw_data br
                  (if is_trimmed then flagTrimmed else 0)
 
         -- extended flags, renamed to avoid collision with BWA
-        eflags = case M.lookup "FF" (b_exts b) of { Just (Int i) -> i ; _ ->
-                 case M.lookup "XF" (b_exts b) of { Just (Int i) -> i ; _ -> 0 }}
+        -- Goes like this:  if FF is there, use and remove it.  Else
+        -- check if XF is there _and_is_numeric_.  If so, use it and
+        -- remove it.  Else use 0 and leave it alone.  Note that this
+        -- solves the collision with BWA, since BWA puts a character
+        -- there, not an int.
+        (eflags, cleaned_exts) = case (M.lookup "FF" (b_exts b), M.lookup "XF" (b_exts b)) of
+                ( Just (Int i), _ ) -> (i, M.delete "FF" (b_exts b))
+                ( _, Just (Int i) ) -> (i, M.delete "XF" (b_exts b))
+                (       _,_       ) -> (0,                b_exts b )
 
         -- if either mate is unmapped, remove "properly paired"
         fixPP f | f .&. (flagUnmapped .|. flagMateUnmapped) == 0 = f
