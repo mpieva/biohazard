@@ -21,6 +21,7 @@ data Conf = Conf {
     strand_preserved :: Bool,
     collapse :: Collapse,
     filter_enee :: BamRaw -> Maybe BamRaw,
+    min_len :: Int,
     debug :: String -> IO () }
 
 defaults :: Conf
@@ -28,6 +29,7 @@ defaults = Conf { output = pipeRawBamOutput
                 , strand_preserved = True
                 , collapse = cons_collapse 60
                 , filter_enee = is_aligned
+                , min_len = 0
                 , debug = \_ -> return () }
 
 options :: [OptDescr (Conf -> IO Conf)]
@@ -38,6 +40,7 @@ options = [
     Option  "c" ["cheap"]          (NoArg  set_cheap)         "Cheap computation: skip the consensus calling",
     Option  "C" ["count-only"]     (NoArg  set_count_only)    "Count duplicates, don't bother with output",
     Option  "Q" ["max-qual"]       (ReqArg set_qual "QUAL")   "Set maximum quality after consensus call to QUAL",
+    Option  "l" ["min-length"]     (ReqArg set_len "LEN")     "Discard reads shorter than LEN",
     Option  "s" ["no-strand"]      (NoArg  set_no_strand)     "Strand of alignments is uninformative",
     Option  "v" ["verbose"]        (NoArg  set_verbose)       "Print more diagnostics",
     Option "h?" ["help","usage"]   (NoArg  usage)             "Print this message" ]
@@ -50,6 +53,7 @@ options = [
     set_single     c =                    return $ c { filter_enee = make_single }
     set_cheap      c =                    return $ c { collapse = cheap_collapse }
     set_count_only c =                    return $ c { collapse = very_cheap_collapse, output = const skipToEof }
+    set_len      n c = readIO n >>= \a -> return $ c { min_len = a }
 
     usage _ = do p <- getProgName
                  hPutStrLn stderr $ usageInfo (p ++ info)  options 
@@ -100,7 +104,7 @@ main = do
                 mapM_ debug [ unpackSeqid k ++ " --> " ++ unpackSeqid v ++ "\n" | (k,v) <- M.toList tbl ]
 
        joinI $ takeWhileE is_halfway_aligned $
-           joinI $ mapChunks (mapMaybe filter_enee) $
+           joinI $ mapChunks (mapMaybe filter_enee . filter ((>= min_len) . eff_len)) $
            joinI $ progress debug (meta_refs hdr) $
            I.zip I.length $ joinI $ rmdup (get_library tbl) strand_preserved collapse $
                             I.zip I.length (output (add_pg hdr))
@@ -110,6 +114,10 @@ main = do
                        " aligned reads in, " ++ showNum (tout::Int) ++ 
                        " aligned reads out; unique fraction " ++ 
                        showFFloat (Just 1) rate "%.\n"
+
+eff_len :: BamRaw -> Int
+eff_len br | br_isProperlyPaired br = br_isize br
+           | otherwise              = br_l_seq br
 
 is_halfway_aligned :: BamRaw -> Bool
 is_halfway_aligned br = not (br_isUnmapped br) || not (br_isMateUnmapped br)
