@@ -14,6 +14,10 @@ module Bio.PriorityQueue (
         sizePQ
 ) where
 
+import Data.Binary
+import Data.IORef
+import qualified Control.Exception as CE
+
 -- | A Priority Queue that can fall back to external storage.  
 -- 
 -- Note that such a Priority Queue automatically gives rise to an
@@ -55,10 +59,6 @@ module Bio.PriorityQueue (
 --          unix-bytestring:System.Posix.IO.ByteString.fdPread
 --          temporary:System.IO.Temp.openBinaryTempFile
 --          lz4:Codec.Compression.LZ4
-
-import Data.Binary
-import Data.IORef
-import qualified Control.Exception as CE
 
 data PQ_Conf = PQ_Conf {
         max_mb :: Int,          -- ^ memory limit
