@@ -171,6 +171,34 @@ do_rmdup label strand_preserved (Collapse inject collapse add_xp_of finish) =
                        ps <- pairs'
                        return $ map finish $ results ss ms ps
       where
+        -- Treatment of Half-Aligned Pairs (meaning one known
+        -- coordinate, the validity of the alignments is immaterial)
+
+        -- They are to be treated as follows:  Given that only one
+        -- coordinate is known (5' of the aligned mate), we want to
+        -- treat them like true singles.  But the unaligned mate should
+        -- be kept if possible, though it should not contribute to a
+        -- consensus sequence.  (*groan*)
+        --
+        -- Therefore, aligned reads with unaligned mate go to the same
+        -- potential duplicate set as true singletons.  If a pair exists
+        -- that might be a duplicate of those, the singletons and
+        -- half-aligned pairs are removed.  Else a consensus is computed
+        -- and remains for the aligned mate.
+        --
+        -- The unaligned mates end up in the same place (therefore we
+        -- see them and can treat them locally).  We cannot call a
+        -- consensus (these molecules may well have different length),
+        -- so we select one, doesn't matter which.  The name is of
+        -- course the lexically smallest one.  
+        --
+        -- So to get both:  collect aligned reads with unaligned mates;
+        -- separately collect unaligned reads.  If we don't find a
+        -- matching true pair, we keep the highest quality unaligned
+        -- read, combine with the consensus of the half-aligned mates
+        -- and singletons, and give it the lexically smallest name of
+        -- the half-aligned pairs.
+        --
         (pairs,  singles)      = partition br_isPaired rds
         (merged, true_singles) = partition br_isMergeTrimmed singles
 

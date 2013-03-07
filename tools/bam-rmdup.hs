@@ -2,7 +2,7 @@
 import Bio.File.Bam
 import Bio.File.Bam.Rmdup
 import Bio.Iteratee
-import Bio.Util ( showNum )
+import Bio.Util ( showNum, showOOM, estimateComplexity )
 import Control.Monad
 import Data.Bits
 import Data.Maybe
@@ -97,7 +97,7 @@ main = do
     unless (null errors) $ mapM_ (hPutStrLn stderr) errors >> exitFailure
     Conf{..} <- foldr (>=>) return opts defaults
     add_pg <- addPG $ Just version
-    (tin, (tout, ())) <- mergeInputs combineCoordinates files >=> run $ \hdr -> do
+    (tin, (tout, singles, ())) <- mergeInputs combineCoordinates files >=> run $ \hdr -> do
        let tbl = mk_rg_tbl hdr
        unless (M.null tbl) $ liftIO $ do
                 debug "mapping of read groups to libraries:\n"
@@ -107,16 +107,28 @@ main = do
            joinI $ mapChunks (mapMaybe filter_enee . filter ((>= min_len) . eff_len)) $
            joinI $ progress debug (meta_refs hdr) $
            I.zip I.length $ joinI $ rmdup (get_library tbl) strand_preserved collapse $
-                            I.zip I.length (output (add_pg hdr))
+                            I.zip3 I.length count_singles (output (add_pg hdr))
 
-    let rate = 100 * fromIntegral tout / fromIntegral tin :: Double
+
+    let grand_total = estimateComplexity tout singles
+        rate = 100 * fromIntegral tout / fromIntegral tin :: Double
+        exhaustion = 100 * fromIntegral tin / fromIntegral grand_total :: Double
+
     hPutStrLn stderr $ "\27[KDone; " ++ showNum (tin::Int) ++
                        " aligned reads in, " ++ showNum (tout::Int) ++ 
                        " aligned reads out; unique fraction " ++ 
-                       showFFloat (Just 1) rate "%.\n"
+                       showFFloat (Just 1) rate "%.\nEstimate " ++
+                       showOOM (grand_total - tin) ++ " dark matter molecules, " ++
+                       showOOM grand_total ++ " total distinct molecules, " ++
+                       showFFloat (Just 1) exhaustion "% exhausted.\n"
+
+count_singles :: Monad m => Iteratee [BamRaw] m Int
+count_singles = I.foldl c 0
+  where
+    c acc br = if br_extAsInt 1 "XP" br == 1 then acc + 1 else acc
 
 eff_len :: BamRaw -> Int
-eff_len br | br_isProperlyPaired br = br_isize br
+eff_len br | br_isProperlyPaired br = abs $ br_isize br
            | otherwise              = br_l_seq br
 
 is_halfway_aligned :: BamRaw -> Bool
@@ -151,4 +163,3 @@ progress put refs = eneeCheckIfDone (liftI . go 0)
                                   when (n `div` 16384 /= n' `div` 16384) $ liftIO $ put $
                                         "\27[KRmdup at " ++ nm ++ shows (br_pos a) "\r"
                                   eneeCheckIfDone (liftI . go n') . k $ Chunk as
-

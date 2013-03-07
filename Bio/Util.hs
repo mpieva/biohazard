@@ -1,8 +1,11 @@
 -- Random useful stuff I didn't know where to put.
 module Bio.Util (
-    wilson,
-    showNum
+    wilson, invnormcdf,
+    showNum, showOOM,
+    estimateComplexity
                 ) where
+
+import Data.Char (intToDigit)
 
 -- | calculates the Wilson Score interval.
 -- If @(l,m,h) = wilson c x n@, then @m@ is the binary proportion and
@@ -28,7 +31,19 @@ showNum = triplets [] . reverse . show
     triplets acc (a:b:[]) = b:a:acc
     triplets acc (a:b:c:[]) = c:b:a:acc
     triplets acc (a:b:c:s) = triplets (',':c:b:a:acc) s
-             
+
+showOOM :: Int -> String
+showOOM x | x < 0 = '-' : showOOM (negate x)
+          | x < 100 = show x
+          | x < 1000 = showOOM ((x+5) `div` 10) ++ "0"
+          | otherwise = findSuffix ((x+50) `div` 100) "kMGTPEZY"
+  where
+    findSuffix _ [] = "many"
+    findSuffix y (s:ss) | y < 100  = intToDigit (y `div` 10) : s : case y `mod` 10 of 0 -> [] ; d -> [intToDigit d]
+                        | y < 1000 = [intToDigit (y `div` 100), intToDigit ((y `mod` 100) `div` 10), s]
+                        | y < 10000 = [intToDigit (y `div` 1000), intToDigit ((y `mod` 1000) `div` 100), '0', s]
+                        | otherwise = findSuffix ((y+500) `div` 1000) ss
+
 -- Stolen from Lennart Augustsson's erf package, who in turn took it rom
 -- http://home.online.no/~pjacklam/notes/invnorm/ Accurate to about 1e-9.
 invnormcdf :: (Ord a, Floating a) => a -> a
@@ -79,3 +94,43 @@ invnormcdf p =
             - invnormcdf (1 - p)
         else
             nan
+
+
+-- Try to estimate complexity of a whole from a sample.  Suppose we
+-- sampled @total@ things and among those @singles@ occured only once.
+-- How many different things are there?
+--
+-- Let the total number be @m@.  The copy number follows a Poisson
+-- distribution with paramter @\lambda@.  Let @z := e^{\lambda}@, then
+-- we have:
+--
+--   P( 0 ) = e^{-\lambda} = 1/z
+--   P( 1 ) = \lambda e^{-\lambda} = ln z / z
+--   P(>=1) = 1 - e^{-\lambda} = 1 - 1/z
+--
+--   singles = m ln z / z
+--   total   = m (1 - 1/z)
+--
+--   D := total/singles = (1 - 1/z) * z / ln z
+--   f := z - 1 - D ln z = 0
+--
+-- To get @z@, we solve using Newton iteration and then substitute to
+-- get @m@:
+--
+--   df/dz = 1 - D/z
+--   z' := z - z (z - 1 - D ln z) / (z - D)
+--   m = singles * z /log z
+--
+-- It converges as long as the initial @z@ is large enough, and @10D@
+-- appears to work well.
+
+estimateComplexity :: Integral a => a -> a -> a
+estimateComplexity total singles = round m
+  where
+    d = fromIntegral total / fromIntegral singles :: Double
+    step z = z * (z - 1 - d * log z) / (z - d)
+    iter z = case step z of zd | abs zd < 0.00001 -> z
+                               | otherwise -> iter $! z-zd
+    zz = iter $! 10*d
+    m = fromIntegral singles * zz / log zz
+
