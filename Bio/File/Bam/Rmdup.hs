@@ -1,7 +1,6 @@
 {-# LANGUAGE ExistentialQuantification #-}
 module Bio.File.Bam.Rmdup(
-            rmdup, Collapse,
-            cons_collapse, cheap_collapse, very_cheap_collapse
+            rmdup, Collapse, cons_collapse, cheap_collapse
     ) where
 
 import Bio.File.Bam
@@ -26,10 +25,6 @@ cons_collapse maxq = Collapse check_flags (do_collapse maxq) addXPOf encodeBamEn
 
 cheap_collapse :: Collapse
 cheap_collapse = Collapse Right do_cheap_collapse addXPOf' id
-
-very_cheap_collapse :: Collapse
-very_cheap_collapse = Collapse Right do_very_cheap_collapse (const id) id
-
 
 -- | Removes duplicates from an aligned, sorted BAM stream.
 --
@@ -382,10 +377,6 @@ consensus maxq nqs = if qr > 3 then (n0, qr) else (nucN,0)
     (n0,q0) : (_,q1) : _ = sortBy (flip $ comparing snd) $ assocs accs
     qr = fromIntegral $ (q0-q1) `min` fromIntegral maxq
 
-
--- Cheap version: simply takes the lexically first record
-do_very_cheap_collapse :: [BamRaw] -> BamRaw
-do_very_cheap_collapse bs = minimumBy (comparing br_qname) bs
 
 -- Cheap version: simply takes the lexically first record, adds XP field
 do_cheap_collapse :: [BamRaw] -> BamRaw

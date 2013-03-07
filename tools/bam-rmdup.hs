@@ -52,7 +52,7 @@ options = [
     set_improper   c =                    return $ c { filter_enee = Just }
     set_single     c =                    return $ c { filter_enee = make_single }
     set_cheap      c =                    return $ c { collapse = cheap_collapse }
-    set_count_only c =                    return $ c { collapse = very_cheap_collapse, output = const skipToEof }
+    set_count_only c =                    return $ c { collapse = cheap_collapse, output = const skipToEof }
     set_len      n c = readIO n >>= \a -> return $ c { min_len = a }
 
     usage _ = do p <- getProgName
@@ -107,23 +107,24 @@ main = do
            joinI $ mapChunks (mapMaybe filter_enee . filter ((>= min_len) . eff_len)) $
            joinI $ progress debug (meta_refs hdr) $
            I.zip I.length $ joinI $ rmdup (get_library tbl) strand_preserved collapse $
-                            I.zip3 I.length count_singles (output (add_pg hdr))
+                            I.zip3 I.length count_singles $ output (add_pg hdr)
 
 
     let grand_total = estimateComplexity tout singles
         rate = 100 * fromIntegral tout / fromIntegral tin :: Double
-        exhaustion = 100 * fromIntegral tin / fromIntegral grand_total :: Double
+        exhaustion = 100 * fromIntegral tout / fromIntegral grand_total :: Double
 
     hPutStrLn stderr $ "\27[KDone; " ++ showNum (tin::Int) ++
                        " aligned reads in, " ++ showNum (tout::Int) ++ 
-                       " aligned reads out; unique fraction " ++ 
-                       showFFloat (Just 1) rate "%.\nEstimate " ++
-                       showOOM (grand_total - tin) ++ " dark matter molecules, " ++
-                       showOOM grand_total ++ " total distinct molecules, " ++
+                       " aligned reads out, " ++ showNum singles ++
+                       " singletons.\nEstimate " ++ showOOM (grand_total - tout) ++
+                       " dark matter molecules, " ++ showOOM grand_total ++
+                       " total distinct molecules.\nUnique fraction is " ++ 
+                       showFFloat (Just 1) rate "%, library is " ++
                        showFFloat (Just 1) exhaustion "% exhausted.\n"
 
 count_singles :: Monad m => Iteratee [BamRaw] m Int
-count_singles = I.foldl c 0
+count_singles = I.foldl' c 0
   where
     c acc br = if br_extAsInt 1 "XP" br == 1 then acc + 1 else acc
 
@@ -159,7 +160,7 @@ progress put refs = eneeCheckIfDone (liftI . go 0)
     go !_ k (EOF         mx) = idone (liftI k) (EOF mx)
     go !n k (Chunk    [   ]) = liftI $ go n k
     go !n k (Chunk as@(a:_)) = do let !n' = n + length as
-                                      nm = shows (sq_name (getRef refs (br_rname a))) ":"
-                                  when (n `div` 16384 /= n' `div` 16384) $ liftIO $ put $
-                                        "\27[KRmdup at " ++ nm ++ shows (br_pos a) "\r"
+                                      nm = unpackSeqid (sq_name (getRef refs (br_rname a))) ++ ":"
+                                  when (n `div` 65536 /= n' `div` 65536) $ liftIO $ put $
+                                        "\27[KRmdup at " ++ nm ++ showNum (br_pos a) ++ "\r"
                                   eneeCheckIfDone (liftI . go n') . k $ Chunk as
