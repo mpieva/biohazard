@@ -55,12 +55,13 @@ data Config = CF { report_mrnm :: !Bool
                  , report_isize :: !Bool
                  , report_flags :: !Bool
                  , report_fflag :: !Bool
+                 , report_ixs :: !Bool
                  , verbosity :: Verbosity
                  , killmode :: KillMode
                  , output :: BamMeta -> Iteratee [BamRaw] IO () }
 
 config0 :: IO Config
-config0 = return $ CF True True False True False Errors KillNone pipeRawBamOutput
+config0 = return $ CF True True False True False True Errors KillNone pipeRawBamOutput
 
 options :: [OptDescr (Config -> IO Config)]
 options = [
@@ -86,6 +87,7 @@ options = [
     Option "" ["no-report-isize"] (NoArg (\c -> return $ c { report_isize = False })) "Do not report wrong insert size",
     Option "" ["no-report-flags"] (NoArg (\c -> return $ c { report_flags = False })) "Do not report wrong flags",
     Option "" ["no-report-fflag"] (NoArg (\c -> return $ c { report_fflag = False })) "Do not report commonly inconsistent flags",
+    Option "" ["no-report-fflag"] (NoArg (\c -> return $ c { report_ixs = False })) "Do not report mismatched index fields",
 
     Option "h?" ["help","usage"] (NoArg usage) "Print this helpful message" ]
   where
@@ -140,7 +142,8 @@ fixmate r s | br_isFirstMate r && br_isSecondMate s = sequence [go r s, go s r]
                  , (br_mpos a  == br_pos b,      setMpos  (br_pos b),    count_mpos)
                  , (br_isize a == computedIsize, setIsize computedIsize, count_isize)
                  , (br_flag a === computedFlag,  setFlag  computedFlag,  count_flags)
-                 , (br_flag a =!= computedFlag,  setFlag  computedFlag,  count_fflag) ]
+                 , (br_flag a =!= computedFlag,  setFlag  computedFlag,  count_fflag)
+                 , (br_indices a == common_indices, setIndices common_indices, count_ixs) ]
 
         message infos = "fixing " ++ shows (br_qname a `S.append` if br_isFirstMate a then "/1" else "/2") 
                         ": \t" ++ intercalate ", " infos
@@ -179,8 +182,18 @@ fixmate r s | br_isFirstMate r && br_isSecondMate s = sequence [go r s, go s r]
         count_fflag = do modify $ \c -> c { num_fflag = 1 + num_fflag c }                           
                          onlyIf report_fflag $ printf "FLAG %03X is technically wrong (+%03X,-%03X)" (br_flag a) fp fm
 
+        count_ixs = do modify $ \c -> c { num_ixs = 1 + num_ixs c }                           
+                       onlyIf report_ixs $ printf "Index fields %s are wrong (%s)" (show $ br_indices a) (show common_indices)
+
         fp = computedFlag .&. complement (br_flag a)
         fm = complement computedFlag .&. br_flag a
+
+        index_fields = words "XI XJ YI YJ RG BC"
+        br_indices x = [ br_extAsString key x | key <- index_fields ]
+        common_indices = zipWith max (br_indices a) (br_indices b)
+
+        setIndices is = do mapM_ removeExt index_fields
+                           zipWithM_ appendStringExt index_fields is 
 
 -- | Turns a lone mate into a single.  Basically removes the pairing
 -- related flags and clear the information concerning the mate. 
@@ -220,7 +233,8 @@ data MatingStats = MS { total_in   :: !Int
                       , num_mpos :: !Int
                       , num_isize :: !Int
                       , num_flags :: !Int
-                      , num_fflag :: !Int }
+                      , num_fflag :: !Int 
+                      , num_ixs :: !Int }
 
 report_stats :: MatingStats -> String
 report_stats ms = unlines [
@@ -232,7 +246,8 @@ report_stats ms = unlines [
     "number of repaired MPOS values:  " ++ showNum (num_mpos ms),
     "number of repaired ISIZE values: " ++ showNum (num_isize ms),
     "number of repaired FLAGS values: " ++ showNum (num_flags ms),
-    "number of common FLAGS problem:  " ++ showNum (num_fflag ms) ]
+    "number of common FLAGS problems: " ++ showNum (num_fflag ms),
+    "number of index field problems:  " ++ showNum (num_ixs ms) ]
 
 data Queues = QS { right_here :: !(PQ ByQName)
                  , in_order   :: !(PQ ByMatePos)
@@ -245,7 +260,7 @@ withQueues k = withPQ pqconf $ \h ->
                k $ QS h o m
 
 ms0 :: MatingStats 
-ms0 = MS 0 0 0 0 0 0 0 0 0
+ms0 = MS 0 0 0 0 0 0 0 0 0 0
 
 getSize :: (MonadIO m, Ord a, Binary a, Sizeable a) => (Queues -> PQ a) -> Mating r m Int
 getSize sel = getq sel >>= liftIO . sizePQ

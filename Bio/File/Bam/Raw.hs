@@ -81,6 +81,7 @@ module Bio.File.Bam.Raw (
     Mutator,
     mutateBamRaw,
     removeExt,
+    appendStringExt,
     setFlag,
     setMrnm,
     setMpos,
@@ -461,18 +462,19 @@ writeRawBamHandle hdl meta = encodeBam meta =$ mapChunksM_ (liftIO . S.hPut hdl)
 mutateBamRaw :: BamRaw -> Mutator () -> BamRaw
 mutateBamRaw (BamRaw vo br) mut = unsafePerformIO $ do
         S.useAsCStringLen br $ \(p,l) -> do
-            (l',()) <- runMutator mut p l
-            if l' <= l then bamRaw vo `fmap` S.packCStringLen (p,l')
+            (l',frags, ()) <- runMutator mut p l []
+            if l' <= l then do f1 <- S.packCStringLen (p,l')
+                               return $! bamRaw vo $! S.concat (f1 : reverse frags)
                        else error "broken Mutator: length must never increase"
 
-newtype Mutator a = Mut { runMutator :: CString -> Int -> IO (Int,a) }
+newtype Mutator a = Mut { runMutator :: CString -> Int -> [S.ByteString] -> IO (Int,[S.ByteString], a) }
 
 instance Monad Mutator where
-    return a = Mut $ \_ l -> return (l,a)
-    m >>= k  = Mut $ \p l -> runMutator m p l >>= \(l',a) -> runMutator (k a) p l'
+    return a = Mut $ \_ l fs -> return (l,fs,a)
+    m >>= k  = Mut $ \p l fs -> runMutator m p l fs >>= \(l',fs',a) -> runMutator (k a) p l' fs'
 
-passL :: IO a -> Int -> IO (Int,a)
-passL io = \l -> io >>= \a -> return (l,a)
+passL :: IO a -> Int -> [S.ByteString] -> IO (Int,[S.ByteString],a)
+passL io = \l fs -> io >>= \a -> return (l,fs,a)
 
 setFlag, setMpos, setIsize :: Int -> Mutator ()
 setFlag  f = Mut $ \p -> passL $ pokeInt16 p 14 f
@@ -542,10 +544,16 @@ br_extAsString k br@(BamRaw _ r) = case br_findExtension k br of
         _                                -> S.empty
 
 removeExt :: String -> Mutator ()
-removeExt key = Mut $ \p l -> do
+removeExt key = Mut $ \p l fs -> do
     r <- S.unsafePackCStringLen (p,l)
     case br_findExtension key (bamRaw 0 r) of
-        Nothing    -> return (l,())
+        Nothing    -> return (l,fs,())
         Just (a,b) -> do moveBytes (p `plusPtr` a) (p `plusPtr` b) (l-b)
-                         return $ (l-(b-a), ())
+                         return $ (l-(b-a), fs, ())
+
+appendStringExt :: String -> S.ByteString -> Mutator ()
+appendStringExt [u,v] value = Mut $ \_ l fs -> return (l,f:fs,())
+  where
+    f = S.concat [ SC.singleton u, SC.singleton v, SC.singleton 'Z', value, S.singleton 0 ]
+appendStringExt _ _ = error "illegal key, must be two characters"
 
