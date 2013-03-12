@@ -55,6 +55,7 @@ module Bio.File.Bam.Raw (
 
     br_rname,
     br_pos,
+    br_mapq,
     br_mrnm,
     br_mpos,
     br_isize,
@@ -341,6 +342,9 @@ br_isDuplicate      = flip testBit 10 . br_flag
 
 br_rname :: BamRaw -> Refseq
 br_rname (BamRaw _ raw) = Refseq $ getInt raw 0
+
+br_mapq :: BamRaw -> Int
+br_mapq (BamRaw _ raw) = fromIntegral $ S.unsafeIndex raw 9
 
 br_pos :: BamRaw -> Int
 br_pos (BamRaw _ raw) = getInt raw 4

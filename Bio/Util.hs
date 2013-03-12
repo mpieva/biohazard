@@ -124,12 +124,14 @@ invnormcdf p =
 -- It converges as long as the initial @z@ is large enough, and @10D@
 -- appears to work well.
 
-estimateComplexity :: Integral a => a -> a -> a
-estimateComplexity total singles = round m
+estimateComplexity :: Integral a => a -> a -> Maybe a
+estimateComplexity total singles | total   <= singles = Nothing
+                                 | singles <= 0       = Nothing
+                                 | otherwise          = Just $ round m
   where
     d = fromIntegral total / fromIntegral singles :: Double
     step z = z * (z - 1 - d * log z) / (z - d)
-    iter z = case step z of zd | abs zd < 0.00001 -> z
+    iter z = case step z of zd | abs zd < 1e-12 -> z
                                | otherwise -> iter $! z-zd
     zz = iter $! 10*d
     m = fromIntegral singles * zz / log zz

@@ -97,7 +97,7 @@ main = do
     unless (null errors) $ mapM_ (hPutStrLn stderr) errors >> exitFailure
     Conf{..} <- foldr (>=>) return opts defaults
     add_pg <- addPG $ Just version
-    (tin, (tout, singles, ())) <- mergeInputs combineCoordinates files >=> run $ \hdr -> do
+    (tin, (tout, good_singles, good_total, ())) <- mergeInputs combineCoordinates files >=> run $ \hdr -> do
        let tbl = mk_rg_tbl hdr
        unless (M.null tbl) $ liftIO $ do
                 debug "mapping of read groups to libraries:\n"
@@ -107,26 +107,38 @@ main = do
            joinI $ mapChunks (mapMaybe filter_enee . filter ((>= min_len) . eff_len)) $
            joinI $ progress debug (meta_refs hdr) $
            I.zip I.length $ joinI $ rmdup (get_library tbl) strand_preserved collapse $
-                            I.zip3 I.length count_singles $ output (add_pg hdr)
+                            I.zip4 I.length count_singles count_good $ output (add_pg hdr)
 
 
-    let grand_total = estimateComplexity tout singles
-        rate = 100 * fromIntegral tout / fromIntegral tin :: Double
-        exhaustion = 100 * fromIntegral tout / fromIntegral grand_total :: Double
+        
+    let report_estimate Nothing = "Complexity cannot be estimated.\n"
+        report_estimate (Just good_grand_total) =
+            "Estimate " ++ showOOM (grand_total - tout) ++ " dark matter molecules, " ++
+            showOOM grand_total ++ " total distinct molecules.\n" ++
+            "Unique fraction so for is " ++ showFFloat (Just 1) rate 
+            "%, library is " ++ showFFloat (Just 1) exhaustion "% exhausted.\n"
+          where 
+            grand_total = good_grand_total * tout `div` good_total 
+            exhaustion = 100 * fromIntegral good_total / fromIntegral good_grand_total :: Double
+            rate = 100 * fromIntegral tout / fromIntegral tin :: Double
 
-    hPutStrLn stderr $ "\27[KDone; " ++ showNum (tin::Int) ++
-                       " aligned reads in, " ++ showNum (tout::Int) ++ 
-                       " aligned reads out, " ++ showNum singles ++
-                       " singletons.\nEstimate " ++ showOOM (grand_total - tout) ++
-                       " dark matter molecules, " ++ showOOM grand_total ++
-                       " total distinct molecules.\nUnique fraction is " ++ 
-                       showFFloat (Just 1) rate "%, library is " ++
-                       showFFloat (Just 1) exhaustion "% exhausted.\n"
+    hPutStr stderr $ "\27[KDone; " ++ showNum (tin::Int) ++
+                     " aligned reads in, " ++ showNum (tout::Int) ++ 
+                     " aligned reads out; " ++ showNum good_total ++
+                     " at MAPQ>=20, " ++ showNum good_singles ++
+                     " singletons at MAPQ>=20.\n" ++
+                     report_estimate (estimateComplexity good_total good_singles)
+
+
+count_if :: Monad m => (a -> Bool) -> Iteratee [a] m Int
+count_if p = I.foldl' (\acc a -> if p a then acc + 1 else acc) 0
 
 count_singles :: Monad m => Iteratee [BamRaw] m Int
-count_singles = I.foldl' c 0
-  where
-    c acc br = if br_extAsInt 1 "XP" br == 1 then acc + 1 else acc
+count_singles = count_if $ \br -> br_mapq br >= 20 && br_extAsInt 1 "XP" br == 1
+
+count_good :: Monad m => Iteratee [BamRaw] m Int
+count_good = count_if $ \br -> br_mapq br >= 20
+
 
 eff_len :: BamRaw -> Int
 eff_len br | br_isProperlyPaired br = abs $ br_isize br
