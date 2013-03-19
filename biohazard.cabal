@@ -18,7 +18,7 @@ Description:         This is a collection of modules I separated from
                      them reusable and easier to maintain.
 
 -- URL for the project homepage or repository.
-Homepage:            http://biofs04/svn/bioinf/biohazard
+Homepage:            http://github.com/udo-stenzel/biohazard
 
 -- The license under which the package is released.
 License:             BSD3
@@ -33,8 +33,7 @@ Author:              Udo Stenzel
 -- and patches.
 Maintainer:          udo_stenzel@eva.mpg.de
 
--- A copyright notice.
--- Copyright:           
+Copyright:           (C) 2010 Udo Stenzel
 
 Category:            Development
 
@@ -50,6 +49,15 @@ Extra-Source-Files:  man/man1/bam-meld.1
 
 -- Constraint on the version of Cabal needed to build this package.
 Cabal-version:       >=1.9.2
+
+source-repository head
+  type:     git
+  location: git://github.com/udo-stenzel/biohazard.git
+
+source-repository this
+  type:     git
+  location: git://github.com/udo-stenzel/biohazard.git
+  tag:      0.4.7
 
 
 Library
@@ -71,7 +79,7 @@ Library
                        Bio.Util
   
   -- Packages needed in order to build this package.
-  Build-depends:       bytestring, containers, base >=4, binary, array,
+  Build-depends:       bytestring, containers, base ==4.*, binary, array,
                        zlib, attoparsec-iteratee, attoparsec, iteratee,
                        transformers, binary-strict, ListLike,
                        MonadCatchIO-transformers, random, 
@@ -90,7 +98,7 @@ Test-Suite test-biohazard
   Ghc-options:         -Wall -auto-all -threaded -rtsopts
   Type:                exitcode-stdio-1.0
   Main-is:             test-biohazard.hs
-  Build-depends:       bytestring, containers, base >=4, binary, array,
+  Build-depends:       bytestring, containers, base ==4.*, binary, array,
                        zlib, attoparsec-iteratee, attoparsec, iteratee,
                        transformers, binary-strict, ListLike,
                        MonadCatchIO-transformers, random, HUnit, vector
@@ -99,7 +107,7 @@ Test-Suite test-biohazard
 Executable bam-fixpair
   Ghc-options:         -Wall -auto-all -threaded -rtsopts
   Main-is:             tools/bam-fixpair.hs
-  Build-depends:       bytestring, containers, base >=4, binary, array,
+  Build-depends:       bytestring, containers, base ==4.*, binary, array,
                        zlib, attoparsec-iteratee, attoparsec, iteratee,
                        transformers, binary-strict, ListLike, vector,
                        MonadCatchIO-transformers, filepath, directory,
@@ -108,7 +116,7 @@ Executable bam-fixpair
 Executable bam-meld
   Ghc-options:         -Wall -auto-all -threaded -rtsopts
   Main-is:             tools/bam-meld.hs
-  Build-depends:       bytestring, containers, base >=4, binary, array,
+  Build-depends:       bytestring, containers, base ==4.*, binary, array,
                        zlib, attoparsec-iteratee, attoparsec, iteratee,
                        transformers, binary-strict, ListLike,
                        MonadCatchIO-transformers, filepath, directory,
@@ -117,7 +125,7 @@ Executable bam-meld
 Executable bam-resample
   Ghc-options:         -Wall -auto-all -threaded -rtsopts
   Main-is:             tools/bam-resample.hs
-  Build-depends:       bytestring, containers, base >=4, binary, array,
+  Build-depends:       bytestring, containers, base ==4.*, binary, array,
                        zlib, attoparsec-iteratee, attoparsec, iteratee,
                        transformers, binary-strict, ListLike,
                        MonadCatchIO-transformers, 
@@ -126,7 +134,7 @@ Executable bam-resample
 Executable bam-rmdup
   Ghc-options:         -Wall -auto-all -threaded -rtsopts
   Main-is:             tools/bam-rmdup.hs
-  Build-depends:       bytestring, containers, base >=4, binary, array,
+  Build-depends:       bytestring, containers, base ==4.*, binary, array,
                        zlib, attoparsec-iteratee, attoparsec, iteratee,
                        transformers, binary-strict, ListLike,
                        MonadCatchIO-transformers,
@@ -135,7 +143,7 @@ Executable bam-rmdup
 Executable bam-trim
   Ghc-options:         -Wall -auto-all -threaded -rtsopts
   Main-is:             tools/bam-trim.hs
-  Build-depends:       bytestring, containers, base >=4, binary, array,
+  Build-depends:       bytestring, containers, base ==4.*, binary, array,
                        zlib, attoparsec-iteratee, attoparsec, iteratee,
                        transformers, binary-strict, ListLike,
                        MonadCatchIO-transformers, 
@@ -144,7 +152,7 @@ Executable bam-trim
 Executable count-coverage
   Ghc-options:         -Wall -auto-all -threaded -rtsopts
   Main-is:             tools/count-coverage.hs
-  Build-depends:       bytestring, containers, base >=4, binary, array,
+  Build-depends:       bytestring, containers, base ==4.*, binary, array,
                        zlib, attoparsec-iteratee, attoparsec, iteratee,
                        transformers, binary-strict, ListLike,
                        MonadCatchIO-transformers, 
@@ -153,7 +161,7 @@ Executable count-coverage
 Executable glf-consensus
   Ghc-options:         -Wall -auto-all -threaded -rtsopts
   Main-is:             tools/glf-consensus.hs
-  Build-depends:       bytestring, containers, base >=4, binary, array,
+  Build-depends:       bytestring, containers, base ==4.*, binary, array,
                        zlib, attoparsec-iteratee, attoparsec, iteratee,
                        transformers, binary-strict, ListLike,
                        MonadCatchIO-transformers, 
@@ -162,7 +170,7 @@ Executable glf-consensus
 Executable wiggle-coverage
   Ghc-options:         -Wall -auto-all -threaded -rtsopts
   Main-is:             tools/wiggle-coverage.hs
-  Build-depends:       bytestring, containers, base >=4, binary, array,
+  Build-depends:       bytestring, containers, base ==4.*, binary, array,
                        zlib, attoparsec-iteratee, attoparsec, iteratee,
                        transformers, binary-strict, ListLike,
                        MonadCatchIO-transformers, 
