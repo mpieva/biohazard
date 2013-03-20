@@ -194,7 +194,7 @@ filterStream :: (Monad m, ListLike s a, NullPoint s) => (a -> Bool) -> Enumerate
 filterStream = mapChunks . LL.filter
 
 -- | Apply a monadic filter predicate to an @Iteratee@.
-filterStreamM :: (Monad m, ListLike s a, Nullable s, NullPoint s) => (a -> m Bool) -> Enumeratee s s m a
+filterStreamM :: (Monad m, ListLike s a, Nullable s, NullPoint s) => (a -> m Bool) -> Enumeratee s s m r
 filterStreamM k = mapChunksM (go id)
   where
     go acc s | LL.null s = return $! acc LL.empty
