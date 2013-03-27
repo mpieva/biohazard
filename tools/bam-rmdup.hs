@@ -47,7 +47,7 @@ options = [
     Option  "s" ["no-strand"]      (NoArg  set_no_strand)     "Strand of alignments is uninformative",
     Option  "r" ["ignore-rg"]      (NoArg  set_no_rg)         "Ignore read groups when looking for duplicates",
     Option  "v" ["verbose"]        (NoArg  set_verbose)       "Print more diagnostics",
-    Option "h?" ["help","usage"]   (NoArg  usage)             "Print this message" ]
+    Option "h?" ["help","usage"]   (NoArg  (const usage))     "Print this message" ]
   where
     set_output   f c =                    return $ c { output = writeRawBamFile f } 
     set_qual     n c = readIO n >>= \a -> return $ c { collapse = cons_collapse a }
@@ -60,13 +60,15 @@ options = [
     set_len      n c = readIO n >>= \a -> return $ c { min_len = a }
     set_no_rg      c =                    return $ c { get_label = get_no_library }
 
-    usage _ = do p <- getProgName
-                 hPutStrLn stderr $ usageInfo (p ++ info)  options 
-                 exitSuccess
+
+usage :: IO a
+usage = do p <- getProgName
+           hPutStrLn stderr $ "Usage: " ++ usageInfo (p ++ info) options 
+           exitSuccess
+  where 
     info = " [option...] [bam-file...]\n\
-           \Removes PCR duplicates from BAM files and calls a consensus for each duplicate set.  \
-           \Input files must be sorted by coordinate and are merged on the fly.  \
-           \Options are:"
+           \Removes PCR duplicates from BAM files and calls a consensus for each duplicate set.  \n\
+           \Input files must be sorted by coordinate and are merged on the fly.  Options are:"
     
 
 -- | Get library from BAM record.
@@ -99,9 +101,14 @@ mk_rg_tbl hdr = M.fromList
 
 main :: IO ()
 main = do
-    (opts, files, errors) <- getOpt Permute options `fmap` getArgs
+    args <- getArgs
+    let (opts, files, errors) = getOpt Permute options args
     unless (null errors) $ mapM_ (hPutStrLn stderr) errors >> exitFailure
     Conf{..} <- foldr (>=>) return opts defaults
+
+    when (null args) $ do t <- hIsTerminalDevice stdout
+                          when t $ hPutStrLn stderr "Cowardly refusing to write BAM to a terminal." >> usage
+
     add_pg <- addPG $ Just version
     (tin, (tout, good_singles, good_total, ())) <- mergeInputs combineCoordinates files >=> run $ \hdr -> do
        let tbl = mk_rg_tbl hdr
