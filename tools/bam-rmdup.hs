@@ -13,8 +13,9 @@ import System.Environment ( getArgs, getProgName )
 import System.Exit
 import System.IO
 
-import qualified Data.Map as M
-import qualified Data.Iteratee as I
+import qualified Data.ByteString    as S
+import qualified Data.Map           as M
+import qualified Data.Iteratee      as I
 
 data Conf = Conf {
     output :: BamMeta -> Iteratee [BamRaw] IO (),
@@ -22,6 +23,7 @@ data Conf = Conf {
     collapse :: Collapse,
     filter_enee :: BamRaw -> Maybe BamRaw,
     min_len :: Int,
+    get_label :: M.Map Seqid Seqid -> BamRaw -> Seqid,
     debug :: String -> IO () }
 
 defaults :: Conf
@@ -30,6 +32,7 @@ defaults = Conf { output = pipeRawBamOutput
                 , collapse = cons_collapse 60
                 , filter_enee = is_aligned
                 , min_len = 0
+                , get_label = get_library
                 , debug = \_ -> return () }
 
 options :: [OptDescr (Conf -> IO Conf)]
@@ -42,6 +45,7 @@ options = [
     Option  "Q" ["max-qual"]       (ReqArg set_qual "QUAL")   "Set maximum quality after consensus call to QUAL",
     Option  "l" ["min-length"]     (ReqArg set_len "LEN")     "Discard reads shorter than LEN",
     Option  "s" ["no-strand"]      (NoArg  set_no_strand)     "Strand of alignments is uninformative",
+    Option  "r" ["ignore-rg"]      (NoArg  set_no_rg)         "Ignore read groups when looking for duplicates",
     Option  "v" ["verbose"]        (NoArg  set_verbose)       "Print more diagnostics",
     Option "h?" ["help","usage"]   (NoArg  usage)             "Print this message" ]
   where
@@ -54,6 +58,7 @@ options = [
     set_cheap      c =                    return $ c { collapse = cheap_collapse }
     set_count_only c =                    return $ c { collapse = cheap_collapse, output = const skipToEof }
     set_len      n c = readIO n >>= \a -> return $ c { min_len = a }
+    set_no_rg      c =                    return $ c { get_label = get_no_library }
 
     usage _ = do p <- getProgName
                  hPutStrLn stderr $ usageInfo (p ++ info)  options 
@@ -79,8 +84,9 @@ options = [
 -- If no RG is present, the empty string is returned.  This serves as
 -- fall-back.
 
-get_library :: M.Map Seqid Seqid -> BamRaw -> Seqid
-get_library tbl = \br -> let rg = br_extAsString "RG" br in M.findWithDefault rg rg tbl
+get_library, get_no_library :: M.Map Seqid Seqid -> BamRaw -> Seqid
+get_library  tbl = \br -> let rg = br_extAsString "RG" br in M.findWithDefault rg rg tbl
+get_no_library _ = \_  -> S.empty
 
 mk_rg_tbl :: BamMeta -> M.Map Seqid Seqid
 mk_rg_tbl hdr = M.fromList
@@ -106,7 +112,7 @@ main = do
        joinI $ takeWhileE is_halfway_aligned $
            joinI $ mapChunks (mapMaybe filter_enee . filter ((>= min_len) . eff_len)) $
            joinI $ progress debug (meta_refs hdr) $
-           I.zip I.length $ joinI $ rmdup (get_library tbl) strand_preserved collapse $
+           I.zip I.length $ joinI $ rmdup (get_label tbl) strand_preserved collapse $
                             I.zip4 I.length count_singles count_good $ output (add_pg hdr)
 
 
@@ -119,8 +125,8 @@ main = do
             "%, library is " ++ showFFloat (Just 1) exhaustion "% exhausted.\n"
           where 
             grand_total = good_grand_total * tout `div` good_total 
-            exhaustion = 100 * fromIntegral good_total / fromIntegral good_grand_total :: Double
-            rate = 100 * fromIntegral tout / fromIntegral tin :: Double
+            exhaustion  = 100 * fromIntegral good_total / fromIntegral good_grand_total     :: Double
+            rate        = 100 * fromIntegral tout / fromIntegral tin                        :: Double
 
     hPutStr stderr $ "\27[KDone; " ++ showNum (tin::Int) ++
                      " aligned reads in, " ++ showNum (tout::Int) ++ 
