@@ -1,6 +1,6 @@
 {-# LANGUAGE ExistentialQuantification #-}
 module Bio.File.Bam.Rmdup(
-            rmdup, Collapse, cons_collapse, cheap_collapse
+            rmdup, Collapse, cons_collapse, cheap_collapse, cons_collapse_keep, cheap_collapse_keep
     ) where
 
 import Bio.File.Bam
@@ -18,13 +18,28 @@ import qualified Data.Iteratee          as I
 import qualified Data.Map               as M
 import qualified Data.Vector.Generic    as V
 
-data Collapse = forall a . Collapse (BamRaw -> Either String a) ([a] -> a) (a -> a -> a) (a -> BamRaw)
+data Collapse = forall a . Collapse 
+                    (BamRaw -> Either String a)  -- convert BamRaw to internal data type
+                    ([a] -> (a,[a]))             -- cluster to representative and other stuff
+                    (a -> a -> a)                -- oof... what's that again?
+                    ([a] -> [a])                 -- treatment of the redundant original reads
+                    (a -> BamRaw)                -- get it back out
 
 cons_collapse :: Word8 -> Collapse
-cons_collapse maxq = Collapse check_flags (do_collapse maxq) addXPOf encodeBamEntry
+cons_collapse maxq = Collapse check_flags (do_collapse maxq) addXPOf (const []) encodeBamEntry
+
+cons_collapse_keep :: Word8 -> Collapse
+cons_collapse_keep maxq = Collapse check_flags (do_collapse maxq) addXPOf (map flagDup) encodeBamEntry
+  where
+    flagDup b = b { b_flag = b_flag b .|. flagDuplicate }
 
 cheap_collapse :: Collapse
-cheap_collapse = Collapse Right do_cheap_collapse addXPOf' id
+cheap_collapse = Collapse Right do_cheap_collapse addXPOf' (const []) id
+
+cheap_collapse_keep :: Collapse
+cheap_collapse_keep = Collapse Right do_cheap_collapse addXPOf' (map flagDup) id
+  where
+    flagDup b = b
 
 -- | Removes duplicates from an aligned, sorted BAM stream.
 --
@@ -158,13 +173,14 @@ check_flags raw | extAsInt 1 "HI" b /= 1 = Left "cannot deal with HI /= 1"
 -}
 
 do_rmdup :: Ord l => (BamRaw -> l) -> Bool -> Collapse -> [BamRaw] -> Either String [BamRaw]
-do_rmdup label strand_preserved (Collapse inject collapse add_xp_of finish) = 
+do_rmdup label strand_preserved (Collapse inject collapse add_xp_of originals finish) = 
     fmap concat . mapM do_rmdup1 . M.elems . accumMap label
   where
-    do_rmdup1 rds = do ss <- true_singles'
-                       ms <- merged'
-                       ps <- pairs'
-                       return $ map finish $ results ss ms ps
+    do_rmdup1 rds = do (ss,r1) <- true_singles'
+                       (ms,r2) <- merged'
+                       (ps,r3) <- pairs'
+                       return $ map finish $ results ss ms ps ++ originals 
+                            (leftovers ss ms ps ++ r1 ++ r2 ++ r3)
       where
         -- Treatment of Half-Aligned Pairs (meaning one known
         -- coordinate, the validity of the alignments is immaterial)
@@ -197,10 +213,11 @@ do_rmdup label strand_preserved (Collapse inject collapse add_xp_of finish) =
         (pairs,  singles)      = partition br_isPaired rds
         (merged, true_singles) = partition br_isMergeTrimmed singles
 
-        mkMap f = fmap (M.map collapse) . accumMapM f inject
-
+        mkMap f x = do m1 <- fmap (M.map collapse) . accumMapM f inject $ x
+                       return (M.map fst m1, concatMap snd $ M.elems m1)
+                  
         pairs'        = mkMap (\b -> (br_mate_pos b,   strand_preserved && br_isReversed  b 
-                                                     , strand_preserved && br_isFirstMate b)) pairs
+                                                          , strand_preserved && br_isFirstMate b)) pairs
         merged'       = mkMap (\b -> (br_aln_length b, strand_preserved && br_isReversed  b)) merged
 
         true_singles' = mkMap (\b -> (                 strand_preserved && br_isReversed  b)) true_singles
@@ -209,10 +226,18 @@ do_rmdup label strand_preserved (Collapse inject collapse add_xp_of finish) =
                                            ++ [ (rev, v) | ((_, rev, False), v) <- M.toList ps ] )
                                         ++ [ v | ((_, _, True), v) <- M.toList ps ]
 
+        leftovers ss ms ps = unmerged_singles ss ( [ (rev, v) | ((_, rev),        v) <- M.toList ms ]
+                                                ++ [ (rev, v) | ((_, rev, False), v) <- M.toList ps ] )
+
     merge_singles m [           ] = M.elems m
     merge_singles m ((k,v) : kvs) = case M.lookup k m of
             Nothing -> v : merge_singles m kvs
             Just  w -> add_xp_of w v : merge_singles (M.delete k m) kvs
+
+    unmerged_singles _ [           ] = []
+    unmerged_singles m ((k,_) : kvs) = case M.lookup k m of
+            Nothing -> unmerged_singles m kvs
+            Just  w -> w : unmerged_singles (M.delete k m) kvs
 
     br_mate_pos       br = (br_mrnm br, br_mpos br, br_isUnmapped br, br_isMateUnmapped br)
     br_isMergeTrimmed br = let ef = br_extAsInt (br_extAsInt 0 "XF" br) "FF" br 
@@ -270,15 +295,15 @@ addXPOf w v = v { b_exts = M.insert "XP" (Int $ extAsInt 1 "XP" w `oplus` extAsI
 addXPOf' :: BamRaw -> BamRaw -> BamRaw
 addXPOf' w v = replaceXP (br_extAsInt 1 "XP" w `oplus` br_extAsInt 1 "XP" v) v
 
-do_collapse :: Word8 -> [BamRec] -> BamRec
-do_collapse maxq [br] = br { b_qual  = B.map (min maxq) $ b_qual br, b_virtual_offset = 0 }
-do_collapse maxq  brs = b0 { b_exts  = modify_extensions $ b_exts b0
-                           , b_flag  = failflag .&. complement flagDuplicate
-                           , b_mapq  = rmsq $ map b_mapq brs'
-                           , b_cigar = Cigar cigar'
-                           , b_seq   = V.fromList $ cons_seq
-                           , b_qual  = B.pack cons_qual
-                           , b_virtual_offset = 0 }
+do_collapse :: Word8 -> [BamRec] -> (BamRec, [BamRec])
+do_collapse maxq [br] = ( br { b_qual  = B.map (min maxq) $ b_qual br, b_virtual_offset = 0 }, [br] )
+do_collapse maxq  brs = ( b0 { b_exts  = modify_extensions $ b_exts b0
+                             , b_flag  = failflag .&. complement flagDuplicate
+                             , b_mapq  = rmsq $ map b_mapq brs'
+                             , b_cigar = Cigar cigar'
+                             , b_seq   = V.fromList $ cons_seq
+                             , b_qual  = B.pack cons_qual
+                             , b_virtual_offset = 0 }, brs )
   where
     b0 = minimumBy (comparing b_qname) brs
     most_fail = 2 * length (filter isFailsQC brs) > length brs 
@@ -337,6 +362,14 @@ do_collapse maxq  brs = b0 { b_exts  = modify_extensions $ b_exts b0
     do_rmsq = words "AM AS MQ PQ SM UQ"
     do_maj  = words "X0 X1 XT XS XF XE BC LB RG"
 
+minViewBy :: (a -> a -> Ordering) -> [a] -> (a,[a])
+minViewBy  _  [    ] = error "minViewBy on empty list"
+minViewBy cmp (x:xs) = go x [] xs
+  where
+    go m acc [    ] = (m,acc)
+    go m acc (a:as) = case m `cmp` a of GT -> go a (m:acc) as
+                                        _  -> go m (a:acc) as
+
 mk_new_md :: [(CigOp, Int)] -> [MdOp] -> [Nucleotide] -> [Nucleotide] -> [MdOp]
 mk_new_md [] [] [] [] = []
 
@@ -379,11 +412,12 @@ consensus maxq nqs = if qr > 3 then (n0, qr) else (nucN,0)
 
 
 -- Cheap version: simply takes the lexically first record, adds XP field
-do_cheap_collapse :: [BamRaw] -> BamRaw
-do_cheap_collapse [b] = b
-do_cheap_collapse bs = replaceXP new_xp (minimumBy (comparing br_qname) bs)
+do_cheap_collapse :: [BamRaw] -> ( BamRaw, [BamRaw] )
+do_cheap_collapse [b] = ( b, [] )
+do_cheap_collapse  bs = ( replaceXP new_xp b0, bx )
   where
-    new_xp = foldl' (\a b -> a `oplus` br_extAsInt 1 "XP" b) 0 bs
+    (b0, bx) = minViewBy (comparing br_qname) bs
+    new_xp   = foldl' (\a b -> a `oplus` br_extAsInt 1 "XP" b) 0 bs
 
 replaceXP :: Int -> BamRaw -> BamRaw
 replaceXP new_xp b0 = bamRaw 0 . xpcode . raw_data . mutateBamRaw b0 $ removeExt "XP"
