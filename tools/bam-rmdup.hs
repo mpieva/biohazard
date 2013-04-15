@@ -20,7 +20,8 @@ import qualified Data.Iteratee      as I
 data Conf = Conf {
     output :: BamMeta -> Iteratee [BamRaw] IO (),
     strand_preserved :: Bool,
-    collapse :: Collapse,
+    collapse :: Bool -> Collapse,
+    keep_all :: Bool,
     filter_enee :: BamRaw -> Maybe BamRaw,
     min_len :: Int,
     get_label :: M.Map Seqid Seqid -> BamRaw -> Seqid,
@@ -29,7 +30,8 @@ data Conf = Conf {
 defaults :: Conf
 defaults = Conf { output = pipeRawBamOutput
                 , strand_preserved = True
-                , collapse = cons_collapse 60
+                , collapse = cons_collapse' 60
+                , keep_all = False
                 , filter_enee = is_aligned
                 , min_len = 0
                 , get_label = get_library
@@ -42,6 +44,7 @@ options = [
     Option  "1" ["single-read"]    (NoArg  set_single)        "Pretend there is no second mate",
     Option  "c" ["cheap"]          (NoArg  set_cheap)         "Cheap computation: skip the consensus calling",
     Option  "C" ["count-only"]     (NoArg  set_count_only)    "Count duplicates, don't bother with output",
+    Option  "k" ["keep","mark-only"](NoArg set_keep)          "Mark duplicates, but include them in output",
     Option  "Q" ["max-qual"]       (ReqArg set_qual "QUAL")   "Set maximum quality after consensus call to QUAL",
     Option  "l" ["min-length"]     (ReqArg set_len "LEN")     "Discard reads shorter than LEN",
     Option  "s" ["no-strand"]      (NoArg  set_no_strand)     "Strand of alignments is uninformative",
@@ -50,13 +53,14 @@ options = [
     Option "h?" ["help","usage"]   (NoArg  (const usage))     "Print this message" ]
   where
     set_output   f c =                    return $ c { output = writeRawBamFile f } 
-    set_qual     n c = readIO n >>= \a -> return $ c { collapse = cons_collapse a }
+    set_qual     n c = readIO n >>= \a -> return $ c { collapse = cons_collapse' a }
     set_no_strand  c =                    return $ c { strand_preserved = False }
     set_verbose    c =                    return $ c { debug = hPutStr stderr }
     set_improper   c =                    return $ c { filter_enee = Just }
     set_single     c =                    return $ c { filter_enee = make_single }
-    set_cheap      c =                    return $ c { collapse = cheap_collapse }
-    set_count_only c =                    return $ c { collapse = cheap_collapse, output = const skipToEof }
+    set_cheap      c =                    return $ c { collapse = cheap_collapse' }
+    set_count_only c =                    return $ c { collapse = cheap_collapse', output = const skipToEof }
+    set_keep       c =                    return $ c { keep_all = True }
     set_len      n c = readIO n >>= \a -> return $ c { min_len = a }
     set_no_rg      c =                    return $ c { get_label = get_no_library }
 
@@ -70,6 +74,13 @@ usage = do p <- getProgName
            \Removes PCR duplicates from BAM files and calls a consensus for each duplicate set.  \n\
            \Input files must be sorted by coordinate and are merged on the fly.  Options are:"
     
+cons_collapse' :: GHC.Word.Word8 -> Bool -> Collapse
+cons_collapse' m False = cons_collapse m
+cons_collapse' m True  = cons_collapse_keep m
+
+cheap_collapse' :: Bool -> Collapse
+cheap_collapse'  False = cheap_collapse
+cheap_collapse'  True  = cheap_collapse_keep
 
 -- | Get library from BAM record.
 -- This gets the read group from a bam record, then the library for read
@@ -119,7 +130,7 @@ main = do
        joinI $ takeWhileE is_halfway_aligned $
            joinI $ mapChunks (mapMaybe filter_enee . filter ((>= min_len) . eff_len)) $
            joinI $ progress debug (meta_refs hdr) $
-           I.zip I.length $ joinI $ rmdup (get_label tbl) strand_preserved collapse $
+           I.zip I.length $ joinI $ rmdup (get_label tbl) strand_preserved (collapse keep_all) $
                             I.zip4 I.length count_singles count_good $ output (add_pg hdr)
 
 
