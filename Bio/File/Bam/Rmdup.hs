@@ -39,7 +39,7 @@ cheap_collapse = Collapse Right do_cheap_collapse addXPOf' (const []) id
 cheap_collapse_keep :: Collapse
 cheap_collapse_keep = Collapse Right do_cheap_collapse addXPOf' (map flagDup) id
   where
-    flagDup b = b
+    flagDup b = mutateBamRaw b $ setFlag (br_flag b .|. flagDuplicate)
 
 -- | Removes duplicates from an aligned, sorted BAM stream.
 --
@@ -296,14 +296,18 @@ addXPOf' :: BamRaw -> BamRaw -> BamRaw
 addXPOf' w v = replaceXP (br_extAsInt 1 "XP" w `oplus` br_extAsInt 1 "XP" v) v
 
 do_collapse :: Word8 -> [BamRec] -> (BamRec, [BamRec])
-do_collapse maxq [br] = ( br { b_qual  = B.map (min maxq) $ b_qual br, b_virtual_offset = 0 }, [br] )
+do_collapse maxq [br] | B.all (<= maxq) (b_qual br) = ( br, [] )        -- no modifcation, pass through
+                      | otherwise                   = ( lq_br, [br] )   -- qualities reduces, must keep original
+  where
+    lq_br = br { b_qual  = B.map (min maxq) $ b_qual br, b_virtual_offset = 0 }
+
 do_collapse maxq  brs = ( b0 { b_exts  = modify_extensions $ b_exts b0
                              , b_flag  = failflag .&. complement flagDuplicate
                              , b_mapq  = rmsq $ map b_mapq brs'
                              , b_cigar = Cigar cigar'
                              , b_seq   = V.fromList $ cons_seq
                              , b_qual  = B.pack cons_qual
-                             , b_virtual_offset = 0 }, brs )
+                             , b_virtual_offset = 0 }, brs )            -- many modifications, must keep everything
   where
     b0 = minimumBy (comparing b_qname) brs
     most_fail = 2 * length (filter isFailsQC brs) > length brs 

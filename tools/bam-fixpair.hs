@@ -488,8 +488,8 @@ instance Ord ByMatePos where
     ByMatePos a `compare` ByMatePos b = 
         br_mate_pos a `compare` br_mate_pos b
 
-instance Binary ByQName     -- XXX
-instance Binary ByMatePos   -- XXX
+instance Binary ByQName where put = undefined ; get = undefined    -- XXX
+instance Binary ByMatePos where put = undefined ; get = undefined -- XXX
 
 instance Sizeable ByQName       -- XXX
 instance Sizeable ByMatePos     -- XXX

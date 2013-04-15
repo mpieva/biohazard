@@ -6,6 +6,7 @@ import Bio.Util ( showNum, showOOM, estimateComplexity )
 import Control.Monad
 import Data.Bits
 import Data.Maybe
+import Data.Word ( Word8 )
 import Numeric ( showFFloat )
 import Paths_biohazard ( version )
 import System.Console.GetOpt
@@ -74,7 +75,7 @@ usage = do p <- getProgName
            \Removes PCR duplicates from BAM files and calls a consensus for each duplicate set.  \n\
            \Input files must be sorted by coordinate and are merged on the fly.  Options are:"
     
-cons_collapse' :: GHC.Word.Word8 -> Bool -> Collapse
+cons_collapse' :: Word8 -> Bool -> Collapse
 cons_collapse' m False = cons_collapse m
 cons_collapse' m True  = cons_collapse_keep m
 
