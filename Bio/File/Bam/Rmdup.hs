@@ -1,4 +1,4 @@
-{-# LANGUAGE ExistentialQuantification #-}
+{-# LANGUAGE ExistentialQuantification, RecordWildCards, NamedFieldPuns #-}
 module Bio.File.Bam.Rmdup(
             rmdup, Collapse, cons_collapse, cheap_collapse, cons_collapse_keep, cheap_collapse_keep
     ) where
@@ -18,28 +18,38 @@ import qualified Data.Iteratee          as I
 import qualified Data.Map               as M
 import qualified Data.Vector.Generic    as V
 
-data Collapse = forall a . Collapse 
-                    (BamRaw -> Either String a)  -- convert BamRaw to internal data type
-                    ([a] -> (a,[a]))             -- cluster to representative and other stuff
-                    (a -> a -> a)                -- oof... what's that again?
-                    ([a] -> [a])                 -- treatment of the redundant original reads
-                    (a -> BamRaw)                -- get it back out
+data Collapse = forall a . Collapse {
+                    inject :: BamRaw -> Either String a,    -- convert BamRaw to internal data type
+                    collapse :: [a] -> (Either a a,[a]),    -- cluster to consensus and stuff or representative and stuff
+                    add_xp_of :: a -> a -> a,               -- modify XP when discarding a record
+                    originals :: [a] -> [a],                -- treatment of the redundant original reads
+                    make_singleton :: a -> a,               -- force to singleton
+                    project :: a -> BamRaw }                -- get it back out
 
 cons_collapse :: Word8 -> Collapse
-cons_collapse maxq = Collapse check_flags (do_collapse maxq) addXPOf (const []) encodeBamEntry
+cons_collapse maxq = Collapse check_flags (do_collapse maxq) addXPOf (const []) make_singleton_cooked encodeBamEntry
 
 cons_collapse_keep :: Word8 -> Collapse
-cons_collapse_keep maxq = Collapse check_flags (do_collapse maxq) addXPOf (map flagDup) encodeBamEntry
+cons_collapse_keep maxq = Collapse check_flags (do_collapse maxq) addXPOf (map flagDup) make_singleton_cooked encodeBamEntry
   where
     flagDup b = b { b_flag = b_flag b .|. flagDuplicate }
 
 cheap_collapse :: Collapse
-cheap_collapse = Collapse Right do_cheap_collapse addXPOf' (const []) id
+cheap_collapse = Collapse Right do_cheap_collapse addXPOf' (const []) make_singleton_raw id
 
 cheap_collapse_keep :: Collapse
-cheap_collapse_keep = Collapse Right do_cheap_collapse addXPOf' (map flagDup) id
+cheap_collapse_keep = Collapse Right do_cheap_collapse addXPOf' (map flagDup) make_singleton_raw id
   where
     flagDup b = mutateBamRaw b $ setFlag (br_flag b .|. flagDuplicate)
+
+make_singleton_raw :: BamRaw -> BamRaw
+make_singleton_raw b = mutateBamRaw b $ setFlag (br_flag b .&. complement pflags)
+  
+make_singleton_cooked :: BamRec -> BamRec
+make_singleton_cooked b = b { b_flag = b_flag b .&. complement pflags }
+  
+pflags :: Int  
+pflags = flagPaired .|. flagProperlyPaired .|. flagMateUnmapped .|. flagMateReversed .|. flagFirstMate .|. flagSecondMate
 
 -- | Removes duplicates from an aligned, sorted BAM stream.
 --
@@ -111,10 +121,12 @@ rmdup label strand_preserved collapse_cfg =
     -- Easiest way to go about this:  We simply collect everything that
     -- starts at some specific coordinate and group it appropriately.
     -- Treat the groups separately, output, go on.
-    check_sort ><> mapGroups (either fail return . do_rmdup label strand_preserved collapse_cfg) ><> check_sort
+    check_sort ><> mapGroups (either fail nice_sort . do_rmdup label strand_preserved collapse_cfg) ><> check_sort
   where
     same_pos u v = br_cpos u == br_cpos v
     br_cpos br = (br_rname br, br_pos br)
+
+    nice_sort = return . sortBy (comparing br_l_seq)
 
     mapGroups f o = I.tryHead >>= maybe (return o) (\a -> eneeCheckIfDone (mg1 f a []) o)
     mg1 f a acc k = I.tryHead >>= \mb -> case mb of
@@ -173,14 +185,15 @@ check_flags raw | extAsInt 1 "HI" b /= 1 = Left "cannot deal with HI /= 1"
 -}
 
 do_rmdup :: Ord l => (BamRaw -> l) -> Bool -> Collapse -> [BamRaw] -> Either String [BamRaw]
-do_rmdup label strand_preserved (Collapse inject collapse add_xp_of originals finish) = 
+do_rmdup label strand_preserved Collapse{..} = 
     fmap concat . mapM do_rmdup1 . M.elems . accumMap label
   where
     do_rmdup1 rds = do (ss,r1) <- true_singles'
                        (ms,r2) <- merged'
                        (ps,r3) <- pairs'
-                       return $ map finish $ results ss ms ps ++ originals 
-                            (leftovers ss ms ps ++ r1 ++ r2 ++ r3)
+                       ua      <- unaligned'
+                       return $ map project $ results ss ua ms ps ++ originals 
+                            (leftovers ss ua ms ps ++ r1 ++ r2 ++ r3)
       where
         -- Treatment of Half-Aligned Pairs (meaning one known
         -- coordinate, the validity of the alignments is immaterial)
@@ -189,7 +202,9 @@ do_rmdup label strand_preserved (Collapse inject collapse add_xp_of originals fi
         -- coordinate is known (5' of the aligned mate), we want to
         -- treat them like true singles.  But the unaligned mate should
         -- be kept if possible, though it should not contribute to a
-        -- consensus sequence.  (*groan*)
+        -- consensus sequence.  We assume nothing about the unaligned
+        -- mate, not even that it *shouldn't* be aligned, never mind the
+        -- fact that it *couldn't* be.  (*groan*)
         --
         -- Therefore, aligned reads with unaligned mate go to the same
         -- potential duplicate set as true singletons.  If a pair exists
@@ -200,44 +215,80 @@ do_rmdup label strand_preserved (Collapse inject collapse add_xp_of originals fi
         -- The unaligned mates end up in the same place (therefore we
         -- see them and can treat them locally).  We cannot call a
         -- consensus (these molecules may well have different length),
-        -- so we select one, doesn't matter which.  The name is of
-        -- course the lexically smallest one.  
+        -- so we select one, doesn't really matter which, and since
+        -- we're treating both mates here, it doesn't even need to
+        -- be reproducible without local information.
         --
-        -- So to get both:  collect aligned reads with unaligned mates;
-        -- separately collect unaligned reads.  If we don't find a
-        -- matching true pair, we keep the highest quality unaligned
-        -- read, combine with the consensus of the half-aligned mates
-        -- and singletons, and give it the lexically smallest name of
-        -- the half-aligned pairs.
-        --
-        (pairs,  singles)      = partition br_isPaired rds
-        (merged, true_singles) = partition br_isMergeTrimmed singles
+        -- So to get both:  collect aligned reads with unaligned mates
+        -- together with aligned true singles.  Collect the unaligned
+        -- mates, which necessarily have the exact same alignment
+        -- coordinates, separately.  If we don't find a matching true
+        -- pair (that case is already handled smoothly), we keep the
+        -- highest quality unaligned read, combine with the consensus of
+        -- the half-aligned mates and singletons, and give it the
+        -- lexically smallest name of the half-aligned pairs.
+
+        (raw_pairs, raw_singles)       = partition br_isPaired rds
+        (merged, true_singles)         = partition br_isMergeTrimmed raw_singles
+
+        (pairs, raw_half_pairs)        = partition is_totally_aligned raw_pairs
+        (half_unaligned, half_aligned) = partition br_isUnmapped raw_half_pairs
+
+        is_totally_aligned b = not (br_isUnmapped b || br_isMateUnmapped b)
 
         mkMap f x = do m1 <- fmap (M.map collapse) . accumMapM f inject $ x
                        return (M.map fst m1, concatMap snd $ M.elems m1)
                   
         pairs'        = mkMap (\b -> (br_mate_pos b,   strand_preserved && br_isReversed  b 
-                                                          , strand_preserved && br_isFirstMate b)) pairs
+                                                     , strand_preserved && br_isFirstMate b)) pairs
         merged'       = mkMap (\b -> (br_aln_length b, strand_preserved && br_isReversed  b)) merged
 
-        true_singles' = mkMap (\b -> (                 strand_preserved && br_isReversed  b)) true_singles
+        true_singles' = mkMap (\b -> (                 strand_preserved && br_isReversed  b)) (true_singles++half_aligned)
 
-        results ss ms ps = merge_singles ss ( [ (rev, v) | ((_, rev),        v) <- M.toList ms ]
-                                           ++ [ (rev, v) | ((_, rev, False), v) <- M.toList ps ] )
-                                        ++ [ v | ((_, _, True), v) <- M.toList ps ]
 
-        leftovers ss ms ps = unmerged_singles ss ( [ (rev, v) | ((_, rev),        v) <- M.toList ms ]
-                                                ++ [ (rev, v) | ((_, rev, False), v) <- M.toList ps ] )
+        -- What to emit for unaligned mates:  we only emit a mate if we
+        -- did not call a consensus, that is, if there was exactly one
+        -- half-aligned read and no true singleton.  In that case, there
+        -- is also exactly one mate to use and the whole input got
+        -- passed through.  Else we force the result to be a singleton
+        -- (by clearing appropriate flags) and all unaligned mates are
+        -- passed through and marked as duplicates.
 
-    merge_singles m [           ] = M.elems m
-    merge_singles m ((k,v) : kvs) = case M.lookup k m of
-            Nothing -> v : merge_singles m kvs
-            Just  w -> add_xp_of w v : merge_singles (M.delete k m) kvs
+        unaligned'    = accumMapM f inject half_unaligned
+            where f b = strand_preserved && br_isReversed b
 
-    unmerged_singles _ [           ] = []
-    unmerged_singles m ((k,_) : kvs) = case M.lookup k m of
-            Nothing -> unmerged_singles m kvs
-            Just  w -> w : unmerged_singles (M.delete k m) kvs
+        results ss ua ms ps = merge_singles ss ua ( [ (rev, v) | ((_, rev),        v) <- M.toList ms ]
+                                                 ++ [ (rev, v) | ((_, rev, False), v) <- M.toList ps ] )
+                                               ++ [ either id id v | ((_, _, True), v) <- M.toList ps ]
+
+        leftovers ss ua ms ps = unmerged_singles ss ua ( [ (rev, v) | ((_, rev),        v) <- M.toList ms ]
+                                                      ++ [ (rev, v) | ((_, rev, False), v) <- M.toList ps ] )
+
+    -- At every site, we need to check if were producing a consensus or
+    -- if were outputting an original read.  If the latter case, its
+    -- mate should be produced as ordinary else, in the former case, the
+    -- bunch of unmapped mates should be produced as duplicated reads.
+    
+    merge_singles m _ [                 ] = map (either id id) $ M.elems m
+    merge_singles m n ((k,Right v) : kvs) = case M.lookup k m of
+            Nothing -> make_singleton v : merge_singles m (M.delete k n) kvs
+            Just  w -> add_xp_of (either id id w) v : merge_singles (M.delete k m) (M.delete k n) kvs
+    merge_singles m n ((k,Left  v) : kvs) = case (M.lookup k m, M.lookup k n) of
+            (Nothing, Nothing) -> v : merge_singles (M.delete k m) (M.delete k n) kvs
+            (Nothing, Just vs) -> v : vs ++ merge_singles (M.delete k m) (M.delete k n) kvs
+            (Just  w,       _) -> add_xp_of (either id id w) v : merge_singles (M.delete k m) (M.delete k n) kvs
+    
+    unmerged_singles _ n [           ] = concat $ M.elems n
+    -- the singleton is an actual consensus: emit *all* unmapped mates
+    unmerged_singles m n ((k,Right _) : kvs) = case M.lookup k n of
+            Nothing -> unmerged_singles (M.delete k m) (M.delete k n) kvs
+            Just vs -> vs ++ unmerged_singles (M.delete k m) (M.delete k n) kvs
+    -- the singleton was passed through *and* there is no pair we are
+    -- going to use instead: do not pass the unmapped mates (there can
+    -- be only one, and it was passed in merge_singles)
+    unmerged_singles m n ((k,Left  _) : kvs) = case (M.lookup k m, M.findWithDefault [] k n) of
+            (Nothing,  _) -> unmerged_singles (M.delete k m) (M.delete k n) kvs
+            (Just  w, vs) -> (either id id w) : vs ++ unmerged_singles (M.delete k m) (M.delete k n) kvs
 
     br_mate_pos       br = (br_mrnm br, br_mpos br, br_isUnmapped br, br_isMateUnmapped br)
     br_isMergeTrimmed br = let ef = br_extAsInt (br_extAsInt 0 "XF" br) "FF" br 
@@ -295,19 +346,22 @@ addXPOf w v = v { b_exts = M.insert "XP" (Int $ extAsInt 1 "XP" w `oplus` extAsI
 addXPOf' :: BamRaw -> BamRaw -> BamRaw
 addXPOf' w v = replaceXP (br_extAsInt 1 "XP" w `oplus` br_extAsInt 1 "XP" v) v
 
-do_collapse :: Word8 -> [BamRec] -> (BamRec, [BamRec])
-do_collapse maxq [br] | B.all (<= maxq) (b_qual br) = ( br, [] )        -- no modifcation, pass through
-                      | otherwise                   = ( lq_br, [br] )   -- qualities reduces, must keep original
+do_collapse :: Word8 -> [BamRec] -> (Either BamRec BamRec, [BamRec])
+do_collapse maxq [br] | B.all (<= maxq) (b_qual br) = ( Left     br, [  ] )     -- no modifcation, pass through
+                      | otherwise                   = ( Right lq_br, [br] )     -- qualities reduces, must keep original
   where
-    lq_br = br { b_qual  = B.map (min maxq) $ b_qual br, b_virtual_offset = 0 }
+    lq_br = br { b_qual  = B.map (min maxq) $ b_qual br
+               , b_virtual_offset = 0
+               , b_qname = b_qname br `B.snoc` 99 }
 
-do_collapse maxq  brs = ( b0 { b_exts  = modify_extensions $ b_exts b0
-                             , b_flag  = failflag .&. complement flagDuplicate
-                             , b_mapq  = rmsq $ map b_mapq brs'
-                             , b_cigar = Cigar cigar'
-                             , b_seq   = V.fromList $ cons_seq
-                             , b_qual  = B.pack cons_qual
-                             , b_virtual_offset = 0 }, brs )            -- many modifications, must keep everything
+do_collapse maxq  brs = ( Right b0 { b_exts  = modify_extensions $ b_exts b0
+                                   , b_flag  = failflag .&. complement flagDuplicate
+                                   , b_mapq  = rmsq $ map b_mapq brs'
+                                   , b_cigar = Cigar cigar'
+                                   , b_seq   = V.fromList $ cons_seq
+                                   , b_qual  = B.pack cons_qual
+                                   , b_qname = b_qname b0 `B.snoc` 99
+                                   , b_virtual_offset = 0 }, brs )              -- many modifications, must keep everything
   where
     b0 = minimumBy (comparing b_qname) brs
     most_fail = 2 * length (filter isFailsQC brs) > length brs 
@@ -416,9 +470,9 @@ consensus maxq nqs = if qr > 3 then (n0, qr) else (nucN,0)
 
 
 -- Cheap version: simply takes the lexically first record, adds XP field
-do_cheap_collapse :: [BamRaw] -> ( BamRaw, [BamRaw] )
-do_cheap_collapse [b] = ( b, [] )
-do_cheap_collapse  bs = ( replaceXP new_xp b0, bx )
+do_cheap_collapse :: [BamRaw] -> ( Either BamRaw BamRaw, [BamRaw] )
+do_cheap_collapse [b] = ( Left                     b, [] )
+do_cheap_collapse  bs = ( Left $ replaceXP new_xp b0, bx )
   where
     (b0, bx) = minViewBy (comparing br_qname) bs
     new_xp   = foldl' (\a b -> a `oplus` br_extAsInt 1 "XP" b) 0 bs
