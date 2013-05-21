@@ -9,6 +9,7 @@ module Bio.Iteratee (
     i'lookAhead,
     i'take,
     mapStreamM,
+    mapStreamM_,
     filterStream,
     filterStreamM,
     foldStream,
@@ -206,6 +207,10 @@ filterStreamM k = mapChunksM (go id)
 mapStreamM :: (Monad m, ListLike (s el) el, ListLike (s el') el', NullPoint (s el), Nullable (s el), LooseMap s el el')
            => (el -> m el') -> Enumeratee (s el) (s el') m a
 mapStreamM = mapChunksM . LL.mapM
+
+-- | Map a monadic function over an @Iteratee@.
+mapStreamM_ :: (Monad m, Nullable s, ListLike s el) => (el -> m b) -> Iteratee s m ()
+mapStreamM_ = mapChunksM_ . LL.mapM_
 
 -- | Fold a monadic function over an @Iteratee@.
 foldStreamM :: (Monad m, Nullable s, ListLike s a) => (b -> a -> m b) -> b -> Iteratee s m b
