@@ -32,17 +32,18 @@ showNum = triplets [] . reverse . show
     triplets acc (a:b:c:[]) = c:b:a:acc
     triplets acc (a:b:c:s) = triplets (',':c:b:a:acc) s
 
-showOOM :: Int -> String
+showOOM :: Double -> String
 showOOM x | x < 0 = '-' : showOOM (negate x)
-          | x < 100 = show x
-          | x < 1000 = showOOM ((x+5) `div` 10) ++ "0"
-          | otherwise = findSuffix ((x+50) `div` 100) "kMGTPEZY"
+          | otherwise = findSuffix (x*10) ".kMGTPEZY"
   where
     findSuffix _ [] = "many"
-    findSuffix y (s:ss) | y < 100  = intToDigit (y `div` 10) : s : case y `mod` 10 of 0 -> [] ; d -> [intToDigit d]
-                        | y < 1000 = [intToDigit (y `div` 100), intToDigit ((y `mod` 100) `div` 10), s]
-                        | y < 10000 = [intToDigit (y `div` 1000), intToDigit ((y `mod` 1000) `div` 100), '0', s]
-                        | otherwise = findSuffix ((y+500) `div` 1000) ss
+    findSuffix y (s:ss) | y < 100  = intToDigit (round y `div` 10) : case (round y `mod` 10, s) of
+                                            (0,'.') -> [] ; (0,_) -> [s] ; (d,_) -> [s, intToDigit d]
+                        | y < 1000 = intToDigit (round y `div` 100) : intToDigit ((round y `mod` 100) `div` 10) :
+                                            if s == '.' then [] else [s]
+                        | y < 10000 = intToDigit (round y `div` 1000) : intToDigit ((round y `mod` 1000) `div` 100) :
+                                            '0' : if s == '.' then [] else [s]
+                        | otherwise = findSuffix (y*0.001) ss
 
 -- Stolen from Lennart Augustsson's erf package, who in turn took it rom
 -- http://home.online.no/~pjacklam/notes/invnorm/ Accurate to about 1e-9.
@@ -122,12 +123,12 @@ invnormcdf p =
 --   m = singles * z /log z
 --
 -- It converges as long as the initial @z@ is large enough, and @10D@
--- appears to work well.
+-- (in the line for @zz@ below) appears to work well.
 
-estimateComplexity :: Integral a => a -> a -> Maybe a
+estimateComplexity :: Integral a => a -> a -> Maybe Double
 estimateComplexity total singles | total   <= singles = Nothing
                                  | singles <= 0       = Nothing
-                                 | otherwise          = Just $ round m
+                                 | otherwise          = Just m
   where
     d = fromIntegral total / fromIntegral singles :: Double
     step z = z * (z - 1 - d * log z) / (z - d)

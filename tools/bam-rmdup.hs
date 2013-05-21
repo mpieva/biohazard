@@ -138,13 +138,13 @@ main = do
         
     let report_estimate Nothing = "Complexity cannot be estimated.\n"
         report_estimate (Just good_grand_total) =
-            "Estimate " ++ showOOM (grand_total - tout) ++ " dark matter molecules, " ++
+            "Estimate " ++ showOOM (grand_total - fromIntegral tout) ++ " dark matter molecules, " ++
             showOOM grand_total ++ " total distinct molecules.\n" ++
-            "Unique fraction so for is " ++ showFFloat (Just 1) rate 
+            "Unique fraction so far is " ++ showFFloat (Just 1) rate 
             "%, library is " ++ showFFloat (Just 1) exhaustion "% exhausted.\n"
           where 
-            grand_total = good_grand_total * tout `div` good_total 
-            exhaustion  = 100 * fromIntegral good_total / fromIntegral good_grand_total     :: Double
+            grand_total = good_grand_total * fromIntegral tout / fromIntegral good_total 
+            exhaustion  = 100 * fromIntegral good_total / good_grand_total
             rate        = 100 * fromIntegral tout / fromIntegral tin                        :: Double
 
     hPutStr stderr $ "\27[KDone; " ++ showNum (tin::Int) ++
