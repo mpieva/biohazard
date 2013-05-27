@@ -122,19 +122,20 @@ main = do
                           when t $ hPutStrLn stderr "Cowardly refusing to write BAM to a terminal." >> usage
 
     add_pg <- addPG $ Just version
-    (tin, (tout, good_singles, good_total, ())) <- mergeInputs combineCoordinates files >=> run $ \hdr -> do
+    (tin, tout, good_singles, good_total, ()) <- mergeInputs combineCoordinates files >=> run $ \hdr -> do
        let tbl = mk_rg_tbl hdr
        unless (M.null tbl) $ liftIO $ do
                 debug "mapping of read groups to libraries:\n"
                 mapM_ debug [ unpackSeqid k ++ " --> " ++ unpackSeqid v ++ "\n" | (k,v) <- M.toList tbl ]
 
-       joinI $ takeWhileE is_halfway_aligned $
-           joinI $ mapChunks (mapMaybe filter_enee . filter ((>= min_len) . eff_len)) $
-           joinI $ progress debug (meta_refs hdr) $
-           I.zip I.length $ joinI $ rmdup (get_label tbl) strand_preserved (collapse keep_all) $
-                            I.zip4 I.length count_singles count_good $ output (add_pg hdr)
+       output' <- takeWhileE is_halfway_aligned ><>
+                  mapChunks (mapMaybe filter_enee . filter ((>= min_len) . eff_len)) ><>
+                  progress debug (meta_refs hdr) ><>
+                  rmdup (get_label tbl) strand_preserved (collapse keep_all) $ 
+                  I.zip5 count_multiples I.length count_singles count_good $ output (add_pg hdr)
 
-
+       if keep_all then output'
+                   else lift $ run output'
         
     let report_estimate Nothing = "Complexity cannot be estimated.\n"
         report_estimate (Just good_grand_total) =
@@ -164,6 +165,8 @@ count_singles = count_if $ \br -> br_mapq br >= 20 && br_extAsInt 1 "XP" br == 1
 count_good :: Monad m => Iteratee [BamRaw] m Int
 count_good = count_if $ \br -> br_mapq br >= 20
 
+count_multiples :: Monad m => Iteratee [BamRaw] m Int
+count_multiples = I.foldl' (\acc br -> acc + br_extAsInt 1 "XP" br) 0
 
 eff_len :: BamRaw -> Int
 eff_len br | br_isProperlyPaired br = abs $ br_isize br

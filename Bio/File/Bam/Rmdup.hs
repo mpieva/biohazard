@@ -1,6 +1,8 @@
 {-# LANGUAGE ExistentialQuantification, RecordWildCards, NamedFieldPuns #-}
 module Bio.File.Bam.Rmdup(
-            rmdup, Collapse, cons_collapse, cheap_collapse, cons_collapse_keep, cheap_collapse_keep
+            rmdup, Collapse, cons_collapse, cheap_collapse,
+            cons_collapse_keep, cheap_collapse_keep,
+            check_sort
     ) where
 
 import Bio.File.Bam
@@ -121,7 +123,7 @@ rmdup label strand_preserved collapse_cfg =
     -- Easiest way to go about this:  We simply collect everything that
     -- starts at some specific coordinate and group it appropriately.
     -- Treat the groups separately, output, go on.
-    check_sort ><> mapGroups (either fail nice_sort . do_rmdup label strand_preserved collapse_cfg) ><> check_sort
+    check_sort ><> mapGroups (either fail nice_sort . do_rmdup label strand_preserved collapse_cfg)
   where
     same_pos u v = br_cpos u == br_cpos v
     br_cpos br = (br_rname br, br_pos br)
