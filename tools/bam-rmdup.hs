@@ -111,6 +111,11 @@ mk_rg_tbl hdr = M.fromList
                      ++ [ s | ('S','M',s) <- fields ]
                      ++ [ rg_id ] ]
 
+data Counts = Counts { tin          :: !Int
+                     , tout         :: !Int
+                     , good_singles :: !Int
+                     , good_total   :: !Int }
+
 main :: IO ()
 main = do
     args <- getArgs
@@ -122,7 +127,7 @@ main = do
                           when t $ hPutStrLn stderr "Cowardly refusing to write BAM to a terminal." >> usage
 
     add_pg <- addPG $ Just version
-    (tin, tout, good_singles, good_total, ()) <- mergeInputs combineCoordinates files >=> run $ \hdr -> do
+    (counts, ()) <- mergeInputs combineCoordinates files >=> run $ \hdr -> do
        let tbl = mk_rg_tbl hdr
        unless (M.null tbl) $ liftIO $ do
                 debug "mapping of read groups to libraries:\n"
@@ -132,11 +137,15 @@ main = do
                   mapChunks (mapMaybe filter_enee . filter ((>= min_len) . eff_len)) ><>
                   progress debug (meta_refs hdr) ><>
                   rmdup (get_label tbl) strand_preserved (collapse keep_all) $ 
-                  I.zip5 count_multiples I.length count_singles count_good $ output (add_pg hdr)
+                  count_all `I.zip` output (add_pg hdr)
+       if keep_all
+         then output'
+         else lift (run output')
 
-       if keep_all then output'
-                   else lift $ run output'
-        
+    do_report counts
+
+do_report :: Counts -> IO ()
+do_report Counts{..} = do
     let report_estimate Nothing = "Complexity cannot be estimated.\n"
         report_estimate (Just good_grand_total) =
             "Estimate " ++ showOOM (grand_total - fromIntegral tout) ++ " dark matter molecules, " ++
@@ -156,6 +165,17 @@ main = do
                      report_estimate (estimateComplexity good_total good_singles)
 
 
+count_all :: Iteratee [BamRaw] m Counts
+count_all = I.foldl' plus (Counts 0 0 0 0)
+  where
+    plus (Counts ti to gs gt) br = Counts ti' to' gs' gt'
+      where
+        ti' = ti + br_extAsInt 1 "XP" br
+        to' = to + 1
+        gs' = if br_mapq br >= 20 && br_extAsInt 1 "XP" br == 1 then gs + 1 else gs
+        gt' = if br_mapq br >= 20 then gt + 1 else gt
+
+{-
 count_if :: Monad m => (a -> Bool) -> Iteratee [a] m Int
 count_if p = I.foldl' (\acc a -> if p a then acc + 1 else acc) 0
 
@@ -167,6 +187,7 @@ count_good = count_if $ \br -> br_mapq br >= 20
 
 count_multiples :: Monad m => Iteratee [BamRaw] m Int
 count_multiples = I.foldl' (\acc br -> acc + br_extAsInt 1 "XP" br) 0
+-}
 
 eff_len :: BamRaw -> Int
 eff_len br | br_isProperlyPaired br = abs $ br_isize br
