@@ -132,7 +132,7 @@ Executable bam-resample
                        filepath, directory, biohazard, random, vector
 
 Executable bam-rmdup
-  Ghc-options:         -Wall -auto-all -threaded -rtsopts
+  Ghc-options:         -Wall -auto-all -threaded -rtsopts -with-rtsopts=-N
   Main-is:             tools/bam-rmdup.hs
   Build-depends:       bytestring, containers, base ==4.*, binary, array,
                        zlib, attoparsec-iteratee, attoparsec, iteratee,

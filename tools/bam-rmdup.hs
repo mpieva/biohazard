@@ -5,6 +5,7 @@ import Bio.Iteratee
 import Bio.Util ( showNum, showOOM, estimateComplexity )
 import Control.Monad
 import Data.Bits
+import Data.List ( intercalate )
 import Data.Maybe
 import Data.Word ( Word8 )
 import Numeric ( showFFloat )
@@ -99,14 +100,14 @@ cheap_collapse'  True  = cheap_collapse_keep
 -- fall-back.
 
 get_library, get_no_library :: M.Map Seqid Seqid -> BamRaw -> Seqid
-get_library  tbl = \br -> let rg = br_extAsString "RG" br in M.findWithDefault rg rg tbl
-get_no_library _ = \_  -> S.empty
+get_library  tbl br = M.findWithDefault rg rg tbl where rg = br_extAsString "RG" br
+get_no_library _  _ = S.empty
 
 mk_rg_tbl :: BamMeta -> M.Map Seqid Seqid
 mk_rg_tbl hdr = M.fromList
     [ (rg_id, rg_lb)
     | ('R','G',fields) <- meta_other_shit hdr
-    , rg_id <- take 1 [ i | ('I','D',i) <- fields ]
+    , rg_id <- take 1   [ i | ('I','D',i) <- fields ]
     , rg_lb <- take 1 $ [ l | ('L','B',l) <- fields ]
                      ++ [ s | ('S','M',s) <- fields ]
                      ++ [ rg_id ] ]
@@ -124,7 +125,7 @@ main = do
     Conf{..} <- foldr (>=>) return opts defaults
 
     when (null args) $ do t <- hIsTerminalDevice stdout
-                          when t $ hPutStrLn stderr "Cowardly refusing to write BAM to a terminal." >> usage
+                          when t $ hPutStrLn stderr "Cowardly refusing to write BAM to a terminal." >> exitFailure
 
     add_pg <- addPG $ Just version
     (counts, ()) <- mergeInputs combineCoordinates files >=> run $ \hdr -> do
@@ -137,57 +138,50 @@ main = do
                   mapChunks (mapMaybe filter_enee . filter ((>= min_len) . eff_len)) ><>
                   progress debug (meta_refs hdr) ><>
                   rmdup (get_label tbl) strand_preserved (collapse keep_all) $ 
-                  count_all `I.zip` output (add_pg hdr)
+                  count_all (get_label tbl) `I.zip` output (add_pg hdr)
        if keep_all
          then output'
          else lift (run output')
 
-    do_report counts
-
-do_report :: Counts -> IO ()
-do_report Counts{..} = do
-    let report_estimate Nothing = "Complexity cannot be estimated.\n"
-        report_estimate (Just good_grand_total) =
-            "Estimate " ++ showOOM (grand_total - fromIntegral tout) ++ " dark matter molecules, " ++
-            showOOM grand_total ++ " total distinct molecules.\n" ++
-            "Unique fraction so far is " ++ showFFloat (Just 1) rate 
-            "%, library is " ++ showFFloat (Just 1) exhaustion "% exhausted.\n"
-          where 
-            grand_total = good_grand_total * fromIntegral tout / fromIntegral good_total 
-            exhaustion  = 100 * fromIntegral good_total / good_grand_total
-            rate        = 100 * fromIntegral tout / fromIntegral tin                        :: Double
-
-    hPutStr stderr $ "\27[KDone; " ++ showNum (tin::Int) ++
-                     " aligned reads in, " ++ showNum (tout::Int) ++ 
-                     " aligned reads out; " ++ showNum good_total ++
-                     " at MAPQ>=20, " ++ showNum good_singles ++
-                     " singletons at MAPQ>=20.\n" ++
-                     report_estimate (estimateComplexity good_total good_singles)
+    hPutStr stderr . unlines $
+        "\27[K#RG\tin\tout\tin@MQ20\tsingle@MQ20\tunseen\ttotal\t%unique\t%exhausted"
+        : map (uncurry do_report) (M.toList counts)
 
 
-count_all :: Iteratee [BamRaw] m Counts
-count_all = I.foldl' plus (Counts 0 0 0 0)
+do_report :: Seqid -> Counts -> String
+do_report lbl Counts{..} = intercalate "\t" fs
   where
-    plus (Counts ti to gs gt) br = Counts ti' to' gs' gt'
+    fs = label : showNum tin : showNum tout : showNum good_total : showNum good_singles : 
+         report_estimate (estimateComplexity good_total good_singles)
+
+    label = if S.null lbl then "--" else unpackSeqid lbl
+
+    report_estimate  Nothing                = [ "N/A" ]
+    report_estimate (Just good_grand_total) =
+            [ showOOM (grand_total - fromIntegral tout)
+            , showOOM grand_total
+            , showFFloat (Just 1) rate []
+            , showFFloat (Just 1) exhaustion [] ]
+      where 
+        grand_total = good_grand_total * fromIntegral tout / fromIntegral good_total 
+        exhaustion  = 100 * fromIntegral good_total / good_grand_total
+        rate        = 100 * fromIntegral tout / fromIntegral tin :: Double
+
+
+count_all :: (BamRaw -> Seqid) -> Iteratee [BamRaw] m (M.Map Seqid Counts)
+count_all lbl = I.foldl' plus M.empty
+  where
+    plus m br = M.insert (lbl br) cs m
       where
-        ti' = ti + br_extAsInt 1 "XP" br
-        to' = to + 1
-        gs' = if br_mapq br >= 20 && br_extAsInt 1 "XP" br == 1 then gs + 1 else gs
-        gt' = if br_mapq br >= 20 then gt + 1 else gt
+        !cs = plus1 (M.findWithDefault (Counts 0 0 0 0) (lbl br) m) br
 
-{-
-count_if :: Monad m => (a -> Bool) -> Iteratee [a] m Int
-count_if p = I.foldl' (\acc a -> if p a then acc + 1 else acc) 0
+    plus1 (Counts ti to gs gt) br = Counts ti' to' gs' gt'
+      where
+        !ti' = ti + br_extAsInt 1 "XP" br
+        !to' = to + 1
+        !gs' = if br_mapq br >= 20 && br_extAsInt 1 "XP" br == 1 then gs + 1 else gs
+        !gt' = if br_mapq br >= 20 then gt + 1 else gt
 
-count_singles :: Monad m => Iteratee [BamRaw] m Int
-count_singles = count_if $ \br -> br_mapq br >= 20 && br_extAsInt 1 "XP" br == 1
-
-count_good :: Monad m => Iteratee [BamRaw] m Int
-count_good = count_if $ \br -> br_mapq br >= 20
-
-count_multiples :: Monad m => Iteratee [BamRaw] m Int
-count_multiples = I.foldl' (\acc br -> acc + br_extAsInt 1 "XP" br) 0
--}
 
 eff_len :: BamRaw -> Int
 eff_len br | br_isProperlyPaired br = abs $ br_isize br
