@@ -57,7 +57,7 @@ source-repository head
 source-repository this
   type:     git
   location: git://github.com/udo-stenzel/biohazard.git
-  tag:      0.4.7
+  tag:      0.4.8
 
 
 Library
@@ -132,7 +132,7 @@ Executable bam-resample
                        filepath, directory, biohazard, random, vector
 
 Executable bam-rmdup
-  Ghc-options:         -Wall -auto-all -threaded -rtsopts -with-rtsopts=-N
+  Ghc-options:         -Wall -auto-all -threaded -rtsopts
   Main-is:             tools/bam-rmdup.hs
   Build-depends:       bytestring, containers, base ==4.*, binary, array,
                        zlib, attoparsec-iteratee, attoparsec, iteratee,
