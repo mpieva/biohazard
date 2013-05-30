@@ -28,7 +28,11 @@ data Conf = Conf {
     filter_enee :: BamRaw -> Maybe BamRaw,
     min_len :: Int,
     get_label :: M.Map Seqid Seqid -> BamRaw -> Seqid,
-    debug :: String -> IO () }
+    debug :: String -> IO (),
+    which :: Which }
+
+-- | Which reference sequences to scan
+data Which = All | Some Refseq Refseq | Unaln deriving Show
 
 defaults :: Conf
 defaults = Conf { output = pipeRawBamOutput
@@ -39,11 +43,13 @@ defaults = Conf { output = pipeRawBamOutput
                 , filter_enee = is_aligned
                 , min_len = 0
                 , get_label = get_library
-                , debug = \_ -> return () }
+                , debug = \_ -> return ()
+                , which = All }
 
 options :: [OptDescr (Conf -> IO Conf)]
 options = [
     Option  "o" ["output"]         (ReqArg set_output "FILE") "Write to FILE (default: stdout)",
+    Option  "R" ["refseq"]         (ReqArg set_range "RANGE") "Read only range of reference sequences",
     Option  "p" ["improper-pairs"] (NoArg  set_improper)      "Include improper pairs",
     Option  "u" ["unaligned"]      (NoArg  set_unaligned)     "Included unaligned reads and pairs",
     Option  "1" ["single-read"]    (NoArg  set_single)        "Pretend there is no second mate",
@@ -56,6 +62,7 @@ options = [
     Option  "r" ["ignore-rg"]      (NoArg  set_no_rg)         "Ignore read groups when looking for duplicates",
     Option  "v" ["verbose"]        (NoArg  set_verbose)       "Print more diagnostics",
     Option "h?" ["help","usage"]   (NoArg  (const usage))     "Print this message" ]
+
   where
     set_output   f c =                    return $ c { output = writeRawBamFile f } 
     set_qual     n c = readIO n >>= \a -> return $ c { collapse = cons_collapse' a }
@@ -70,6 +77,14 @@ options = [
     set_len      n c = readIO n >>= \a -> return $ c { min_len = a }
     set_no_rg      c =                    return $ c { get_label = get_no_library }
 
+    set_range    a c
+        | a == "A" || a == "a" = return $ c { which = All }
+        | a == "U" || a == "u" = return $ c { which = Unaln }
+        | otherwise = case reads a of
+                [ (x,"")    ] -> return $ c { which = Some (Refseq $ x-1) (Refseq $ x-1) }
+                [ (x,'-':b) ] -> readIO b >>= \y -> 
+                                 return $ c { which = Some (Refseq $ x-1) (Refseq $ y-1) }
+                _ -> fail $ "parse error in " ++ show a                                 
 
 usage :: IO a
 usage = do p <- getProgName
@@ -130,6 +145,10 @@ main = do
 
     when (null args) $ do t <- hIsTerminalDevice stdout
                           when t $ hPutStrLn stderr "Cowardly refusing to write BAM to a terminal." >> exitFailure
+
+    hPrint stderr which
+    exitFailure
+
 
     add_pg <- addPG $ Just version
     (counts, ()) <- mergeInputs combineCoordinates files >=> run $ \hdr -> do
