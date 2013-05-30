@@ -24,6 +24,7 @@ data Conf = Conf {
     strand_preserved :: Bool,
     collapse :: Bool -> Collapse,
     keep_all :: Bool,
+    keep_unaligned :: Bool,
     filter_enee :: BamRaw -> Maybe BamRaw,
     min_len :: Int,
     get_label :: M.Map Seqid Seqid -> BamRaw -> Seqid,
@@ -34,6 +35,7 @@ defaults = Conf { output = pipeRawBamOutput
                 , strand_preserved = True
                 , collapse = cons_collapse' 60
                 , keep_all = False
+                , keep_unaligned = False
                 , filter_enee = is_aligned
                 , min_len = 0
                 , get_label = get_library
@@ -43,6 +45,7 @@ options :: [OptDescr (Conf -> IO Conf)]
 options = [
     Option  "o" ["output"]         (ReqArg set_output "FILE") "Write to FILE (default: stdout)",
     Option  "p" ["improper-pairs"] (NoArg  set_improper)      "Include improper pairs",
+    Option  "u" ["unaligned"]      (NoArg  set_unaligned)     "Included unaligned reads and pairs",
     Option  "1" ["single-read"]    (NoArg  set_single)        "Pretend there is no second mate",
     Option  "c" ["cheap"]          (NoArg  set_cheap)         "Cheap computation: skip the consensus calling",
     Option  "C" ["count-only"]     (NoArg  set_count_only)    "Count duplicates, don't bother with output",
@@ -63,6 +66,7 @@ options = [
     set_cheap      c =                    return $ c { collapse = cheap_collapse' }
     set_count_only c =                    return $ c { collapse = cheap_collapse', output = const skipToEof }
     set_keep       c =                    return $ c { keep_all = True }
+    set_unaligned  c =                    return $ c { keep_unaligned = True }
     set_len      n c = readIO n >>= \a -> return $ c { min_len = a }
     set_no_rg      c =                    return $ c { get_label = get_no_library }
 
@@ -139,7 +143,7 @@ main = do
                   progress debug (meta_refs hdr) ><>
                   rmdup (get_label tbl) strand_preserved (collapse keep_all) $ 
                   count_all (get_label tbl) `I.zip` output (add_pg hdr)
-       if keep_all
+       if keep_unaligned
          then output'
          else lift (run output')
 
