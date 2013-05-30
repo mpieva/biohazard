@@ -7,6 +7,7 @@ import Control.Monad
 import Data.Bits
 import Data.List ( intercalate )
 import Data.Maybe
+import Data.Monoid ( mempty )
 import Data.Word ( Word8 )
 import Numeric ( showFFloat )
 import Paths_biohazard ( version )
@@ -242,3 +243,20 @@ progress put refs = eneeCheckIfDone (liftI . go 0)
                                   when (n `div` 65536 /= n' `div` 65536) $ liftIO $ put $
                                         "\27[KRmdup at " ++ nm ++ showNum (br_pos a) ++ "\r"
                                   eneeCheckIfDone (liftI . go n') . k $ Chunk as
+
+
+mergeInputRanges :: MonadCatchIO m
+    => Which -> [FilePath] -> Enumerator' BamMeta [BamRaw] m a
+mergeInputRanges All      fps   = mergeInputs combineCoordinates fps
+mergeInputRanges rng [        ] = \k -> return $ k mempty
+mergeInputRanges rng (fp0:fps0) = go fp0 fps0
+  where
+    enum1  fp k1 = decodeBamFileRange rng fp k1
+
+    go fp [       ] = enum1 fp
+    go fp (fp1:fps) = mergeEnums' (go fp1 fps) (enum1 fp) combineCoordinates
+
+    decodeBamFileRange All fp = decodeAnyBamFile fp
+    decodeBamFileRange Unaln fp = undefined
+    decodeBamFileRange (Some x y) fp = undefined
+    
