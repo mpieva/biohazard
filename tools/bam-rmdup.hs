@@ -154,14 +154,17 @@ main = do
                 debug "mapping of read groups to libraries:\n"
                 mapM_ debug [ unpackSeqid k ++ " --> " ++ unpackSeqid v ++ "\n" | (k,v) <- M.toList tbl ]
 
-       output' <- takeWhileE is_halfway_aligned ><>
-                  mapChunks (mapMaybe filter_enee . filter ((>= min_len) . eff_len)) ><>
-                  progress debug (meta_refs hdr) ><>
+       let filters = mapChunks (mapMaybe filter_enee . filter ((>= min_len) . eff_len)) ><>
+                     progress debug (meta_refs hdr)
+
+       output' <- takeWhileE is_halfway_aligned ><> filters ><>
                   rmdup (get_label tbl) strand_preserved (collapse keep_all) $ 
                   count_all (get_label tbl) `I.zip` output (add_pg hdr)
-       if keep_unaligned
-         then output'
-         else lift (run output')
+
+       case which of
+            Unaln              -> joinI $ filters $ output'
+            _ | keep_unaligned -> joinI $ filters $ output'
+            _                  -> lift (run output')
 
     hPutStr stderr . unlines $
         "\27[K#RG\tin\tout\tin@MQ20\tsingle@MQ20\tunseen\ttotal\t%unique\t%exhausted"
@@ -247,21 +250,26 @@ mergeInputRanges All      fps   = mergeInputs combineCoordinates fps
 mergeInputRanges  _  [        ] = \k -> return $ k mempty
 mergeInputRanges rng (fp0:fps0) = go fp0 fps0
   where
-    enum1  fp k1 = case rng of All      -> decodeAnyBamFile       fp k1
-                               Some x y -> decodeBamFileRange x y fp k1
-                               -- XXX Unaln ->
+    enum1  fp k1 = case rng of All      -> decodeAnyBamFile                   fp k1
+                               Some x y -> decodeBamFileRange             x y fp k1
+                               Unaln    -> decodeWithIndex decodeBamUnaligned fp k1
 
     go fp [       ] = enum1 fp
     go fp (fp1:fps) = mergeEnums' (go fp1 fps) (enum1 fp) combineCoordinates
 
-decodeBamFileRange :: MonadCatchIO m
-                   => Refseq -> Refseq -> FilePath 
-                   -> (BamMeta -> Iteratee [BamRaw] m a) 
-                   -> m (Iteratee [BamRaw] m a)
-decodeBamFileRange x y fp k0 = do
+    decodeBamFileRange x y = decodeWithIndex $
+            \idx -> foldr ((>=>) . decodeBamSequence idx) return [x..y]
+
+
+decodeWithIndex :: MonadCatchIO m
+                => (BamIndex -> Enumeratee Block [BamRaw] m a)
+                -> FilePath -> (BamMeta -> Iteratee [BamRaw] m a)
+                -> m (Iteratee [BamRaw] m a)
+
+decodeWithIndex enum fp k0 = do
     idx <- liftIO $ readBamIndex fp
     enumFileRandom defaultBufSize fp >=> run $
         joinI $ decompressBgzf $ do
             hdr <- decodeBam return
-            foldr ((>=>) . decodeBamSequence idx) return [x..y] $ hdr >>= k0
+            enum idx $ hdr >>= k0
 
