@@ -21,7 +21,7 @@ import qualified Data.Map           as M
 import qualified Data.Iteratee      as I
 
 data Conf = Conf {
-    output :: BamMeta -> Iteratee [BamRaw] IO (),
+    output :: (BamRaw -> Seqid) -> BamMeta -> Iteratee [BamRaw] IO (),
     strand_preserved :: Bool,
     collapse :: Bool -> Collapse,
     keep_all :: Bool,
@@ -36,7 +36,7 @@ data Conf = Conf {
 data Which = All | Some Refseq Refseq | Unaln deriving Show
 
 defaults :: Conf
-defaults = Conf { output = pipeRawBamOutput
+defaults = Conf { output = \_ -> pipeRawBamOutput
                 , strand_preserved = True
                 , collapse = cons_collapse' 60
                 , keep_all = False
@@ -50,6 +50,7 @@ defaults = Conf { output = pipeRawBamOutput
 options :: [OptDescr (Conf -> IO Conf)]
 options = [
     Option  "o" ["output"]         (ReqArg set_output "FILE") "Write to FILE (default: stdout)",
+    Option  "O" ["output-lib"]     (ReqArg set_lib_out "PAT") "Write each lib to file named following PAT",
     Option  "R" ["refseq"]         (ReqArg set_range "RANGE") "Read only range of reference sequences",
     Option  "p" ["improper-pairs"] (NoArg  set_improper)      "Include improper pairs",
     Option  "u" ["unaligned"]      (NoArg  set_unaligned)     "Included unaligned reads and pairs",
@@ -65,14 +66,15 @@ options = [
     Option "h?" ["help","usage"]   (NoArg  (const usage))     "Print this message" ]
 
   where
-    set_output   f c =                    return $ c { output = writeRawBamFile f } 
+    set_output   f c =                    return $ c { output = \_ -> writeRawBamFile f } 
+    set_lib_out  f c =                    return $ c { output =       writeLibBamFiles f } 
     set_qual     n c = readIO n >>= \a -> return $ c { collapse = cons_collapse' a }
     set_no_strand  c =                    return $ c { strand_preserved = False }
     set_verbose    c =                    return $ c { debug = hPutStr stderr }
     set_improper   c =                    return $ c { filter_enee = Just }
     set_single     c =                    return $ c { filter_enee = make_single }
     set_cheap      c =                    return $ c { collapse = cheap_collapse' }
-    set_count_only c =                    return $ c { collapse = cheap_collapse', output = const skipToEof }
+    set_count_only c =                    return $ c { collapse = cheap_collapse', output = \_ _ -> skipToEof }
     set_keep       c =                    return $ c { keep_all = True }
     set_unaligned  c =                    return $ c { keep_unaligned = True }
     set_len      n c = readIO n >>= \a -> return $ c { min_len = a }
@@ -159,7 +161,7 @@ main = do
 
        output' <- takeWhileE is_halfway_aligned ><> filters ><>
                   rmdup (get_label tbl) strand_preserved (collapse keep_all) $ 
-                  count_all (get_label tbl) `I.zip` output (add_pg hdr)
+                  count_all (get_label tbl) `I.zip` output (get_label tbl) (add_pg hdr)
 
        case which of
             Unaln              -> joinI $ filters $ output'
@@ -272,4 +274,21 @@ decodeWithIndex enum fp k0 = do
         joinI $ decompressBgzf $ do
             hdr <- decodeBam return
             enum idx $ hdr >>= k0
+
+
+writeLibBamFiles :: MonadCatchIO m => FilePath -> (BamRaw -> Seqid) -> BamMeta -> Iteratee [BamRaw] m ()
+writeLibBamFiles fp lbl hdr = tryHead >>= loop M.empty
+  where
+    loop m  Nothing  = mapM_ run $ M.elems m
+    loop m (Just br) = do
+        let !l = lbl br
+        let !it = M.findWithDefault (writeRawBamFile (fp `subst` l) hdr) l m
+        it' <- enumPure1Chunk [br] it
+        let !m' = M.insert l it' m
+        tryHead >>= loop m'
+
+    subst [            ] _ = []
+    subst ('%':'s':rest) l = unpackSeqid l ++ subst rest l
+    subst ('%':'%':rest) l = '%' : subst rest l
+    subst ( c :    rest) l =  c  : subst rest l
 

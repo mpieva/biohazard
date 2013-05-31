@@ -23,6 +23,20 @@ Send output to
 .I file
 instead of standard output.
 
+.IP "-O, --output-lib pat"
+Split output by library (see notes below) and write each into a file
+with the name created from 
+.IR pat .
+If 
+.I pat
+contains the characters
+.IR '%s' ,
+they will be replaced by the name of the library.  Note that there can
+be reads assigned to no read group, these will have the empty string
+substituted.  The characters
+.IR '%%'
+will be replaced by a single percent sign.
+
 .IP "-R, --refseq REF"
 Specify which parts of the input to read.  Selective reading requires an
 index file for the input.  It allows separate processing of individual
