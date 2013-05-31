@@ -23,6 +23,30 @@ Send output to
 .I file
 instead of standard output.
 
+.IP "-R, --refseq REF"
+Specify which parts of the input to read.  Selective reading requires an
+index file for the input.  It allows separate processing of individual
+reference sequences and hence parallelization.  If
+.IR REF " is " A ,
+the whole input is processed, which is the default.  If
+.I REF
+is a number, only alignments to one reference sequence are processed.
+If
+.IR REF " is " X-Y ", where " X " and " Y
+are numbers, alignments to reference sequences numbered 
+.IR X " through " Y
+are processed.  Reference sequences are numbered starting from
+.IR 1 ,
+asking for references that do not exist results in no error, but an
+empty output file.  If
+.IR REF " is " U ,
+only reads with invalid reference sequence (unaligned reads at the end
+of the file) are processed.  This only makes sense to simulate the
+effect of 
+.IR --unaligned ,
+therefore 
+.IR "--refseq U" " implies " --unaligned .
+
 .IP "-p, --improper-pairs"
 Retain improper pairs, that is, mate-pairs of which only one mate is
 mapped.  These are discarded by default.
@@ -57,7 +81,7 @@ removal are instead retained and marked as duplicates.
 Note that 
 .I --keep
 does not affect the operation of the filter settings!  It may make sense
-to com bine 
+to combine 
 .I --keep 
 with 
 .IR --improper-pairs ,
