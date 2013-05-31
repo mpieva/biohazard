@@ -110,7 +110,9 @@ import Foreign.C.String             ( CString )
 import Foreign.Ptr                  ( plusPtr )
 import Foreign.Marshal.Utils        ( moveBytes )
 import Foreign.Storable             ( pokeElemOff )
+import System.Directory             ( doesFileExist )
 import System.Environment           ( getArgs )
+import System.FilePath              ( dropExtension, (<.>) )
 import System.IO
 import System.IO.Unsafe
 
@@ -422,7 +424,13 @@ decodeBamLoop = eneeCheckIfDone loop
 type BamIndex = UArray Refseq Int64
 
 readBamIndex :: FilePath -> IO BamIndex
-readBamIndex = fileDriver readBamIndex'
+readBamIndex fp0 = do
+    let fp1 = fp0 <.> "bai" ; fp2 = dropExtension fp0 <.> "bai"
+    es <- (,,) `fmap` doesFileExist fp0 `ap` doesFileExist fp1 `ap` doesFileExist fp2
+    case es of
+        (False, True, _) -> fileDriver readBamIndex' fp1
+        (False, _, True) -> fileDriver readBamIndex' fp2
+        _                -> fileDriver readBamIndex' fp0
 
 readBamIndex' :: MonadIO m => Iteratee S.ByteString m BamIndex
 readBamIndex' = do magic <- heads "BAI\1"

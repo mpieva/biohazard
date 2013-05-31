@@ -1,4 +1,5 @@
 dist
+tags
 cabal-dev
 *.o
 *.hi
