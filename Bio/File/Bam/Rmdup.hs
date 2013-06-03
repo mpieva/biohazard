@@ -8,6 +8,8 @@ module Bio.File.Bam.Rmdup(
 import Bio.File.Bam
 import Bio.File.Bam.Fastq               ( removeWarts )
 import Bio.Iteratee
+import Control.Monad                    ( liftM )
+import Control.Parallel                 ( par )
 import Data.Array.Unboxed
 import Data.Bits
 import Data.List
@@ -123,19 +125,33 @@ rmdup label strand_preserved collapse_cfg =
     -- Easiest way to go about this:  We simply collect everything that
     -- starts at some specific coordinate and group it appropriately.
     -- Treat the groups separately, output, go on.
-    check_sort ><> mapGroups (either fail nice_sort . do_rmdup label strand_preserved collapse_cfg)
+    check_sort ><> mapGroups rmdup_group ><> holdup ><> check_sort
   where
+    rmdup_group = nice_sort . do_rmdup label strand_preserved collapse_cfg
     same_pos u v = br_cpos u == br_cpos v
     br_cpos br = (br_rname br, br_pos br)
 
-    nice_sort = return . sortBy (comparing br_l_seq)
+    nice_sort (Right x) = [Right $ sortBy (comparing br_l_seq) x]
+    nice_sort (Left  y) = [Left y]
 
     mapGroups f o = I.tryHead >>= maybe (return o) (\a -> eneeCheckIfDone (mg1 f a []) o)
     mg1 f a acc k = I.tryHead >>= \mb -> case mb of
-                        Nothing -> f (a:acc) >>= return . k . Chunk
+                        Nothing -> return . k . Chunk . f $ a:acc
                         Just b | same_pos a b -> mg1 f a (b:acc) k
-                               | otherwise -> f (a:acc) >>= eneeCheckIfDone (mg1 f b []) . k . Chunk
+                               | otherwise -> eneeCheckIfDone (mg1 f b []) . k . Chunk . f $ a:acc
     
+holdup :: Monad m => Enumeratee [Either String [BamRaw]] [BamRaw] m a
+holdup = eneeCheckIfDone (go (0::Int) [])
+  where
+    go 1024 acc k = embed (reverse acc) >>= holdup . k . Chunk
+    go    n acc k = tryHead >>= go' n acc k
+
+    go' _ acc k  Nothing  = embed (reverse acc) >>= return . k . Chunk
+    go' n acc k (Just  a) = a `par` go (n+1) (a:acc) k
+
+    embed = liftM concat . mapM (either fail return)
+
+
 check_sort :: Monad m => Enumeratee [BamRaw] [BamRaw] m a
 check_sort out = I.tryHead >>= maybe (return out) (\a -> eneeCheckIfDone (step a) out)
   where
