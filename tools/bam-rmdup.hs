@@ -26,7 +26,8 @@ data Conf = Conf {
     collapse :: Bool -> Collapse,
     keep_all :: Bool,
     keep_unaligned :: Bool,
-    filter_enee :: BamRaw -> Maybe BamRaw,
+    keep_improper :: Bool,
+    transform :: BamRaw -> Maybe BamRaw,
     min_len :: Int,
     get_label :: M.Map Seqid Seqid -> BamRaw -> Seqid,
     debug :: String -> IO (),
@@ -41,7 +42,8 @@ defaults = Conf { output = \_ -> pipeRawBamOutput
                 , collapse = cons_collapse' 60
                 , keep_all = False
                 , keep_unaligned = False
-                , filter_enee = is_aligned
+                , keep_improper = False
+                , transform = Just
                 , min_len = 0
                 , get_label = get_library
                 , debug = \_ -> return ()
@@ -71,8 +73,8 @@ options = [
     set_qual     n c = readIO n >>= \a -> return $ c { collapse = cons_collapse' a }
     set_no_strand  c =                    return $ c { strand_preserved = False }
     set_verbose    c =                    return $ c { debug = hPutStr stderr }
-    set_improper   c =                    return $ c { filter_enee = Just }
-    set_single     c =                    return $ c { filter_enee = make_single }
+    set_improper   c =                    return $ c { keep_improper = True }
+    set_single     c =                    return $ c { transform = make_single }
     set_cheap      c =                    return $ c { collapse = cheap_collapse' }
     set_count_only c =                    return $ c { collapse = cheap_collapse', output = \_ _ -> skipToEof }
     set_keep       c =                    return $ c { keep_all = True }
@@ -156,12 +158,17 @@ main = do
                 debug "mapping of read groups to libraries:\n"
                 mapM_ debug [ unpackSeqid k ++ " --> " ++ unpackSeqid v ++ "\n" | (k,v) <- M.toList tbl ]
 
-       let filters = mapChunks (mapMaybe filter_enee . filter ((>= min_len) . eff_len)) ><>
+       let filters = mapChunks (mapMaybe transform) ><> 
+                     filterStream (\br -> (keep_unaligned || is_aligned br) &&
+                                          (keep_improper || is_proper br) &&
+                                          eff_len br >= min_len) ><>
                      progress debug (meta_refs hdr)
 
        output' <- takeWhileE is_halfway_aligned ><> filters ><>
                   rmdup (get_label tbl) strand_preserved (collapse keep_all) $ 
                   count_all (get_label tbl) `I.zip` output (get_label tbl) (add_pg hdr)
+
+       liftIO $ debug "rmdup done; copying junk\n"
 
        case which of
             Unaln              -> joinI $ filters $ output'
@@ -215,10 +222,12 @@ eff_len br | br_isProperlyPaired br = abs $ br_isize br
 is_halfway_aligned :: BamRaw -> Bool
 is_halfway_aligned br = not (br_isUnmapped br) || not (br_isMateUnmapped br)
 
-is_aligned :: BamRaw -> Maybe BamRaw
-is_aligned br | br_isUnmapped br || not (isValidRefseq (br_rname br)) = Nothing
-              | br_isPaired br && br_isMateUnmapped br                = Nothing
-              | otherwise                                             = Just br
+is_aligned :: BamRaw -> Bool
+is_aligned br = not (br_isUnmapped br) && isValidRefseq (br_rname br)
+
+is_proper :: BamRaw -> Bool
+is_proper br = not (br_isPaired br) || 
+               (br_isMateUnmapped br == br_isUnmapped br && br_isProperlyPaired br)
 
 make_single :: BamRaw -> Maybe BamRaw
 make_single br | br_isPaired br && br_isSecondMate br = Nothing

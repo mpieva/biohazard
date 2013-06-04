@@ -113,7 +113,7 @@ import Foreign.Marshal.Utils        ( moveBytes )
 import Foreign.Storable             ( pokeElemOff )
 import System.Directory             ( doesFileExist )
 import System.Environment           ( getArgs )
-import System.FilePath              ( dropExtension, (<.>) )
+import System.FilePath              ( dropExtension, takeExtension, (<.>) )
 import System.IO
 import System.IO.Unsafe
 
@@ -203,13 +203,12 @@ decodeAnyBamFile fn k = enumFileRandom defaultBufSize fn (decodeAnyBam k) >>= ru
 -- at all if the sequence isn't found.
 
 decodeBamSequence :: Monad m => BamIndex -> Refseq -> Enumeratee Block [BamRaw] m a
-decodeBamSequence idx refseq iter
-    | refseq < Refseq 0         = return iter
-    | refseq > snd (bounds idx) = return iter
-    | otherwise = case idx ! refseq of
+decodeBamSequence (BamIndex _ idx) refseq iter
+    | bounds idx `inRange` refseq = case idx ! refseq of
         0       -> return iter
         virtoff -> do seek $ fromIntegral virtoff
                       (decodeBamLoop ><> breakE wrong_ref) iter
+    | otherwise = return iter
   where
     wrong_ref br = br_rname br /= refseq
 
@@ -217,10 +216,8 @@ decodeBamSequence idx refseq iter
 -- decode those.  Sort of the dual to @decodeBamSequence@.
 
 decodeBamUnaligned :: Monad m => BamIndex -> Enumeratee Block [BamRaw] m a
-decodeBamUnaligned idx iter = case idx ! Refseq (-1) of
-        0       -> return iter
-        virtoff -> do seek $ fromIntegral virtoff
-                      (decodeBamLoop ><> filterStream no_ref) iter
+decodeBamUnaligned (BamIndex voff _) iter = do when (voff /= 0) $ seek $ fromIntegral voff
+                                               (decodeBamLoop ><> filterStream no_ref) iter
   where
     no_ref br = br_rname br == invalidRefseq
 
@@ -429,26 +426,28 @@ decodeBamLoop = eneeCheckIfDone loop
 -- | Stop gap solution for a cheap index.  We only get the first offset
 -- from the linear index, which allows us to navigate to a target
 -- sequence.  Will do the rest when I need it.
-type BamIndex = UArray Refseq Int64
+data BamIndex = BamIndex { _bi_unaln :: Int64
+                         , _bi_refseqs :: UArray Refseq Int64 }
 
 readBamIndex :: FilePath -> IO BamIndex
-readBamIndex fp0 = do
+readBamIndex fp0 | takeExtension fp0 == ".bai" = fileDriver readBamIndex' fp0
+                 | otherwise = do
     let fp1 = fp0 <.> "bai" ; fp2 = dropExtension fp0 <.> "bai"
-    es <- (,,) `fmap` doesFileExist fp0 `ap` doesFileExist fp1 `ap` doesFileExist fp2
+    es <- liftM2 (,) (doesFileExist fp1) (doesFileExist fp2)
     case es of
-        (False, True, _) -> fileDriver readBamIndex' fp1
-        (False, _, True) -> fileDriver readBamIndex' fp2
-        _                -> fileDriver readBamIndex' fp0
+        (True, _) -> fileDriver readBamIndex' fp1
+        (_, True) -> fileDriver readBamIndex' fp2
+        _         -> fileDriver readBamIndex' fp0
 
 readBamIndex' :: MonadIO m => Iteratee S.ByteString m BamIndex
 readBamIndex' = do magic <- heads "BAI\1"
                    when (magic /= 4) $ fail "BAI signature not found"
                    nref <- fromIntegral `liftM` endianRead4 LSB
-                   if nref < 1 then return (array (toEnum 1, toEnum 0) [])
+                   if nref < 1 then return . BamIndex 0 $ array (toEnum 1, toEnum 0) []
                                else get_array nref
   where
     get_array nref = do 
-        arr <- liftIO $ ( newArray_ (toEnum (-1), toEnum (nref-1)) :: IO (IOUArray Refseq Int64) )
+        arr <- liftIO $ ( newArray_ (toEnum 0, toEnum (nref-1)) :: IO (IOUArray Refseq Int64) )
         mx <- reduceM [toEnum 0 .. toEnum (nref-1)] 0 $ \m0 r -> do
             nbins <- fromIntegral `liftM` endianRead4 LSB
             replicateM_ nbins $ do
@@ -465,8 +464,7 @@ readBamIndex' = do magic <- heads "BAI\1"
                      in loop maxBound m0 nintv                    
             liftIO $ writeArray arr r o 
             return m
-        liftIO $ writeArray arr (toEnum (-1)) mx
-        liftIO $ unsafeFreeze arr
+        BamIndex mx `liftM` liftIO (unsafeFreeze arr)
 
     reduceM xs nil cons = foldM cons nil xs
 
