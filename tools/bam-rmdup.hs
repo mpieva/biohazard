@@ -157,6 +157,7 @@ main = do
        unless (M.null tbl) $ liftIO $ do
                 debug "mapping of read groups to libraries:\n"
                 mapM_ debug [ unpackSeqid k ++ " --> " ++ unpackSeqid v ++ "\n" | (k,v) <- M.toList tbl ]
+       liftIO $ debug $ show hdr
 
        let filters = mapChunks (mapMaybe transform) ><> 
                      filterStream (\br -> (keep_unaligned || is_aligned br) &&

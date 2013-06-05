@@ -119,18 +119,18 @@ data BamSorting = Unsorted | Grouped | Queryname | Coordinate | GroupSorted
 type BamOtherShit = [(Char, Char, S.ByteString)]
 
 parseBamMeta :: P.Parser BamMeta
-parseBamMeta = foldr ($) mempty <$> P.sepBy parseBamMetaLine (P.char '\n')
+parseBamMeta = foldr ($) mempty <$> P.sepBy parseBamMetaLine (P.skipWhile (=='\t') >> P.char '\n')
 
 parseBamMetaLine :: P.Parser (BamMeta -> BamMeta)
 parseBamMetaLine = P.char '@' >> P.choice [hdLine, sqLine, coLine, otherLine]
   where
     hdLine = P.string "HD\t" >> 
              (\fns meta -> meta { meta_hdr = foldr ($) (meta_hdr meta) fns })
-               <$> P.sepBy1 (P.choice [hdvn, hdso, hdother]) (P.char '\t')
+               <$> P.sepBy1 (P.choice [hdvn, hdso, hdother]) tabs
     
     sqLine = P.string "SQ\t" >> 
              (\fns meta -> meta { meta_refs = foldr ($) bad_seq fns <| meta_refs meta })
-               <$> P.sepBy1 (P.choice [sqnm, sqln, sqother]) (P.char '\t')
+               <$> P.sepBy1 (P.choice [sqnm, sqln, sqother]) tabs
     
     hdvn = P.string "VN:" >>
            (\a b hdr -> hdr { hdr_version = (a,b) })
@@ -155,11 +155,13 @@ parseBamMetaLine = P.char '@' >> P.choice [hdLine, sqLine, coLine, otherLine]
                <$> P.takeWhile (/= 'n')
 
     otherLine = (\a b ts meta -> meta { meta_other_shit = (a,b,ts) : meta_other_shit meta })
-                  <$> P.anyChar <*> P.anyChar <*> (P.char '\t' >> P.sepBy1 tagother (P.char '\t'))
+                  <$> P.anyChar <*> P.anyChar <*> (tabs >> P.sepBy1 tagother tabs)
 
     tagother :: P.Parser (Char,Char,S.ByteString)
     tagother = (,,) <$> P.anyChar <*> P.anyChar <*> (P.char ':' >> pall)
     
+    tabs = P.char '\t' >> P.skipWhile (== '\t')
+
     pall :: P.Parser S.ByteString
     pall = P.takeWhile (\c -> c/='\t' && c/='\n')
 
