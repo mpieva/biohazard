@@ -19,9 +19,9 @@ output file.
 
 .SH OPTIONS
 .IP "-o, --output file"
-Send output to
-.I file
-instead of standard output.
+Send BAM output to
+.IR file .
+The default is to produce no output and count duplicates only.
 
 .IP "-O, --output-lib pat"
 Split output by library (see notes below) and write each into a file
@@ -80,12 +80,8 @@ marked as "paired" any more after running with this setting.
 .IP "-c, --cheap"
 Run in cheap mode.  Cheap mode does not compute a consensus sequence for
 a cluster of duplicates, but selects one of the reads as representative.
-It's advantage is that it runs faster.
-
-.IP "-C, --count-only"
-Count duplicates, do not produce any output.  This is even faster than
-the cheap mode, and mostly useful to get complexity estimates for
-sequencing libraries.
+It's advantage is that it runs faster.  Cheap mode is the default if no
+output file is specified, else a consensus is computed by default.
 
 .IP "-k, --keep, --mark-only"
 Keep duplicates and mark them as such.  Setting this option has the
