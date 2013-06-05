@@ -21,7 +21,7 @@ import qualified Data.Map           as M
 import qualified Data.Iteratee      as I
 
 data Conf = Conf {
-    output :: (BamRaw -> Seqid) -> BamMeta -> Iteratee [BamRaw] IO (),
+    output :: Maybe ((BamRaw -> Seqid) -> BamMeta -> Iteratee [BamRaw] IO ()),
     strand_preserved :: Bool,
     collapse :: Bool -> Collapse,
     keep_all :: Bool,
@@ -37,7 +37,7 @@ data Conf = Conf {
 data Which = All | Some Refseq Refseq | Unaln deriving Show
 
 defaults :: Conf
-defaults = Conf { output = \_ -> pipeRawBamOutput
+defaults = Conf { output = Nothing
                 , strand_preserved = True
                 , collapse = cons_collapse' 60
                 , keep_all = False
@@ -51,14 +51,13 @@ defaults = Conf { output = \_ -> pipeRawBamOutput
 
 options :: [OptDescr (Conf -> IO Conf)]
 options = [
-    Option  "o" ["output"]         (ReqArg set_output "FILE") "Write to FILE (default: stdout)",
+    Option  "o" ["output"]         (ReqArg set_output "FILE") "Write to FILE (default: no output, count only)",
     Option  "O" ["output-lib"]     (ReqArg set_lib_out "PAT") "Write each lib to file named following PAT",
     Option  "R" ["refseq"]         (ReqArg set_range "RANGE") "Read only range of reference sequences",
     Option  "p" ["improper-pairs"] (NoArg  set_improper)      "Include improper pairs",
     Option  "u" ["unaligned"]      (NoArg  set_unaligned)     "Included unaligned reads and pairs",
     Option  "1" ["single-read"]    (NoArg  set_single)        "Pretend there is no second mate",
     Option  "c" ["cheap"]          (NoArg  set_cheap)         "Cheap computation: skip the consensus calling",
-    Option  "C" ["count-only"]     (NoArg  set_count_only)    "Count duplicates, don't bother with output",
     Option  "k" ["keep","mark-only"](NoArg set_keep)          "Mark duplicates, but include them in output",
     Option  "Q" ["max-qual"]       (ReqArg set_qual "QUAL")   "Set maximum quality after consensus call to QUAL",
     Option  "l" ["min-length"]     (ReqArg set_len "LEN")     "Discard reads shorter than LEN",
@@ -68,15 +67,14 @@ options = [
     Option "h?" ["help","usage"]   (NoArg  (const usage))     "Print this message" ]
 
   where
-    set_output   f c =                    return $ c { output = \_ -> writeRawBamFile f } 
-    set_lib_out  f c =                    return $ c { output =       writeLibBamFiles f } 
+    set_output   f c =                    return $ c { output = Just $ \_ -> writeRawBamFile f } 
+    set_lib_out  f c =                    return $ c { output = Just $       writeLibBamFiles f } 
     set_qual     n c = readIO n >>= \a -> return $ c { collapse = cons_collapse' a }
     set_no_strand  c =                    return $ c { strand_preserved = False }
     set_verbose    c =                    return $ c { debug = hPutStr stderr }
     set_improper   c =                    return $ c { keep_improper = True }
     set_single     c =                    return $ c { transform = make_single }
     set_cheap      c =                    return $ c { collapse = cheap_collapse' }
-    set_count_only c =                    return $ c { collapse = cheap_collapse', output = \_ _ -> skipToEof }
     set_keep       c =                    return $ c { keep_all = True }
     set_unaligned  c =                    return $ c { keep_unaligned = True }
     set_len      n c = readIO n >>= \a -> return $ c { min_len = a }
@@ -148,16 +146,12 @@ main = do
     unless (null errors) $ mapM_ (hPutStrLn stderr) errors >> exitFailure
     Conf{..} <- foldr (>=>) return opts defaults
 
-    when (null args) $ do t <- hIsTerminalDevice stdout
-                          when t $ hPutStrLn stderr "Cowardly refusing to write BAM to a terminal." >> exitFailure
-
     add_pg <- addPG $ Just version
     (counts, ()) <- mergeInputRanges which files >=> run $ \hdr -> do
        let tbl = mk_rg_tbl hdr
        unless (M.null tbl) $ liftIO $ do
                 debug "mapping of read groups to libraries:\n"
                 mapM_ debug [ unpackSeqid k ++ " --> " ++ unpackSeqid v ++ "\n" | (k,v) <- M.toList tbl ]
-       liftIO $ debug $ show hdr
 
        let filters = mapChunks (mapMaybe transform) ><> 
                      filterStream (\br -> (keep_unaligned || is_aligned br) &&
@@ -165,18 +159,21 @@ main = do
                                           eff_len br >= min_len) ><>
                      progress debug (meta_refs hdr)
 
-       output' <- takeWhileE is_halfway_aligned ><> filters ><>
-                  rmdup (get_label tbl) strand_preserved (collapse keep_all) $ 
-                  count_all (get_label tbl) `I.zip` output (get_label tbl) (add_pg hdr)
+       let (co, ou) = case output of Nothing -> (cheap_collapse', \_ _ -> skipToEof)
+                                     Just  o -> (collapse, o)
+
+       ou' <- takeWhileE is_halfway_aligned ><> filters ><>
+              rmdup (get_label tbl) strand_preserved (co keep_all) $ 
+              count_all (get_label tbl) `I.zip` ou (get_label tbl) (add_pg hdr)
 
        liftIO $ debug "rmdup done; copying junk\n"
 
        case which of
-            Unaln              -> joinI $ filters $ output'
-            _ | keep_unaligned -> joinI $ filters $ output'
-            _                  -> lift (run output')
+            Unaln              -> joinI $ filters $ ou'
+            _ | keep_unaligned -> joinI $ filters $ ou'
+            _                  -> lift (run ou')
 
-    hPutStr stderr . unlines $
+    putStr . unlines $
         "\27[K#RG\tin\tout\tin@MQ20\tsingle@MQ20\tunseen\ttotal\t%unique\t%exhausted"
         : map (uncurry do_report) (M.toList counts)
 
