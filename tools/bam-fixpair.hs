@@ -309,7 +309,8 @@ no_mate_here l b = do note $ "[" ++ l ++ "] record "
                       enqueue (byQName b') messed_up
 
 no_mate_ever :: MonadIO m => BamRaw -> Mating r m ()
-no_mate_ever b = do err  $ "record " ++ show (br_qname b) ++ " did not have a mate at all."
+no_mate_ever b = do err $ "record " ++ shows (br_qname b) " (" ++ 
+                          shows (br_extAsInt 1 "XI" b) ") did not have a mate at all."
                     modify $ \c -> c { lone_mates = 1 + lone_mates c }
                     kill <- tells killmode
                     case kill of
@@ -377,9 +378,9 @@ re_pair qs cf = eneeCheckIfDone $ \out -> runMating go finish ms0 out qs cf
 
     -- At EOF, flush everything.
     go' Nothing = peekMin right_here >>= \mm -> case mm of
-            Just (ByQName _ qq) -> do complete_here (br_self_pos qq)
-                                      flush_here Nothing  -- flush_here loops back here
-            Nothing             -> flush_in_order  -- this ends the whole operation
+            Just (ByQName _ _ qq) -> do complete_here (br_self_pos qq)
+                                        flush_here Nothing  -- flush_here loops back here
+            Nothing               -> flush_in_order  -- this ends the whole operation
 
     -- Single read?  Pass through and go on.
     -- Paired read?  Does it belong 'here'?
@@ -390,7 +391,7 @@ re_pair qs cf = eneeCheckIfDone $ \out -> runMating go finish ms0 out qs cf
             -- there's nothing else here, so here becomes redefined
             Nothing             -> enqueueThis r >> go
 
-            Just (ByQName _ qq) -> case compare (br_self_pos r) (br_self_pos qq) of
+            Just (ByQName _ _ qq) -> case compare (br_self_pos r) (br_self_pos qq) of
                 -- nope, r is out of order and goes to 'messed_up'
                 LT -> do warn $ "record " ++ show (br_qname r) ++ " is out of order."
                          let !r' = force_copy r
@@ -421,14 +422,14 @@ re_pair qs cf = eneeCheckIfDone $ \out -> runMating go finish ms0 out qs cf
     -- unless something is broken.
     flush_messed_up = fetchMin messed_up >>= flush_mess1 
 
-    flush_mess1 Nothing              = return ()
-    flush_mess1 (Just (ByQName _ a)) = fetchMin messed_up >>= flush_mess2 a
+    flush_mess1 Nothing                 = return ()
+    flush_mess1 (Just (ByQName _ ai a)) = fetchMin messed_up >>= flush_mess2 ai a
 
-    flush_mess2 a Nothing = no_mate_ever a
+    flush_mess2  _ a Nothing = no_mate_ever a
                                                 
-    flush_mess2 a b'@(Just (ByQName _ b)) 
-        | br_qname a /= br_qname b = no_mate_ever a >> report' >> flush_mess1 b' 
-        | otherwise                = fixmate a b    >>= yield >> report' >> flush_messed_up 
+    flush_mess2 ai a b'@(Just (ByQName _ bi b)) 
+        | ai /= bi || br_qname a /= br_qname b = no_mate_ever a >> report' >> flush_mess1 b' 
+        | otherwise                            = fixmate a b    >>= yield >> report' >> flush_messed_up 
 
 
     -- Flush the right_here queue.  Everything should come off in pairs,
@@ -438,12 +439,12 @@ re_pair qs cf = eneeCheckIfDone $ \out -> runMating go finish ms0 out qs cf
     flush_here1 r Nothing = go' r
     flush_here1 r (Just a) = fetchMin right_here >>= flush_here2 r a
 
-    flush_here2 r (ByQName _ a) Nothing = do no_mate_here "flush_here2/Nothing" a
-                                             flush_here r
+    flush_here2 r (ByQName _ _ a) Nothing = do no_mate_here "flush_here2/Nothing" a
+                                               flush_here r
                                                 
-    flush_here2 r (ByQName _ a) b'@(Just (ByQName _ b)) 
-        | br_qname a /= br_qname b = no_mate_here "flush_here2/Just" a >> flush_here1 r b'
-        | otherwise                = fixmate a b >>= yield >> flush_here r
+    flush_here2 r (ByQName _ ai a) b'@(Just (ByQName _ bi b)) 
+        | ai /= bi || br_qname a /= br_qname b = no_mate_here "flush_here2/Just" a >> flush_here1 r b'
+        | otherwise                            = fixmate a b >>= yield >> flush_here r
 
 
     -- add stuff coming from 'in_order' to 'right_here'
@@ -465,18 +466,20 @@ re_pair qs cf = eneeCheckIfDone $ \out -> runMating go finish ms0 out qs cf
     finish () st o _qs _cf = do liftIO $ hPutStrLn stderr $ report_stats st
                                 return (liftI o)
 
-data ByQName = ByQName !Int !BamRaw
+data ByQName = ByQName { _bq_hash :: !Int
+                       , _bq_alnid :: !Int
+                       , _bq_rec :: !BamRaw }
 
 byQName :: BamRaw -> ByQName
-byQName b = ByQName (hash $ br_qname b) b
+byQName b = ByQName (hash $ br_qname b) (br_extAsInt 0 "XI" b) b
 
 instance Eq ByQName where 
-    ByQName ah a == ByQName bh b = 
-        (ah, br_qname a) == (bh, br_qname b)
+    ByQName ah ai a == ByQName bh bi b = 
+        (ah, ai, br_qname a) == (bh, bi, br_qname b)
 
 instance Ord ByQName where 
-    ByQName ah a `compare` ByQName bh b = 
-        (ah, br_qname a) `compare` (bh, br_qname b)
+    ByQName ah ai a `compare` ByQName bh bi b = 
+        (ah, ai, br_qname a) `compare` (bh, bi, br_qname b)
 
 newtype ByMatePos = ByMatePos BamRaw
 
@@ -491,8 +494,8 @@ instance Ord ByMatePos where
 instance Binary ByQName where put = undefined ; get = undefined    -- XXX
 instance Binary ByMatePos where put = undefined ; get = undefined -- XXX
 
-instance Sizeable ByQName       -- XXX
-instance Sizeable ByMatePos     -- XXX
+instance Sizeable ByQName where usedBytes = undefined       -- XXX
+instance Sizeable ByMatePos where usedBytes = undefined    -- XXX
 
 br_mate_pos :: BamRaw -> (Refseq, Int)
 br_mate_pos b = (br_mrnm b, br_mpos b)
