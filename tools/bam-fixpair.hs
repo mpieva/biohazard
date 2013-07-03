@@ -42,7 +42,7 @@ import Paths_biohazard                          ( version )
 import System.Console.GetOpt
 import System.Environment                       ( getArgs, getProgName )
 import System.Exit                              ( exitFailure, exitSuccess )
-import System.IO
+import System.IO                                ( hPutStrLn )
 import Text.Printf
 
 import qualified Data.ByteString as S

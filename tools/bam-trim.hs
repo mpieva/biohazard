@@ -7,7 +7,7 @@ import Paths_biohazard                      ( version )
 import System.Console.GetOpt
 import System.Environment                   ( getArgs )
 import System.Exit                          ( exitFailure, exitSuccess )
-import System.IO                            ( stdout, stderr, hPutStrLn )
+import System.IO                            ( hPutStrLn )
 
 import qualified Data.ByteString      as S  ( hPut )
 

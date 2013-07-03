@@ -60,6 +60,8 @@ module Bio.File.Bam.Raw (
     br_mrnm,
     br_mpos,
     br_isize,
+    br_seq_at,
+    br_qual_at,
 
     br_findExtension,
     br_extAsInt,
@@ -367,6 +369,18 @@ br_isize (BamRaw _ raw) | i >= 0x80000000 = i - 0x100000000
                         | otherwise       = i
     where i :: Int
           i = getInt raw 28
+
+br_seq_at :: BamRaw -> Int -> Nucleotide
+br_seq_at br@(BamRaw _ raw) i
+    | even    i = N $ (S.unsafeIndex raw (off0 + i `div` 2) `shiftR` 4) .&. 0xF
+    | otherwise = N $  S.unsafeIndex raw (off0 + i `div` 2)             .&. 0xF
+  where
+    off0 = sum [ 33, br_l_read_name br, 4 * br_n_cigar_op br ]
+    
+br_qual_at :: BamRaw -> Int -> Int
+br_qual_at br@(BamRaw _ raw) i = fromIntegral $ S.unsafeIndex raw (off0 + i)
+  where
+    off0 = sum [ 33, br_l_read_name br, 4 * br_n_cigar_op br, br_l_seq br ]
 
 br_aln_length :: BamRaw -> Int
 br_aln_length br@(BamRaw _ raw) 

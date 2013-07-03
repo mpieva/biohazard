@@ -11,8 +11,8 @@ import Bio.File.Bam
 import Bio.Iteratee
 import Paths_biohazard ( version )
 import System.Environment
-import System.IO
 import System.Random
+import System.IO ( hPutStr )
 
 import qualified Data.ByteString as S
 import qualified Data.Iteratee as I

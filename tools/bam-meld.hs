@@ -18,7 +18,7 @@ import Paths_biohazard                          ( version )
 import System.Console.GetOpt
 import System.Environment                       ( getArgs )
 import System.Exit                              ( exitSuccess, exitFailure )
-import System.IO
+import System.IO                                ( hPutStrLn )
 
 import qualified Data.ByteString.Char8 as S
 import qualified Data.Iteratee         as I

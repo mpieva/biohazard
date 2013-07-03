@@ -25,11 +25,10 @@ module Bio.Iteratee (
 
     ($==),
     ListLike,
-    MonadIO,
-    MonadCatchIO,
-    lift,
-    liftIO,
+    MonadIO, MonadCatchIO,
+    lift, liftIO,
     (>=>), (<=<),
+    stdin, stdout, stderr,
 
     enumAuxFile,
     enumInputs,
@@ -63,7 +62,7 @@ import Data.Iteratee.Iteratee
 import Data.Iteratee.Parallel
 import Data.Monoid
 import Data.ListLike ( ListLike )
-import System.IO ( stdin )
+import System.IO ( stdin, stdout, stderr )
 import System.Environment ( getArgs )
 
 import qualified Data.ListLike as LL

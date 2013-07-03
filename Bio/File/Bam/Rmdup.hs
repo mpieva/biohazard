@@ -156,8 +156,9 @@ check_sort :: Monad m => Enumeratee [BamRaw] [BamRaw] m a
 check_sort out = I.tryHead >>= maybe (return out) (\a -> eneeCheckIfDone (step a) out)
   where
     step a k = I.tryHead >>= maybe (return . k $ Chunk [a]) (step' a k)
-    step' a k b | (br_rname a, br_pos a) > (br_rname b, br_pos b) = fail "sorting violated"
+    step' a k b | (br_rname a, br_pos a) > (br_rname b, br_pos b) = fail msg
                 | otherwise = eneeCheckIfDone (step b) . k $ Chunk [a]
+    msg = "rmdup: input must be sorted"
 
 -- To be perfectly honest, I do not understand what these flags mean.
 -- All I know it that if and when they are set, the duplicate removal

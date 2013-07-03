@@ -124,7 +124,7 @@ import qualified Data.Vector.Generic            as V
 -- those integers in an array.
 newtype Cigar = Cigar { unCigar :: [(CigOp, Int)] }
 
-data CigOp = Mat | Ins | Del | Nop | SMa | HMa | Pad 
+data CigOp = Mat | Ins | Del | Nop | SMa | HMa | Pad
     deriving ( Eq, Ord, Enum, Show, Bounded, Ix )
 
 instance Show Cigar where
