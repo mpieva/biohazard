@@ -1,4 +1,5 @@
 {-# LANGUAGE OverloadedStrings, PatternGuards, BangPatterns, NoMonomorphismRestriction #-}
+{-# OPTIONS_GHC -funbox-strict-fields #-}
 module Bio.File.Bam.Raw (
     module Bio.Base,
 
@@ -62,6 +63,7 @@ module Bio.File.Bam.Raw (
     br_isize,
     br_seq_at,
     br_qual_at,
+    br_cigar_at,
 
     br_findExtension,
     br_extAsInt,
@@ -136,14 +138,17 @@ import qualified Data.Sequence                  as Z
 
 -- | The invalid position.
 -- Bam uses this value to encode a missing position.
+{-# INLINE invalidPos #-}
 invalidPos :: Int
 invalidPos = 0xFFFFFFFF
 
 -- | Tests whether a position is valid.
 -- Returns true unless the the argument equals @invalidPos@.
+{-# INLINE isValidPos #-}
 isValidPos :: Int -> Bool
 isValidPos = (/=) invalidPos
 
+{-# INLINE unknownMapq #-}
 unknownMapq :: Int
 unknownMapq = 255
 
@@ -240,10 +245,12 @@ mergeInputs (?) (fp0:fps0) = go fp0 fps0
     go fp [       ] = enum1 fp
     go fp (fp1:fps) = mergeEnums' (go fp1 fps) (enum1 fp) (?)
 
+{-# INLINE combineCoordinates #-}
 combineCoordinates :: Monad m => BamMeta -> Enumeratee [BamRaw] [BamRaw] (Iteratee [BamRaw] m) a
 combineCoordinates _ = mergeSortStreams (?)
   where u ? v = if (br_rname u, br_pos u) < (br_rname v, br_pos v) then Less else NotLess
 
+{-# INLINE combineNames #-}
 combineNames :: Monad m => BamMeta -> Enumeratee [BamRaw] [BamRaw] (Iteratee [BamRaw] m) a
 combineNames _ = mergeSortStreams (?)
   where u ? v = case br_qname u `compareNames` br_qname v of LT -> Less ; _ -> NotLess
@@ -311,28 +318,46 @@ bamRaw o s = if good then r else error $ "broken BAM record " ++ show (S.length 
     m = sum [ 32, br_l_read_name r, br_l_seq r, (br_l_seq r+1) `div` 2, br_n_cigar_op r * 4 ] 
 
 -- | Accessor for raw bam.
+{-# INLINE br_qname #-}
 br_qname :: BamRaw -> S.ByteString
 br_qname r@(BamRaw _ raw) = S.unsafeTake (br_l_read_name r) $ S.unsafeDrop 32 raw
 
+{-# INLINE br_l_read_name #-}
 br_l_read_name :: BamRaw -> Int  
 br_l_read_name (BamRaw _ raw) = fromIntegral $ S.unsafeIndex raw 8 - 1
 
+{-# INLINE br_l_seq #-}
 br_l_seq :: BamRaw -> Int
 br_l_seq (BamRaw _ raw) = getInt raw 16
 
+{-# INLINE getInt16 #-}
 getInt16 :: (Num a, Bits a) => S.ByteString -> Int -> a
 getInt16 s o = fromIntegral (S.unsafeIndex s o) .|. fromIntegral (S.unsafeIndex s $ o+1) `shiftL`  8
 
+{-# INLINE getInt #-}
 getInt :: (Num a, Bits a) => S.ByteString -> Int -> a
 getInt s o = fromIntegral (S.unsafeIndex s $ o+0)             .|. fromIntegral (S.unsafeIndex s $ o+1) `shiftL`  8 .|.
              fromIntegral (S.unsafeIndex s $ o+2) `shiftL` 16 .|. fromIntegral (S.unsafeIndex s $ o+3) `shiftL` 24
 
+{-# INLINE br_n_cigar_op #-}
 br_n_cigar_op :: BamRaw -> Int
 br_n_cigar_op (BamRaw _ raw) = getInt16 raw 12
 
+{-# INLINE br_flag #-}
 br_flag :: BamRaw -> Int
 br_flag (BamRaw _ raw) = getInt16 raw 14
 
+{-# INLINE br_isPaired         #-}
+{-# INLINE br_isProperlyPaired #-}
+{-# INLINE br_isUnmapped       #-}
+{-# INLINE br_isMateUnmapped   #-}
+{-# INLINE br_isReversed       #-}
+{-# INLINE br_isMateReversed   #-}
+{-# INLINE br_isFirstMate      #-}
+{-# INLINE br_isSecondMate     #-}
+{-# INLINE br_isAuxillary      #-}
+{-# INLINE br_isFailsQC        #-}
+{-# INLINE br_isDuplicate      #-}
 br_isPaired, br_isProperlyPaired, br_isUnmapped, br_isMateUnmapped, br_isReversed,
     br_isMateReversed, br_isFirstMate, br_isSecondMate, br_isAuxillary, br_isFailsQC,
     br_isDuplicate :: BamRaw -> Bool
@@ -349,27 +374,34 @@ br_isAuxillary      = flip testBit  8 . br_flag
 br_isFailsQC        = flip testBit  9 . br_flag
 br_isDuplicate      = flip testBit 10 . br_flag
 
+{-# INLINE br_rname #-}
 br_rname :: BamRaw -> Refseq
 br_rname (BamRaw _ raw) = Refseq $ getInt raw 0
 
+{-# INLINE br_mapq #-}
 br_mapq :: BamRaw -> Int
 br_mapq (BamRaw _ raw) = fromIntegral $ S.unsafeIndex raw 9
 
+{-# INLINE br_pos #-}
 br_pos :: BamRaw -> Int
 br_pos (BamRaw _ raw) = getInt raw 4
 
+{-# INLINE br_mrnm #-}
 br_mrnm :: BamRaw -> Refseq
 br_mrnm (BamRaw _ raw) = Refseq $ getInt raw 20
 
+{-# INLINE br_mpos #-}
 br_mpos :: BamRaw -> Int
 br_mpos (BamRaw _ raw) = getInt raw 24
 
+{-# INLINE br_isize #-}
 br_isize :: BamRaw -> Int
 br_isize (BamRaw _ raw) | i >= 0x80000000 = i - 0x100000000
                         | otherwise       = i
     where i :: Int
           i = getInt raw 28
 
+{-# INLINE br_seq_at #-}
 br_seq_at :: BamRaw -> Int -> Nucleotide
 br_seq_at br@(BamRaw _ raw) i
     | even    i = N $ (S.unsafeIndex raw (off0 + i `div` 2) `shiftR` 4) .&. 0xF
@@ -377,24 +409,32 @@ br_seq_at br@(BamRaw _ raw) i
   where
     off0 = sum [ 33, br_l_read_name br, 4 * br_n_cigar_op br ]
     
+{-# INLINE br_qual_at #-}    
 br_qual_at :: BamRaw -> Int -> Int
 br_qual_at br@(BamRaw _ raw) i = fromIntegral $ S.unsafeIndex raw (off0 + i)
   where
     off0 = sum [ 33, br_l_read_name br, 4 * br_n_cigar_op br, br_l_seq br ]
 
+{-# INLINE br_cigar_at #-}
+br_cigar_at :: BamRaw -> Int -> Word32
+br_cigar_at br@(BamRaw _ raw) i = getInt raw $ cig_off + i * 4
+  where !cig_off = 33 + br_l_read_name br
+
+{-# INLINE br_aln_length #-}
 br_aln_length :: BamRaw -> Int
 br_aln_length br@(BamRaw _ raw) 
     | ncig == 0 = br_l_seq br
     | otherwise = sum [ x `shiftR` 4 | x <- map (getInt raw) $ take ncig [cig_off, cig_off+4 ..]
                                      , x .&. 0xF == 0 || x .&. 0xF == 2 || x .&. 0xF == 3 ]
-    where
-        !ncig    = br_n_cigar_op br
-        !cig_off = 33 + br_l_read_name br
+  where
+    !ncig    = br_n_cigar_op br
+    !cig_off = 33 + br_l_read_name br
 
 -- | Decode a BAM stream into raw entries.  Note that the entries can be
 -- unpacked using @decodeBamEntry@.  Also note that this is an
 -- Enumeratee in spirit, only the @BamMeta@ and @Refs@ need to get
 -- passed separately.
+{-# INLINE decodeBam #-}
 decodeBam :: Monad m => (BamMeta -> Iteratee [BamRaw] m a) -> Iteratee Block m (Iteratee [BamRaw] m a)
 decodeBam inner = do meta <- liftBlock get_bam_header
                      refs <- liftBlock get_ref_array
@@ -425,6 +465,7 @@ decodeBam inner = do meta <- liftBlock get_bam_header
                | otherwise                  = l -- contradiction in header, but we'll just ignore it
 
 
+{-# INLINE decodeBamLoop #-}
 decodeBamLoop :: Monad m => Enumeratee Block [BamRaw] m a
 decodeBamLoop = eneeCheckIfDone loop
   where
@@ -440,8 +481,8 @@ decodeBamLoop = eneeCheckIfDone loop
 -- | Stop gap solution for a cheap index.  We only get the first offset
 -- from the linear index, which allows us to navigate to a target
 -- sequence.  Will do the rest when I need it.
-data BamIndex = BamIndex { _bi_unaln :: Int64
-                         , _bi_refseqs :: UArray Refseq Int64 }
+data BamIndex = BamIndex { _bi_unaln :: !Int64
+                         , _bi_refseqs :: !(UArray Refseq Int64) }
 
 readBamIndex :: FilePath -> IO BamIndex
 readBamIndex fp0 | takeExtension fp0 == ".bai" = fileDriver readBamIndex' fp0
@@ -507,24 +548,33 @@ mutateBamRaw (BamRaw vo br) mut = unsafePerformIO $ do
 newtype Mutator a = Mut { runMutator :: CString -> Int -> [S.ByteString] -> IO (Int,[S.ByteString], a) }
 
 instance Monad Mutator where
+    {-# INLINE return #-}
     return a = Mut $ \_ l fs -> return (l,fs,a)
+    {-# INLINE (>>=) #-}
     m >>= k  = Mut $ \p l fs -> runMutator m p l fs >>= \(l',fs',a) -> runMutator (k a) p l' fs'
 
+{-# INLINE passL #-}
 passL :: IO a -> Int -> [S.ByteString] -> IO (Int,[S.ByteString],a)
 passL io = \l fs -> io >>= \a -> return (l,fs,a)
 
+{-# INLINE setFlag  #-}
+{-# INLINE setMpos  #-}
+{-# INLINE setIsize #-}
 setFlag, setMpos, setIsize :: Int -> Mutator ()
 setFlag  f = Mut $ \p -> passL $ pokeInt16 p 14 f
 setMpos  x = Mut $ \p -> passL $ pokeInt32 p 24 x
 setIsize x = Mut $ \p -> passL $ pokeInt32 p 28 x
 
+{-# INLINE setMrnm #-}
 setMrnm :: Refseq -> Mutator ()
 setMrnm r = Mut $ \p -> passL $ pokeInt32 p 20 (unRefseq r)
 
+{-# INLINE pokeInt16 #-}
 pokeInt16 :: (Bits a, Integral a) => CString -> Int -> a -> IO ()
 pokeInt16 p o x = do pokeElemOff p  o    . fromIntegral $        x   .&. 0xff
                      pokeElemOff p (o+1) . fromIntegral $ shiftR x 8 .&. 0xff
 
+{-# INLINE pokeInt32 #-}
 pokeInt32 :: (Bits a, Integral a) => CString -> Int -> a -> IO ()
 pokeInt32 p o x = do pokeElemOff p  o    . fromIntegral $        x    .&. 0xff
                      pokeElemOff p (o+1) . fromIntegral $ shiftR x  8 .&. 0xff
@@ -534,6 +584,7 @@ pokeInt32 p o x = do pokeElemOff p  o    . fromIntegral $        x    .&. 0xff
 
 
 -- Find an extension field, return offset in BamRaw data.
+{-# INLINE br_findExtension #-}
 br_findExtension :: String -> BamRaw -> Maybe (Int,Int)
 br_findExtension [u,v] br@(BamRaw _ r) = go off0
   where
@@ -563,6 +614,7 @@ br_findExtension [u,v] br@(BamRaw _ r) = go off0
     sizeof  x  = error $ "unknown fields type: " ++ show x
 br_findExtension _ _ = error "illegal key, must be two characters"
 
+{-# INLINE br_extAsInt #-}
 br_extAsInt :: Int -> String -> BamRaw -> Int
 br_extAsInt d k br@(BamRaw _ r) = case br_findExtension k br of
         Just (o,_) | SC.index r o == 'c' -> fromIntegral               (S.index r (o+1))
@@ -573,6 +625,7 @@ br_extAsInt d k br@(BamRaw _ r) = case br_findExtension k br of
                    | SC.index r o == 'I' -> fromIntegral (getInt   r (o+1) :: Word32)
         _                                -> d
 
+{-# INLINE br_extAsString #-}
 br_extAsString :: String -> BamRaw -> S.ByteString
 br_extAsString k br@(BamRaw _ r) = case br_findExtension k br of
         Just (o,_) | SC.index r o == 'A' -> S.singleton (S.index r (o+1))
@@ -580,6 +633,7 @@ br_extAsString k br@(BamRaw _ r) = case br_findExtension k br of
                    | SC.index r o == 'H' -> S.takeWhile (/= 0) $ S.drop (o+1) r
         _                                -> S.empty
 
+{-# INLINE removeExt #-}
 removeExt :: String -> Mutator ()
 removeExt key = Mut $ \p l fs -> do
     r <- S.unsafePackCStringLen (p,l)
@@ -588,6 +642,7 @@ removeExt key = Mut $ \p l fs -> do
         Just (a,b) -> do moveBytes (p `plusPtr` a) (p `plusPtr` b) (l-b)
                          return $ (l-(b-a), fs, ())
 
+{-# INLINE appendStringExt #-}
 appendStringExt :: String -> S.ByteString -> Mutator ()
 appendStringExt [u,v] value = Mut $ \_ l fs -> return (l,f:fs,())
   where
