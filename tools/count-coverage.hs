@@ -3,7 +3,6 @@ import Bio.File.Bam
 import Bio.Iteratee
 import System.Environment
 import System.Exit
-import System.IO
 
 import qualified Data.ByteString.Char8  as S
 import qualified Data.Iteratee          as I

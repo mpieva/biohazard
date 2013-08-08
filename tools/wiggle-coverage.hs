@@ -1,7 +1,6 @@
 {-# LANGUAGE BangPatterns #-}
 import Bio.File.Bam
 import Bio.Iteratee
-import System.IO
 
 import qualified Data.Iteratee.ListLike as I
 
