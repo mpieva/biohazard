@@ -2,27 +2,24 @@
 module Bio.File.Pileup where
 
 import Bio.File.Bam.Raw
+import Data.Strict.Tuple
 
 -- Pileup of BAM records.  The ingredients for simple genotyping.
 
--- | The primitive pieces for genotype calling.  We alternate between a
--- base (which may be missing) and and indel (which is often missing).
--- Two co-recursive data types are used for representation, @PrimChunks@
--- and @PrimChunks'@.
-data PrimChunks = 
-    = SingleBase !Double !Double !Double !Double PrimChunks'
-        -- ^ One base, represented as logs probabilities for A, C, G, T
-    | Skip !Int PrimChunks'
-        -- ^ No data here, because of a deletion or a gap in the CIGAR.
-        -- Comes with number of bases to skip.
+type Double4 = Double :!: Double :!: Double :!: Double
+
+-- | The primitive pieces for genotype calling:  A position, a base
+-- represented as four probabilities, an inserted sequence, and the
+-- length of a deleted sequence.  The logic is that we look at a base
+-- followed by some indel, and all those indels are combined into a
+-- single insertion and a single deletion.
+data PrimChunks 
+    = PC { position :: !Int                       -- position on chromosome; we may need to skip forwards
+         , probs :: !Double4                      -- four probabilities instead of a call
+         , insertion :: [Nucleotide :!: Word8]    -- possible insertion
+         , deletion :: !Int                       -- possible deletion
+         , more_chunks :: PrimChunks              -- and the remainder
     | EndOfRead
-
-data PrimChunks'
-    = Variant !Int SeqQual PrimChunks
-        -- ^ Length of deletion, then inserted sequence with qualities
-    | Invariant PrimChunks
-
-data SeqQual = SQ !Nucleotide !Word8 SeqQual | EndOfSeq
 
 
 -- | Decomposes a BAM record.  We pick apart the CIGAR field, and
@@ -30,36 +27,36 @@ data SeqQual = SQ !Nucleotide !Word8 SeqQual | EndOfSeq
 -- MD field, even if it is present.  Clipped bases are removed,
 
 decompose :: BamRaw -> PrimChunks
-decompose br = nextBase 0 0
+decompose br = nextBase (br_pos br) 0 0
   where
     !max_cig = br_cig_len br
     !max_seq = br_l_seq br
 
-    nextBase !is !ic !io | is >= max_seq || ic >= max_cig = EndOfRead
-    nextBase !is !ic !io = case co of
-        Ins ->             nextBase (is+cl) (ic+1) 0    -- technically an error, we skip it
-        Del ->             nextBase  is     (ic+1) 0    -- technically an error, we skip it
-        Nop -> Skip cl $   nextIndel is     (ic+1) 0
-        SMa ->             nextBase (is+cl) (ic+1) 0 
-        HMa ->             nextBase  is     (ic+1) 0
-        Pad ->             nextBase  is     (ic+1) 0
-        Mat | io == cl  -> nextBase  is     (ic+1) 0
-            | otherwise -> nb $ nextIndel (is+1) ic (io+1)
+    nextBase !pos !is !ic !io | is >= max_seq || ic >= max_cig = EndOfRead
+    nextBase !pos !is !ic !io = case co of
+        Ins ->             nextBase  pos     (is+cl) (ic+1) 0    -- technically an error, we skip it
+        Del ->             nextBase (pos+cl)  is     (ic+1) 0    -- technically an error, we skip it
+        Nop ->             nextBase (pos+cl)  is     (ic+1) 0
+        SMa ->             nextBase  pos     (is+cl) (ic+1) 0 
+        HMa ->             nextBase  pos      is     (ic+1) 0
+        Pad ->             nextBase  pos      is     (ic+1) 0
+        Mat | io == cl  -> nextBase  pos      is     (ic+1) 0
+            | otherwise -> nb $ nextIndel (pos+1) (is+1) ic (io+1) 
       where
         !co = cigar_op  $ br_cigar_at ic br
         !cl = cigar_len $ br_cigar_at ic br
 
-        nb = let !nc = br_seq_at is br
-                 !qu = fromIntegral (br_seq_at is br) + 4.77
+        nb k = let !nc = br_seq_at is br
+                   !qu = fromIntegral (br_seq_at is br) + 4.77
              in case () of
-                nc == nucA -> SingleBase 0 qu qu qu 
-                nc == nucC -> SingleBase qu 0 qu qu
-                nc == nucG -> SingleBase qu qu 0 qu
-                nc == nucT -> SingleBase qu qu qu 0
-                otherwise  -> Skip 1
+                nc == nucA -> k $  0 :!: qu :!: qu :!: qu
+                nc == nucC -> k $ qu :!:  0 :!: qu :!: qu
+                nc == nucG -> k $ qu :!: qu :!:  0 :!: qu
+                nc == nucT -> k $ qu :!: qu :!: qu :!:  0
+                otherwise  -> nextBase (pos+1) (is+1) ic (io+1) 
 
-    nextIndel !is !ic !io | is >= max_seq || ic >= max_cig = Invariant EndOfRead
-    nextIndel !is !ic !io = case co of
+    nextIndel !pos !is !ic !io | is >= max_seq || ic >= max_cig = Invariant EndOfRead
+    nextIndel !pos !is !ic !io = case co of -- XXX
         Ins ->             nextBase (is+cl) (ic+1) 0    -- technically an error, we skip it
         Del ->             nextBase  is     (ic+1) 0    -- technically an error, we skip it
         Nop -> Skip cl $   nextIndel is     (ic+1) 0
