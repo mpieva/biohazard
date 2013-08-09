@@ -55,6 +55,7 @@ options :: [OptDescr (Conf -> IO Conf)]
 options = [
     Option  "o" ["output"]         (ReqArg set_output "FILE") "Write to FILE (default: no output, count only)",
     Option  "O" ["output-lib"]     (ReqArg set_lib_out "PAT") "Write each lib to file named following PAT",
+    Option  [ ] ["debug"]          (NoArg  set_debug_out)     "Write textual debugging output",
     Option  "R" ["refseq"]         (ReqArg set_range "RANGE") "Read only range of reference sequences",
     Option  "p" ["improper-pairs"] (NoArg  set_improper)      "Include improper pairs",
     Option  "u" ["unaligned"]      (NoArg  set_unaligned)     "Included unaligned reads and pairs",
@@ -73,6 +74,7 @@ options = [
     set_output "-" c =                    return $ c { output = Just $ \_ -> pipeRawBamOutput } 
     set_output   f c =                    return $ c { output = Just $ \_ -> writeRawBamFile f } 
     set_lib_out  f c =                    return $ c { output = Just $       writeLibBamFiles f } 
+    set_debug_out  c =                    return $ c { output = Just $ \_ -> mapStreamM_ . dump_sam . meta_refs } 
     set_qual     n c = readIO n >>= \a -> return $ c { collapse = cons_collapse' a }
     set_no_strand  c =                    return $ c { strand_preserved = False }
     set_verbose    c =                    return $ c { debug = hPutStr stderr }
@@ -93,6 +95,8 @@ options = [
                 [ (x,'-':b) ] -> readIO b >>= \y -> 
                                  return $ c { which = Some (Refseq $ x-1) (Refseq $ y-1) }
                 _ -> fail $ "parse error in " ++ show a                                 
+
+    dump_sam r b = putStr $ encodeSamEntry r (decodeBamEntry b) "\n"
 
 usage :: IO a
 usage = do p <- getProgName
