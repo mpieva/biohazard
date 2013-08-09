@@ -24,7 +24,7 @@ data Conf = Conf {
     output :: Maybe ((BamRaw -> Seqid) -> BamMeta -> Iteratee [BamRaw] IO ()),
     strand_preserved :: Bool,
     collapse :: Bool -> Collapse,
-    clean_multimap :: BamRaw -> IO [BamRaw],
+    clean_multimap :: BamRaw -> IO (Maybe BamRaw),
     keep_all :: Bool,
     keep_unaligned :: Bool,
     keep_improper :: Bool,
@@ -70,6 +70,7 @@ options = [
     Option "h?" ["help","usage"]   (NoArg  (const usage))     "Print this message" ]
 
   where
+    set_output "-" c =                    return $ c { output = Just $ \_ -> pipeRawBamOutput } 
     set_output   f c =                    return $ c { output = Just $ \_ -> writeRawBamFile f } 
     set_lib_out  f c =                    return $ c { output = Just $       writeLibBamFiles f } 
     set_qual     n c = readIO n >>= \a -> return $ c { collapse = cons_collapse' a }
@@ -159,7 +160,7 @@ main = do
                 mapM_ debug [ unpackSeqid k ++ " --> " ++ unpackSeqid v ++ "\n" | (k,v) <- M.toList tbl ]
 
        let filters = mapChunks (mapMaybe transform) ><> 
-                     mapChunksM (mapM' clean_multimap) ><>
+                     mapChunksM (mapMM clean_multimap) ><>
                      filterStream (\br -> (keep_unaligned || is_aligned br) &&
                                           (keep_improper || is_proper br) &&
                                           eff_len br >= min_len) ><>
@@ -306,21 +307,21 @@ writeLibBamFiles fp lbl hdr = tryHead >>= loop M.empty
     subst ( c :    rest) l =  c  : subst rest l
 
 
-mapM' :: Monad m => (a -> m [b]) -> [a] -> m [b]
-mapM' f = go []
+mapMM :: Monad m => (a -> m (Maybe b)) -> [a] -> m [b]
+mapMM f = go []
   where
-    go acc [    ] = return $ concat $ reverse acc
-    go acc (a:as) = do b <- f a ; go (b:acc) as
+    go acc [    ] = return $ reverse acc
+    go acc (a:as) = do b <- f a ; go (maybe acc (:acc) b) as
 
 
-check_flags :: Monad m => BamRaw -> m [BamRaw]
+check_flags :: Monad m => BamRaw -> m (Maybe BamRaw)
 check_flags b | br_extAsInt 1 "HI" b /= 1 = fail "cannot deal with HI /= 1"
               | br_extAsInt 1 "IH" b /= 1 = fail "cannot deal with IH /= 1"
               | br_extAsInt 1 "NH" b /= 1 = fail "cannot deal with NH /= 1"
-              | otherwise                 = return [b]
+              | otherwise                 = return $ Just b
 
-clean_multi_flags :: Monad m => BamRaw -> m [BamRaw]
-clean_multi_flags b = return $ if br_extAsInt 1 "HI" b /= 1 then [] else [b']
+clean_multi_flags :: Monad m => BamRaw -> m (Maybe BamRaw)
+clean_multi_flags b = return $ if br_extAsInt 1 "HI" b /= 1 then Nothing else Just b'
   where
     b' = mutateBamRaw b $ mapM_ removeExt ["HI","IH","NH"]
 
