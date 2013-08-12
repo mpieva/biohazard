@@ -22,7 +22,6 @@
 -- - BZip compression isn't supported.  
 
 -- TONOTDO:  
--- - SAM writer.  Writing SAM is a bad idea.
 -- - Reader for gzipped/bzipped/bgzf'ed SAM.  Storing SAM is a bad idea,
 --   so why would anyone ever want to compress, much less index it?
 
@@ -48,6 +47,8 @@ module Bio.File.Bam (
     writeBamFile,
     writeBamHandle,
     pipeBamOutput,
+    pipeRawSamOutput,
+    pipeSamOutput,
 
     BamRec(..),
     nullBamRec,
@@ -379,12 +380,30 @@ encodeBamEntry = bamRaw 0 . S.concat . L.toChunks . runPut . putEntry
 writeBamHandle :: MonadIO m => Handle -> BamMeta -> Iteratee [BamRec] m ()
 writeBamHandle hdl meta = I.mapStream encodeBamEntry =$ writeRawBamHandle hdl meta
 
+-- | writes BAM encoded stuff to a file
+-- XXX This should(!) write indexes on the side---a simple block index
+-- for MapReduce style slicing, a standard BAM index or a name index
+-- would be possible.  When writing to a file, this makes even more
+-- sense than when writing to a @Handle@.
 writeBamFile :: MonadCatchIO m => FilePath -> BamMeta -> Iteratee [BamRec] m ()
 writeBamFile fp meta = I.mapStream encodeBamEntry =$ writeRawBamFile fp meta
 
+-- | write BAM encoded stuff to stdout
+-- This send uncompressed BAM to stdout.  Useful for piping to other
+-- tools.
 pipeBamOutput :: MonadIO m => BamMeta -> Iteratee [BamRec] m ()
 pipeBamOutput meta = I.mapStream encodeBamEntry =$ pipeRawBamOutput meta
 
+-- | write in SAM format to stdout
+-- This is useful for piping to other tools (say, AWK scripts) or for
+-- debugging.  No convenience function to send SAM to a file exists,
+-- because that's a stupid idea.
+pipeSamOutput :: MonadIO m => BamMeta -> Iteratee [BamRec] m ()
+pipeSamOutput meta = do liftIO . L.putStr $ showBamMeta meta L.empty
+                        mapStreamM_ $ \b -> liftIO . putStr $ encodeSamEntry (meta_refs meta) b "\n"
+
+pipeRawSamOutput :: MonadIO m => BamMeta -> Iteratee [BamRaw] m ()
+pipeRawSamOutput hdr = joinI $ mapStream decodeBamEntry $ pipeSamOutput hdr
 
 put_int_32, put_int_16, put_int_8 :: Integral a => a -> Put
 put_int_32 = putWord32le . fromIntegral
@@ -586,10 +605,10 @@ encodeSamEntry refs b = conjoin '\t' [
     shows (b_isize b + 1),
     shows (V.toList $ b_seq b),
     unpck (B.map (+33) $ b_qual b) ] .
-    M.foldWithKey (\k v b -> (:) '\t' . (++) k . (:) ':' . extToSam v . b) id (b_exts b)
+    M.foldWithKey (\k v f -> (:) '\t' . (++) k . (:) ':' . extToSam v . f) id (b_exts b)
   where
     unpck = (++) . S.unpack
-    conjoin c = foldr1 (\a b -> a . (:) c . b)
+    conjoin c = foldr1 (\a f -> a . (:) c . f)
 
     extToSam (Int        i) = (:) 'i' . (:) ':' . shows i
     extToSam (Float      f) = (:) 'f' . (:) ':' . shows f

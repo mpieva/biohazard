@@ -74,7 +74,7 @@ options = [
     set_output "-" c =                    return $ c { output = Just $ \_ -> pipeRawBamOutput } 
     set_output   f c =                    return $ c { output = Just $ \_ -> writeRawBamFile f } 
     set_lib_out  f c =                    return $ c { output = Just $       writeLibBamFiles f } 
-    set_debug_out  c =                    return $ c { output = Just $ \_ -> mapStreamM_ . dump_sam . meta_refs } 
+    set_debug_out  c =                    return $ c { output = Just $ \_ -> pipeRawSamOutput } 
     set_qual     n c = readIO n >>= \a -> return $ c { collapse = cons_collapse' a }
     set_no_strand  c =                    return $ c { strand_preserved = False }
     set_verbose    c =                    return $ c { debug = hPutStr stderr }
@@ -96,7 +96,6 @@ options = [
                                  return $ c { which = Some (Refseq $ x-1) (Refseq $ y-1) }
                 _ -> fail $ "parse error in " ++ show a                                 
 
-    dump_sam r b = putStr $ encodeSamEntry r (decodeBamEntry b) "\n"
 
 usage :: IO a
 usage = do p <- getProgName
