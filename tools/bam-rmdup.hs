@@ -24,6 +24,7 @@ data Conf = Conf {
     output :: Maybe ((BamRaw -> Seqid) -> BamMeta -> Iteratee [BamRaw] IO ()),
     strand_preserved :: Bool,
     collapse :: Bool -> Collapse,
+    clean_multimap :: BamRaw -> IO (Maybe BamRaw),
     keep_all :: Bool,
     keep_unaligned :: Bool,
     keep_improper :: Bool,
@@ -40,6 +41,7 @@ defaults :: Conf
 defaults = Conf { output = Nothing
                 , strand_preserved = True
                 , collapse = cons_collapse' 60
+                , clean_multimap = check_flags
                 , keep_all = False
                 , keep_unaligned = False
                 , keep_improper = False
@@ -53,10 +55,12 @@ options :: [OptDescr (Conf -> IO Conf)]
 options = [
     Option  "o" ["output"]         (ReqArg set_output "FILE") "Write to FILE (default: no output, count only)",
     Option  "O" ["output-lib"]     (ReqArg set_lib_out "PAT") "Write each lib to file named following PAT",
+    Option  [ ] ["debug"]          (NoArg  set_debug_out)     "Write textual debugging output",
     Option  "R" ["refseq"]         (ReqArg set_range "RANGE") "Read only range of reference sequences",
     Option  "p" ["improper-pairs"] (NoArg  set_improper)      "Include improper pairs",
     Option  "u" ["unaligned"]      (NoArg  set_unaligned)     "Included unaligned reads and pairs",
     Option  "1" ["single-read"]    (NoArg  set_single)        "Pretend there is no second mate",
+    Option  "m" ["multimappers"]   (NoArg  set_multi)         "Process multi-mappers (by dropping secondary alignments)",
     Option  "c" ["cheap"]          (NoArg  set_cheap)         "Cheap computation: skip the consensus calling",
     Option  "k" ["keep","mark-only"](NoArg set_keep)          "Mark duplicates, but include them in output",
     Option  "Q" ["max-qual"]       (ReqArg set_qual "QUAL")   "Set maximum quality after consensus call to QUAL",
@@ -67,8 +71,10 @@ options = [
     Option "h?" ["help","usage"]   (NoArg  (const usage))     "Print this message" ]
 
   where
+    set_output "-" c =                    return $ c { output = Just $ \_ -> pipeRawBamOutput } 
     set_output   f c =                    return $ c { output = Just $ \_ -> writeRawBamFile f } 
     set_lib_out  f c =                    return $ c { output = Just $       writeLibBamFiles f } 
+    set_debug_out  c =                    return $ c { output = Just $ \_ -> pipeRawSamOutput } 
     set_qual     n c = readIO n >>= \a -> return $ c { collapse = cons_collapse' a }
     set_no_strand  c =                    return $ c { strand_preserved = False }
     set_verbose    c =                    return $ c { debug = hPutStr stderr }
@@ -79,6 +85,7 @@ options = [
     set_unaligned  c =                    return $ c { keep_unaligned = True }
     set_len      n c = readIO n >>= \a -> return $ c { min_len = a }
     set_no_rg      c =                    return $ c { get_label = get_no_library }
+    set_multi      c =                    return $ c { clean_multimap = clean_multi_flags }
 
     set_range    a c
         | a == "A" || a == "a" = return $ c { which = All }
@@ -88,6 +95,7 @@ options = [
                 [ (x,'-':b) ] -> readIO b >>= \y -> 
                                  return $ c { which = Some (Refseq $ x-1) (Refseq $ y-1) }
                 _ -> fail $ "parse error in " ++ show a                                 
+
 
 usage :: IO a
 usage = do p <- getProgName
@@ -142,6 +150,7 @@ data Counts = Counts { tin          :: !Int
 main :: IO ()
 main = do
     args <- getArgs
+    when (null args) usage 
     let (opts, files, errors) = getOpt Permute options args
     unless (null errors) $ mapM_ (hPutStrLn stderr) errors >> exitFailure
     Conf{..} <- foldr (>=>) return opts defaults
@@ -154,6 +163,7 @@ main = do
                 mapM_ debug [ unpackSeqid k ++ " --> " ++ unpackSeqid v ++ "\n" | (k,v) <- M.toList tbl ]
 
        let filters = mapChunks (mapMaybe transform) ><> 
+                     mapChunksM (mapMM clean_multimap) ><>
                      filterStream (\br -> (keep_unaligned || is_aligned br) &&
                                           (keep_improper || is_proper br) &&
                                           eff_len br >= min_len) ><>
@@ -298,4 +308,23 @@ writeLibBamFiles fp lbl hdr = tryHead >>= loop M.empty
     subst ('%':'s':rest) l = unpackSeqid l ++ subst rest l
     subst ('%':'%':rest) l = '%' : subst rest l
     subst ( c :    rest) l =  c  : subst rest l
+
+
+mapMM :: Monad m => (a -> m (Maybe b)) -> [a] -> m [b]
+mapMM f = go []
+  where
+    go acc [    ] = return $ reverse acc
+    go acc (a:as) = do b <- f a ; go (maybe acc (:acc) b) as
+
+
+check_flags :: Monad m => BamRaw -> m (Maybe BamRaw)
+check_flags b | br_extAsInt 1 "HI" b /= 1 = fail "cannot deal with HI /= 1"
+              | br_extAsInt 1 "IH" b /= 1 = fail "cannot deal with IH /= 1"
+              | br_extAsInt 1 "NH" b /= 1 = fail "cannot deal with NH /= 1"
+              | otherwise                 = return $ Just b
+
+clean_multi_flags :: Monad m => BamRaw -> m (Maybe BamRaw)
+clean_multi_flags b = return $ if br_extAsInt 1 "HI" b /= 1 then Nothing else Just b'
+  where
+    b' = mutateBamRaw b $ mapM_ removeExt ["HI","IH","NH"]
 

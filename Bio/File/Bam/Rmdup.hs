@@ -8,8 +8,6 @@ module Bio.File.Bam.Rmdup(
 import Bio.File.Bam
 import Bio.File.Bam.Fastq               ( removeWarts )
 import Bio.Iteratee
-import Control.Monad                    ( liftM )
-import Control.Parallel                 ( par )
 import Data.Array.Unboxed
 import Data.Bits
 import Data.List
@@ -23,7 +21,7 @@ import qualified Data.Map               as M
 import qualified Data.Vector.Generic    as V
 
 data Collapse = forall a . Collapse {
-                    inject :: BamRaw -> Either String a,    -- convert BamRaw to internal data type
+                    inject :: BamRaw -> a,                  -- convert BamRaw to internal data type
                     collapse :: [a] -> (Either a a,[a]),    -- cluster to consensus and stuff or representative and stuff
                     add_xp_of :: a -> a -> a,               -- modify XP when discarding a record
                     originals :: [a] -> [a],                -- treatment of the redundant original reads
@@ -31,18 +29,20 @@ data Collapse = forall a . Collapse {
                     project :: a -> BamRaw }                -- get it back out
 
 cons_collapse :: Word8 -> Collapse
-cons_collapse maxq = Collapse check_flags (do_collapse maxq) addXPOf (const []) make_singleton_cooked encodeBamEntry
+cons_collapse maxq = Collapse (removeWarts . decodeBamEntry) (do_collapse maxq)
+                              addXPOf (const []) make_singleton_cooked encodeBamEntry
 
 cons_collapse_keep :: Word8 -> Collapse
-cons_collapse_keep maxq = Collapse check_flags (do_collapse maxq) addXPOf (map flagDup) make_singleton_cooked encodeBamEntry
+cons_collapse_keep maxq = Collapse (removeWarts . decodeBamEntry) (do_collapse maxq)
+                                   addXPOf (map flagDup) make_singleton_cooked encodeBamEntry
   where
     flagDup b = b { b_flag = b_flag b .|. flagDuplicate }
 
 cheap_collapse :: Collapse
-cheap_collapse = Collapse Right do_cheap_collapse addXPOf' (const []) make_singleton_raw id
+cheap_collapse = Collapse id do_cheap_collapse addXPOf' (const []) make_singleton_raw id
 
 cheap_collapse_keep :: Collapse
-cheap_collapse_keep = Collapse Right do_cheap_collapse addXPOf' (map flagDup) make_singleton_raw id
+cheap_collapse_keep = Collapse id do_cheap_collapse addXPOf' (map flagDup) make_singleton_raw id
   where
     flagDup b = mutateBamRaw b $ setFlag (br_flag b .|. flagDuplicate)
 
@@ -125,14 +125,13 @@ rmdup label strand_preserved collapse_cfg =
     -- Easiest way to go about this:  We simply collect everything that
     -- starts at some specific coordinate and group it appropriately.
     -- Treat the groups separately, output, go on.
-    check_sort ><> mapGroups rmdup_group ><> holdup ><> check_sort
+    check_sort ><> mapGroups rmdup_group ><> check_sort
   where
     rmdup_group = nice_sort . do_rmdup label strand_preserved collapse_cfg
     same_pos u v = br_cpos u == br_cpos v
     br_cpos br = (br_rname br, br_pos br)
 
-    nice_sort (Right x) = [Right $ sortBy (comparing br_l_seq) x]
-    nice_sort (Left  y) = [Left y]
+    nice_sort x = sortBy (comparing br_l_seq) x
 
     mapGroups f o = I.tryHead >>= maybe (return o) (\a -> eneeCheckIfDone (mg1 f a []) o)
     mg1 f a acc k = I.tryHead >>= \mb -> case mb of
@@ -140,18 +139,6 @@ rmdup label strand_preserved collapse_cfg =
                         Just b | same_pos a b -> mg1 f a (b:acc) k
                                | otherwise -> eneeCheckIfDone (mg1 f b []) . k . Chunk . f $ a:acc
     
-holdup :: Monad m => Enumeratee [Either String [BamRaw]] [BamRaw] m a
-holdup = eneeCheckIfDone (go (0::Int) [])
-  where
-    go 1024 acc k = embed (reverse acc) >>= holdup . k . Chunk
-    go    n acc k = tryHead >>= go' n acc k
-
-    go' _ acc k  Nothing  = embed (reverse acc) >>= return . k . Chunk
-    go' n acc k (Just  a) = a `par` go (n+1) (a:acc) k
-
-    embed = liftM concat . mapM (either fail return)
-
-
 check_sort :: Monad m => Enumeratee [BamRaw] [BamRaw] m a
 check_sort out = I.tryHead >>= maybe (return out) (\a -> eneeCheckIfDone (step a) out)
   where
@@ -159,17 +146,6 @@ check_sort out = I.tryHead >>= maybe (return out) (\a -> eneeCheckIfDone (step a
     step' a k b | (br_rname a, br_pos a) > (br_rname b, br_pos b) = fail msg
                 | otherwise = eneeCheckIfDone (step b) . k $ Chunk [a]
     msg = "rmdup: input must be sorted"
-
--- To be perfectly honest, I do not understand what these flags mean.
--- All I know it that if and when they are set, the duplicate removal
--- will go very, very wrong.
-check_flags :: BamRaw -> Either String BamRec
-check_flags raw | extAsInt 1 "HI" b /= 1 = Left "cannot deal with HI /= 1"
-                | extAsInt 1 "IH" b /= 1 = Left "cannot deal with IH /= 1"
-                | extAsInt 1 "NH" b /= 1 = Left "cannot deal with NH /= 1"
-                | otherwise              = Right b
-  where b = removeWarts $ decodeBamEntry raw
-    
 
 {- Unmapped fragments should not be considered to be duplicates of
    mapped fragments.  The "unmapped" flag can serve for that:  while
@@ -203,15 +179,15 @@ check_flags raw | extAsInt 1 "HI" b /= 1 = Left "cannot deal with HI /= 1"
    with an appropriately filtered stream.
 -}
 
-do_rmdup :: Ord l => (BamRaw -> l) -> Bool -> Collapse -> [BamRaw] -> Either String [BamRaw]
+do_rmdup :: Ord l => (BamRaw -> l) -> Bool -> Collapse -> [BamRaw] -> [BamRaw]
 do_rmdup label strand_preserved Collapse{..} = 
-    fmap concat . mapM do_rmdup1 . M.elems . accumMap label
+    concatMap do_rmdup1 . M.elems . accumMap label id
   where
-    do_rmdup1 rds = do (ss,r1) <- true_singles'
-                       (ms,r2) <- merged'
-                       (ps,r3) <- pairs'
-                       ua      <- unaligned'
-                       return $ map project $ results ss ua ms ps ++ originals 
+    do_rmdup1 rds = let (ss,r1) = true_singles'
+                        (ms,r2) = merged'
+                        (ps,r3) = pairs'
+                        ua      = unaligned'
+                    in map project $ results ss ua ms ps ++ originals 
                             (leftovers ss ua ms ps ++ r1 ++ r2 ++ r3)
       where
         -- Treatment of Half-Aligned Pairs (meaning one known
@@ -255,8 +231,8 @@ do_rmdup label strand_preserved Collapse{..} =
 
         is_totally_aligned b = not (br_isUnmapped b || br_isMateUnmapped b)
 
-        mkMap f x = do m1 <- fmap (M.map collapse) . accumMapM f inject $ x
-                       return (M.map fst m1, concatMap snd $ M.elems m1)
+        mkMap f x = let m1 = M.map collapse $ accumMap f inject x
+                    in (M.map fst m1, concatMap snd $ M.elems m1)
                   
         pairs'        = mkMap (\b -> (br_mate_pos b,   strand_preserved && br_isReversed  b 
                                                      , strand_preserved && br_isFirstMate b)) pairs
@@ -273,7 +249,7 @@ do_rmdup label strand_preserved Collapse{..} =
         -- (by clearing appropriate flags) and all unaligned mates are
         -- passed through and marked as duplicates.
 
-        unaligned'    = accumMapM f inject half_unaligned
+        unaligned'    = accumMap f inject half_unaligned
             where f b = strand_preserved && br_isReversed b
 
         results ss ua ms ps = merge_singles ss ua ( [ (rev, v) | ((_, rev),        v) <- M.toList ms ]
@@ -313,20 +289,12 @@ do_rmdup label strand_preserved Collapse{..} =
     br_isMergeTrimmed br = let ef = br_extAsInt (br_extAsInt 0 "XF" br) "FF" br 
                            in (ef .&. flagTrimmed .|. flagMerged) /= 0
 
-accumMap :: Ord b => (a -> b) -> [a] -> M.Map b [a]
-accumMap f = go M.empty    
+accumMap :: Ord k => (a -> k) -> (a -> v) -> [a] -> M.Map k [v]
+accumMap f g = go M.empty    
   where    
     go m [    ] = m
-    go m (v:vs) = let ws = M.findWithDefault [] (f v) m 
-                  in ws `seq` go (M.insert (f v) (v:ws) m) vs
-
-accumMapM :: (Ord k, Monad m) => (a -> k) -> (a -> m v) -> [a] -> m (M.Map k [v])
-accumMapM f g = go M.empty
-  where    
-    go m [    ] = return m
-    go m (v:vs) = do v' <- g v
-                     let ws = M.findWithDefault [] (f v) m 
-                     ws `seq` go (M.insert (f v) (v':ws) m) vs
+    go m (a:as) = let ws = M.findWithDefault [] (f a) m 
+                  in ws `seq` go (M.insert (f a) (g a:ws) m) as
 
 
 {- We need to deal sensibly with each field, but different fields have
