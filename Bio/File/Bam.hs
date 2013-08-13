@@ -61,6 +61,8 @@ module Bio.File.Bam (
     Cigar(..),
     CigOp(..),
     cigarToAlnLen,
+    cigar_op,
+    cigar_len,
 
     Extensions, Ext(..),
     extAsInt, extAsString, setQualFlag,
@@ -78,7 +80,9 @@ module Bio.File.Bam (
     isDuplicate,
     isTrimmed,
     isMerged,
-    type_mask
+    type_mask,
+
+    Word32, Word8
 ) where
 
 import Bio.Base
@@ -142,6 +146,11 @@ cigarToAlnLen :: Cigar -> Int
 cigarToAlnLen (Cigar cig) = sum $ map l cig
   where l (op,n) = if op == Mat || op == Del || op == Nop then n else 0
     
+cigar_op :: Word32 -> CigOp
+cigar_op x = toEnum $ fromIntegral $ x .&. 0xf
+
+cigar_len :: Word32 -> Int
+cigar_len x = fromIntegral x `shiftR` 4
 
 -- | internal representation of a BAM record
 data BamRec = BamRec {

@@ -67,6 +67,7 @@ Library
                        Bio.File.Bam.Fastq,
                        Bio.File.Bam.Filter,
                        Bio.File.Bam.Header,
+                       Bio.File.Bam.Pileup,
                        Bio.File.Bam.Raw,
                        Bio.File.Bam.Rmdup,
                        Bio.File.Bam.Trim,
