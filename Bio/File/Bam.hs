@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings, PatternGuards, BangPatterns, NoMonomorphismRestriction #-}
 
--- TODO:  
+-- TODO:
 -- - Index writer
 -- - Seeking, partially.  So far, we can only seek to the beginning of
 --   the range of some RNAME.  Most of the functionality available from
@@ -19,9 +19,9 @@
 -- NICE_TO_HAVE:
 -- - Decoding of BAM needlessly needs a MonadIO context, because of the
 --   weird Zlib bindings.
--- - BZip compression isn't supported.  
+-- - BZip compression isn't supported.
 
--- TONOTDO:  
+-- TONOTDO:
 -- - Reader for gzipped/bzipped/bgzf'ed SAM.  Storing SAM is a bad idea,
 --   so why would anyone ever want to compress, much less index it?
 
@@ -61,8 +61,6 @@ module Bio.File.Bam (
     Cigar(..),
     CigOp(..),
     cigarToAlnLen,
-    cigar_op,
-    cigar_len,
 
     Extensions, Ext(..),
     extAsInt, extAsString, setQualFlag,
@@ -131,9 +129,6 @@ type ByteString = B.ByteString
 -- those integers in an array.
 newtype Cigar = Cigar { unCigar :: [(CigOp, Int)] }
 
-data CigOp = Mat | Ins | Del | Nop | SMa | HMa | Pad
-    deriving ( Eq, Ord, Enum, Show, Bounded, Ix )
-
 instance Show Cigar where
     show (Cigar cs) = concat [ shows l (toChr op) | (op,l) <- cs ]
       where toChr = (:[]) . S.index "MIDNSHP=X" . fromEnum
@@ -145,12 +140,6 @@ instance Show Cigar where
 cigarToAlnLen :: Cigar -> Int
 cigarToAlnLen (Cigar cig) = sum $ map l cig
   where l (op,n) = if op == Mat || op == Del || op == Nop then n else 0
-    
-cigar_op :: Word32 -> CigOp
-cigar_op x = toEnum $ fromIntegral $ x .&. 0xf
-
-cigar_len :: Word32 -> Int
-cigar_len x = fromIntegral x `shiftR` 4
 
 -- | internal representation of a BAM record
 data BamRec = BamRec {
@@ -206,7 +195,7 @@ decodeAnyBamOrSamFile :: MonadCatchIO m => FilePath -> (BamMeta -> Iteratee [Bam
 decodeAnyBamOrSamFile fn k = enumFileRandom defaultBufSize fn (decodeAnyBamOrSam k) >>= run
 
 
-    
+
 
 
 -- | Decodes a raw block into a @BamRec@.
@@ -232,7 +221,7 @@ decodeBamEntry br = either error fixup . fst . G.runGet go $ raw_data br
 
             return $ BamRec read_name flag rid start mapq cigar
                             mate_rid mate_pos ins_size (V.fromListN read_len $ expand qry_seq) qual exts (virt_offset br)
-  
+
     bases = listArray (0,15) (map toNucleotide "NACNGNNNTNNNNNNN") :: Array Word8 Nucleotide
     expand t = if S.null t then [] else let x = B.head t in bases ! (x `shiftR` 4) : bases ! (x .&. 0xf) : expand (B.tail t)
 
@@ -328,10 +317,10 @@ getExtensions m = getExt `G.plus` return m
                         fromIntegral <$> G.getWord32le ]
 
 
-        
+
 getByteStringNul :: G.Get ByteString
 getByteStringNul = S.init <$> (G.lookAhead (get_len 1) >>= G.getByteString)
-  where 
+  where
     get_len l = G.getWord8 >>= \w -> if w == 0 then return l else get_len $! l+1
 
 
@@ -357,7 +346,7 @@ encodeBamEntry = bamRaw 0 . S.concat . L.toChunks . runPut . putEntry
                      putSeq $ b_seq b
                      putByteString $ if not (S.null (b_qual b)) then b_qual b
                                      else B.replicate (V.length $ b_seq b) 0xff
-                     forM_ (M.toList $ more_exts b) $ \(k,v) -> 
+                     forM_ (M.toList $ more_exts b) $ \(k,v) ->
                         case k of [c,d] -> putChr c >> putChr d >> putValue v
                                   _     -> error $ "invalid field key " ++ show k
 
@@ -370,13 +359,13 @@ encodeBamEntry = bamRaw 0 . S.concat . L.toChunks . runPut . putEntry
     encodeCigar (op,l) = fromEnum op .|. l `shiftL` 4
 
     putSeq :: Sequence -> Put
-    putSeq v = case v !? 0 of 
+    putSeq v = case v !? 0 of
                  Nothing -> return ()
                  Just a  -> case v !? 1 of
                     Nothing -> putWord8 (num a `shiftL` 4)
                     Just b  -> putWord8 (unN a `shiftL` 4 .|. num b)
                                >> putSeq (V.drop 2 v)
-                         
+
     num :: Nucleotide -> Word8
     num (N x) = x .&. 15
 
@@ -441,7 +430,7 @@ putValue v = case v of
     IntArr   ia -> case put_some_int (elems ia) of
                     (c,op) -> putChr 'B' >> putChr c >> put_int_32 (rangeSize (bounds ia)-1)
                               >> mapM_ op (elems ia)
-  where 
+  where
     put_some_int :: [Int] -> (Char, Int -> Put)
     put_some_int is
         | all (between        0    0xff) is = ('C', put_int_8)
@@ -509,7 +498,7 @@ isDuplicate      = flip testBit 10 . b_flag
 isTrimmed        = flip testBit 16 . b_flag
 isMerged         = flip testBit 17 . b_flag
 
- 
+
 type_mask :: Int
 type_mask = flagFirstMate .|. flagSecondMate .|. flagPaired
 
@@ -551,7 +540,7 @@ decodeSamLoop refs inner = I.convStream (liftI parse_record) inner
         parse_record (EOF x) = icont parse_record x
         parse_record (Chunk []) = liftI parse_record
         parse_record (Chunk (l:ls)) | "@" `S.isPrefixOf` l = parse_record (Chunk ls)
-        parse_record (Chunk (l:ls)) = case P.parseOnly (parseSamRec ref) l of 
+        parse_record (Chunk (l:ls)) = case P.parseOnly (parseSamRec ref) l of
             Right  r -> idone [r] (Chunk ls)
             Left err -> icont parse_record (Just $ iterStrExc $ err ++ ", " ++ show l)
 
@@ -577,7 +566,7 @@ parseSamRec ref = (\nm fl rn po mq cg rn' -> BamRec nm fl rn po mq cg (rn' rn))
     sequ     = {-# SCC "parseSamRec/sequ" #-}
                (V.empty <$ P.char '*' <|>
                V.fromList . map toNucleotide . S.unpack <$> P.takeWhile (P.inClass "acgtnACGTN")) <* sep
-    
+
     quals    = {-# SCC "parseSamRec/quals" #-} B.empty <$ P.char '*' <* sep <|> B.map (subtract 33) <$> word
 
     cigar    = [] <$ P.char '*' <* sep <|>
@@ -586,7 +575,7 @@ parseSamRec ref = (\nm fl rn po mq cg rn' -> BamRec nm fl rn po mq cg (rn' rn))
     cigop    = P.choice $ zipWith (\c r -> r <$ P.char c) "MIDNSHP" [Mat,Ins,Del,Nop,SMa,HMa,Pad]
     exts     = M.fromList <$> ext `P.sepBy` sep
     ext      = (\a b v -> ([a,b],v)) <$> P.anyChar <*> P.anyChar <*> (P.char ':' *> value)
-    
+
     value    = P.char 'A' *> P.char ':' *> (Char <$>               anyWord8) <|>
                P.char 'i' *> P.char ':' *> (Int  <$>     P.signed P.decimal) <|>
                P.char 'Z' *> P.char ':' *> (Text <$> P.takeTill ((==) '\t')) <|>
@@ -629,7 +618,7 @@ encodeSamEntry refs b = conjoin '\t' [
 
     tohex = B.foldr (\c f -> w2d (c `shiftR` 4) . w2d (c .&. 0xf) . f) id
     w2d = (:) . S.index "0123456789ABCDEF" . fromIntegral
-    sarr = conjoin ',' . map shows . elems 
+    sarr = conjoin ',' . map shows . elems
 
 -- ------------------------------------------------------------------- Tests
 
@@ -641,7 +630,7 @@ bam_test' = fileDriver $
             joinI $ decompressBgzf $
             joinI $ decodeBam      $
             dump_bam
-            
+
 bam_test :: FilePath -> IO ()
 bam_test = fileDriverRandom $
            joinI $ decompressBgzf $
@@ -679,12 +668,12 @@ bam2bam_test = withFile "foo.bam" WriteMode $       \hdl ->
                joinI $ encodeBam meta       $
                mapChunksM_ (S.hPut hdl)
 
-sam2bam_test :: IO ()               
+sam2bam_test :: IO ()
 sam2bam_test = withFile "bar.bam" WriteMode       $             \hdl ->
                flip fileDriver "foo.sam"          $
                joinI $ decodeSam                  $             \meta ->
                joinI $ I.mapStream encodeBamEntry $
-               lift (print meta)                >>=             \_ -> 
+               lift (print meta)                >>=             \_ ->
                joinI $ encodeBam meta             $
                mapChunksM_ (S.hPut hdl)
 

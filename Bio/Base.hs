@@ -65,7 +65,7 @@ import Data.ByteString.Internal ( c2w, w2c )
 -- To allow @Nucleotide@s to be unpacked and incorparated into
 -- containers, we choose to represent them the same way as the BAM file
 -- format:  as a 4 bit wide field.  Gaps are encoded as 0 where they
--- make sense, N is 15.  
+-- make sense, N is 15.
 
 newtype Nucleotide = N { unN :: Word8 } deriving (Eq, Ord, Ix, Storable)
 
@@ -92,14 +92,14 @@ instance VM.MVector VU.MVector Nucleotide where
     basicUnsafeSlice i l (MV_Nucleotide v) = MV_Nucleotide (VM.basicUnsafeSlice i l v)
 
     {-# INLINE basicOverlaps #-}
-    basicOverlaps (MV_Nucleotide v) (MV_Nucleotide w) = VM.basicOverlaps v w 
+    basicOverlaps (MV_Nucleotide v) (MV_Nucleotide w) = VM.basicOverlaps v w
 
     {-# INLINE basicUnsafeNew #-}
     basicUnsafeNew l = MV_Nucleotide `liftM` VM.basicUnsafeNew l
-   
+
     {-# INLINE basicUnsafeRead #-}
     basicUnsafeRead (MV_Nucleotide v) i = N `liftM` VM.basicUnsafeRead v i
-   
+
     {-# INLINE basicUnsafeWrite #-}
     basicUnsafeWrite (MV_Nucleotide v) i (N e) = VM.basicUnsafeWrite v i e
 
@@ -115,7 +115,7 @@ instance VG.Vector VU.Vector Nucleotide where
     basicLength (V_Nucleotide v) = VG.basicLength v
 
     {-# INLINE basicUnsafeSlice #-}
-    basicUnsafeSlice i l (V_Nucleotide v) = V_Nucleotide (VG.basicUnsafeSlice i l v) 
+    basicUnsafeSlice i l (V_Nucleotide v) = V_Nucleotide (VG.basicUnsafeSlice i l v)
 
     {-# INLINE basicUnsafeIndexM #-}
     basicUnsafeIndexM (V_Nucleotide v) i = N `liftM` VG.basicUnsafeIndexM v i
@@ -131,7 +131,7 @@ instance VU.Unbox Nucleotide
 -- import of @Data.ByteString@.
 type Seqid = S.ByteString
 
--- | comparatively short Sequences 
+-- | comparatively short Sequences
 type Sequence = VU.Vector Nucleotide
 
 -- | Unpacks a @Seqid@ into a @String@
@@ -156,7 +156,7 @@ shelve s = case L.toChunks s of
 -- The position is zero-based, no questions about it.  Think of the
 -- position as pointing to the crack between two bases: looking forward
 -- you see the next base to the right, looking in the reverse direction
--- you see the complement of the first base to the left.  
+-- you see the complement of the first base to the left.
 --
 -- To encode the strand, we (virtually) reverse-complement any sequence
 -- and prepend it to the normal one.  That way, reversed coordinates
@@ -179,8 +179,8 @@ p_is_reverse = (< 0) . p_start
 -- same stretch on the reverse strand, shift r_pos by r_length, then
 -- reverse direction (or call reverseRange).
 data Range = Range {
-        r_pos    :: {-# UNPACK #-} !Position, 
-        r_length :: {-# UNPACK #-} !Int 
+        r_pos    :: {-# UNPACK #-} !Position,
+        r_length :: {-# UNPACK #-} !Int
     } deriving (Show, Eq, Ord)
 
 
@@ -199,13 +199,13 @@ toNucleotide c = if inRange (bounds arr) (ord c) then N (arr ! ord c) else nucN
 
     pairs = [ ('a', nucA), ('c', nucC), ('g', nucG), ('t', nucT),
               ('u', nucT), ('-', gap),  ('.', gap),
-              ('b', nucC `plus` nucG `plus` nucT), 
+              ('b', nucC `plus` nucG `plus` nucT),
               ('d', nucA `plus` nucG `plus` nucT),
               ('h', nucA `plus` nucC `plus` nucT),
               ('v', nucA `plus` nucC `plus` nucG),
               ('k', nucG `plus` nucT),
               ('m', nucA `plus` nucC),
-              ('s', nucC `plus` nucG), 
+              ('s', nucC `plus` nucG),
               ('w', nucA `plus` nucT),
               ('r', nucA `plus` nucG),
               ('y', nucC `plus` nucT) ]
@@ -242,7 +242,7 @@ instance Read Nucleotide where
     readsPrec _ [    ] = []
     readList s = let (hd,tl) = span (\c -> isAlpha c || isSpace c || '-' == c) s
                  in [(map toNucleotide $ filter (not . isSpace) hd, tl)]
-    
+
 -- | Reverse-complements a stretch of Nucleotides
 {-# INLINE revcompl #-}
 revcompl :: [Nucleotide] -> [Nucleotide]

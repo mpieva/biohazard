@@ -15,14 +15,14 @@ import Data.Char (intToDigit)
 wilson :: Double -> Int -> Int -> (Double, Double, Double)
 wilson c x n = ( (m - h) / d, p, (m + h) / d )
   where
-    nn = fromIntegral n 
+    nn = fromIntegral n
     p  = fromIntegral x / nn
 
     z = invnormcdf (1-c*0.5)
     h = z * sqrt (( p * (1-p) + 0.25*z*z / nn ) / nn)
     m = p + 0.5 * z * z / nn
     d = 1 + z * z / nn
-                
+
 showNum :: Show a => a -> String
 showNum = triplets [] . reverse . show
   where
