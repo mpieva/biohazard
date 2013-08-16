@@ -21,12 +21,12 @@ instance Show Double4 where
 -- length of a deleted sequence.  The logic is that we look at a base
 -- followed by some indel, and all those indels are combined into a
 -- single insertion and a single deletion.
-data PrimChunks = Seek !Int PrimChunks'                         -- skip to position (at start or after N operation)
-                | Indel !Int [(Nucleotide, Int)] PrimChunks'    -- observed deletion and insertion
-                | EndOfRead                                     -- Nothing anymore
+data PrimChunks = Seek !Int PrimBase                            -- skip to position (at start or after N operation)
+                | Indel !Int [(Nucleotide, Int)] PrimBase       -- observed deletion and insertion
+                | EndOfRead                                     -- nothing anymore
   deriving Show
 
-data PrimChunks' = Base !Double4 PrimChunks                     -- four probabilities instead of a base
+data PrimBase = Base !Double4 PrimChunks                     -- four probabilities instead of a base
   deriving Show
 
 
@@ -34,8 +34,8 @@ data PrimChunks' = Base !Double4 PrimChunks                     -- four probabil
 -- combine it with sequence and quality as appropriate.  We ignore the
 -- MD field, even if it is present.  Clipped bases are removed,
 
-decompose :: BamRaw -> PrimChunks
-decompose br = firstBase (br_pos br) 0 0
+decompose :: DamageModel -> BamRaw -> PrimChunks
+decompose dm br = firstBase (br_pos br) 0 0
   where
     !max_cig = br_n_cigar_op br
     !max_seq = br_l_seq br
@@ -51,20 +51,13 @@ decompose br = firstBase (br_pos br) 0 0
             (HMa, _) ->            firstBase  pos      is     (ic+1)
             (Pad, _) ->            firstBase  pos      is     (ic+1)
             (Mat, 0) ->            firstBase  pos      is     (ic+1)
-            (Mat, _) -> Seek pos $ nextBase   pos      is     (ic+1) 0
+            (Mat, _) -> Seek pos $ nextBase   pos      is      ic    0
 
 
-    nextBase :: Int -> Int -> Int -> Int -> PrimChunks'
+    nextBase :: Int -> Int -> Int -> Int -> PrimBase
     nextBase !pos !is !ic !io = Base bq $ nextIndel  [] 0 (pos+1) (is+1) ic (io+1)
       where
-        !nc = br_seq_at br is
-        !qu = fromIntegral (br_qual_at br is) + 4.77
-        !bq | nc == nucA = D4  0 qu qu qu
-            | nc == nucC = D4 qu  0 qu qu
-            | nc == nucG = D4 qu qu  0 qu
-            | nc == nucT = D4 qu qu qu  0
-            | otherwise  = D4  0  0  0  0       -- XXX this needs elaboration...
-
+        !bq = dm is (br_seq_at br is) (br_qual_at br is)
 
 
     nextIndel :: [[(Nucleotide,Int)]] -> Int -> Int -> Int -> Int -> Int -> PrimChunks
@@ -77,9 +70,28 @@ decompose br = firstBase (br_pos br) 0 0
             (Pad, _) ->             nextIndel  ins     del   pos     is  (ic+1) 0
             (HMa, _) ->             nextIndel  ins     del   pos     is  (ic+1) 0
             (Mat,cl) | io == cl  -> nextIndel  ins     del   pos     is  (ic+1) 0
-                     | otherwise -> Indel del out $ nextBase pos is  ic   io        -- ends up generating a 'Base'
+                     | otherwise -> Indel del out $ nextBase pos     is   ic   io   -- ends up generating a 'Base'
             (Nop,cl) ->             firstBase               (pos+cl) is  (ic+1)     -- ends up generating a 'Seek'
       where
         out    = concat $ reverse ins
         isq cl = [ (br_seq_at br i, br_qual_at br i) | i <- [is..is+cl-1] ] : ins
 
+
+type DamageModel = Int              -- ^ position in read
+                -> Nucleotide       -- ^ base
+                -> Int              -- ^ quality score
+                -> Double4          -- ^ results in four probabilities
+
+-- | 'DamageModel' for undamaged DNA.  The probabilities follow directly
+-- from the quality score.  This needs elaboration to see what to do
+-- with amibiguity codes.
+noDamage :: DamageModel
+noDamage _ b q | b == nucA = D4 0 p p p
+               | b == nucC = D4 p 0 p p
+               | b == nucG = D4 p p 0 p
+               | b == nucT = D4 p p p 0
+               | otherwise = D4 0 0 0 0
+  where !p = fromIntegral q + 4.77
+
+
+-- pileup :: Monad m => Enumeratee [PrimChunks] [Pile] m a

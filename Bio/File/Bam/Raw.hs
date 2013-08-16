@@ -417,7 +417,7 @@ br_seq_at br@(BamRaw _ raw) i
 br_qual_at :: BamRaw -> Int -> Int
 br_qual_at br@(BamRaw _ raw) i = fromIntegral $ S.unsafeIndex raw (off0 + i)
   where
-    off0 = sum [ 33, br_l_read_name br, 4 * br_n_cigar_op br, br_l_seq br ]
+    off0 = sum [ 33, br_l_read_name br, 4 * br_n_cigar_op br, (br_l_seq br + 1) `div` 2]
 
 {-# INLINE br_cigar_at #-}
 br_cigar_at :: BamRaw -> Int -> (CigOp, Int)
