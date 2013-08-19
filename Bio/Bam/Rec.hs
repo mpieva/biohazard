@@ -25,12 +25,8 @@
 -- - Reader for gzipped/bzipped/bgzf'ed SAM.  Storing SAM is a bad idea,
 --   so why would anyone ever want to compress, much less index it?
 
-module Bio.File.Bam (
-    module Bio.Base,
-    module Bio.File.Bam.Header,
-    module Bio.File.Bam.Raw,
-
-    Block(..),
+module Bio.Bam.Rec (
+    Block,
     BamEnumeratee,
     isBamOrSam,
 
@@ -58,10 +54,6 @@ module Bio.File.Bam (
     readMd,
     showMd,
 
-    Cigar(..),
-    CigOp(..),
-    cigarToAlnLen,
-
     Extensions, Ext(..),
     extAsInt, extAsString, setQualFlag,
 
@@ -84,8 +76,8 @@ module Bio.File.Bam (
 ) where
 
 import Bio.Base
-import Bio.File.Bam.Header
-import Bio.File.Bam.Raw
+import Bio.Bam.Header
+import Bio.Bam.Raw
 import Bio.Iteratee
 
 import Control.Monad
@@ -123,23 +115,6 @@ import qualified Data.Vector.Generic            as V
 -- understood.
 
 type ByteString = B.ByteString
-
--- | Cigar line in BAM coding
--- Bam encodes an operation and a length into a single integer, we keep
--- those integers in an array.
-newtype Cigar = Cigar { unCigar :: [(CigOp, Int)] }
-
-instance Show Cigar where
-    show (Cigar cs) = concat [ shows l (toChr op) | (op,l) <- cs ]
-      where toChr = (:[]) . S.index "MIDNSHP=X" . fromEnum
-
--- | extracts the aligned length from a cigar line
--- This gives the length of an alignment as measured on the reference,
--- which is different from the length on the query or the length of the
--- alignment.
-cigarToAlnLen :: Cigar -> Int
-cigarToAlnLen (Cigar cig) = sum $ map l cig
-  where l (op,n) = if op == Mat || op == Del || op == Nop then n else 0
 
 -- | internal representation of a BAM record
 data BamRec = BamRec {

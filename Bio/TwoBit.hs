@@ -1,27 +1,27 @@
-module Bio.File.TwoBit (
-    module Bio.Base,
+module Bio.TwoBit (
+        module Bio.Base,
 
-    TwoBitFile,
-    openTwoBit,
-    closeTwoBit,
-    withTwoBit,
+        TwoBitFile,
+        openTwoBit,
+        closeTwoBit,
+        withTwoBit,
 
-    getSubseq,
-    getSeqnames,
-    hasSequence,
-    getSeqLength,
-    clampPosition,
-    getRandomSeq
-) where
+        getSubseq,
+        getSeqnames,
+        hasSequence,
+        getSeqLength,
+        clampPosition,
+        getRandomSeq
+    ) where
 
--- TODO: proper masking is unsupported right now 
+-- TODO: proper masking is unsupported right now
 
 {-
 Would you believe it?  The 2bit format stores blocks of Ns in a table at
 the beginning of a sequence, then packs four bases into a byte.  So it
 is neither possible nor necessary to store Ns in the main sequence, and
 you would think they aren't stored there, right?  And they aren't.
-Instead Ts are stored which the reader has to replace with Ns.  
+Instead Ts are stored which the reader has to replace with Ns.
 
 How stupid is that?
 
@@ -34,8 +34,7 @@ Note to self:  use Judy for the Int->Int mappings?  Or (gasp!) sorted
 arrays with binary search?
 -}
 
-import Bio.Base
-
+import           Bio.Base
 import           Control.Exception
 import           Control.Monad
 import           Data.Array.Unboxed
@@ -76,7 +75,7 @@ openTwoBit fp = do
                         0x4327411A -> return $ fromIntegral `fmap` getWord32le
                         _          -> fail $ "invalid .2bit signature " ++ showHex sig []
 
-                
+
                 version <- getWord32
                 unless (version == 0) $ fail $ "wrong .2bit version " ++ show version
 
@@ -97,7 +96,7 @@ closeTwoBit :: TwoBitFile -> IO ()
 closeTwoBit = hClose . tbf_handle
 
 withTwoBit :: FilePath -> (TwoBitFile -> IO a) -> IO a
-withTwoBit f = bracket (openTwoBit f) closeTwoBit 
+withTwoBit f = bracket (openTwoBit f) closeTwoBit
 
 read_block_index :: TwoBitFile -> IORef TwoBitSequence -> IO TwoBitSequence
 read_block_index tbf r = do
@@ -144,8 +143,8 @@ do_frag start0 len revcomplp s_blocks raw ofs0 = do
 
     left_fragment = case I.maxViewWithKey left_junk of
         Nothing -> Nothing
-        Just ((start1, len1), _) -> 
-            let d = start - start1 
+        Just ((start1, len1), _) ->
+            let d = start - start1
             in if d >= len1 then Nothing
                             else Just (start, len1-d)
 
@@ -156,7 +155,7 @@ do_frag start0 len revcomplp s_blocks raw ofs0 = do
     right_fragment = case I.maxViewWithKey right_clipped of
         Nothing -> Nothing
         Just ((startn, lenn), _) ->
-            let l' = start + len - startn 
+            let l' = start + len - startn
             in if l' <= 0 then Nothing
                           else Just (startn, min l' lenn)
 
@@ -188,7 +187,7 @@ get_dna  nt  start total blocks0@((start1, len1) : blocks) raw ofs
 
 getSubseq :: TwoBitFile -> Range -> IO [Nucleotide]
 getSubseq tbf (Range { r_pos = Pos { p_seq = chr, p_start = start }, r_length = len }) = do
-             ref <- maybe (fail $ S.unpack chr ++ " doesn't exist") return 
+             ref <- maybe (fail $ S.unpack chr ++ " doesn't exist") return
                     $ M.lookup chr (tbf_seqs tbf)
              sq1 <- read_block_index tbf ref
              let go | start < 0 = do_frag (-start-len) len True
@@ -211,7 +210,7 @@ hasSequence tbf sq = isJust . M.lookup sq . tbf_seqs $ tbf
 
 getSeqLength :: TwoBitFile -> Seqid -> IO Int
 getSeqLength tbf chr = do
-             ref <- maybe (fail $ shows chr " doesn't exist") return 
+             ref <- maybe (fail $ shows chr " doesn't exist") return
                     $ M.lookup chr (tbf_seqs tbf)
              sq1 <- read_block_index tbf ref
              return $ tbs_dna_size sq1
@@ -241,5 +240,5 @@ getRandomSeq tbf = do
                          if r_length r' == l && good sq
                            then return (r', sq)
                            else draw good l
-    return draw                        
-                         
+    return draw
+

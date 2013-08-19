@@ -1,9 +1,11 @@
 -- | Trimming of reads as found in BAM files.  Implements trimming low
 -- quality sequence from the 3' end.
 
-module Bio.File.Bam.Trim ( trim_3', trim_low_quality ) where
+module Bio.Bam.Trim ( trim_3', trim_low_quality ) where
 
-import Bio.File.Bam
+import Bio.Bam.Header
+import Bio.Bam.Rec
+import Bio.Base
 
 import Data.Bits ( testBit )
 import Data.List ( inits )

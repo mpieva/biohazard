@@ -9,7 +9,9 @@
 -- also sorted together.  So all we have to do is (maybe) exchange first
 -- and seocnd mate.
 
-import Bio.File.Bam
+import Bio.Base
+import Bio.Bam.Header
+import Bio.Bam.Rec
 import Bio.Iteratee
 import Control.Monad                            ( unless, foldM )
 import Data.List                                ( sortBy )
@@ -46,8 +48,8 @@ getExt k (Pair a b) = extAsInt 0 k a + extAsInt 0 k b
 -- in something close to an Enumerator (not quite, because the merged
 -- headers need to be passed along).
 enum_bam_files :: MonadCatchIO m
-               => Enumeratee [BamPair] [[BamPair]] (Iteratee [[BamPair]] m) a 
-               -> [ FilePath ] 
+               => Enumeratee [BamPair] [[BamPair]] (Iteratee [[BamPair]] m) a
+               -> [ FilePath ]
                -> Enumerator' BamMeta [[BamPair]] m a
 enum_bam_files _etee [    ] = return . ($ mempty)
 enum_bam_files  etee (f1:fs1) = go (decodeAnyBamOrSamFile f1 $== find_pairs $== I.mapStream (:[])) fs1
@@ -100,8 +102,8 @@ set_mapq (Pair a b) q = Pair (a { b_mapq = q }) (b { b_mapq = q })
 
 meld :: BamMeta -> (BamPair -> Int) -> [BamPair] -> BamPair
 meld hdr score rs | all p_is_unmapped rs = head rs
-                  | all_equal (map p_qname rs) = set_mapq best' mapq 
-                  | otherwise = error $ "BAMs are not in the same order or sequences are missing: " 
+                  | all_equal (map p_qname rs) = set_mapq best' mapq
+                  | otherwise = error $ "BAMs are not in the same order or sequences are missing: "
                                      ++ show (map p_qname rs)
   where
     all_equal [] = error "no input (not supposed to happen)"
@@ -110,8 +112,8 @@ meld hdr score rs | all p_is_unmapped rs = head rs
     ( best : rs' ) = sortBy (\a b -> score a `compare` score b) $ filter (not . p_is_unmapped) rs
     mapq = case rs' of [    ] -> p_mapq best
                        (r2:_) -> p_mapq best `min` (score r2 - score best)
-    
-    
+
+
     split_xa br = let s = extAsString "XA" br in if S.null s then id else (++) (S.split ';' s)
 
     get_xas (Single a) (one,two) = (split_xa a one, two)
@@ -137,7 +139,7 @@ meld hdr score rs | all p_is_unmapped rs = head rs
 
 
 options :: [OptDescr (Conf -> IO Conf)]
-options = 
+options =
     [ Option "o" ["output"]   (ReqArg set_output "FILE") "Send output to FILE"
     , Option "u" ["unsorted"] (NoArg  set_unsorted)      "Input is unsorted"
     , Option "s" ["sorted"]   (NoArg  set_sorted)        "Input is sorted by name"
@@ -145,7 +147,7 @@ options =
     , Option [ ] ["bwa"]      (NoArg  set_bwa)           "Preset for alignments from 'bwa' (uses XM, XO, XG)"
     , Option [ ] ["anfo"]     (NoArg  set_anfo)          "Preset for alignments from 'anfo' (uses UQ, PQ)"
     , Option [ ] ["blast"]    (NoArg  set_blast)         "Preset for alignments from 'blast' (uses AS)"
-    , Option [ ] ["blat"]     (NoArg  set_blat)          "Preset for alignments from 'blat' (uses NM)" 
+    , Option [ ] ["blat"]     (NoArg  set_blat)          "Preset for alignments from 'blat' (uses NM)"
     , Option "h?" ["help","usage"] (NoArg usage)         "Display this information" ]
 
 usage :: Conf -> IO Conf
@@ -165,7 +167,7 @@ set_sorted :: Conf -> IO Conf
 set_sorted c = return $ c { c_merge = merge_by_name }
 
 set_weight :: String -> Conf -> IO Conf
-set_weight (a:b:':':rest) c = do 
+set_weight (a:b:':':rest) c = do
     w <- readIO rest
     let f = \r -> getExt [a,b] r * w + maybe 0 ($ r) (c_score c)
     return $ c { c_score = Just f }
@@ -174,7 +176,7 @@ set_weight s _ = error $ "illegal weight specification " ++ show s
 set_bwa, set_anfo, set_blat, set_blast :: Conf -> IO Conf
 set_bwa c = return $ c { c_score = Just defaultScore }
 set_anfo c = return $ c { c_score = Just $ \r -> getExt "UQ" r }
-set_blat c = return $ c { c_score = Just $ \r -> getExt "NM" r * 30 } 
+set_blat c = return $ c { c_score = Just $ \r -> getExt "NM" r * 30 }
 set_blast c = return $ c { c_score = Just $ \r -> getExt "AS" r * (-3) }
 
 main :: IO ()

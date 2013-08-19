@@ -5,7 +5,7 @@
 -- input and output.  The input iteratee can optionally supply virtual
 -- file offsets, so that seeking is possible.
 
-module Bio.File.Bgzf (
+module Codec.Bgzf (
     Block(..), decompressBgzf, decompressPlain, compressBgzf,
     maxBlockSize, bgzfEofMarker, liftBlock, getOffset,
     isBgzf, isGzip

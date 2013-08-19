@@ -85,7 +85,7 @@ groupStreamOn proj inner = eneeCheckIfDone (liftI . step)
     step outer   (EOF   mx) = idone (liftI outer) $ EOF mx
     step outer c@(Chunk as)
         | LL.null as = liftI $ step outer
-        | otherwise  = let x = proj (LL.head as) 
+        | otherwise  = let x = proj (LL.head as)
                        in lift (inner x) >>= \i -> step' x i outer c
 
     -- We want to feed a @Chunk@ to the inner @Iteratee@, which might be
@@ -95,7 +95,7 @@ groupStreamOn proj inner = eneeCheckIfDone (liftI . step)
     -- @enumPure1Chunk@ is not appropriate, it would accumulate the
     -- data, just to have it discarded by the @run@ that eventually
     -- happens.
-    
+
     step' c it outer (Chunk as)
         | LL.null as = liftI $ step' c it outer
         | (l,r) <- LL.span ((==) c . proj) as, not (LL.null l) =
@@ -104,7 +104,7 @@ groupStreamOn proj inner = eneeCheckIfDone (liftI . step)
                 oc k       m = icontM k m
             in lift (runIter it od oc) >>= \it' -> step' c it' outer (Chunk r)
 
-    step' c it outer str = 
+    step' c it outer str =
         lift (run it) >>= \b -> eneeCheckIfDone (\k -> step k str) . outer $ Chunk [(c,b)]
 
 
@@ -132,7 +132,7 @@ groupStreamBy cmp inner = eneeCheckIfDone (liftI . step)
                 oc k       m = icontM k m
             in lift (runIter it od oc) >>= \it' -> step' (LL.head l) it' outer (Chunk r)
 
-    step' _ it outer str = 
+    step' _ it outer str =
         lift (run it) >>= \b -> eneeCheckIfDone (\k -> step k str) . outer $ Chunk [b]
 
 
@@ -146,15 +146,12 @@ i'take = I.take
 -- speedily.
 i'lookAhead :: Monoid s => Iteratee s m a -> Iteratee s m a
 i'lookAhead = go mempty
-  where 
+  where
     go acc it = Iteratee $ \od oc -> runIter it (\x _ -> od x (Chunk acc)) (oc . step acc)
-    
-    -- step acc k (Chunk s) | trace (show ("lookahead", msg, S.length acc, S.length s)) False = undefined
-    -- step acc k (EOF _) | trace (show ("lookahead", msg, S.length acc, "EOF")) False = undefined
 
     step acc k c@(Chunk str) = go (acc `mappend` str) (k c)
     step acc k c@(EOF     _) = Iteratee $ \od1 -> runIter (k c) (\x _ -> od1 x (Chunk acc))
-                                      
+
 
 -- | Collects a string of a given length.  Don't use this for long
 -- strings, use @Data.Iteratee.ListLike.take@ instead.
@@ -171,7 +168,7 @@ infixl 1 $==
 -- | Compose an @Enumerator'@ with an @Enumeratee@, giving a new
 -- @Enumerator'@.
 ($==) :: Monad m => Enumerator' hdr input m (Iteratee output m result)
-                 -> Enumeratee      input             output m result 
+                 -> Enumeratee      input             output m result
                  -> Enumerator' hdr                   output m result
 ($==) enum enee iter = run =<< enum (\hdr -> enee $ iter hdr)
 
@@ -249,7 +246,7 @@ defaultBufSize = 2*1024*1024
 data Ordering' a = Less | Equal a | NotLess
 
 mergeSortStreams :: (Monad m, ListLike s a, Nullable s) => (a -> a -> Ordering' a) -> Enumeratee s s (Iteratee s m) b
-mergeSortStreams comp = eneeCheckIfDone step 
+mergeSortStreams comp = eneeCheckIfDone step
   where
     step out = I.peek >>= \mx -> lift I.peek >>= \my -> case (mx, my) of
         (Just x, Just y) -> case x `comp` y of
@@ -275,7 +272,7 @@ mapChunksMP f it = do chan <- liftIO $ Ch `liftM` newEmptyMVar
         -- end the channel, then empty it
         liftIO $ putMVar back Nothing
         let loop (Ch c) k' = do mr <- liftIO $ takeMVar c
-                                case mr of 
+                                case mr of
                                     -- end marker
                                     Nothing -> idone (liftI k') (EOF mx)
                                     Just (r,c') -> eneeCheckIfDone (loop c') . k' $ Chunk r
@@ -286,7 +283,7 @@ mapChunksMP f it = do chan <- liftIO $ Ch `liftM` newEmptyMVar
         -- full, don't try, but wait.  If we get something, pass it on
         -- and recurse immediately.
         mnext <- liftIO $ if num >= maxqueue then Just `liftM` takeMVar chan else tryTakeMVar chan
-        case mnext of 
+        case mnext of
             Just (Just (r,chan')) -> eneeCheckIfDone (\k' -> go (num-1) chan' (Ch back) k' (Chunk c)) . k $ Chunk r
 
             -- end marker... shouldn't actually happen

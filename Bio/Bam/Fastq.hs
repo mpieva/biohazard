@@ -1,12 +1,16 @@
--- | Parser for FastA/FastQ, @Iteratee@ style, based on Attoparsec, and
--- written such that it is compatible with module @Bio.File.Bam@.
-
 {-# LANGUAGE OverloadedStrings #-}
-module Bio.File.Bam.Fastq (
+module Bio.Bam.Fastq (
     parseFastq, parseFastq', removeWarts
                           ) where
 
-import Bio.File.Bam
+-- ^ Parser for @FastA/FastQ@, 'Iteratee' style, based on
+-- "Data.Attoparsec", and written such that it is compatible with module
+-- 'Bio.Bam'.  This gives import of @FastA/FastQ@ while respecting some
+-- local conventions.
+
+import Bio.Bam.Header
+import Bio.Bam.Rec
+import Bio.Base
 import Bio.Iteratee
 import Control.Applicative       hiding ( many )
 import Data.Attoparsec.Char8
@@ -21,42 +25,48 @@ import qualified Data.Map               as M
 
 -- | Reader for DNA (not protein) sequences in FastA and FastQ.  We read
 -- everything vaguely looking like FastA or FastQ, then shoehorn it into
--- a BAM record.  We strive to extract information following
--- more-or-less-established conventions from the header, but we won't
--- support everything under the sun.  The recognized syntactical warts
--- are converted into appropriate flags and removed.  Only the canonical
+-- a BAM record.  We strive to extract information following more or
+-- less established conventions from the header, but we won't support
+-- everything under the sun.  The recognized syntactical warts are
+-- converted into appropriate flags and removed.  Only the canonical
 -- variant of FastQ is supported (qualities stored as raw bytes with
 -- base 33).  Input can be gzipped.
 --
--- Supported conventions:
--- * A name suffix of /1 or /2 is turned into the first mate or second
+-- Supported additional conventions:
+--
+-- * A name suffix of @/1@ or @/2@ is turned into the first mate or second
 --   mate flag and the read is flagged as paired.
--- * Same for name prefixes of F_ or R_, respectively.
--- * A name prefix of M_ flags the sequence as unpaired and merged
--- * A name prefix of T_ flags the sequence as unpaired and trimmed
--- * A name prefix of C_, either before or after any of the other
---   prefixes, is turned into the extra flag XP:i:-1 (result of
---   duplicate removal with unknown depth).
+--
+-- * Same for name prefixes of @F_@ or @R_@, respectively.
+--
+-- * A name prefix of @M_@ flags the sequence as unpaired and merged
+--
+-- * A name prefix of @T_@ flags the sequence as unpaired and trimmed
+--
+-- * A name prefix of @C_@, either before or after any of the other
+--   prefixes, is turned into the extra flag @XP:i:-1@ (result of
+--   duplicate removal with unknown duplicate count).
+--
 -- * A collection of tags separated from the name by an octothorpe is
---   removed and put into the fields XI and YI as text.
+--   removed and put into the fields @XI@ and @XJ@ as text.
 --
 -- Everything before the first sequence header is ignored.  Headers can
--- start with '>' or '@', we treat both equally.  The first word of the
--- header becomes the read name, a parser for the remainder of the
--- header can be supplied, and the default is to simply ignore it.  The
--- sequence can be split across multiple lines; whitespace, dashes and
--- dots are ignored, IUPAC ambiguity codes are accepted as bases,
--- anything else causes an error.  The sequence ends at a line that is
--- either a header or starts with '+', in the latter case, that line is
--- ignored and must be followed by quality scores.  There must be
--- exactly as many Q-scores as there are bases, followed immediately by
--- a header or end-of-file.  Whitespace is ignored.
+-- start with @\>@ or @\@@, we treat both equally.  The first word of
+-- the header becomes the read name, the remainder of the header is
+-- ignored.  The sequence can be split across multiple lines;
+-- whitespace, dashes and dots are ignored, IUPAC ambiguity codes are
+-- accepted as bases, anything else causes an error.  The sequence ends
+-- at a line that is either a header or starts with @\+@, in the latter
+-- case, that line is ignored and must be followed by quality scores.
+-- There must be exactly as many Q-scores as there are bases, followed
+-- immediately by a header or end-of-file.  Whitespace is ignored.
 
 parseFastq :: Monad m => Enumeratee S.ByteString [ BamRec ] m a
 parseFastq = parseFastq' (const id)
 
--- | Same as @parseFastq@, but a custom function can be applied to the
--- description string and the parsed record.
+-- | Same as 'parseFastq', but a custom function can be applied to the
+-- description string (the part of the header after the sequence name),
+-- which can modify the parsed record.
 
 parseFastq' :: Monad m => (S.ByteString->BamRec->BamRec) -> Enumeratee S.ByteString [ BamRec ] m a
 parseFastq' descr it = do skipJunk ; convStream (parserToIteratee $ (:[]) <$> pRec) it
@@ -68,8 +78,8 @@ parseFastq' descr it = do skipJunk ; convStream (parserToIteratee $ (:[]) <$> pR
     pRec   = (satisfy isHdr <?> "start marker") *> (makeRecord <$> pName <*> (descr <$> P.takeWhile ('\n' /=)) <*> (pSeq >>= pQual))
     pName  = takeTill isSpace <* skipWhile (\c -> c /= '\n' && isSpace c)  <?> "read name"
     pSeq   =     (:) <$> satisfy isCBase <*> pSeq
-             <|> satisfy canSkip *> pSeq 
-             <|> pure []                                                   <?> "sequence" 
+             <|> satisfy canSkip *> pSeq
+             <|> pure []                                                   <?> "sequence"
 
     pQual sq = (,) sq <$> (char '+' *> skipWhile ('\n' /=) *> pQual' (length sq) <* skipSpace <|> return S.empty)  <?> "qualities"
     pQual' n = B.map (subtract 33) . B.filter (not . isSpace_w8) <$> scan n step
@@ -111,7 +121,7 @@ removeWarts br = br { b_qname = name, b_flag = flags, b_exts = tags }
                                                _       -> ( n, f,               t)
 
     insertTags ts t | S.null y  = M.insert "XI" (Text ts) t
-                    | otherwise = M.insert "XI" (Text  x) $ M.insert "YI" (Text $ S.tail y) t
+                    | otherwise = M.insert "XI" (Text  x) $ M.insert "XJ" (Text $ S.tail y) t
         where (x,y) = S.break (== ',') ts
 
 ----------------------------------------------------------------------------
@@ -121,7 +131,7 @@ some_file = "/mnt/ngs_data/101203_SOLEXA-GA04_00007_PEDi_MM_QF_SR/Ibis/Final_Seq
 
 fastq_test :: FilePath -> IO ()
 fastq_test = fileDriver $ joinI $ parseFastq $ print_names
-            
+
 print_names :: Iteratee [BamRec] IO ()
 print_names = I.mapM_ $ S.putStrLn . b_qname
 

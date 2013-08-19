@@ -7,7 +7,7 @@ Name:                biohazard
 -- The package version. See the Haskell package versioning policy
 -- (http://www.haskell.org/haskellwiki/Package_versioning_policy) for
 -- standards guiding when and how versions should be incremented.
-Version:             0.4.10
+Version:             0.5.0
 
 -- A short (one-line) description of the package.
 Synopsis:            bioinformatics support library
@@ -57,27 +57,27 @@ source-repository head
 source-repository this
   type:     git
   location: git://github.com/udo-stenzel/biohazard.git
-  tag:      0.4.10
+  tag:      0.5.0
 
 
 Library
   -- Modules exported by the library.
   Exposed-modules:     Bio.Base,
-                       Bio.File.Bam,
-                       Bio.File.Bam.Fastq,
-                       Bio.File.Bam.Filter,
-                       Bio.File.Bam.Header,
-                       Bio.File.Bam.Pileup,
-                       Bio.File.Bam.Raw,
-                       Bio.File.Bam.Rmdup,
-                       Bio.File.Bam.Trim,
-                       Bio.File.Bgzf,
-                       Bio.File.Glf,
-                       Bio.File.TwoBit,
+                       Bio.Bam,
+                       Bio.Bam.Fastq,
+                       Bio.Bam.Filter,
+                       Bio.Bam.Header,
+                       Bio.Bam.Raw,
+                       Bio.Bam.Rec,
+                       Bio.Bam.Rmdup,
+                       Bio.Bam.Trim,
+                       Bio.Glf,
                        Bio.Iteratee,
                        Bio.Iteratee.ZLib,
                        Bio.PriorityQueue,
-                       Bio.Util
+                       Bio.TwoBit,
+                       Bio.Util,
+                       Codec.Bgzf
   
   -- Packages needed in order to build this package.
   Build-depends:       bytestring, containers, base ==4.*, binary, array,

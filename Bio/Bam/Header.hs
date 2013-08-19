@@ -1,5 +1,5 @@
 {-# LANGUAGE OverloadedStrings, BangPatterns #-}
-module Bio.File.Bam.Header (
+module Bio.Bam.Header (
         BamMeta(..),
         parseBamMeta,
         parseBamMetaLine,
@@ -33,7 +33,11 @@ module Bio.File.Bam.Header (
         flagFailsQC,
         flagDuplicate,
         flagTrimmed,
-        flagMerged
+        flagMerged,
+
+        Cigar(..),
+        CigOp(..),
+        cigarToAlnLen
     ) where
 
 import Bio.Base
@@ -47,8 +51,8 @@ import Data.Word                    ( Word32 )
 import System.Environment           ( getArgs, getProgName )
 
 import qualified Data.Attoparsec.Char8          as P
-import qualified Data.ByteString                as S
-import qualified Data.ByteString.Char8          as B
+import qualified Data.ByteString                as B
+import qualified Data.ByteString.Char8          as S
 import qualified Data.ByteString.Lazy.Char8     as L
 import qualified Data.Foldable                  as F
 import qualified Data.Sequence                  as Z
@@ -62,7 +66,7 @@ data BamMeta = BamMeta {
 
 
 addPG :: Maybe Version -> IO (BamMeta -> BamMeta)
-addPG vn = do 
+addPG vn = do
     args <- getArgs
     pn   <- getProgName
     return $ go args pn
@@ -70,13 +74,13 @@ addPG vn = do
     go args pn bm = bm { meta_other_shit = ('P','G',pg_line) : meta_other_shit bm }
       where
         pg_line = concat [ [ ('I','D', pg_id) ]
-                         , [ ('P','N', B.pack pn) ]
-                         , [ ('C','L', B.pack $ unwords args) ]
-                         , maybe [] (\v -> [('V','N',B.pack (showVersion v))]) vn
+                         , [ ('P','N', S.pack pn) ]
+                         , [ ('C','L', S.pack $ unwords args) ]
+                         , maybe [] (\v -> [('V','N',S.pack (showVersion v))]) vn
                          , map (\p -> ('P','P',p)) (take 1 pg_pp)
                          , map (\p -> ('p','p',p)) (drop 1 pg_pp) ]
 
-        pg_id : _ = filter (not . flip elem pg_ids) . map B.pack $
+        pg_id : _ = filter (not . flip elem pg_ids) . map S.pack $
                       pn : [ pn ++ '-' : show i | i <- [(1::Int)..] ]
 
         pg_ids = [ pgid | ('P','G',fs) <- meta_other_shit bm, ('I','D',pgid) <- fs ]
@@ -113,7 +117,7 @@ data BamSQ = BamSQ {
 bad_seq :: BamSQ
 bad_seq = BamSQ (error "no SN field") (error "no LN field") []
 
-data BamSorting = Unsorted | Grouped | Queryname | Coordinate | GroupSorted 
+data BamSorting = Unsorted | Grouped | Queryname | Coordinate | GroupSorted
     deriving (Show, Eq)
 
 type BamOtherShit = [(Char, Char, S.ByteString)]
@@ -124,14 +128,14 @@ parseBamMeta = foldr ($) mempty <$> P.sepBy parseBamMetaLine (P.skipWhile (=='\t
 parseBamMetaLine :: P.Parser (BamMeta -> BamMeta)
 parseBamMetaLine = P.char '@' >> P.choice [hdLine, sqLine, coLine, otherLine]
   where
-    hdLine = P.string "HD\t" >> 
+    hdLine = P.string "HD\t" >>
              (\fns meta -> meta { meta_hdr = foldr ($) (meta_hdr meta) fns })
                <$> P.sepBy1 (P.choice [hdvn, hdso, hdother]) tabs
-    
-    sqLine = P.string "SQ\t" >> 
+
+    sqLine = P.string "SQ\t" >>
              (\fns meta -> meta { meta_refs = foldr ($) bad_seq fns <| meta_refs meta })
                <$> P.sepBy1 (P.choice [sqnm, sqln, sqother]) tabs
-    
+
     hdvn = P.string "VN:" >>
            (\a b hdr -> hdr { hdr_version = (a,b) })
              <$> P.decimal <*> ((P.char '.' <|> P.char ':') >> P.decimal)
@@ -149,7 +153,7 @@ parseBamMetaLine = P.char '@' >> P.choice [hdLine, sqLine, coLine, otherLine]
 
     hdother = (\t hdr -> hdr { hdr_other_shit = t : hdr_other_shit hdr }) <$> tagother
     sqother = (\t sq  -> sq  { sq_other_shit = t : sq_other_shit sq }) <$> tagother
-    
+
     coLine = P.string "CO\t" >>
              (\s meta -> meta { meta_comment = s : meta_comment meta })
                <$> P.takeWhile (/= 'n')
@@ -159,20 +163,20 @@ parseBamMetaLine = P.char '@' >> P.choice [hdLine, sqLine, coLine, otherLine]
 
     tagother :: P.Parser (Char,Char,S.ByteString)
     tagother = (,,) <$> P.anyChar <*> P.anyChar <*> (P.char ':' >> pall)
-    
+
     tabs = P.char '\t' >> P.skipWhile (== '\t')
 
     pall :: P.Parser S.ByteString
     pall = P.takeWhile (\c -> c/='\t' && c/='\n')
 
 showBamMeta :: BamMeta -> L.ByteString -> L.ByteString
-showBamMeta (BamMeta h ss os cs) = 
+showBamMeta (BamMeta h ss os cs) =
     show_bam_meta_hdr h .
     F.foldr ((.) . show_bam_meta_seq) id ss .
     foldr ((.) . show_bam_meta_other) id os .
     foldr ((.) . show_bam_meta_comment) id cs
   where
-    show_bam_meta_hdr (BamHeader (major,minor) so os') = 
+    show_bam_meta_hdr (BamHeader (major,minor) so os') =
         L.append "@HD\tVN:" . L.append (L.pack (show major ++ '.' : show minor)) .
         L.append (case so of Unsorted -> L.empty
                              Grouped  -> "\tSO:grouped"
@@ -188,13 +192,13 @@ showBamMeta (BamMeta h ss os cs) =
 
     show_bam_meta_comment cm = L.append "@CO\t" . L.append (L.fromChunks [cm]) . L.cons '\n'
 
-    show_bam_meta_other (a,b,ts) = 
+    show_bam_meta_other (a,b,ts) =
         L.cons '@' . L.cons a . L.cons b . show_bam_others ts
 
-    show_bam_others ts =         
+    show_bam_others ts =
         foldr ((.) . show_bam_other) id ts . L.cons '\n'
 
-    show_bam_other (a,b,v) = 
+    show_bam_other (a,b,v) =
         L.cons '\t' . L.cons a . L.cons b . L.cons ':' . L.append (L.fromChunks [v])
 
 -- | Reference sequence in Bam
@@ -231,7 +235,7 @@ noRefs :: Refs
 noRefs = Z.empty
 
 getRef :: Refs -> Refseq -> BamSQ
-getRef refs (Refseq i) 
+getRef refs (Refseq i)
     | 0 <= i && fromIntegral i <= Z.length refs = Z.index refs (fromIntegral i)
     | otherwise                                 = BamSQ "*" 0 []
 
@@ -266,23 +270,44 @@ flagMerged  = 0x20000
 --   smaller (and that part is stupid)
 
 compareNames :: Seqid -> Seqid -> Ordering
-compareNames n m = case (S.uncons n, S.uncons m) of
+compareNames n m = case (B.uncons n, B.uncons m) of
         ( Nothing, Nothing ) -> EQ
         ( Just  _, Nothing ) -> GT
         ( Nothing, Just  _ ) -> LT
         ( Just (c,n'), Just (d,m') )
-            | is_digit c && is_digit d -> 
-                let Just (u,n'') = B.readInt n
-                    Just (v,m'') = B.readInt m
-                in case u `compare` v of 
+            | is_digit c && is_digit d ->
+                let Just (u,n'') = S.readInt n
+                    Just (v,m'') = S.readInt m
+                in case u `compare` v of
                     LT -> LT
                     GT -> GT
                     EQ -> n'' `compareNames` m''
-            | otherwise -> case c `compare` d of 
+            | otherwise -> case c `compare` d of
                     LT -> LT
                     GT -> GT
                     EQ -> n' `compareNames` m'
   where
     is_digit c = 48 <= c && c < 58
 
+
+-- | Cigar line in BAM coding
+-- Bam encodes an operation and a length into a single integer, we keep
+-- those integers in an array.
+newtype Cigar = Cigar { unCigar :: [(CigOp, Int)] }
+
+data CigOp = Mat | Ins | Del | Nop | SMa | HMa | Pad
+    deriving ( Eq, Ord, Enum, Show, Bounded, Ix )
+
+instance Show Cigar where
+    show (Cigar cs) = concat [ shows l (toChr op) | (op,l) <- cs ]
+      where toChr = (:[]) . S.index "MIDNSHP=X" . fromEnum
+
+
+-- | extracts the aligned length from a cigar line
+-- This gives the length of an alignment as measured on the reference,
+-- which is different from the length on the query or the length of the
+-- alignment.
+cigarToAlnLen :: Cigar -> Int
+cigarToAlnLen (Cigar cig) = sum $ map l cig
+  where l (op,n) = if op == Mat || op == Del || op == Nop then n else 0
 

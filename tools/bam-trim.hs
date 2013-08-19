@@ -1,6 +1,5 @@
-import Bio.File.Bam
-import Bio.File.Bam.Trim
-import Bio.Iteratee
+import Bio.Bam
+import Bio.Base
 import Control.Monad                        ( unless, foldM )
 import Data.Word                            ( Word8 )
 import Paths_biohazard                      ( version )
@@ -45,9 +44,7 @@ main = do
             where r' = decodeBamEntry r
 
     add_pg <- addPG (Just version)
-    enumInputs files >=> run                $                   -- IO ()
-        joinI $ decompressBgzf              $                   -- Iteratee ByteString   IO ()
-        joinI $ decodeBam                   $ \hdr ->           -- Iteratee Block        IO ()
+    concatDefaultInputs >=> run             $ \hdr ->           -- IO ()
         joinI $ mapStream do_trim           $                   -- Iteratee [BamRaw]     IO ()
         joinI $ encodeBam (add_pg hdr)      $                   -- Iteratee [ByteString] IO ()
         mapChunksM_ (S.hPut stdout)                             -- Iteratee ByteString   IO ()
