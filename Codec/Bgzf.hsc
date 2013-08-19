@@ -11,6 +11,7 @@ module Codec.Bgzf (
     isBgzf, isGzip
                      ) where
 
+import Bio.Iteratee
 import Control.Concurrent
 import Control.Monad
 import Foreign.Marshal.Alloc

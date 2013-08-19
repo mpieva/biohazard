@@ -8,10 +8,9 @@ module Bio.Bam (
 
 -- ^ Umbrella module for most of whats under 'Bio.Bam'.
 
+import Bio.Iteratee
 import Bio.Bam.Header
-import Bio.Iteratee
-import Bio.Iteratee
 import Bio.Bam.Raw
 import Bio.Bam.Rec
-import Bio.Types
+import Bio.Bam.Types
 

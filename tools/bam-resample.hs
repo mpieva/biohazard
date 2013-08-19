@@ -7,7 +7,8 @@
 --
 -- Usage: resample [NUM] [FILE...]
 
-import Bio.File.Bam
+import Bio.Bam.Header
+import Bio.Bam.Raw
 import Bio.Iteratee
 import Paths_biohazard ( version )
 import System.Environment
@@ -47,10 +48,10 @@ resample m0 n0 = eneeCheckIfDone (go m0 n0)
                        if r < m
                          then eneeCheckIfDone (go (m-1) (n-1)) . k $ Chunk a
                          else go m (n-1) k
-    
+
 groupOn :: (Monad m, Eq b) => (a -> b) -> Enumeratee [a] [[a]] m c
 groupOn f = eneeCheckIfDone (\k -> I.tryHead >>= maybe (return $ liftI k) (\a -> go k [a] (f a)))
   where
     go  k acc fa = I.tryHead >>= maybe (return . k $ Chunk [reverse acc]) (go' k acc fa)
-    go' k acc fa b | fa == f b = go k (b:acc) fa 
+    go' k acc fa b | fa == f b = go k (b:acc) fa
                    | otherwise = eneeCheckIfDone (\k' -> go k' [b] (f b)) . k $ Chunk [reverse acc]

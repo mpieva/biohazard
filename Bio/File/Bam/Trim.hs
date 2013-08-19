@@ -3,7 +3,9 @@
 
 module Bio.File.Bam.Trim ( trim_3', trim_low_quality ) where
 
-import Bio.File.Bam
+import Bio.Bam.Rec
+import Bio.Bam.Types
+import Bio.Base
 
 import Data.Bits ( testBit )
 import Data.List ( inits )

@@ -15,6 +15,8 @@ module Bio.Bam.Raw (
     decodeAnyBam,
     decodeAnyBamFile,
 
+    concatInputs,
+    concatDefaultInputs,
     mergeInputs,
     mergeDefaultInputs,
     combineCoordinates,
@@ -221,6 +223,19 @@ decodeBamUnaligned (BamIndex voff _) iter = do when (voff /= 0) $ seek $ fromInt
                                                (decodeBamLoop ><> filterStream no_ref) iter
   where
     no_ref br = br_rname br == invalidRefseq
+
+concatDefaultInputs :: MonadCatchIO m => Enumerator' BamMeta [BamRaw] m a
+concatDefaultInputs it0 = liftIO getArgs >>= \fs -> concatInputs fs it0
+
+concatInputs :: MonadCatchIO m => [FilePath] -> Enumerator' BamMeta [BamRaw] m a
+concatInputs [        ] = \k -> enumHandle defaultBufSize stdin (decodeAnyBam k) >>= run
+concatInputs (fp0:fps0) = \k -> enum1 fp0 k >>= go fps0
+  where
+    enum1 "-" k1 = enumHandle defaultBufSize stdin (decodeAnyBam k1) >>= run
+    enum1  fp k1 = enumFile   defaultBufSize    fp (decodeAnyBam k1) >>= run
+
+    go [       ] = return
+    go (fp1:fps) = enum1 fp1 . const >=> go fps
 
 mergeDefaultInputs :: MonadCatchIO m
     => (BamMeta -> Enumeratee [BamRaw] [BamRaw] (Iteratee [BamRaw] m) a)

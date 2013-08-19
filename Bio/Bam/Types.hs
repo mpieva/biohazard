@@ -1,8 +1,13 @@
+{-# LANGUAGE OverloadedStrings #-}
+
 module Bio.Bam.Types (
         Cigar(..),
         CigOp(..),
         cigarToAlnLen
     ) where
+
+import Data.Ix (Ix)
+import Data.ByteString.Char8 (index)
 
 -- ^ Types for representing the BAM data model that are useful in more
 -- than one place.
@@ -17,7 +22,7 @@ data CigOp = Mat | Ins | Del | Nop | SMa | HMa | Pad
 
 instance Show Cigar where
     show (Cigar cs) = concat [ shows l (toChr op) | (op,l) <- cs ]
-      where toChr = (:[]) . S.index "MIDNSHP=X" . fromEnum
+      where toChr = (:[]) . index "MIDNSHP=X" . fromEnum
 
 
 -- | extracts the aligned length from a cigar line

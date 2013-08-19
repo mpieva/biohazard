@@ -5,7 +5,8 @@ module Bio.File.Bam.Rmdup(
             check_sort
     ) where
 
-import Bio.File.Bam
+import Bio.Bam
+import Bio.Base
 import Bio.File.Bam.Fastq               ( removeWarts )
 import Bio.Iteratee
 import Data.Array.Unboxed
@@ -48,11 +49,11 @@ cheap_collapse_keep = Collapse id do_cheap_collapse addXPOf' (map flagDup) make_
 
 make_singleton_raw :: BamRaw -> BamRaw
 make_singleton_raw b = mutateBamRaw b $ setFlag (br_flag b .&. complement pflags)
-  
+
 make_singleton_cooked :: BamRec -> BamRec
 make_singleton_cooked b = b { b_flag = b_flag b .&. complement pflags }
-  
-pflags :: Int  
+
+pflags :: Int
 pflags = flagPaired .|. flagProperlyPaired .|. flagMateUnmapped .|. flagMateReversed .|. flagFirstMate .|. flagSecondMate
 
 -- | Removes duplicates from an aligned, sorted BAM stream.
@@ -120,7 +121,7 @@ pflags = flagPaired .|. flagProperlyPaired .|. flagMateUnmapped .|. flagMateReve
 -- duplicates of each other.  The typical label function would extract
 -- read groups, libraries or samples.
 
-rmdup :: (Monad m, Ord l) => (BamRaw -> l) -> Bool -> Collapse -> Enumeratee [BamRaw] [BamRaw] m r 
+rmdup :: (Monad m, Ord l) => (BamRaw -> l) -> Bool -> Collapse -> Enumeratee [BamRaw] [BamRaw] m r
 rmdup label strand_preserved collapse_cfg =
     -- Easiest way to go about this:  We simply collect everything that
     -- starts at some specific coordinate and group it appropriately.
@@ -138,7 +139,7 @@ rmdup label strand_preserved collapse_cfg =
                         Nothing -> return . k . Chunk . f $ a:acc
                         Just b | same_pos a b -> mg1 f a (b:acc) k
                                | otherwise -> eneeCheckIfDone (mg1 f b []) . k . Chunk . f $ a:acc
-    
+
 check_sort :: Monad m => Enumeratee [BamRaw] [BamRaw] m a
 check_sort out = I.tryHead >>= maybe (return out) (\a -> eneeCheckIfDone (step a) out)
   where
@@ -154,7 +155,7 @@ check_sort out = I.tryHead >>= maybe (return out) (\a -> eneeCheckIfDone (step a
    always have different coordinates.  (Unfortunately, correct duplicate
    removal now relies on correct "unmapped" and "mate unmapped" flags,
    and we didn't have those until four hours ago...)
-   
+
    . Other definitions (e.g. lack of CIGAR) don't work, because that
      information won't be available for the mate.
 
@@ -180,14 +181,14 @@ check_sort out = I.tryHead >>= maybe (return out) (\a -> eneeCheckIfDone (step a
 -}
 
 do_rmdup :: Ord l => (BamRaw -> l) -> Bool -> Collapse -> [BamRaw] -> [BamRaw]
-do_rmdup label strand_preserved Collapse{..} = 
+do_rmdup label strand_preserved Collapse{..} =
     concatMap do_rmdup1 . M.elems . accumMap label id
   where
     do_rmdup1 rds = let (ss,r1) = true_singles'
                         (ms,r2) = merged'
                         (ps,r3) = pairs'
                         ua      = unaligned'
-                    in map project $ results ss ua ms ps ++ originals 
+                    in map project $ results ss ua ms ps ++ originals
                             (leftovers ss ua ms ps ++ r1 ++ r2 ++ r3)
       where
         -- Treatment of Half-Aligned Pairs (meaning one known
@@ -233,8 +234,8 @@ do_rmdup label strand_preserved Collapse{..} =
 
         mkMap f x = let m1 = M.map collapse $ accumMap f inject x
                     in (M.map fst m1, concatMap snd $ M.elems m1)
-                  
-        pairs'        = mkMap (\b -> (br_mate_pos b,   strand_preserved && br_isReversed  b 
+
+        pairs'        = mkMap (\b -> (br_mate_pos b,   strand_preserved && br_isReversed  b
                                                      , strand_preserved && br_isFirstMate b)) pairs
         merged'       = mkMap (\b -> (br_aln_length b, strand_preserved && br_isReversed  b)) merged
 
@@ -263,7 +264,7 @@ do_rmdup label strand_preserved Collapse{..} =
     -- if were outputting an original read.  If the latter case, its
     -- mate should be produced as ordinary else, in the former case, the
     -- bunch of unmapped mates should be produced as duplicated reads.
-    
+
     merge_singles m _ [                 ] = map (either id id) $ M.elems m
     merge_singles m n ((k,Right v) : kvs) = case M.lookup k m of
             Nothing -> make_singleton v : merge_singles m (M.delete k n) kvs
@@ -272,7 +273,7 @@ do_rmdup label strand_preserved Collapse{..} =
             (Nothing, Nothing) -> v : merge_singles (M.delete k m) (M.delete k n) kvs
             (Nothing, Just vs) -> v : vs ++ merge_singles (M.delete k m) (M.delete k n) kvs
             (Just  w,       _) -> add_xp_of (either id id w) v : merge_singles (M.delete k m) (M.delete k n) kvs
-    
+
     unmerged_singles _ n [           ] = concat $ M.elems n
     -- the singleton is an actual consensus: emit *all* unmapped mates
     unmerged_singles m n ((k,Right _) : kvs) = case M.lookup k n of
@@ -286,14 +287,14 @@ do_rmdup label strand_preserved Collapse{..} =
             (Just  w, vs) -> (either id id w) : vs ++ unmerged_singles (M.delete k m) (M.delete k n) kvs
 
     br_mate_pos       br = (br_mrnm br, br_mpos br, br_isUnmapped br, br_isMateUnmapped br)
-    br_isMergeTrimmed br = let ef = br_extAsInt (br_extAsInt 0 "XF" br) "FF" br 
+    br_isMergeTrimmed br = let ef = br_extAsInt (br_extAsInt 0 "XF" br) "FF" br
                            in (ef .&. flagTrimmed .|. flagMerged) /= 0
 
 accumMap :: Ord k => (a -> k) -> (a -> v) -> [a] -> M.Map k [v]
-accumMap f g = go M.empty    
-  where    
+accumMap f g = go M.empty
+  where
     go m [    ] = m
-    go m (a:as) = let ws = M.findWithDefault [] (f a) m 
+    go m (a:as) = let ws = M.findWithDefault [] (f a) m
                   in ws `seq` go (M.insert (f a) (g a:ws) m) as
 
 
@@ -306,7 +307,7 @@ accumMap f g = go M.empty
    ignore it anyway, or we calculate some special value; see below.
    Unknown fields will be taken from the first read, which seems to be a
    safe default.
- 
+
    QNAME and most fields              taken from first
    FLAG qc fail                       majority vote
         dup                           deleted
@@ -325,7 +326,7 @@ accumMap f g = go M.empty
          compute rmsq
 
    X0, X1, XT, XS, XF, XE, BC, LB, RG
-         majority vote -} 
+         majority vote -}
 
 addXPOf :: BamRec -> BamRec -> BamRec
 addXPOf w v = v { b_exts = M.insert "XP" (Int $ extAsInt 1 "XP" w `oplus` extAsInt 1 "XP" v) (b_exts v) }
@@ -351,7 +352,7 @@ do_collapse maxq  brs = ( Right b0 { b_exts  = modify_extensions $ b_exts b0
                                    , b_virtual_offset = 0 }, brs )              -- many modifications, must keep everything
   where
     b0 = minimumBy (comparing b_qname) brs
-    most_fail = 2 * length (filter isFailsQC brs) > length brs 
+    most_fail = 2 * length (filter isFailsQC brs) > length brs
     failflag | most_fail = b_flag b0 .|. flagFailsQC
              | otherwise = b_flag b0 .&. complement flagFailsQC
 
@@ -367,16 +368,16 @@ do_collapse maxq  brs = ( Right b0 { b_exts  = modify_extensions $ b_exts b0
     brs' = filter ((==) cigar' . unCigar . b_cigar) brs
 
     (cons_seq, cons_qual) = unzip $ map (consensus maxq) $ transpose $ map to_pairs brs'
-    
+
     add_index k1 k2 | null inputs = id
                     | otherwise = M.insert k1 (Text $ T.pack $ show conss) .
-                                  M.insert k2 (Text $ B.pack $ map (+33) consq) 
+                                  M.insert k2 (Text $ B.pack $ map (+33) consq)
       where
         inputs = [ zip (map toNucleotide $ T.unpack sq) qs
                  | es <- map b_exts brs
                  , Text sq <- maybe [] (:[]) $ M.lookup k1 es
                  , let qs = case M.lookup k2 es of
-                                Just (Text t) -> map (subtract 33) $ B.unpack t 
+                                Just (Text t) -> map (subtract 33) $ B.unpack t
                                 _             -> repeat 23 ]
         (conss,consq) = unzip $ map (consensus 93) $ transpose $ inputs
 
@@ -399,7 +400,7 @@ do_collapse maxq  brs = ( Right b0 { b_exts  = modify_extensions $ b_exts b0
         [ M.insert "NM" $! Int nm'
         , M.insert "XP" $! Int (foldl' (\a b -> a `oplus` extAsInt 1 "XP" b) 0 brs)
         , if null xa' then id else M.insert "XA" $! (Text $ T.intercalate (T.singleton ';') xa')
-        , if null md' then id else M.insert "MD" $! (Text $ showMd md') 
+        , if null md' then id else M.insert "MD" $! (Text $ showMd md')
         , add_index "XI" "YI"
         , add_index "XJ" "YJ" ]
 
@@ -468,14 +469,14 @@ replaceXP :: Int -> BamRaw -> BamRaw
 replaceXP new_xp b0 = bamRaw 0 . xpcode . raw_data . mutateBamRaw b0 $ removeExt "XP"
   where
     xpcode r | new_xp == 1 = r
-             | -0x80 <= new_xp && new_xp < 0 = r `B.append` B.pack [ c2w 'X', c2w 'P', c2w 'c', 
+             | -0x80 <= new_xp && new_xp < 0 = r `B.append` B.pack [ c2w 'X', c2w 'P', c2w 'c',
                                                                      fromIntegral $ new_xp .&. 0xff ]
-             | new_xp < 0x100                = r `B.append` B.pack [ c2w 'X', c2w 'P', c2w 'C', 
-                                                                     fromIntegral $ new_xp .&. 0xff ]                                                                   
-             | new_xp < 0x10000              = r `B.append` B.pack [ c2w 'X', c2w 'P', c2w 'S', 
+             | new_xp < 0x100                = r `B.append` B.pack [ c2w 'X', c2w 'P', c2w 'C',
+                                                                     fromIntegral $ new_xp .&. 0xff ]
+             | new_xp < 0x10000              = r `B.append` B.pack [ c2w 'X', c2w 'P', c2w 'S',
                                                                      fromIntegral $ (new_xp `shiftR`  0).&. 0xff,
                                                                      fromIntegral $ (new_xp `shiftR`  8) .&. 0xff ]
-             | otherwise   = r `B.append` B.pack [ c2w 'X', c2w 'P', c2w 'i', 
+             | otherwise   = r `B.append` B.pack [ c2w 'X', c2w 'P', c2w 'i',
                                                    fromIntegral $ (new_xp `shiftR`  0) .&. 0xff,
                                                    fromIntegral $ (new_xp `shiftR`  8) .&. 0xff,
                                                    fromIntegral $ (new_xp `shiftR` 16) .&. 0xff,

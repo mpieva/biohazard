@@ -1,5 +1,8 @@
 {-# LANGUAGE RecordWildCards, BangPatterns #-}
-import Bio.File.Bam
+import Bio.Base
+import Bio.Bam.Header
+import Bio.Bam.Raw
+import Bio.Bam.Rec
 import Bio.File.Bam.Rmdup
 import Bio.Iteratee
 import Bio.Util ( showNum, showOOM, estimateComplexity )
@@ -71,10 +74,10 @@ options = [
     Option "h?" ["help","usage"]   (NoArg  (const usage))     "Print this message" ]
 
   where
-    set_output "-" c =                    return $ c { output = Just $ \_ -> pipeRawBamOutput } 
-    set_output   f c =                    return $ c { output = Just $ \_ -> writeRawBamFile f } 
-    set_lib_out  f c =                    return $ c { output = Just $       writeLibBamFiles f } 
-    set_debug_out  c =                    return $ c { output = Just $ \_ -> pipeRawSamOutput } 
+    set_output "-" c =                    return $ c { output = Just $ \_ -> pipeRawBamOutput }
+    set_output   f c =                    return $ c { output = Just $ \_ -> writeRawBamFile f }
+    set_lib_out  f c =                    return $ c { output = Just $       writeLibBamFiles f }
+    set_debug_out  c =                    return $ c { output = Just $ \_ -> pipeRawSamOutput }
     set_qual     n c = readIO n >>= \a -> return $ c { collapse = cons_collapse' a }
     set_no_strand  c =                    return $ c { strand_preserved = False }
     set_verbose    c =                    return $ c { debug = hPutStr stderr }
@@ -92,20 +95,20 @@ options = [
         | a == "U" || a == "u" = return $ c { which = Unaln }
         | otherwise = case reads a of
                 [ (x,"")    ] -> return $ c { which = Some (Refseq $ x-1) (Refseq $ x-1) }
-                [ (x,'-':b) ] -> readIO b >>= \y -> 
+                [ (x,'-':b) ] -> readIO b >>= \y ->
                                  return $ c { which = Some (Refseq $ x-1) (Refseq $ y-1) }
-                _ -> fail $ "parse error in " ++ show a                                 
+                _ -> fail $ "parse error in " ++ show a
 
 
 usage :: IO a
 usage = do p <- getProgName
-           hPutStrLn stderr $ "Usage: " ++ usageInfo (p ++ info) options 
+           hPutStrLn stderr $ "Usage: " ++ usageInfo (p ++ info) options
            exitSuccess
-  where 
+  where
     info = " [option...] [bam-file...]\n\
            \Removes PCR duplicates from BAM files and calls a consensus for each duplicate set.  \n\
            \Input files must be sorted by coordinate and are merged on the fly.  Options are:"
-    
+
 cons_collapse' :: Word8 -> Bool -> Collapse
 cons_collapse' m False = cons_collapse m
 cons_collapse' m True  = cons_collapse_keep m
@@ -150,7 +153,7 @@ data Counts = Counts { tin          :: !Int
 main :: IO ()
 main = do
     args <- getArgs
-    when (null args) usage 
+    when (null args) usage
     let (opts, files, errors) = getOpt Permute options args
     unless (null errors) $ mapM_ (hPutStrLn stderr) errors >> exitFailure
     Conf{..} <- foldr (>=>) return opts defaults
@@ -162,7 +165,7 @@ main = do
                 debug "mapping of read groups to libraries:\n"
                 mapM_ debug [ unpackSeqid k ++ " --> " ++ unpackSeqid v ++ "\n" | (k,v) <- M.toList tbl ]
 
-       let filters = mapChunks (mapMaybe transform) ><> 
+       let filters = mapChunks (mapMaybe transform) ><>
                      mapChunksM (mapMM clean_multimap) ><>
                      filterStream (\br -> (keep_unaligned || is_aligned br) &&
                                           (keep_improper || is_proper br) &&
@@ -173,7 +176,7 @@ main = do
                                      Just  o -> (collapse, o)
 
        ou' <- takeWhileE is_halfway_aligned ><> filters ><>
-              rmdup (get_label tbl) strand_preserved (co keep_all) $ 
+              rmdup (get_label tbl) strand_preserved (co keep_all) $
               count_all (get_label tbl) `I.zip` ou (get_label tbl) (add_pg hdr)
 
        liftIO $ debug "rmdup done; copying junk\n"
@@ -191,7 +194,7 @@ main = do
 do_report :: Seqid -> Counts -> String
 do_report lbl Counts{..} = intercalate "\t" fs
   where
-    fs = label : showNum tin : showNum tout : showNum good_total : showNum good_singles : 
+    fs = label : showNum tin : showNum tout : showNum good_total : showNum good_singles :
          report_estimate (estimateComplexity good_total good_singles)
 
     label = if S.null lbl then "--" else unpackSeqid lbl
@@ -202,8 +205,8 @@ do_report lbl Counts{..} = intercalate "\t" fs
             , showOOM grand_total
             , showFFloat (Just 1) rate []
             , showFFloat (Just 1) exhaustion [] ]
-      where 
-        grand_total = good_grand_total * fromIntegral tout / fromIntegral good_total 
+      where
+        grand_total = good_grand_total * fromIntegral tout / fromIntegral good_total
         exhaustion  = 100 * fromIntegral good_total / good_grand_total
         rate        = 100 * fromIntegral tout / fromIntegral tin :: Double
 
@@ -234,7 +237,7 @@ is_aligned :: BamRaw -> Bool
 is_aligned br = not (br_isUnmapped br) && isValidRefseq (br_rname br)
 
 is_proper :: BamRaw -> Bool
-is_proper br = not (br_isPaired br) || 
+is_proper br = not (br_isPaired br) ||
                (br_isMateUnmapped br == br_isUnmapped br && br_isProperlyPaired br)
 
 make_single :: BamRaw -> Maybe BamRaw
@@ -245,11 +248,11 @@ make_single br | br_isPaired br && br_isSecondMate br = Nothing
                                                           setMrnm $ invalidRefseq
                                                           setMpos $ invalidPos
                                                           setIsize $ 0
-  where                                    
+  where
     pair_flags = flagPaired .|. flagProperlyPaired .|.
                  flagFirstMate .|. flagSecondMate .|.
                  flagMateUnmapped
-                                
+
 
 progress :: MonadIO m => (String -> IO ()) -> Refs -> Enumeratee [BamRaw] [BamRaw] m a
 progress put refs = eneeCheckIfDone (liftI . go 0)

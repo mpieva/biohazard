@@ -25,7 +25,7 @@
 -- - Reader for gzipped/bzipped/bgzf'ed SAM.  Storing SAM is a bad idea,
 --   so why would anyone ever want to compress, much less index it?
 
-module Bio.Bam (
+module Bio.Bam.Rec (
     Block,
     BamEnumeratee,
     isBamOrSam,
@@ -76,6 +76,7 @@ module Bio.Bam (
 import Bio.Base
 import Bio.Bam.Header
 import Bio.Bam.Raw
+import Bio.Bam.Types
 import Bio.Iteratee
 
 import Control.Monad

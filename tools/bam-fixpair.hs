@@ -1,6 +1,6 @@
 {-# LANGUAGE BangPatterns, OverloadedStrings #-}
 
-{- 
+{-
 This is a validator/fixup for paired end BAM files, that is more
 efficient than 'samtools sort -n' followed by 'samtools fixmate'.
 
@@ -28,7 +28,9 @@ TODO:
    opportunistic sort that is fast on almost sorted files.
 -}
 
-import Bio.File.Bam             hiding ( mergeInputs, combineCoordinates )
+import Bio.Base
+import Bio.Bam.Header
+import Bio.Bam.Raw hiding ( mergeInputs, combineCoordinates )
 import Bio.Iteratee
 import Bio.PriorityQueue
 import Bio.Util                                 ( showNum )
@@ -145,17 +147,17 @@ fixmate r s | br_isFirstMate r && br_isSecondMate s = sequence [go r s, go s r]
                  , (br_flag a =!= computedFlag,  setFlag  computedFlag,  count_fflag)
                  , (br_indices a == common_indices, setIndices common_indices, count_ixs) ]
 
-        message infos = "fixing " ++ shows (br_qname a `S.append` if br_isFirstMate a then "/1" else "/2") 
+        message infos = "fixing " ++ shows (br_qname a `S.append` if br_isFirstMate a then "/1" else "/2")
                         ": \t" ++ intercalate ", " infos
         !computedFlag' = (if br_rname a == invalidRefseq then (.|. flagUnmapped) else id) .
                          (if br_rname b == invalidRefseq then (.|. flagMateUnmapped) else id) .
                          (if br_isReversed b then (.|. flagMateReversed) else (.&. complement flagMateReversed)) .
                          (if br_isUnmapped b then (.|. flagMateUnmapped) else (.&. complement flagMateUnmapped)) .
                          (if br_isFailsQC  b then (.|. flagFailsQC) else id) $
-                         br_flag a 
+                         br_flag a
 
         !properly_paired = computedFlag' .&. (flagUnmapped .|. flagMateUnmapped) == 0 && br_rname a == br_rname b
-        !computedFlag    = if properly_paired then computedFlag' else computedFlag' .&. complement flagProperlyPaired 
+        !computedFlag    = if properly_paired then computedFlag' else computedFlag' .&. complement flagProperlyPaired
         !computedIsize   = if properly_paired then pos5 b - pos5 a else 0
 
         reduce f | f .&. flagMateUnmapped == 0 = f .&. complement flagFailsQC
@@ -169,20 +171,20 @@ fixmate r s | br_isFirstMate r && br_isSecondMate s = sequence [go r s, go s r]
         count_mrnm  = do modify $ \c -> c { num_mrnm = 1 + num_mrnm c }
                          let ra = unRefseq (br_mrnm a); rb = unRefseq (br_rname b)
                          onlyIf report_mrnm $ printf "MRNM %d is wrong (%d)" ra rb
-                           
-        count_mpos  = do modify $ \c -> c { num_mpos = 1 + num_mpos c }                           
+
+        count_mpos  = do modify $ \c -> c { num_mpos = 1 + num_mpos c }
                          onlyIf report_mpos $ printf "MPOS %d is wrong (%d)" (br_mpos a) (br_pos b)
 
-        count_isize = do modify $ \c -> c { num_isize = 1 + num_isize c }                           
+        count_isize = do modify $ \c -> c { num_isize = 1 + num_isize c }
                          onlyIf report_isize $ printf "ISIZE %d is wrong (%d)" (br_isize a) computedIsize
 
-        count_flags = do modify $ \c -> c { num_flags = 1 + num_flags c }                           
+        count_flags = do modify $ \c -> c { num_flags = 1 + num_flags c }
                          onlyIf report_flags $ printf "FLAG %03X is wrong (+%03X,-%03X)" (br_flag a) fp fm
 
-        count_fflag = do modify $ \c -> c { num_fflag = 1 + num_fflag c }                           
+        count_fflag = do modify $ \c -> c { num_fflag = 1 + num_fflag c }
                          onlyIf report_fflag $ printf "FLAG %03X is technically wrong (+%03X,-%03X)" (br_flag a) fp fm
 
-        count_ixs = do modify $ \c -> c { num_ixs = 1 + num_ixs c }                           
+        count_ixs = do modify $ \c -> c { num_ixs = 1 + num_ixs c }
                        onlyIf report_ixs $ printf "Index fields %s are wrong (%s)" (show $ br_indices a) (show common_indices)
 
         fp = computedFlag .&. complement (br_flag a)
@@ -193,17 +195,17 @@ fixmate r s | br_isFirstMate r && br_isSecondMate s = sequence [go r s, go s r]
         common_indices = zipWith max (br_indices a) (br_indices b)
 
         setIndices is = do mapM_ removeExt index_fields
-                           zipWithM_ appendStringExt index_fields is 
+                           zipWithM_ appendStringExt index_fields is
 
 -- | Turns a lone mate into a single.  Basically removes the pairing
--- related flags and clear the information concerning the mate. 
+-- related flags and clear the information concerning the mate.
 divorce :: BamRaw -> BamRaw
 divorce b = mutateBamRaw b $ do setFlag $ br_flag b .&. complement pair_flags
                                 setMrnm invalidRefseq
                                 setMpos invalidPos
                                 setIsize 0
   where
-    pair_flags = flagPaired .|. flagProperlyPaired .|. 
+    pair_flags = flagPaired .|. flagProperlyPaired .|.
                  flagFirstMate .|. flagSecondMate .|.
                  flagMateUnmapped .|. flagMateReversed
 
@@ -226,14 +228,14 @@ divorce b = mutateBamRaw b $ do setFlag $ br_flag b .&. complement pair_flags
 --   a pair gets queued up again.
 
 data MatingStats = MS { total_in   :: !Int
-                      , total_out  :: !Int 
+                      , total_out  :: !Int
                       , singletons :: !Int
                       , lone_mates :: !Int
                       , num_mrnm :: !Int
                       , num_mpos :: !Int
                       , num_isize :: !Int
                       , num_flags :: !Int
-                      , num_fflag :: !Int 
+                      , num_fflag :: !Int
                       , num_ixs :: !Int }
 
 report_stats :: MatingStats -> String
@@ -259,7 +261,7 @@ withQueues k = withPQ pqconf $ \h ->
                withPQ pqconf $ \m  ->
                k $ QS h o m
 
-ms0 :: MatingStats 
+ms0 :: MatingStats
 ms0 = MS 0 0 0 0 0 0 0 0 0 0
 
 getSize :: (MonadIO m, Ord a, Binary a, Sizeable a) => (Queues -> PQ a) -> Mating r m Int
@@ -296,8 +298,8 @@ report br = do i <- gets total_in
                      hs <- getSize right_here
                      os <- getSize in_order
                      ms <- getSize messed_up
-                     let rs = br_rname br ; p = br_pos br 
-                         at = if rs == invalidRefseq || p == invalidPos 
+                     let rs = br_rname br ; p = br_pos br
+                         at = if rs == invalidRefseq || p == invalidPos
                               then "" else printf "@%d/%d, " (unRefseq rs) p
                      note $ printf "%sin: %d, out: %d, here: %d, wait: %d, mess: %d" (at::String) i o hs os ms
 
@@ -309,7 +311,7 @@ no_mate_here l b = do note $ "[" ++ l ++ "] record "
                       enqueue (byQName b') messed_up
 
 no_mate_ever :: MonadIO m => BamRaw -> Mating r m ()
-no_mate_ever b = do err $ "record " ++ shows (br_qname b) " (" ++ 
+no_mate_ever b = do err $ "record " ++ shows (br_qname b) " (" ++
                           shows (br_extAsInt 1 "XI" b) ") did not have a mate at all."
                     modify $ \c -> c { lone_mates = 1 + lone_mates c }
                     kill <- tells killmode
@@ -373,8 +375,8 @@ yield rs = Mating $ \k s o q c -> let !s' = s { total_out = length rs + total_ou
 -- that is emptied no longer holds on to files on disk.
 re_pair :: MonadIO m => Queues -> Config -> Enumeratee [BamPair] [BamRaw] m a
 re_pair qs cf = eneeCheckIfDone $ \out -> runMating go finish ms0 out qs cf
-   where   
-    go = fetchNext >>= go' 
+   where
+    go = fetchNext >>= go'
 
     -- At EOF, flush everything.
     go' Nothing = peekMin right_here >>= \mm -> case mm of
@@ -395,12 +397,12 @@ re_pair qs cf = eneeCheckIfDone $ \out -> runMating go finish ms0 out qs cf
                 -- nope, r is out of order and goes to 'messed_up'
                 LT -> do warn $ "record " ++ show (br_qname r) ++ " is out of order."
                          let !r' = force_copy r
-                         enqueue (byQName r') messed_up 
+                         enqueue (byQName r') messed_up
                          go
 
                 -- nope, r comes later.  we need to finish our business here
                 GT -> do complete_here (br_self_pos qq)
-                         flush_here (Just (LoneMate r)) 
+                         flush_here (Just (LoneMate r))
 
                 -- it belongs here or there is nothing else here
                 EQ -> enqueueThis r >> go
@@ -415,21 +417,21 @@ re_pair qs cf = eneeCheckIfDone $ \out -> runMating go finish ms0 out qs cf
     -- their mate the ordinary way.  Afterwards, flush the messed_up
     -- queue.
     flush_in_order = fetchMin in_order >>= \zz -> case zz of
-        Just (ByMatePos b) -> no_mate_here "flush_in_order" b >> flush_in_order 
-        Nothing            -> flush_messed_up 
+        Just (ByMatePos b) -> no_mate_here "flush_in_order" b >> flush_in_order
+        Nothing            -> flush_messed_up
 
     -- Flush the messed up queue.  Everything should come off in pairs,
     -- unless something is broken.
-    flush_messed_up = fetchMin messed_up >>= flush_mess1 
+    flush_messed_up = fetchMin messed_up >>= flush_mess1
 
     flush_mess1 Nothing                 = return ()
     flush_mess1 (Just (ByQName _ ai a)) = fetchMin messed_up >>= flush_mess2 ai a
 
     flush_mess2  _ a Nothing = no_mate_ever a
-                                                
-    flush_mess2 ai a b'@(Just (ByQName _ bi b)) 
-        | ai /= bi || br_qname a /= br_qname b = no_mate_ever a >> report' >> flush_mess1 b' 
-        | otherwise                            = fixmate a b    >>= yield >> report' >> flush_messed_up 
+
+    flush_mess2 ai a b'@(Just (ByQName _ bi b))
+        | ai /= bi || br_qname a /= br_qname b = no_mate_ever a >> report' >> flush_mess1 b'
+        | otherwise                            = fixmate a b    >>= yield >> report' >> flush_messed_up
 
 
     -- Flush the right_here queue.  Everything should come off in pairs,
@@ -441,8 +443,8 @@ re_pair qs cf = eneeCheckIfDone $ \out -> runMating go finish ms0 out qs cf
 
     flush_here2 r (ByQName _ _ a) Nothing = do no_mate_here "flush_here2/Nothing" a
                                                flush_here r
-                                                
-    flush_here2 r (ByQName _ ai a) b'@(Just (ByQName _ bi b)) 
+
+    flush_here2 r (ByQName _ ai a) b'@(Just (ByQName _ bi b))
         | ai /= bi || br_qname a /= br_qname b = no_mate_here "flush_here2/Just" a >> flush_here1 r b'
         | otherwise                            = fixmate a b >>= yield >> flush_here r
 
@@ -452,11 +454,11 @@ re_pair qs cf = eneeCheckIfDone $ \out -> runMating go finish ms0 out qs cf
             zz <- peekMin in_order
             case zz of
                 Nothing -> return ()
-                Just (ByMatePos b) 
+                Just (ByMatePos b)
                        | pivot  > br_mate_pos b -> do discardMin in_order
                                                       no_mate_here "complete_here" b
                                                       complete_here pivot
-                    
+
                        | pivot == br_mate_pos b -> do discardMin in_order
                                                       enqueue (byQName b) right_here
                                                       complete_here pivot
@@ -473,22 +475,22 @@ data ByQName = ByQName { _bq_hash :: !Int
 byQName :: BamRaw -> ByQName
 byQName b = ByQName (hash $ br_qname b) (br_extAsInt 0 "XI" b) b
 
-instance Eq ByQName where 
-    ByQName ah ai a == ByQName bh bi b = 
+instance Eq ByQName where
+    ByQName ah ai a == ByQName bh bi b =
         (ah, ai, br_qname a) == (bh, bi, br_qname b)
 
-instance Ord ByQName where 
-    ByQName ah ai a `compare` ByQName bh bi b = 
+instance Ord ByQName where
+    ByQName ah ai a `compare` ByQName bh bi b =
         (ah, ai, br_qname a) `compare` (bh, bi, br_qname b)
 
 newtype ByMatePos = ByMatePos BamRaw
 
 instance Eq ByMatePos where
-    ByMatePos a == ByMatePos b = 
+    ByMatePos a == ByMatePos b =
         br_mate_pos a == br_mate_pos b
 
 instance Ord ByMatePos where
-    ByMatePos a `compare` ByMatePos b = 
+    ByMatePos a `compare` ByMatePos b =
         br_mate_pos a `compare` br_mate_pos b
 
 instance Binary ByQName where put = undefined ; get = undefined    -- XXX
@@ -518,7 +520,7 @@ force_copy br = bamRaw (virt_offset br) $! S.copy (raw_data br)
 -- re-pair.
 
 data BamPair = Singleton BamRaw | Pair BamRaw BamRaw | LoneMate BamRaw
-  
+
 
 mergeInputs :: MonadCatchIO m => [FilePath] -> Enumerator' BamMeta [BamPair] m a
 mergeInputs = go0
@@ -531,7 +533,7 @@ mergeInputs = go0
 
     enum1 "-" = enumG $ enumHandle defaultBufSize stdin
     enum1  fp = enumG $ enumFile   defaultBufSize    fp
-    
+
     enumG ee k = ee >=> run $ joinI $ decodeAnyBam $ \h -> quick_pair (k h)
 
 

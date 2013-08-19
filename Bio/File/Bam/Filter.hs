@@ -11,7 +11,8 @@ module Bio.File.Bam.Filter (
     qualityFromOldIllumina, qualityFromNewIllumina
                            ) where
 
-import Bio.File.Bam
+import Bio.Bam
+import Bio.Base
 import Bio.Iteratee
 import Data.Bits
 import Data.Word ( Word8 )
@@ -36,7 +37,7 @@ filterPairs ps pp = eneeCheckIfDone step
         | isPaired b = I.tryHead >>= step'' k b
         | otherwise  = case ps b of [] -> step k ; b' -> eneeCheckIfDone step . k $ Chunk b'
 
-    step'' k b Nothing = case pp (Just b) Nothing of 
+    step'' k b Nothing = case pp (Just b) Nothing of
                             [] -> return $ liftI k
                             b' -> return $ k $ Chunk b'
 
@@ -87,7 +88,7 @@ complexEntropy r b = if p then b else b'
   where
     b' = setQualFlag 'C' $ b { b_flag = b_flag b .|. flagFailsQC }
     p = ent >= r * total
-    
+
     counts = [ count x $ b_seq b | x <- properBases ]
     total = fromIntegral $ V.length $ b_seq b
     ent   = sum [ fromIntegral c * log (total / fromIntegral c) | c <- counts, c /= 0 ] / log 2
@@ -122,8 +123,8 @@ qualityFromOldIllumina b = b { b_qual = S.map conv $ b_qual b }
                  s' = exp $ log 10 * (fromIntegral s - 31) / (-10)
                  p  = s' / (1+s')
                  q  = - 10 * log p / log 10
-             in round q    
-                 
+             in round q
+
 -- | Convert quality scores from new Illumina scale (standard formula
 -- but offset 64 in FastQ).
 qualityFromNewIllumina :: BamRec -> BamRec

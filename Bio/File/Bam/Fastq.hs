@@ -6,7 +6,8 @@ module Bio.File.Bam.Fastq (
     parseFastq, parseFastq', removeWarts
                           ) where
 
-import Bio.File.Bam
+import Bio.Bam
+import Bio.Base
 import Bio.Iteratee
 import Control.Applicative       hiding ( many )
 import Data.Attoparsec.Char8
@@ -68,8 +69,8 @@ parseFastq' descr it = do skipJunk ; convStream (parserToIteratee $ (:[]) <$> pR
     pRec   = (satisfy isHdr <?> "start marker") *> (makeRecord <$> pName <*> (descr <$> P.takeWhile ('\n' /=)) <*> (pSeq >>= pQual))
     pName  = takeTill isSpace <* skipWhile (\c -> c /= '\n' && isSpace c)  <?> "read name"
     pSeq   =     (:) <$> satisfy isCBase <*> pSeq
-             <|> satisfy canSkip *> pSeq 
-             <|> pure []                                                   <?> "sequence" 
+             <|> satisfy canSkip *> pSeq
+             <|> pure []                                                   <?> "sequence"
 
     pQual sq = (,) sq <$> (char '+' *> skipWhile ('\n' /=) *> pQual' (length sq) <* skipSpace <|> return S.empty)  <?> "qualities"
     pQual' n = B.map (subtract 33) . B.filter (not . isSpace_w8) <$> scan n step
@@ -121,7 +122,7 @@ some_file = "/mnt/ngs_data/101203_SOLEXA-GA04_00007_PEDi_MM_QF_SR/Ibis/Final_Seq
 
 fastq_test :: FilePath -> IO ()
 fastq_test = fileDriver $ joinI $ parseFastq $ print_names
-            
+
 print_names :: Iteratee [BamRec] IO ()
 print_names = I.mapM_ $ S.putStrLn . b_qname
 

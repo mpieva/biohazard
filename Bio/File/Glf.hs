@@ -6,7 +6,7 @@ module Bio.File.Glf (
     enum_glf_handle
                     ) where
 
-import Bio.File.Bgzf
+import Codec.Bgzf
 import Bio.Iteratee
 import Control.Monad
 import Data.Bits
@@ -33,7 +33,7 @@ data GlfRec = SNP { glf_refbase :: {-# UNPACK #-} !Char
                     , glf_is_ins1 :: !Bool
                     , glf_is_ins2 :: !Bool
                     , glf_seq1    :: {-# UNPACK #-} !S.ByteString
-                    , glf_seq2    :: {-# UNPACK #-} !S.ByteString } 
+                    , glf_seq2    :: {-# UNPACK #-} !S.ByteString }
     deriving Show
 
 data GlfSeq = GlfSeq { glf_seqname :: {-# UNPACK #-} !S.ByteString
@@ -72,7 +72,7 @@ enee_glf_recs = eneeCheckIfDone step
                 `ap` (fromIntegral `liftM` I.head)
                 `ap` (fromIntegral `liftM` I.head)
         l1 <- getInt16le
-        l2 <- getInt16le 
+        l2 <- getInt16le
         liftM2 (f' (l1 >= 0) (l2 >= 0)) (i'getString (abs l1)) (i'getString (abs l2))
 
     getInt16le = do i <- endianRead2 LSB
@@ -92,7 +92,7 @@ enee_glf_seq per_seq oit = do l <- endianRead4 LSB
 enee_glf_file :: Monad m => (GlfSeq -> Enumeratee [GlfRec] a m b)
                          -> (S.ByteString -> Enumerator a m b)
                          -> Enumeratee S.ByteString a m b
-enee_glf_file per_seq per_file oit = do 
+enee_glf_file per_seq per_file oit = do
     matched <- I.heads (S.pack "GLF\003")
     when (matched /= 4) (fail "GLF signature not found")
     nm <- endianRead4 LSB >>= i'getString . fromIntegral
@@ -110,7 +110,7 @@ enee_glf_file per_seq per_file oit = do
 --
 -- This type is positively weird and I'm not entirely sure this is the
 -- right way to go about it.
-enum_glf_file :: MonadCatchIO m 
+enum_glf_file :: MonadCatchIO m
               => FilePath
               -> (GlfSeq -> Enumeratee [GlfRec] a m b)
               -> (S.ByteString -> Enumerator a m b)
@@ -122,8 +122,8 @@ enum_glf_file fp per_seq per_file output =
     enee_glf_file per_seq per_file output
 
 enum_glf_handle :: MonadCatchIO m
-                => Handle 
-                -> (GlfSeq -> Enumeratee [GlfRec] a m b) 
+                => Handle
+                -> (GlfSeq -> Enumeratee [GlfRec] a m b)
                 -> (S.ByteString -> Enumerator a m b)
                 -> Enumerator a m b
 enum_glf_handle hdl per_seq per_file output =
