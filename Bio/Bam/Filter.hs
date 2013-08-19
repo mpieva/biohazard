@@ -4,14 +4,15 @@
 --       - "rim job" (try to detect glass border)?
 
 {-# LANGUAGE BangPatterns #-}
-module Bio.File.Bam.Filter (
+module Bio.Bam.Filter (
     filterPairs, QualFilter,
     complexSimple, complexEntropy,
     qualityAverage, qualityMinimum,
     qualityFromOldIllumina, qualityFromNewIllumina
                            ) where
 
-import Bio.Bam
+import Bio.Bam.Header
+import Bio.Bam.Rec
 import Bio.Base
 import Bio.Iteratee
 import Data.Bits

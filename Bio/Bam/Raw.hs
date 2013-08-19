@@ -94,7 +94,6 @@ module Bio.Bam.Raw (
 
 import Bio.Base
 import Bio.Bam.Header
-import Bio.Bam.Types
 import Bio.Iteratee
 import Bio.Iteratee.ZLib hiding ( CompressionLevel )
 import Codec.Bgzf

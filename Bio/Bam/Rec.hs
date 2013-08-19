@@ -76,7 +76,6 @@ module Bio.Bam.Rec (
 import Bio.Base
 import Bio.Bam.Header
 import Bio.Bam.Raw
-import Bio.Bam.Types
 import Bio.Iteratee
 
 import Control.Monad

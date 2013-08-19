@@ -1,10 +1,6 @@
 {-# LANGUAGE RecordWildCards, BangPatterns #-}
+import Bio.Bam
 import Bio.Base
-import Bio.Bam.Header
-import Bio.Bam.Raw
-import Bio.Bam.Rec
-import Bio.File.Bam.Rmdup
-import Bio.Iteratee
 import Bio.Util ( showNum, showOOM, estimateComplexity )
 import Control.Monad
 import Data.Bits

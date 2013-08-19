@@ -1,13 +1,15 @@
 {-# LANGUAGE ExistentialQuantification, RecordWildCards, NamedFieldPuns #-}
-module Bio.File.Bam.Rmdup(
+module Bio.Bam.Rmdup(
             rmdup, Collapse, cons_collapse, cheap_collapse,
             cons_collapse_keep, cheap_collapse_keep,
             check_sort
     ) where
 
-import Bio.Bam
+import Bio.Bam.Fastq                    ( removeWarts )
+import Bio.Bam.Header
+import Bio.Bam.Raw
+import Bio.Bam.Rec
 import Bio.Base
-import Bio.File.Bam.Fastq               ( removeWarts )
 import Bio.Iteratee
 import Data.Array.Unboxed
 import Data.Bits

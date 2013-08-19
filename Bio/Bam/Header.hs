@@ -33,7 +33,11 @@ module Bio.Bam.Header (
         flagFailsQC,
         flagDuplicate,
         flagTrimmed,
-        flagMerged
+        flagMerged,
+
+        Cigar(..),
+        CigOp(..),
+        cigarToAlnLen
     ) where
 
 import Bio.Base
@@ -47,8 +51,8 @@ import Data.Word                    ( Word32 )
 import System.Environment           ( getArgs, getProgName )
 
 import qualified Data.Attoparsec.Char8          as P
-import qualified Data.ByteString                as S
-import qualified Data.ByteString.Char8          as B
+import qualified Data.ByteString                as B
+import qualified Data.ByteString.Char8          as S
 import qualified Data.ByteString.Lazy.Char8     as L
 import qualified Data.Foldable                  as F
 import qualified Data.Sequence                  as Z
@@ -70,13 +74,13 @@ addPG vn = do
     go args pn bm = bm { meta_other_shit = ('P','G',pg_line) : meta_other_shit bm }
       where
         pg_line = concat [ [ ('I','D', pg_id) ]
-                         , [ ('P','N', B.pack pn) ]
-                         , [ ('C','L', B.pack $ unwords args) ]
-                         , maybe [] (\v -> [('V','N',B.pack (showVersion v))]) vn
+                         , [ ('P','N', S.pack pn) ]
+                         , [ ('C','L', S.pack $ unwords args) ]
+                         , maybe [] (\v -> [('V','N',S.pack (showVersion v))]) vn
                          , map (\p -> ('P','P',p)) (take 1 pg_pp)
                          , map (\p -> ('p','p',p)) (drop 1 pg_pp) ]
 
-        pg_id : _ = filter (not . flip elem pg_ids) . map B.pack $
+        pg_id : _ = filter (not . flip elem pg_ids) . map S.pack $
                       pn : [ pn ++ '-' : show i | i <- [(1::Int)..] ]
 
         pg_ids = [ pgid | ('P','G',fs) <- meta_other_shit bm, ('I','D',pgid) <- fs ]
@@ -266,14 +270,14 @@ flagMerged  = 0x20000
 --   smaller (and that part is stupid)
 
 compareNames :: Seqid -> Seqid -> Ordering
-compareNames n m = case (S.uncons n, S.uncons m) of
+compareNames n m = case (B.uncons n, B.uncons m) of
         ( Nothing, Nothing ) -> EQ
         ( Just  _, Nothing ) -> GT
         ( Nothing, Just  _ ) -> LT
         ( Just (c,n'), Just (d,m') )
             | is_digit c && is_digit d ->
-                let Just (u,n'') = B.readInt n
-                    Just (v,m'') = B.readInt m
+                let Just (u,n'') = S.readInt n
+                    Just (v,m'') = S.readInt m
                 in case u `compare` v of
                     LT -> LT
                     GT -> GT
@@ -284,5 +288,27 @@ compareNames n m = case (S.uncons n, S.uncons m) of
                     EQ -> n' `compareNames` m'
   where
     is_digit c = 48 <= c && c < 58
+
+
+-- | Cigar line in BAM coding
+-- Bam encodes an operation and a length into a single integer, we keep
+-- those integers in an array.
+newtype Cigar = Cigar { unCigar :: [(CigOp, Int)] }
+
+data CigOp = Mat | Ins | Del | Nop | SMa | HMa | Pad
+    deriving ( Eq, Ord, Enum, Show, Bounded, Ix )
+
+instance Show Cigar where
+    show (Cigar cs) = concat [ shows l (toChr op) | (op,l) <- cs ]
+      where toChr = (:[]) . S.index "MIDNSHP=X" . fromEnum
+
+
+-- | extracts the aligned length from a cigar line
+-- This gives the length of an alignment as measured on the reference,
+-- which is different from the length on the query or the length of the
+-- alignment.
+cigarToAlnLen :: Cigar -> Int
+cigarToAlnLen (Cigar cig) = sum $ map l cig
+  where l (op,n) = if op == Mat || op == Del || op == Nop then n else 0
 
 
