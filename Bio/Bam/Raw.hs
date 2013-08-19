@@ -1,7 +1,5 @@
 {-# LANGUAGE OverloadedStrings, PatternGuards, BangPatterns, NoMonomorphismRestriction #-}
-module Bio.File.Bam.Raw (
-    module Bio.Base,
-
+module Bio.Bam.Raw (
     Block(..),
     decompressBgzf,
     compressBgzf,
@@ -93,10 +91,11 @@ module Bio.File.Bam.Raw (
 ) where
 
 import Bio.Base
-import Bio.File.Bam.Header
-import Bio.File.Bgzf
+import Bio.Bam.Header
+import Bio.Bam.Types
 import Bio.Iteratee
 import Bio.Iteratee.ZLib hiding ( CompressionLevel )
+import Codec.Bgzf
 
 import Control.Monad
 import Data.Array.IO                ( IOUArray, newArray_, writeArray )
@@ -161,7 +160,7 @@ isBam = firstOf [ isEmptyBam, isPlainBam, isBgzfBam, isGzipBam ]
 
 isEmptyBam = (\e -> if e then Just (\k -> return $ k mempty) else Nothing) `liftM` isFinished
 
-isPlainBam = (\n -> if n == 4 then Just (joinI . decompressPlain . decodeBam) else Nothing) 
+isPlainBam = (\n -> if n == 4 then Just (joinI . decompressPlain . decodeBam) else Nothing)
              `liftM` i'lookAhead (heads "BAM\SOH")
 
 -- Interesting... i'lookAhead interacts badly with the parallel
@@ -181,7 +180,7 @@ isGzipBam  = do b <- isGzip
                 k <- if b then i'lookAhead $ joinI $ enumInflate GZip defaultDecompressParams isPlainBam
                           else return Nothing
                 return $ ((joinI . enumInflate GZip defaultDecompressParams) .) `fmap` k
-                
+
 -- | Checks if a file contains BAM in any of the common forms, then
 -- decompresses it appropriately.  We support plain BAM, Bgzf'd BAM,
 -- and Gzip'ed BAM.
@@ -192,7 +191,7 @@ isGzipBam  = do b <- isGzip
 -- @BamRec@.  That way, SAM is supported automatically, and seeking will
 -- be supported if possible.
 decodeAnyBam :: MonadIO m => BamrawEnumeratee m a
-decodeAnyBam it = do mk <- isBam ; case mk of Just  k -> k it 
+decodeAnyBam it = do mk <- isBam ; case mk of Just  k -> k it
                                               Nothing -> fail "this isn't BAM."
 
 decodeAnyBamFile :: MonadCatchIO m => FilePath -> (BamMeta -> Iteratee [BamRaw] m a) -> m (Iteratee [BamRaw] m a)
@@ -280,7 +279,7 @@ encodeBamWith lv meta = eneeBam ><> compressBgzf lv
              S.cons (fromIntegral (l `shiftR`  8 .&. 0xff)) $
              S.cons (fromIntegral (l `shiftR` 16 .&. 0xff)) $
              S.cons (fromIntegral (l `shiftR` 24 .&. 0xff)) r
-    
+
     header = S.concat . L.toChunks $ runPut putHeader
 
     putHeader = do putByteString "BAM\1"
@@ -303,18 +302,18 @@ data BamRaw = BamRaw { virt_offset :: {-# UNPACK #-} !FileOffset
 -- | Smart constructor.  Makes sure we got a at least a full record.
 bamRaw :: FileOffset -> S.ByteString -> BamRaw
 bamRaw o s = if good then r else error $ "broken BAM record " ++ show (S.length s, m) ++
-    show [ 32, br_l_read_name r, br_l_seq r, (br_l_seq r+1) `div` 2, br_n_cigar_op r * 4 ] 
+    show [ 32, br_l_read_name r, br_l_seq r, (br_l_seq r+1) `div` 2, br_n_cigar_op r * 4 ]
   where
-    r = BamRaw o s 
+    r = BamRaw o s
     good | S.length s < 32 = False
          | otherwise       = S.length s >= m
-    m = sum [ 32, br_l_read_name r, br_l_seq r, (br_l_seq r+1) `div` 2, br_n_cigar_op r * 4 ] 
+    m = sum [ 32, br_l_read_name r, br_l_seq r, (br_l_seq r+1) `div` 2, br_n_cigar_op r * 4 ]
 
 -- | Accessor for raw bam.
 br_qname :: BamRaw -> S.ByteString
 br_qname r@(BamRaw _ raw) = S.unsafeTake (br_l_read_name r) $ S.unsafeDrop 32 raw
 
-br_l_read_name :: BamRaw -> Int  
+br_l_read_name :: BamRaw -> Int
 br_l_read_name (BamRaw _ raw) = fromIntegral $ S.unsafeIndex raw 8 - 1
 
 br_l_seq :: BamRaw -> Int
@@ -376,14 +375,14 @@ br_seq_at br@(BamRaw _ raw) i
     | otherwise = N $  S.unsafeIndex raw (off0 + i `div` 2)             .&. 0xF
   where
     off0 = sum [ 33, br_l_read_name br, 4 * br_n_cigar_op br ]
-    
+
 br_qual_at :: BamRaw -> Int -> Int
 br_qual_at br@(BamRaw _ raw) i = fromIntegral $ S.unsafeIndex raw (off0 + i)
   where
     off0 = sum [ 33, br_l_read_name br, 4 * br_n_cigar_op br, br_l_seq br ]
 
 br_aln_length :: BamRaw -> Int
-br_aln_length br@(BamRaw _ raw) 
+br_aln_length br@(BamRaw _ raw)
     | ncig == 0 = br_l_seq br
     | otherwise = sum [ x `shiftR` 4 | x <- map (getInt raw) $ take ncig [cig_off, cig_off+4 ..]
                                      , x .&. 0xF == 0 || x .&. 0xF == 2 || x .&. 0xF == 3 ]
@@ -406,7 +405,7 @@ decodeBam inner = do meta <- liftBlock get_bam_header
                          joinI $ i'take (fromIntegral hdr_len) $ parserToIteratee parseBamMeta
 
     get_ref_array = do nref <- endianRead4 LSB
-                       foldM (\acc _ -> do 
+                       foldM (\acc _ -> do
                            nm <- endianRead4 LSB >>= i'getString . fromIntegral
                            ln <- endianRead4 LSB
                            return $! acc |> BamSQ (S.init nm) (fromIntegral ln) []
@@ -417,7 +416,7 @@ decodeBam inner = do meta <- liftBlock get_bam_header
     -- sequences, so leftovers from the header are discarded.  Merging
     -- is by name.  So we merge information from the header into the
     -- list, then replace the header information.
-    merge meta refs = 
+    merge meta refs =
         let tbl = M.fromList [ (sq_name sq, sq) | sq <- F.toList (meta_refs meta) ]
         in meta { meta_refs = fmap (\s -> maybe s (merge' s) (M.lookup (sq_name s) tbl)) refs }
 
@@ -460,7 +459,7 @@ readBamIndex' = do magic <- heads "BAI\1"
                    if nref < 1 then return . BamIndex 0 $ array (toEnum 1, toEnum 0) []
                                else get_array nref
   where
-    get_array nref = do 
+    get_array nref = do
         arr <- liftIO $ ( newArray_ (toEnum 0, toEnum (nref-1)) :: IO (IOUArray Refseq Int64) )
         mx <- reduceM [toEnum 0 .. toEnum (nref-1)] 0 $ \m0 r -> do
             nbins <- fromIntegral `liftM` endianRead4 LSB
@@ -472,11 +471,11 @@ readBamIndex' = do magic <- heads "BAI\1"
             nintv <- endianRead4 LSB
             (o,m) <- let loop !acc !bcc  0 = return (acc,bcc)
                          loop !acc !bcc !n = do oo <- fromIntegral `liftM` endianRead8 LSB
-                                                if oo == 0 
+                                                if oo == 0
                                                    then loop acc bcc (n-1)
                                                    else loop (min acc oo) (max bcc oo) (n-1)
-                     in loop maxBound m0 nintv                    
-            liftIO $ writeArray arr r o 
+                     in loop maxBound m0 nintv
+            liftIO $ writeArray arr r o
             return m
         BamIndex mx `liftM` liftIO (unsafeFreeze arr)
 
@@ -484,10 +483,10 @@ readBamIndex' = do magic <- heads "BAI\1"
 
 
 writeRawBamFile :: MonadCatchIO m => FilePath -> BamMeta -> Iteratee [BamRaw] m ()
-writeRawBamFile fp meta = 
+writeRawBamFile fp meta =
     CIO.bracket (liftIO $ openBinaryFile fp WriteMode)
                 (liftIO . hClose)
-                (flip writeRawBamHandle meta) 
+                (flip writeRawBamHandle meta)
 
 pipeRawBamOutput :: MonadIO m => BamMeta -> Iteratee [BamRaw] m ()
 pipeRawBamOutput meta = encodeBamUncompressed meta =$ mapChunksM_ (liftIO . S.hPut stdout)
@@ -542,7 +541,7 @@ br_findExtension [u,v] br@(BamRaw _ r) = go off0
           | SC.index r o == u && SC.index r (o+1) == v = Just (o, o+2, skip o)
           | otherwise                                  = go (skip o)
 
-    skip !o = case SC.index r (o+2) of 
+    skip !o = case SC.index r (o+2) of
         'Z' -> skipNul $ o + 3
         'H' -> skipNul $ o + 3
         'B' -> o + 7 + sizeof (SC.index r (o+3)) * getInt r (o+4)
@@ -552,9 +551,9 @@ br_findExtension [u,v] br@(BamRaw _ r) = go off0
                | S.index r o == 0 = o+1
                | otherwise        = skipNul (o+1)
 
-    sizeof 'A' = 1 
-    sizeof 'c' = 1 
-    sizeof 'C' = 1 
+    sizeof 'A' = 1
+    sizeof 'c' = 1
+    sizeof 'C' = 1
     sizeof 's' = 2
     sizeof 'S' = 2
     sizeof 'i' = 4
