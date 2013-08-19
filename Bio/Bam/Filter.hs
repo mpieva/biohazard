@@ -16,7 +16,6 @@ import Bio.Bam.Rec
 import Bio.Base
 import Bio.Iteratee
 import Data.Bits
-import Data.Word ( Word8 )
 
 import qualified Data.ByteString     as S
 import qualified Data.Iteratee       as I

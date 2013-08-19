@@ -131,9 +131,6 @@ import qualified Data.Foldable                  as F
 import qualified Data.Map                       as M
 import qualified Data.Sequence                  as Z
 
-data CigOp = Mat | Ins | Del | Nop | SMa | HMa | Pad
-    deriving ( Eq, Ord, Enum, Show, Bounded, Ix )
-
 -- ^ Parsers and printers for BAM.  We employ an @Iteratee@
 -- interface, and we strive to keep BAM records in their encoded form.
 -- This is most compact and often fasted, since it saves the time for
@@ -396,8 +393,8 @@ br_rname :: BamRaw -> Refseq
 br_rname (BamRaw _ raw) = Refseq $ getInt raw 0
 
 {-# INLINE br_mapq #-}
-br_mapq :: BamRaw -> Int
-br_mapq (BamRaw _ raw) = fromIntegral $ S.unsafeIndex raw 9
+br_mapq :: BamRaw -> Word8
+br_mapq (BamRaw _ raw) = S.unsafeIndex raw 9
 
 {-# INLINE br_pos #-}
 br_pos :: BamRaw -> Int
@@ -427,7 +424,7 @@ br_seq_at br@(BamRaw _ raw) i
     off0 = sum [ 33, br_l_read_name br, 4 * br_n_cigar_op br ]
 
 {-# INLINE br_qual_at #-}
-br_qual_at :: BamRaw -> Int -> Int
+br_qual_at :: BamRaw -> Int -> Word8
 br_qual_at br@(BamRaw _ raw) i = fromIntegral $ S.unsafeIndex raw (off0 + i)
   where
     off0 = sum [ 33, br_l_read_name br, 4 * br_n_cigar_op br, (br_l_seq br + 1) `div` 2]

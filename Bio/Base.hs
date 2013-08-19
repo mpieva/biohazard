@@ -36,7 +36,8 @@ module Bio.Base(
     w2c,
     c2w,
 
-    findAuxFile
+    findAuxFile,
+    Word8
 ) where
 
 import Control.Monad        ( liftM )

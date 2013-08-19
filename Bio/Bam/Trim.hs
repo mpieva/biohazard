@@ -9,7 +9,6 @@ import Bio.Base
 
 import Data.Bits ( testBit )
 import Data.List ( inits )
-import Data.Word ( Word8 )
 import qualified Data.ByteString     as S
 import qualified Data.Map            as M
 import qualified Data.Vector.Generic as V

@@ -7,7 +7,6 @@ import Data.Bits
 import Data.List ( intercalate )
 import Data.Maybe
 import Data.Monoid ( mempty )
-import Data.Word ( Word8 )
 import Numeric ( showFFloat )
 import Paths_biohazard ( version )
 import System.Console.GetOpt

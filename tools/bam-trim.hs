@@ -1,7 +1,6 @@
 import Bio.Bam
 import Bio.Base
 import Control.Monad                        ( unless, foldM )
-import Data.Word                            ( Word8 )
 import Paths_biohazard                      ( version )
 import System.Console.GetOpt
 import System.Environment                   ( getArgs )

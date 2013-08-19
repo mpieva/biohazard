@@ -15,7 +15,6 @@ import Data.Array.Unboxed
 import Data.Bits
 import Data.List
 import Data.Ord                         ( comparing )
-import Data.Word                        ( Word8 )
 
 import qualified Data.ByteString        as B
 import qualified Data.ByteString.Char8  as T
