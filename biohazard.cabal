@@ -63,20 +63,22 @@ source-repository this
 Library
   -- Modules exported by the library.
   Exposed-modules:     Bio.Base,
-                       Bio.File.Bam,
+                       Bio.Bam,
                        Bio.File.Bam.Fastq,
                        Bio.File.Bam.Filter,
-                       Bio.File.Bam.Header,
-                       Bio.File.Bam.Raw,
+                       Bio.Bam.Header,
+                       Bio.Bam.Raw,
+                       Bio.Bam.Rec,
+                       Bio.Bam.Types,
                        Bio.File.Bam.Rmdup,
                        Bio.File.Bam.Trim,
-                       Bio.File.Bgzf,
                        Bio.File.Glf,
                        Bio.File.TwoBit,
                        Bio.Iteratee,
                        Bio.Iteratee.ZLib,
                        Bio.PriorityQueue,
-                       Bio.Util
+                       Bio.Util,
+                       Codec.Bgzf
   
   -- Packages needed in order to build this package.
   Build-depends:       bytestring, containers, base ==4.*, binary, array,
