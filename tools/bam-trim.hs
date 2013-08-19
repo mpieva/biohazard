@@ -1,6 +1,5 @@
 import Bio.Bam
 import Bio.Base
-import Bio.Iteratee
 import Control.Monad                        ( unless, foldM )
 import Data.Word                            ( Word8 )
 import Paths_biohazard                      ( version )
