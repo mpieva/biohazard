@@ -17,17 +17,16 @@ import qualified Data.Map as M
 import qualified Data.Iteratee.ListLike as I
 
 import Bio.Base
-import Bio.File.Glf
+import Bio.Glf
 import Bio.Iteratee
 
 data Config = Config {
     conf_min_qual :: Int,
-    conf_call :: [Int] -> [(Int, Char)],
-    conf_output :: Iteratee String IO (),
-    conf_input :: GlfInput,
-    conf_conv :: Formatter,
-    conf_mkname :: S.ByteString -> String
-  }
+    conf_call     :: [Int] -> [(Int, Char)],
+    conf_output   :: Iteratee String IO (),
+    conf_input    :: GlfInput,
+    conf_conv     :: Formatter,
+    conf_mkname   :: S.ByteString -> String }
 
 type GlfInput = (GlfSeq -> Enumeratee [GlfRec] String IO ())
              -> (S.ByteString -> Enumerator String IO ())
@@ -63,7 +62,7 @@ options = [
 
 usage :: IO a -> Config -> IO a
 usage e _ = getProgName >>= \p -> putStrLn (usageInfo (blurb p) options) >> e
-  where blurb prg = 
+  where blurb prg =
             "Usage: " ++ prg ++ " [Option...] [FastA-File...]\n" ++
             "Reads GLF from stdin and prints the contained consensus sequence in\n" ++
             "FastA/FastQ format.  Gaps are filled with a reference sequence if known\n" ++
@@ -83,13 +82,13 @@ main = do (opts, files, errors) <- getOpt Permute options <$> getArgs
           Config min_qual call output input conv mkname <- foldl (>>=) (return defaultConfig) opts
           refs <- M.fromList . concatMap readFasta <$> mapM L.readFile files
 
-          hPutStrLn stderr $ 
+          hPutStrLn stderr $
                 "known reference sequences: [" ++ intercalate ", "
                 [ show (L.unpack k) ++ " (" ++ show (L.length v) ++ ")" | (k,v) <- M.toList refs ]
                 ++ "]"
 
-          let per_file :: Seqid -> Enumerator String IO () 
-              per_file _genome_name = return 
+          let per_file :: Seqid -> Enumerator String IO ()
+              per_file _genome_name = return
 
               per_seq :: GlfSeq -> Enumeratee [GlfRec] String IO ()
               per_seq glfseq = extract1consensus (mkRef refs glfseq) call min_qual
@@ -105,7 +104,7 @@ main = do (opts, files, errors) <- getOpt Permute options <$> getArgs
 
 mkRef :: M.Map L.ByteString L.ByteString -> GlfSeq -> Int -> Int -> QSeq
 mkRef refs glfseq = case M.lookup (L.fromChunks [glf_seqname glfseq]) refs of
-                Nothing -> \o l -> replicate (min l (glf_seqlen glfseq - o)) ('N',2) 
+                Nothing -> \o l -> replicate (min l (glf_seqlen glfseq - o)) ('N',2)
                 Just s  -> \o l -> let l' = fromIntegral $ min l (glf_seqlen glfseq - o)
                                    in [ (toLower b,30) | b <- L.unpack $ L.take l' $ L.drop (fromIntegral o) s ]
 
@@ -122,7 +121,7 @@ extract1consensus ref call min_qual oit = liftI $ scan oit 0 0
     -- ref_pos: first position in reference we haven't handled
     scan k        !_ !ref_pos (EOF        x) = lift  $ enumPure1Chunk (ref ref_pos maxBound) >=> enumChunk (EOF x) $ k
     scan k !rec_pos_ !ref_pos (Chunk [    ]) = liftI $ scan k rec_pos_ ref_pos
-    scan k !rec_pos_ !ref_pos (Chunk (r:rs)) = 
+    scan k !rec_pos_ !ref_pos (Chunk (r:rs)) =
         case r of SNP {} -> let (_,!base) : (!qual,_) : _ = sort $ call (glf_lk r)
                             in ( if qual >= min_qual
                                  then lift $ enumPure1Chunk (ref ref_pos (rec_pos - ref_pos)) k
@@ -139,10 +138,10 @@ extract1consensus ref call min_qual oit = liftI $ scan oit 0 0
                                                              scan k' rec_pos ref_pos (Chunk rs)
       where
         !rec_pos = rec_pos_ + glf_offset r
-        (ins,sq) = if glf_lk_hom1 r > glf_lk_hom2 r 
+        (ins,sq) = if glf_lk_hom1 r > glf_lk_hom2 r
                    then (glf_is_ins2 r, glf_seq2 r) else (glf_is_ins1 r, glf_seq1 r)
         iqual = abs $ glf_lk_hom1 r - glf_lk_hom2 r
-        
+
 
 diploid_call, haploid_call :: [Int] -> [(Int, Char)]
 diploid_call lks = zip lks "AMRWCSYGKT"
@@ -153,7 +152,7 @@ type Formatter = String -> Enumeratee QSeq String IO ()
 
 print_fasta :: Formatter
 print_fasta name = eneeCheckIfDone (\k -> I.mapStream fst ><> toLines 60 $ k $ Chunk ('>' : name ++ "\n"))
-                       
+
 print_fastq :: Formatter
 print_fastq name = eneeCheckIfDone p'header
   where
@@ -180,7 +179,7 @@ toLines n = eneeCheckIfDone (\k -> I.isFinished >>= go k)
     go k False = do s <- I.take n I.stream2list >>= lift . run
                     eneeCheckIfDone (\k1 -> toLines n . k1 $ Chunk "\n") . k $ Chunk s
 
-                   
+
 readFasta :: L.ByteString -> [(L.ByteString, L.ByteString)]
 readFasta = rd . dropWhile (not . isHeader) . L.lines
   where

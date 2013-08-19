@@ -1,13 +1,13 @@
-module Bio.File.Glf (
-    GlfSeq(..),
-    GlfRec(..),
-    enee_glf_file,
-    enum_glf_file,
-    enum_glf_handle
-                    ) where
+module Bio.Glf (
+        GlfSeq(..),
+        GlfRec(..),
+        enee_glf_file,
+        enum_glf_file,
+        enum_glf_handle
+    ) where
 
-import Codec.Bgzf
 import Bio.Iteratee
+import Codec.Bgzf
 import Control.Monad
 import Data.Bits
 import System.IO
