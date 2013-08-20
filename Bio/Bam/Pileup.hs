@@ -74,7 +74,7 @@ instance Show Double4 where
 -- followed by some indel, and all those indels are combined into a
 -- single insertion and a single deletion.
 data PrimChunks = Seek !Int PrimBase                            -- ^ skip to position (at start or after N operation)
-                | Indel !Int [(Nucleotide, Word8)] PrimBase     -- ^ observed deletion and insertion between two bases
+                | Indel !Int [(Nucleotide, Qual)] PrimBase      -- ^ observed deletion and insertion between two bases
                 | EndOfRead                                     -- ^ nothing anymore
   deriving Show
 
@@ -82,9 +82,10 @@ data PrimBase = Base !Double4 PrimChunks                     -- ^ four probabili
   deriving Show
 
 
--- | Decomposes a BAM record.  We pick apart the CIGAR field, and
--- combine it with sequence and quality as appropriate.  We ignore the
--- @MD@ field, even if it is present.  Clipped bases are removed,
+-- | Decomposes a BAM record into chunks suitable for piling up.  We
+-- pick apart the CIGAR field, and combine it with sequence and quality
+-- as appropriate.  We ignore the @MD@ field, even if it is present.
+-- Clipped bases are removed/skipped as appropriate.
 
 decompose :: DamageModel -> BamRaw -> PrimChunks
 decompose dm br
@@ -99,15 +100,15 @@ decompose dm br
     -- This will compute the effective quality.  As far as I can see
     -- from the BAM spec V1.4, the qualities that matter are QUAL, MAPQ,
     -- and BAQ.  If QUAL is invalid, we replace it (arbitrarily) with
-    -- 30, BAQ is added to QUAL, and MAPQ is an upper limit for
-    -- effective quality.
-    get_seq :: (Nucleotide -> Word8 -> a) -> Int -> a
+    -- 23 (assuming a rather conservative error rate of ~0.5%), BAQ is
+    -- added to QUAL, and MAPQ is an upper limit for effective quality.
+    get_seq :: (Nucleotide -> Qual -> a) -> Int -> a
     get_seq f i = f n q''
       where
         !n = br_seq_at br i                                         -- nucleotide
         !q = case br_qual_at br i of 0xff -> 30 ; x -> x            -- quality; invalid (0xff) becomes 30
         !q' | i > B.length baq = q                                  -- no BAQ available
-            | otherwise = q + B.index baq i - 64                    -- else correct for BAQ
+            | otherwise = q + Q (B.index baq i - 64)                -- else correct for BAQ
         !q'' = min q' mapq                                          -- use MAPQ as upper limit
 
     -- Look for first base following the read's start or a gap (CIGAR
@@ -141,7 +142,7 @@ decompose dm br
     -- skipped: we could check for stuff that isn't valid in the middle
     -- of a read (H and S), but then what would we do anyway?  Just
     -- ignoring it is much easier and arguably as correct.
-    nextIndel :: [[(Nucleotide,Word8)]] -> Int -> Int -> Int -> Int -> Int -> PrimChunks
+    nextIndel :: [[(Nucleotide,Qual)]] -> Int -> Int -> Int -> Int -> Int -> PrimChunks
     nextIndel ins del !pos !is !ic !io
         | is >= max_seq || ic >= max_cig = EndOfRead
         | otherwise = case br_cigar_at br ic of
@@ -164,18 +165,18 @@ decompose dm br
 -- into account... but nobody seems too keen on doing that anyway.
 type DamageModel = Int              -- ^ position in read
                 -> Nucleotide       -- ^ base
-                -> Word8            -- ^ quality score
+                -> Qual             -- ^ quality score
                 -> Double4          -- ^ results in four probabilities
 
 -- | 'DamageModel' for undamaged DNA.  The probabilities follow directly
 -- from the quality score.  This needs elaboration to see what to do
 -- with amibiguity codes.
 noDamage :: DamageModel
-noDamage _ b q | b == nucA = D4 0 p p p
-               | b == nucC = D4 p 0 p p
-               | b == nucG = D4 p p 0 p
-               | b == nucT = D4 p p p 0
-               | otherwise = D4 0 0 0 0
+noDamage _ b (Q q) | b == nucA = D4 0 p p p
+                   | b == nucC = D4 p 0 p p
+                   | b == nucG = D4 p p 0 p
+                   | b == nucT = D4 p p p 0
+                   | otherwise = D4 0 0 0 0
   where !p = fromIntegral q + 4.77
 
 

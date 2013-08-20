@@ -106,8 +106,8 @@ qualityAverage q b = if p then b else b'
 -- if it has no more than @n@ bases with quality less than @q@.  Reads
 -- without quality string pass.
 {-# INLINE qualityMinimum #-}
-qualityMinimum :: Int -> Word8 -> QualFilter
-qualityMinimum n q b = if p then b else b'
+qualityMinimum :: Int -> Qual -> QualFilter
+qualityMinimum n (Q q) b = if p then b else b'
   where
     b' = setQualFlag 'Q' $ b { b_flag = b_flag b .|. flagFailsQC }
     p  = S.length (S.filter (< q) (b_qual b)) <= n
@@ -118,7 +118,6 @@ qualityMinimum n q b = if p then b else b'
 qualityFromOldIllumina :: BamRec -> BamRec
 qualityFromOldIllumina b = b { b_qual = S.map conv $ b_qual b }
   where
-    conv :: Word8 -> Word8
     conv s = let s' :: Double
                  s' = exp $ log 10 * (fromIntegral s - 31) / (-10)
                  p  = s' / (1+s')

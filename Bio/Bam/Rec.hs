@@ -91,7 +91,7 @@ import Data.Char                    ( ord, isDigit, digitToInt )
 import Data.Int                     ( Int32 )
 import Data.Monoid                  ( mempty )
 import Data.Vector.Generic          ( (!?) )
-import Data.Word                    ( Word32 )
+import Data.Word                    ( Word32, Word8 )
 import Foreign.Marshal.Alloc        ( alloca )
 import Foreign.Ptr                  ( castPtr )
 import Foreign.Storable             ( peek, poke )
@@ -197,8 +197,7 @@ decodeBamEntry br = either error fixup . fst . G.runGet go $ raw_data br
             return $ BamRec read_name flag rid start mapq cigar
                             mate_rid mate_pos ins_size (V.fromListN read_len $ expand qry_seq) qual exts (virt_offset br)
 
-    bases = listArray (0,15) (map toNucleotide "NACNGNNNTNNNNNNN") :: Array Word8 Nucleotide
-    expand t = if S.null t then [] else let x = B.head t in bases ! (x `shiftR` 4) : bases ! (x .&. 0xf) : expand (B.tail t)
+    expand t = if S.null t then [] else let x = B.head t in N (x `shiftR` 4) : N (x .&. 0xf) : expand (B.tail t)
 
     decodeCigar c | cc <= fromEnum (maxBound :: CigOp) = (toEnum cc, cl)
                   | otherwise = error "unknown Cigar operation"
@@ -337,12 +336,9 @@ encodeBamEntry = bamRaw 0 . S.concat . L.toChunks . runPut . putEntry
     putSeq v = case v !? 0 of
                  Nothing -> return ()
                  Just a  -> case v !? 1 of
-                    Nothing -> putWord8 (num a `shiftL` 4)
-                    Just b  -> putWord8 (unN a `shiftL` 4 .|. num b)
-                               >> putSeq (V.drop 2 v)
-
-    num :: Nucleotide -> Word8
-    num (N x) = x .&. 15
+                    Nothing -> putWord8 (unN a `shiftL` 4)
+                    Just b  -> do putWord8 (unN a `shiftL` 4 .|. unN b)
+                                  putSeq (V.drop 2 v)
 
 -- | writes BAM encoded stuff to a @Handle@
 -- We generate BAM with dynamic blocks, then stream them out to the file.

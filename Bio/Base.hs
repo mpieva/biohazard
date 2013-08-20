@@ -6,6 +6,7 @@
 
 module Bio.Base(
     Nucleotide(..),
+    Qual(..),
     Sequence,
     nucA, nucC, nucG, nucT, nucN, gap,
     toNucleotide,
@@ -36,8 +37,7 @@ module Bio.Base(
     w2c,
     c2w,
 
-    findAuxFile,
-    Word8
+    findAuxFile
 ) where
 
 import Control.Monad        ( liftM )
@@ -69,10 +69,14 @@ import Data.ByteString.Internal ( c2w, w2c )
 -- make sense, N is 15.
 
 newtype Nucleotide = N { unN :: Word8 } deriving (Eq, Ord, Ix, Storable)
+newtype Qual       = Q { unQ :: Word8 } deriving (Eq, Ord, Ix, Storable, Bounded, Num)
 
 instance Bounded Nucleotide where
     minBound = N  0
     maxBound = N 15
+
+instance Show Qual where
+    showsPrec p (Q q) = showsPrec p q
 
 gap, nucA, nucC, nucG, nucT, nucN :: Nucleotide
 gap  = N 0

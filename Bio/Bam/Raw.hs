@@ -393,8 +393,8 @@ br_rname :: BamRaw -> Refseq
 br_rname (BamRaw _ raw) = Refseq $ getInt raw 0
 
 {-# INLINE br_mapq #-}
-br_mapq :: BamRaw -> Word8
-br_mapq (BamRaw _ raw) = S.unsafeIndex raw 9
+br_mapq :: BamRaw -> Qual
+br_mapq (BamRaw _ raw) = Q $ S.unsafeIndex raw 9
 
 {-# INLINE br_pos #-}
 br_pos :: BamRaw -> Int
@@ -424,7 +424,7 @@ br_seq_at br@(BamRaw _ raw) i
     off0 = sum [ 33, br_l_read_name br, 4 * br_n_cigar_op br ]
 
 {-# INLINE br_qual_at #-}
-br_qual_at :: BamRaw -> Int -> Word8
+br_qual_at :: BamRaw -> Int -> Qual
 br_qual_at br@(BamRaw _ raw) i = fromIntegral $ S.unsafeIndex raw (off0 + i)
   where
     off0 = sum [ 33, br_l_read_name br, 4 * br_n_cigar_op br, (br_l_seq br + 1) `div` 2]

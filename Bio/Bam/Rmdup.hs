@@ -30,11 +30,11 @@ data Collapse = forall a . Collapse {
                     make_singleton :: a -> a,               -- force to singleton
                     project :: a -> BamRaw }                -- get it back out
 
-cons_collapse :: Word8 -> Collapse
+cons_collapse :: Qual -> Collapse
 cons_collapse maxq = Collapse (removeWarts . decodeBamEntry) (do_collapse maxq)
                               addXPOf (const []) make_singleton_cooked encodeBamEntry
 
-cons_collapse_keep :: Word8 -> Collapse
+cons_collapse_keep :: Qual -> Collapse
 cons_collapse_keep maxq = Collapse (removeWarts . decodeBamEntry) (do_collapse maxq)
                                    addXPOf (map flagDup) make_singleton_cooked encodeBamEntry
   where
@@ -335,21 +335,21 @@ addXPOf w v = v { b_exts = M.insert "XP" (Int $ extAsInt 1 "XP" w `oplus` extAsI
 addXPOf' :: BamRaw -> BamRaw -> BamRaw
 addXPOf' w v = replaceXP (br_extAsInt 1 "XP" w `oplus` br_extAsInt 1 "XP" v) v
 
-do_collapse :: Word8 -> [BamRec] -> (Either BamRec BamRec, [BamRec])
-do_collapse maxq [br] | B.all (<= maxq) (b_qual br) = ( Left     br, [  ] )     -- no modifcation, pass through
-                      | otherwise                   = ( Right lq_br, [br] )     -- qualities reduces, must keep original
+do_collapse :: Qual -> [BamRec] -> (Either BamRec BamRec, [BamRec])
+do_collapse (Q maxq) [br] | B.all (<= maxq) (b_qual br) = ( Left     br, [  ] )     -- no modifcation, pass through
+                          | otherwise                   = ( Right lq_br, [br] )     -- qualities reduces, must keep original
   where
     lq_br = br { b_qual  = B.map (min maxq) $ b_qual br
                , b_virtual_offset = 0
-               , b_qname = b_qname br `B.snoc` 99 }
+               , b_qname = b_qname br `B.snoc` c2w 'c' }
 
 do_collapse maxq  brs = ( Right b0 { b_exts  = modify_extensions $ b_exts b0
                                    , b_flag  = failflag .&. complement flagDuplicate
                                    , b_mapq  = rmsq $ map b_mapq brs'
                                    , b_cigar = Cigar cigar'
                                    , b_seq   = V.fromList $ cons_seq
-                                   , b_qual  = B.pack cons_qual
-                                   , b_qname = b_qname b0 `B.snoc` 99
+                                   , b_qual  = B.pack $ map unQ $ cons_qual
+                                   , b_qname = b_qname b0 `B.snoc` c2w 'c'
                                    , b_virtual_offset = 0 }, brs )              -- many modifications, must keep everything
   where
     b0 = minimumBy (comparing b_qname) brs
@@ -372,19 +372,19 @@ do_collapse maxq  brs = ( Right b0 { b_exts  = modify_extensions $ b_exts b0
 
     add_index k1 k2 | null inputs = id
                     | otherwise = M.insert k1 (Text $ T.pack $ show conss) .
-                                  M.insert k2 (Text $ B.pack $ map (+33) consq)
+                                  M.insert k2 (Text $ B.pack $ map (unQ . (+) 33) consq)
       where
         inputs = [ zip (map toNucleotide $ T.unpack sq) qs
                  | es <- map b_exts brs
                  , Text sq <- maybe [] (:[]) $ M.lookup k1 es
                  , let qs = case M.lookup k2 es of
-                                Just (Text t) -> map (subtract 33) $ B.unpack t
+                                Just (Text t) -> map (subtract 33 . Q) $ B.unpack t
                                 _             -> repeat 23 ]
         (conss,consq) = unzip $ map (consensus 93) $ transpose $ inputs
 
 
-    to_pairs b | B.null (b_qual b) = zip (V.toList $ b_seq b) (repeat 23)   -- error rate of ~0.5%
-               | otherwise         = zip (V.toList $ b_seq b) (B.unpack $ b_qual b)
+    to_pairs b | B.null (b_qual b) = zip (V.toList $ b_seq b) (repeat (Q 23))   -- error rate of ~0.5%
+               | otherwise         = zip (V.toList $ b_seq b) (map Q $ B.unpack $ b_qual b)
 
     md' = case [ (b_seq b,md) | b <- brs', Just md <- [ getMd b ] ] of
                 [             ] -> []
@@ -448,11 +448,11 @@ mk_new_md cigs ms osq nsq = error $ unlines
     , "readseq: " ++ show nsq ]
 
 
-consensus :: Word8 -> [ (Nucleotide, Word8) ] -> (Nucleotide, Word8)
-consensus maxq nqs = if qr > 3 then (n0, qr) else (nucN,0)
+consensus :: Qual -> [ (Nucleotide, Qual) ] -> (Nucleotide, Qual)
+consensus (Q maxq) nqs = if qr > 3 then (n0, Q qr) else (nucN, Q 0)
   where
     accs :: UArray Nucleotide Int
-    accs = accumArray (+) 0 (minBound,maxBound) [ (n,fromIntegral q) | (n,q) <- nqs ]
+    accs = accumArray (+) 0 (minBound,maxBound) [ (n,fromIntegral q) | (n,Q q) <- nqs ]
 
     (n0,q0) : (_,q1) : _ = sortBy (flip $ comparing snd) $ assocs accs
     qr = fromIntegral $ (q0-q1) `min` fromIntegral maxq

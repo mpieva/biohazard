@@ -27,13 +27,13 @@ import qualified Data.Vector.Generic as V
 -- TODO: The MD field is currently removed.  It should be repaired
 -- instead.  Many other fields should be trimmed if present.
 
-trim_3' :: ([Nucleotide] -> [Word8] -> Bool) -> BamRec -> BamRec
+trim_3' :: ([Nucleotide] -> [Qual] -> Bool) -> BamRec -> BamRec
 trim_3' p b | b_flag b `testBit` 4 = trim_rev
             | otherwise            = trim_fwd
   where
     trim_fwd = let l = subtract 1 . fromIntegral . length . takeWhile (uncurry p) $
-                            zip (inits . reverse . V.toList $ b_seq b)
-                                (inits . reverse . S.unpack $ b_qual b)
+                            zip (inits . reverse .         V.toList $ b_seq b)
+                                (inits . reverse . map Q . S.unpack $ b_qual b)
                    (_, cigar') = trim_back_cigar (b_cigar b) l
                in b { b_seq   = V.take (V.length (b_seq  b) - l) (b_seq  b)
                     , b_qual  = S.take (S.length (b_qual b) - l) (b_qual b)
@@ -41,8 +41,8 @@ trim_3' p b | b_flag b `testBit` 4 = trim_rev
                     , b_exts  = M.delete "MD" (b_exts b) }
 
     trim_rev = let l = subtract 1 . fromIntegral . length . takeWhile (uncurry p) $
-                            zip (inits . V.toList $ b_seq  b)
-                                (inits . S.unpack $ b_qual b)
+                            zip (inits .         V.toList $ b_seq  b)
+                                (inits . map Q . S.unpack $ b_qual b)
                    (off, cigar') = trim_fwd_cigar (b_cigar b) l
                in b { b_seq   = V.drop l (b_seq  b)
                     , b_qual  = S.drop l (b_qual b)
@@ -81,7 +81,7 @@ trim_cigar l ((op,ll):cs) | bad_op op = let (o,cs') = trim_cigar l cs in (o + re
 -- | Trim predicate to get rid of low quality sequence.
 -- @trim_low_quality q ns qs@ evaluates to true if all qualities in @qs@
 -- are smaller (i.e. worse) than @q@.
-trim_low_quality :: Word8 -> [Nucleotide] -> [Word8] -> Bool
+trim_low_quality :: Qual -> [Nucleotide] -> [Qual] -> Bool
 trim_low_quality q = \_ qs -> all (< q) qs
 
 

@@ -73,7 +73,7 @@ options = [
     set_output   f c =                    return $ c { output = Just $ \_ -> writeRawBamFile f }
     set_lib_out  f c =                    return $ c { output = Just $       writeLibBamFiles f }
     set_debug_out  c =                    return $ c { output = Just $ \_ -> pipeRawSamOutput }
-    set_qual     n c = readIO n >>= \a -> return $ c { collapse = cons_collapse' a }
+    set_qual     n c = readIO n >>= \q -> return $ c { collapse = cons_collapse' (Q q) }
     set_no_strand  c =                    return $ c { strand_preserved = False }
     set_verbose    c =                    return $ c { debug = hPutStr stderr }
     set_improper   c =                    return $ c { keep_improper = True }
@@ -81,7 +81,7 @@ options = [
     set_cheap      c =                    return $ c { collapse = cheap_collapse' }
     set_keep       c =                    return $ c { keep_all = True }
     set_unaligned  c =                    return $ c { keep_unaligned = True }
-    set_len      n c = readIO n >>= \a -> return $ c { min_len = a }
+    set_len      n c = readIO n >>= \l -> return $ c { min_len = l }
     set_no_rg      c =                    return $ c { get_label = get_no_library }
     set_multi      c =                    return $ c { clean_multimap = clean_multi_flags }
 
@@ -104,7 +104,7 @@ usage = do p <- getProgName
            \Removes PCR duplicates from BAM files and calls a consensus for each duplicate set.  \n\
            \Input files must be sorted by coordinate and are merged on the fly.  Options are:"
 
-cons_collapse' :: Word8 -> Bool -> Collapse
+cons_collapse' :: Qual -> Bool -> Collapse
 cons_collapse' m False = cons_collapse m
 cons_collapse' m True  = cons_collapse_keep m
 

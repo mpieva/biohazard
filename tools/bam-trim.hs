@@ -9,7 +9,7 @@ import System.IO                            ( hPutStrLn )
 
 import qualified Data.ByteString      as S  ( hPut )
 
-data Conf = Conf { c_trim_pred :: [Nucleotide] -> [Word8] -> Bool
+data Conf = Conf { c_trim_pred :: [Nucleotide] -> [Qual] -> Bool
                  , c_pass_pred :: BamRec -> Bool }
 
 options :: [OptDescr (Conf -> IO Conf)]
@@ -18,7 +18,7 @@ options = [ Option "q" ["minq"]   (ReqArg set_minq "Q") "Trim where quality is b
           , Option "h?" ["help"]  (NoArg usage)         "Display this text" ]
 
 set_minq :: String -> Conf -> IO Conf
-set_minq s c = readIO s >>= \q -> return $ c { c_trim_pred = trim_low_quality q }
+set_minq s c = readIO s >>= \q -> return $ c { c_trim_pred = trim_low_quality (Q q) }
 
 set_monly :: Conf -> IO Conf
 set_monly c = return $ c { c_pass_pred = \r -> isMerged r || isUnmapped r }

@@ -1,6 +1,7 @@
 {-# LANGUAGE BangPatterns, NoMonomorphismRestriction #-}
 import Bio.Bam.Header
 import Bio.Bam.Raw
+import Bio.Base
 import Bio.Iteratee
 import System.Environment
 import System.Exit
@@ -12,7 +13,7 @@ main :: IO ()
 main = do
     mq <- getArgs >>= \args -> case (args, reads (head args)) of
             ([ ], _)        -> return 0
-            ([_], [(x,[])]) -> return x
+            ([_], [(x,[])]) -> return (Q x)
             _               -> putStrLn "usage: count-coverage [<min-mapq>]" >> exitFailure
 
     let putLine nm cv = putStr $ nm ++ '\t' : shows cv "\n"
