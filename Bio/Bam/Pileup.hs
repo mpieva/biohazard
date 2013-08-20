@@ -180,17 +180,45 @@ noDamage _ b (Q q) | b == nucA = D4 0 p p p
   where !p = fromIntegral q + 4.77
 
 
--- XXX Need to decide what's a Pile.  Base calls and Indel calls should
--- alternate, but we may also need to skip over long stretches.  Encode
--- the alternating property directly in the types?  Hrm...
--- pileup :: Monad m => Enumeratee [PrimChunks] [Pile] m a
+-- | A variant call consists of a position, some measure of qualities,
+-- and the actual call of either a SNV or an Indel.  SNV and Indel calls
+-- will alternate if both are available, but enforcing this is too
+-- cumbersome.  Also, most Indel calls won't be generated for lack of
+-- evidence anyway.
 
-{-
-data VarCall
-    = SnvCall { pl :: [ Int ] }             -- PL values in Phred scale, 4 haploid, 10 diploid
-    | IndelCall { vars :: [[Nucleotide]]
-                , pl :: [ Int ] }           -- PL values, number depends on number of alleles
-                -}
+data VarCall = VarCall { vc_refseq     :: !Refseq
+                       , vc_pos        :: !Int
+                       , vc_depth      :: !Int         -- number of contributing reads
+                       , vc_mapq0      :: !Int         -- number of contributing reads with MAPQ==0
+                       , vc_sum_mapq   :: !Int         -- sum of map qualities of contributring reads
+                       , vc_sum_mapq2  :: !Int         -- sum of squared map qualities of contributing reads
+                       , vc_call       :: Varcall' }   -- variant call, whatever that means
+
+data VarCall' = SnvCall   { pl   :: !UVector Int Qual }     -- PL values in dB
+              | IndelCall { pl   :: !UVector Int Qual       -- PL values in dB
+                          , vars :: [(Int,[Nucleotide])]    -- variant: number of deletions, inserted sequence)
+
+
+-- | Running pileup results in a series of piles.  A 'Pile' has a
+-- position, and contents depending on whether bases or indels were
+-- piled up.
+
+data Pile = Pile { p_refseq :: !Refseq
+                 , p_pos    :: !Int
+                 , p_pile   :: Either BasePile IndelPile }
+
+-- | A 'BasePile' contains map qualities for the contributing reads and
+-- four probabilities for the four possible bases.
+
+type BasePile = [ (Qual, Double4) ]
+
+-- | An 'IndelPile' contains mapq qualities for the contributing reads,
+-- the amount of sequence deleted for each, and the sequence inserted
+-- for each.  Note that a variant can both delete and insert (if the
+-- aligner thinks reporting the changes in this way makes sense).
+
+type IndelPile = [ (Qual, Int, [Nucleotide]) ]
+
 
 -- | A gentoype caller receives a list of bases at a column and is
 -- supposed to turn them into something... PL values come to mind.  XXX
@@ -212,19 +240,11 @@ majorityCall ns gen = case qns of
           foldl' (\m (n:!:q) -> M.insertWith' (+) n q m) M.empty ns -}
 
 
--- We used to filter on coverage before calling a consensus.  This is
--- not a good idea... a far better idea is to track coverage.  And we
--- should only track coverage in terms of reads that show a base (as
--- opposed to a gap), so it's actually trivial.
-{-withinCoverage :: (Int,Int) -> Conscall -> Conscall
-withinCoverage (low,high) call ns gen
-    | length ns < low || length ns > high = Nothing :!: 0 :!: gen
-    | otherwise                           = call ns gen -}
+-- | The pileup enumeratee takes 'BamRec's, decomposes them, interleaves
+-- the pieces appropriately, and generates 'Pile's.  The output will
+-- contain at most one 'BasePile' and one 'IndelPile' for each position,
+-- piles are sorted by position.
 
-
--- Old pileup function.  Types are all shot, but the structure should
--- still be souns, shouldn't it?
-{-
 pileup :: Monad m => Enumeratee [BamRec] [Pile] m a
 pileup = eneeCheckIfDone (liftI . pileup' invalidRefseq 0 Z.empty)
 
@@ -232,6 +252,7 @@ pileup' :: Monad m
         => Refseq -> Int -> Z.Seq BRead
         -> (Stream [Pile] -> Iteratee [Pile] m a)
         -> Stream [BamRec] -> Iteratee [BamRec] m (Iteratee [Pile] m a)
+
 pileup' !_ !_ !pile !out (EOF       mx) | Z.null pile  = idone (liftI out) $ EOF mx
 pileup' !s !p !pile !out (EOF       mx)                = emit s p pile out $ EOF mx
 pileup' !s !p !pile !out (Chunk     [])                = liftI $ pileup' s p pile out
