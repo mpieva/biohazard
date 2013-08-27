@@ -1,4 +1,4 @@
-{-# LANGUAGE BangPatterns #-}
+{-# LANGUAGE BangPatterns, Rank2Types #-}
 {-# OPTIONS_GHC -funbox-strict-fields #-}
 module Bio.Bam.Pileup where
 
@@ -56,11 +56,14 @@ module Bio.Bam.Pileup where
 import Bio.Base
 import Bio.Bam.Header
 import Bio.Bam.Raw
+import Bio.Iteratee
 
 import Data.List ( intersperse )
 import Numeric ( showFFloat )
 
-import qualified Data.ByteString as B
+import qualified Data.ByteString        as B
+import qualified Data.Sequence          as Z
+import qualified Data.Vector.Unboxed    as V
 
 -- | For probabilities for bases @A, C, G, T@.
 data Double4 = D4 !Double !Double !Double !Double
@@ -192,11 +195,11 @@ data VarCall = VarCall { vc_refseq     :: !Refseq
                        , vc_mapq0      :: !Int         -- number of contributing reads with MAPQ==0
                        , vc_sum_mapq   :: !Int         -- sum of map qualities of contributring reads
                        , vc_sum_mapq2  :: !Int         -- sum of squared map qualities of contributing reads
-                       , vc_call       :: Varcall' }   -- variant call, whatever that means
+                       , vc_call       :: VarCall' }   -- variant call, whatever that means
 
-data VarCall' = SnvCall   { pl   :: !UVector Int Qual }     -- PL values in dB
-              | IndelCall { pl   :: !UVector Int Qual       -- PL values in dB
-                          , vars :: [(Int,[Nucleotide])]    -- variant: number of deletions, inserted sequence)
+data VarCall' = SnvCall   { pl   :: !(V.Vector Qual) }     -- PL values in dB
+              | IndelCall { pl   :: !(V.Vector Qual)       -- PL values in dB
+                          , vars :: [(Int,[Nucleotide])] }  -- variant: number of deletions, inserted sequence)
 
 
 -- | Running pileup results in a series of piles.  A 'Pile' has a
@@ -240,30 +243,160 @@ majorityCall ns gen = case qns of
           foldl' (\m (n:!:q) -> M.insertWith' (+) n q m) M.empty ns -}
 
 
--- | The pileup enumeratee takes 'BamRec's, decomposes them, interleaves
+-- | The pileup enumeratee takes 'BamRaw's, decomposes them, interleaves
 -- the pieces appropriately, and generates 'Pile's.  The output will
 -- contain at most one 'BasePile' and one 'IndelPile' for each position,
 -- piles are sorted by position.
+--
+-- This top level driver receives 'BamRaw's.  Unaligned reads and
+-- duplicates are skipped (but not those merely failing quality checks).
+-- Processing stops when the first read with invalid 'br_rname' is
+-- encountered or a t end of file.
 
-pileup :: Monad m => Enumeratee [BamRec] [Pile] m a
-pileup = eneeCheckIfDone (liftI . pileup' invalidRefseq 0 Z.empty)
+pileup :: Monad m => Enumeratee [BamRaw] [Pile] m a
+pileup = takeWhileE (isValidRefseq . br_rname) ><> filterStream useable ><>
+         eneeCheckIfDone (liftI . runPileM pileup' finish (Refseq 0) 0 Z.empty Empty)
+  where
+    useable br = not (br_isUnmapped br || br_isDuplicate br)
 
-pileup' :: Monad m
-        => Refseq -> Int -> Z.Seq BRead
-        -> (Stream [Pile] -> Iteratee [Pile] m a)
-        -> Stream [BamRec] -> Iteratee [BamRec] m (Iteratee [Pile] m a)
+    finish () _r _p act wai out inp
+        | Z.null act && I.null wai = idone (liftI out) inp
+        | otherwise = error "logic error: leftovers after pileup"
 
-pileup' !_ !_ !pile !out (EOF       mx) | Z.null pile  = idone (liftI out) $ EOF mx
-pileup' !s !p !pile !out (EOF       mx)                = emit s p pile out $ EOF mx
-pileup' !s !p !pile !out (Chunk     [])                = liftI $ pileup' s p pile out
-pileup' !s !p !pile !out (Chunk (r:rs))
-    | Z.null pile && good                           = pileup' (b_rname r) (b_pos r) (Z.singleton $ unpackRead r) out (Chunk rs)
-    | Z.null pile                                   = pileup' s p Z.empty out (Chunk rs)
+
+-- | The pileup logic keeps a current coordinate (just two integers) and
+-- two running queues: one of /active/ 'PrimBases' that contribute to
+-- current genotype calling and on of /waiting/ 'PrimBases' that will
+-- contribute at later point.
+--
+-- Oppan continuation passing style!  Not only is the CPS version of the
+-- state monad (we have five distinct pieces of state) somewhat faster,
+-- we also need CPS to interact with the mechanisms of 'Iteratee'.  It
+-- makes implementing 'yield', 'peek', and 'bump' straight forward.
+
+newtype PileM m a = PileM { runPileM :: forall r . (a -> PileF m r) -> PileF m r }
+
+type PileF m r = Refseq -> Int ->                               -- current position
+                 Z.Seq PrimBase ->                              -- active queue
+                 Heap PrimBase ->                               -- waiting queue
+                 (Stream [Pile] -> Iteratee [Pile] m r) ->      -- output function
+                 Stream [BamRaw] ->                             -- pending input
+                 Iteratee [BamRaw] m (Iteratee [Pile] m r)
+
+instance Functor (PileM m) where
+    fmap f (PileM m) = PileM $ \k -> m (k . f)
+
+instance Monad (PileM m) where
+    return a = PileM $ \k -> k a
+    m >>=  k = PileM $ \k' -> runPileM m (\a -> runPileM (k a) k')
+
+
+get_refseq :: PileM m Refseq
+get_refseq = PileM $ \k r -> k r r
+
+upd_refseq :: (Refseq -> Refseq) -> PileM m ()
+upd_refseq f = PileM $ \k r -> k () $! f r
+
+get_pos :: PileM m Int
+get_pos = PileM $ \k r p -> k p r p
+
+upd_pos :: (Int -> Int) -> PileM m ()
+upd_pos f = PileM $ \k r p -> k () r $! f p
+
+get_active :: PileM m (Z.Seq PrimBase)
+get_active = PileM $ \k r p a -> k a r p a
+
+upd_active :: (Z.Seq PrimBase -> Z.Seq PrimBase) -> PileM m ()
+upd_active f = PileM $ \k r p a -> k () r p $! f a
+
+get_waiting :: PileM m (Heap PrimBase)
+get_waiting = PileM $ \k r p a w -> k w r p a w
+
+upd_waiting :: (Heap PrimBase -> Heap PrimBase) -> PileM m ()
+upd_waiting f = PileM $ \k r p a w -> k () r p a $! f w
+
+yield :: Monad m => Pile -> PileM m ()
+yield x = PileM $ \k r p a w out inp ->
+    eneeCheckIfDone (\out' -> k () r p a w out' inp) . out $ Chunk [x]
+
+-- | Inspect next input element, if any.  Returns @Just b@ if @b@ is the
+-- next input element, @Nothing@ if no such element exists.  Waits for
+-- more input if nothing is available immediately.
+peek :: PileM m (Maybe BamRaw)
+peek = PileM $ \k r p a w out inp -> case inp of
+        EOF     _   -> k Nothing r p a w out inp
+        Chunk [   ] -> liftI $ runPileM peek k r p a w out
+        Chunk (b:_) -> k (Just b) r p a w out inp
+
+-- | Discard next input element, if any.  Does nothing if input has
+-- already ended.  Waits for input to discard if nothing is available
+-- immediately.
+bump :: PileM m ()
+bump = PileM $ \k r p a w out inp -> case inp of
+        EOF     _   -> k () r p a w out inp
+        Chunk [   ] -> liftI $ runPileM bump k r p a w out
+        Chunk (_:x) -> k () r p a w out x
+
+
+-- | The actual pileup algorithm.
+pileup' :: Monad m => PileM m ()
+pileup' = do
+    -- See if there's anything active.  If not, we set the current
+    -- coordinate to the minimum of the next coordinate in the input
+    -- stream and the minimum coordinate in the waiting queue.  If and
+    -- only if both are empty, we are done.
+    active <- get_active
+    waiting <- get_waiting
+    mnext <- peek
+
+    case (Z.null active, getMinKey waiting, mnext) of
+        ( False, _,       _       ) ->    pileup''                 -- still active here
+        ( True,  Nothing, Nothing ) ->    return ()                -- everything done
+        ( True,   Just p, Nothing ) -> do set_pos p                -- skip to waiting
+                                          pileup''
+        ( True,  Nothing, Just br ) -> do set_refseq (br_rname br) -- skip to next input
+                                          set_pos (br_pos br)
+                                          pileup''
+        ( True,   Just p, Just br ) -> do r <- get_refseq          -- skip to whatever comes first
+                                          let (r', p') = min (r,p) (br_rname br, br_pos br)
+                                          set_refseq r'
+                                          set_pos p'
+                                          pileup''
+
+pileup'' :: Monad m => PileM m ()
+pileup'' = do
+    -- Input is still 'BamRaw', since these can be relied on to be
+    -- sorted.  First see if there is any input at the current location,
+    -- if so, decompose it and add it to the appropriate queue.
+    ...
+
+    -- Check /waiting/ queue.  If there is anything waiting for the
+    -- current position, move it to /active/ queue.
+    ...
+
+    -- Scan /active/ queue and emit a 'BasePile'.  If the pile ends up
+    -- being empty, don't emit it.  At the same time, we get a new
+    -- active queue for indel calling.
+    ...
+
+    -- Emit an 'IndelPile', if we have indel variants.  At the same
+    -- time, get new 'PrimChunks' and put them into the appropriate
+    -- queues.
+    ...
+
+    -- Bump coordinate and loop.
+    ...
+
+
+
+{-
+-- end of stream, something in active pile --> do sth. about it
+pileup' !s !p !active !inact !out (EOF       mx) = undefined -- ...                = emit s p pile out $ EOF mx
+
+pileup' !s !p !active !inact !out (Chunk (r:rs))
     | s /= b_rname r || p < b_pos r                 = emit    s p pile out (Chunk (r:rs))
     | good                                          = pileup' s p (pile |> unpackRead r) out (Chunk rs)
     | otherwise                                     = pileup' s p pile out (Chunk rs)
-  where
-    good = not (isUnmapped r || isFailsQC r)
 
 emit :: Monad m
      => Refseq -> Int -> Z.Seq BRead
@@ -293,3 +426,33 @@ appConscall gen0 ccall = eneeCheckIfDone (liftI . go gen0)
     step gen (Pile s p b grs) = case ccall grs gen of
         mn :!: q :!: gen' -> let !l = length grs in (gen', Column s p [Just b :!: 30 :!: 1, mn :!: q :!: l])
 -}
+
+-- | We need a simple priority queue.  Here's a skew heap (lightly
+-- specialized).
+data Heap a = Empty | Node !Int a (Heap a) (Heap a)
+
+singleton :: Int -> a -> Heap a
+singleton k v = Node k v Empty Empty
+
+union :: Heap a -> Heap a -> Heap a
+Empty                 `union` t2                    = t2
+t1                    `union` Empty                 = t1
+t1@(Node k1 x1 l1 r1) `union` t2@(Node k2 x2 l2 r2)
+   | k1 <= k2                                       = Node k1 x1 (t2 `union` r1) l1
+   | otherwise                                      = Node k2 x2 (t1 `union` r2) l2
+
+insert :: Int -> a -> Heap a -> Heap a
+insert k x heap = singleton k x `union` heap
+
+getMinKey :: Heap a -> Maybe Int
+getMinKey Empty          = Nothing
+getMinKey (Node x _ _ _) = Just x
+
+getMinVal :: Heap a -> Maybe a
+getMinVal Empty          = Nothing
+getMinVal (Node _ x _ _) = Just x
+
+dropMin :: Heap a -> Heap a
+dropMin Empty        = error "dropMin on empty queue... are you sure?!"
+dropMin (Node _ l r) = l `union` r
+
