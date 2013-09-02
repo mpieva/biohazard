@@ -10,7 +10,7 @@
 import Bio.Bam.Header
 import Bio.Bam.Raw
 import Bio.Iteratee
-import Paths_biohazard ( version )
+import Paths_biohazard_tools ( version )
 import System.Environment
 import System.Random
 import System.IO ( hPutStr )

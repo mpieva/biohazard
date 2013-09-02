@@ -16,7 +16,7 @@ import Bio.Iteratee
 import Control.Monad                            ( unless, foldM )
 import Data.List                                ( sortBy )
 import Data.Monoid
-import Paths_biohazard                          ( version )
+import Paths_biohazard_tools                    ( version )
 import System.Console.GetOpt
 import System.Environment                       ( getArgs )
 import System.Exit                              ( exitSuccess, exitFailure )

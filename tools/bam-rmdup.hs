@@ -9,7 +9,7 @@ import Data.Maybe
 import Data.Monoid ( mempty )
 import Data.Word ( Word8 )
 import Numeric ( showFFloat )
-import Paths_biohazard ( version )
+import Paths_biohazard_tools ( version )
 import System.Console.GetOpt
 import System.Environment ( getArgs, getProgName )
 import System.Exit
