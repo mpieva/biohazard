@@ -5,6 +5,24 @@ module Bio.Bam.Pileup where
 import Debug.Trace
 import Text.Printf
 
+import Bio.Base
+import Bio.Bam.Header
+import Bio.Bam.Raw
+import Bio.Iteratee
+
+import Control.Applicative
+import Control.Monad hiding ( mapM_ )
+import Control.Monad.Fix ( fix )
+import Data.Foldable
+import Data.List ( intersperse )
+import Numeric ( showFFloat )
+
+import qualified Data.ByteString        as B
+import qualified Data.Vector.Unboxed    as V
+import qualified Data.Set               as Set
+
+import Prelude hiding ( foldr, concat, mapM_, all )
+
 -- ^ Genotype Calling:  like Samtools(?), but for aDNA
 --
 -- The goal for this module is to call haploid and diploid single
@@ -65,24 +83,8 @@ import Text.Printf
 -- * Actual genotype calling.
 -- * ML fitting and evaluation of parameters for different possible
 --   error and damage models.
-
-import Bio.Base
-import Bio.Bam.Header
-import Bio.Bam.Raw
-import Bio.Bam.Rec
-import Bio.Iteratee
-
-import Control.Applicative
-import Control.Monad hiding ( mapM_ )
-import Control.Monad.Fix ( fix )
-import Data.Foldable
-import Data.List ( intersperse )
-import Numeric ( showFFloat )
-
-import qualified Data.ByteString        as B
-import qualified Data.Vector.Unboxed    as V
-
-import Prelude hiding ( foldr, concat, mapM_, all )
+-- * Check the 'decompose' logic, in particular, make sure the waiting
+--   time after deletions is exactly right
 
 -- | For probabilities for bases @A, C, G, T@.
 data Double4 = D4 !Double !Double !Double !Double
@@ -100,7 +102,10 @@ data PrimChunks = Seek !Int PrimBase                            -- ^ skip to pos
                 | EndOfRead                                     -- ^ nothing anymore
   deriving Show
 
-data PrimBase = Base !Double4 !Qual PrimChunks                     -- ^ four probabilities instead of a certain base, map quality
+data PrimBase = Base { _pb_wait   :: !Int                       -- ^ number of bases to wait due to a deletion
+                     , _pb_likes  :: !Double4                   -- ^ four likelihoods
+                     , _pb_mapq   :: !Qual                      -- ^ map quality
+                     , _pb_chunks :: PrimChunks }               -- ^ more chunks
   deriving Show
 
 
@@ -148,14 +153,14 @@ decompose dm br
             (HMa, _) ->            firstBase  pos     is  (ic+1)
             (Pad, _) ->            firstBase  pos     is  (ic+1)
             (Mat, 0) ->            firstBase  pos     is  (ic+1)
-            (Mat, _) -> Seek pos $ nextBase   pos     is   ic 0
+            (Mat, _) -> Seek pos $ nextBase 0 pos     is   ic 0
 
 
     -- Generate probabilities for the next base.  When this gets called,
     -- we are looking at an M CIGAR operation and all the subindices are
     -- valid.
-    nextBase :: Int -> Int -> Int -> Int -> PrimBase
-    nextBase !pos !is !ic !io = Base (get_seq (dm is) is) mapq $ nextIndel  [] 0 (pos+1) (is+1) ic (io+1)
+    nextBase :: Int -> Int -> Int -> Int -> Int -> PrimBase
+    nextBase !wt !pos !is !ic !io = Base wt (get_seq (dm is) is) mapq $ nextIndel  [] 0 (pos+1) (is+1) ic (io+1)
 
 
     -- Look for the next indel after a base.  We collect all indels (I
@@ -174,7 +179,7 @@ decompose dm br
             (Pad, _) ->             nextIndel  ins     del   pos     is  (ic+1) 0
             (HMa, _) ->             nextIndel  ins     del   pos     is  (ic+1) 0
             (Mat,cl) | io == cl  -> nextIndel  ins     del   pos     is  (ic+1) 0
-                     | otherwise -> Indel del out $ nextBase pos     is   ic   io   -- ends up generating a 'Base'
+                     | otherwise -> Indel del out $ nextBase del pos is   ic   io   -- ends up generating a 'Base'
             (Nop,cl) ->             firstBase               (pos+cl) is  (ic+1)     -- ends up generating a 'Seek'
       where
         out    = concat $ reverse ins
@@ -203,44 +208,30 @@ noDamage _ b (Q q) | b == nucA = D4 0 p p p
 
 
 -- | A variant call consists of a position, some measure of qualities,
--- and the actual call of either a SNV or an Indel.  SNV and Indel calls
--- will alternate if both are available, but enforcing this is too
--- cumbersome.  Also, most Indel calls won't be generated for lack of
--- evidence anyway.
+-- genotype likelihood values, and a representation of variants.
 
-data VarCall = VarCall { vc_refseq     :: !Refseq
-                       , vc_pos        :: !Int
-                       , vc_depth      :: !Int         -- number of contributing reads
-                       , vc_mapq0      :: !Int         -- number of contributing reads with MAPQ==0
-                       , vc_sum_mapq   :: !Int         -- sum of map qualities of contributring reads
-                       , vc_sum_mapq2  :: !Int         -- sum of squared map qualities of contributing reads
-                       , vc_call       :: VarCall' }   -- variant call, whatever that means
+data VarCall a = VarCall { vc_refseq     :: !Refseq
+                         , vc_pos        :: !Int
+                         , vc_depth      :: !Int                  -- number of contributing reads
+                         , vc_mapq0      :: !Int                  -- number of contributing reads with MAPQ==0
+                         , vc_sum_mapq   :: !Int                  -- sum of map qualities of contributring reads
+                         , vc_sum_mapq2  :: !Int                  -- sum of squared map qualities of contributing reads
+                         , vc_pl         :: !(V.Vector Word8)     -- PL values in dB
+                         , vc_vars       :: a }                   -- variant calls, depending on context
 
-data VarCall' = SnvCall   { pl   :: !(V.Vector Qual) }     -- PL values in dB
-              | IndelCall { pl   :: !(V.Vector Qual)       -- PL values in dB
-                          , vars :: [(Int,[Nucleotide])] }  -- variant: number of deletions, inserted sequence)
+type SnpVars = ()                           -- no additonal info needed for SNP calls
+type IndelVars = [( Int, [Nucleotide] )]    -- indel variant: number of deletions, inserted sequence
 
+-- Both types of piles carry along the map quality.  We'll only need it
+-- in the case of Indels.
+type BasePile  = [( Qual, Double4 )]                       -- a list of encountered bases
+type IndelPile = [( Qual, (Int, [(Nucleotide, Qual)]) )]   -- a list of indel variants
 
--- | Running pileup results in a series of piles.  A 'Pile' has a
--- position, and contents depending on whether bases or indels were
--- piled up.
+-- | Running pileup results in a series of piles.  A 'Pile' has the
+-- basic statistics of a 'VarCall', but no PL values and a pristine list
+-- of variants instead of a proper call.
 
-data Pile = Pile { p_refseq :: !Refseq
-                 , p_pos    :: !Int
-                 , p_pile   :: Either BasePile IndelPile }
-  deriving Show
-
--- | A 'BasePile' contains map qualities for the contributing reads and
--- four probabilities for the four possible bases.
-
-type BasePile = [ (Qual, Double4) ]
-
--- | An 'IndelPile' contains mapq qualities for the contributing reads,
--- the amount of sequence deleted for each, and the sequence inserted
--- for each.  Note that a variant can both delete and insert (if the
--- aligner thinks reporting the changes in this way makes sense).
-
-type IndelPile = [ (Qual, Int, [(Nucleotide, Qual)]) ]
+type Pile = Either (VarCall BasePile) (VarCall IndelPile)
 
 
 -- | The pileup enumeratee takes 'BamRaw's, decomposes them, interleaves
@@ -366,11 +357,11 @@ consume_active nil cons = do ac <- get_active
 pileup' :: MonadIO m => PileM m ()
 pileup' = do
     refseq       <- get_refseq
-    posn         <- get_pos
     active       <- get_active
     next_waiting <- fmap ((,) refseq) . getMinKey <$> get_waiting
     next_input   <- fmap (\b -> (br_rname b, br_pos b)) <$> peek
 
+    -- posn         <- get_pos
     -- liftIO $ printf "pileup' @%d:%d, %d active, %d waiting\n"
         -- (unRefseq refseq) posn (length active) (-1::Int)
 
@@ -418,17 +409,20 @@ pileup'' = do
     -- 'PrimChunks':  'Indel's contribute to an 'IndelPile', 'Seek's and
     -- deletions are pushed back to the /waiting/ queue, 'EndOfRead's are
     -- removed, and everything else is added to the fresh /active/ queue.
-    (fin_bp, fin_ip) <- consume_active ([],[]) $ \(bpile, ipile) (Base qs mq pchunks) -> do
-                let ret x = return ( (mq,qs) : bpile, x )
-                case pchunks of
-                    Seek p' pb' -> do upd_waiting $ insert p' pb'
-                                      ret ipile
-
-                    Indel n ins pb' -> do if n == 0 then upd_active (pb':)
-                                                    else upd_waiting $ insert (po+n+1) pb'
-                                          ret $ (mq, 0, ins) : ipile
-
-                    EndOfRead -> ret ipile
+    let pile0 = VarCall rs po 0 0 0 0 V.empty
+    (fin_bp, fin_ip) <- consume_active (pile0 [], pile0 []) $
+        \(!bpile, !ipile) (Base wt qs mq pchunks) ->
+                let put (Q q) x vc = vc { vc_depth     = vc_depth vc + 1
+                                        , vc_mapq0     = vc_mapq0 vc + (if q == 0 then 1 else 0)
+                                        , vc_sum_mapq  = vc_sum_mapq  vc + fromIntegral q
+                                        , vc_sum_mapq2 = vc_sum_mapq2 vc + fromIntegral q * fromIntegral q
+                                        , vc_vars      = (Q q, x) : vc_vars vc }
+                    b' = Base (wt-1) qs mq pchunks
+                in case pchunks of
+                    _ | wt > 0        -> do upd_active  (b'  :)         ; return (           bpile,                  ipile )
+                    Seek p' pb'       -> do upd_waiting (insert p' pb') ; return ( put mq qs bpile,                  ipile )
+                    Indel del ins pb' -> do upd_active  (pb' :)         ; return ( put mq qs bpile, put mq (del,ins) ipile )
+                    EndOfRead         -> do                               return ( put mq qs bpile,                  ipile )
 
     -- We just reversed /active/ inplicitly, which is no desaster, but may come
     -- as a surprise downstream.  So reverse it back.
@@ -439,9 +433,9 @@ pileup'' = do
     -- because actual indel calling will want to know how many reads /did not/
     -- show the variant.  However, if no reads show any variant, and here is the
     -- first place where we notice that, the pile is useless.
-    let uninteresting (_,d,i) = d == 0 && null i
-    unless (null              fin_bp) $ yield $ Pile rs po (Left  fin_bp)
-    unless (all uninteresting fin_ip) $ yield $ Pile rs po (Right fin_ip)
+    let uninteresting (_,(d,i)) = d == 0 && null i
+    unless (null              (vc_vars fin_bp)) $ yield $ Left  fin_bp
+    unless (all uninteresting (vc_vars fin_ip)) $ yield $ Right fin_ip
 
     -- Bump coordinate and loop.
     upd_pos succ
@@ -514,7 +508,24 @@ appConscall gen0 ccall = eneeCheckIfDone (liftI . go gen0)
         mn :!: q :!: gen' -> let !l = length grs in (gen', Column s p [Just b :!: 30 :!: 1, mn :!: q :!: l])
 -}
 
+-- | Simple indel calling.  We don't bother with it too much, so here's
+-- the gist:  We collect variants (simply different variants, details
+-- don't matter), so @n@ variants give rise to (n+1)*n/2 PL values.
+-- (That's two out of @(n+1)@, the reference allele is there, too.)  To
+-- assign these, we need a likelihood for an observed variant given an
+-- assumed genotype.
+simple_indel_call :: VarCall IndelPile -> VarCall IndelVars
+simple_indel_call vc = vc { vc_pl = undefined, vc_vars = vars' }
+  where
+    nub :: Ord a => [a] -> [a]
+    nub = Set.toList . Set.fromList
+
+    vars' = nub [ (d, map fst i) | (_q,(d,i)) <- vc_vars vc ]
+
+
+smoke_test :: IO ()
 smoke_test =
     decodeAnyBamFile "/mnt/scratch/udo/test.bam" >=> run $ \_hdr ->
     joinI $ pileup noDamage $
-    mapStreamM_ (\(Pile (Refseq r) p e) -> putStrLn $ shows r ":" ++ shows p " " ++ either (const "Bases") (const "Indel") e)
+    mapStreamM_ (either (\vc -> putStrLn $ shows (vc_refseq vc) ":" ++ shows (vc_pos vc) " " ++ "Bases")
+                        (\vc -> putStrLn $ shows (vc_refseq vc) ":" ++ shows (vc_pos vc) " " ++ "Indel"))

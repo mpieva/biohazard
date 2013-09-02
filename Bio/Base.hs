@@ -7,6 +7,7 @@
 module Bio.Base(
     Nucleotide(..),
     Qual(..),
+    Word8,
     Sequence,
     nucA, nucC, nucG, nucT, nucN, gap,
     toNucleotide,

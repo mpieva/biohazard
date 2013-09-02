@@ -46,7 +46,6 @@ import qualified Data.IntMap as I
 import           Data.IORef
 import qualified Data.Map as M
 import           Data.Maybe
-import           Data.Word ( Word8 )
 import           Numeric
 import           System.IO
 import           System.IO.Unsafe
