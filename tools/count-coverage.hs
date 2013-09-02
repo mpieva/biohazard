@@ -6,7 +6,6 @@ import Bio.Iteratee
 import System.Environment
 import System.Exit
 
-import qualified Data.ByteString.Char8  as S
 import qualified Data.Iteratee          as I
 
 main :: IO ()
@@ -17,7 +16,7 @@ main = do
             _               -> putStrLn "usage: count-coverage [<min-mapq>]" >> exitFailure
 
     let putLine nm cv = putStr $ nm ++ '\t' : shows cv "\n"
-        printOne refs (r,c) = putLine (S.unpack (sq_name (getRef refs r))) c
+        printOne refs (r,c) = putLine (unpackSeqid (sq_name (getRef refs r))) c
         do_count = I.foldl' (\a -> (+) a . snd) 0
 
     (total,()) <- enumHandle defaultBufSize stdin >=> run $

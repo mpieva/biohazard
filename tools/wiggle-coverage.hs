@@ -4,11 +4,9 @@ import Bio.Bam.Raw
 import Bio.Base
 import Bio.Iteratee
 
-import qualified Data.Iteratee.ListLike as I
-
 main :: IO ()
 main = mergeDefaultInputs combineCoordinates >=> run $ \hdr ->
-           joinI $ I.filter (not . br_isUnmapped) $
+           joinI $ filterStream (not . br_isUnmapped) $
            joinI $ groupStreamOn br_rname (cov_to_wiggle hdr) $
            skipToEof
 

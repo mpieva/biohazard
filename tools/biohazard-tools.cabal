@@ -1,46 +1,23 @@
--- The name of the package.
 Name:                biohazard-tools
-
--- The package version. See the Haskell package versioning policy
--- (http://www.haskell.org/haskellwiki/Package_versioning_policy) for
--- standards guiding when and how versions should be incremented.
 Version:             0.1.0
-
--- A short (one-line) description of the package.
 Synopsis:            tools separated from biohazard
-
--- A longer description of the package.
 -- Description:
+Category:            Bioinformatics
 
--- URL for the project homepage or repository.
 Homepage:            http://github.com/udo-stenzel/biohazard
-
--- The license under which the package is released.
 License:             BSD3
-
--- The file containing the license text.
 License-File:        LICENSE
 
--- The package author(s).
 Author:              Udo Stenzel
-
--- An email address to which users can send suggestions, bug reports,
--- and patches.
 Maintainer:          udo_stenzel@eva.mpg.de
-
 Copyright:           (C) 2010 Udo Stenzel
 
-Category:            Development
-
-Build-type:          Custom
-
--- Extra files to be distributed with the package, such as examples or
--- a README.
+-- Extra files to be distributed with the package, such as examples or a README.
 Extra-Source-Files:  man/man1/bam-meld.1
                      man/man1/bam-rmdup.1
 
--- Constraint on the version of Cabal needed to build this package.
 Cabal-version:       >=1.9.2
+Build-type:          Custom
 
 -- source-repository head
   -- type:     git
@@ -54,71 +31,41 @@ Cabal-version:       >=1.9.2
 Executable bam-fixpair
   Ghc-options:         -Wall -auto-all -threaded -rtsopts
   Main-is:             bam-fixpair.hs
-  Build-depends:       bytestring, containers, base ==4.*, binary, array,
-                       zlib, attoparsec-iteratee, attoparsec, iteratee,
-                       transformers, binary-strict, ListLike, vector,
-                       MonadCatchIO-transformers, filepath, directory,
-                       biohazard, unordered-containers, hashable
+  Build-depends:       base == 4.*, binary, biohazard, bytestring, hashable, transformers
 
 Executable bam-meld
   Ghc-options:         -Wall -auto-all -threaded -rtsopts
   Main-is:             bam-meld.hs
-  Build-depends:       bytestring, containers, base ==4.*, binary, array,
-                       zlib, attoparsec-iteratee, attoparsec, iteratee,
-                       transformers, binary-strict, ListLike,
-                       MonadCatchIO-transformers, filepath, directory,
-                       biohazard, vector
-
+  Build-depends:       base == 4.*, biohazard, bytestring, containers
+  
 Executable bam-resample
   Ghc-options:         -Wall -auto-all -threaded -rtsopts
   Main-is:             bam-resample.hs
-  Build-depends:       bytestring, containers, base ==4.*, binary, array,
-                       zlib, attoparsec-iteratee, attoparsec, iteratee,
-                       transformers, binary-strict, ListLike,
-                       MonadCatchIO-transformers, 
-                       filepath, directory, biohazard, random, vector
+  Build-depends:       base == 4.*, biohazard, bytestring, random
 
 Executable bam-rmdup
   Ghc-options:         -Wall -auto-all -threaded -rtsopts
   Main-is:             bam-rmdup.hs
-  Build-depends:       bytestring, containers, base ==4.*, binary, array,
-                       zlib, attoparsec-iteratee, attoparsec, iteratee,
-                       transformers, binary-strict, ListLike,
-                       MonadCatchIO-transformers, parallel,
-                       filepath, directory, biohazard, vector
+  Build-depends:       base == 4.*, biohazard, bytestring, containers, iteratee
 
 Executable bam-trim
   Ghc-options:         -Wall -auto-all -threaded -rtsopts
   Main-is:             bam-trim.hs
-  Build-depends:       bytestring, containers, base ==4.*, binary, array,
-                       zlib, attoparsec-iteratee, attoparsec, iteratee,
-                       transformers, binary-strict, ListLike,
-                       MonadCatchIO-transformers, 
-                       filepath, directory, biohazard, vector
-
+  Build-depends:       base ==4.*, biohazard, bytestring
+  
 Executable count-coverage
   Ghc-options:         -Wall -auto-all -threaded -rtsopts
   Main-is:             count-coverage.hs
-  Build-depends:       bytestring, containers, base ==4.*, binary, array,
-                       zlib, attoparsec-iteratee, attoparsec, iteratee,
-                       transformers, binary-strict, ListLike,
-                       MonadCatchIO-transformers, 
-                       filepath, directory, biohazard, vector
+  Build-depends:       base ==4.*, biohazard, iteratee
 
 Executable glf-consensus
   Ghc-options:         -Wall -auto-all -threaded -rtsopts
   Main-is:             glf-consensus.hs
-  Build-depends:       bytestring, containers, base ==4.*, binary, array,
-                       zlib, attoparsec-iteratee, attoparsec, iteratee,
-                       transformers, binary-strict, ListLike,
-                       MonadCatchIO-transformers, 
-                       filepath, directory, biohazard, vector
+  Build-depends:       base ==4.*, biohazard, bytestring, containers, iteratee, MonadCatchIO-transformers
 
 Executable wiggle-coverage
   Ghc-options:         -Wall -auto-all -threaded -rtsopts
   Main-is:             wiggle-coverage.hs
-  Build-depends:       bytestring, containers, base ==4.*, binary, array,
-                       zlib, attoparsec-iteratee, attoparsec, iteratee,
-                       transformers, binary-strict, ListLike,
-                       MonadCatchIO-transformers, 
-                       filepath, directory, biohazard, vector
+  Build-depends:       base ==4.*, biohazard
+
+-- vim:tw=132

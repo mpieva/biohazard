@@ -1,7 +1,7 @@
 import Test.HUnit
 import Bio.File.Bgzf
 
-import Data.Iteratee
+import Bio.Iteratee
 import System.Posix.Types ( COff )
 import System.Exit
 import qualified Data.ByteString as S
@@ -17,16 +17,16 @@ check_bam_block_list :: Assertion
 check_bam_block_list =
     -- fileDriver (joinI $ decompress' (virtualSeek 0 >> print_block))
     fileDriver (joinI $ decompress' $ getBlockList ) some_bgzf_file
-    >>= assertEqual "unexpected block list" known_blocks 
+    >>= assertEqual "unexpected block list" known_blocks
 
 check_bam_block_list_seek :: Assertion
 check_bam_block_list_seek =
     fileDriverRandom (joinI $ decompress' $ virtualSeek 0 >> getBlockList ) some_bgzf_file
-    >>= assertEqual "unexpected block list" known_blocks 
+    >>= assertEqual "unexpected block list" known_blocks
 
 
 some_bgzf_file :: FilePath
-some_bgzf_file = "/mnt/ngs_data/101203_SOLEXA-GA04_00007_PEDi_MM_QF_SR/Ibis/BWA/s_5_L3280_sequence_mq_hg19_nohap.bam" 
+some_bgzf_file = "/mnt/ngs_data/101203_SOLEXA-GA04_00007_PEDi_MM_QF_SR/Ibis/BWA/s_5_L3280_sequence_mq_hg19_nohap.bam"
 
 known_blocks :: [(COff, Int)]
 known_blocks = [(0,65536), (1627521024,65536), (3209297920,65536), (4116643840,65536), (5036769280,65536), (6071189504,65536),

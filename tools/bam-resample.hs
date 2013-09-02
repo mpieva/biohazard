@@ -16,7 +16,6 @@ import System.Random
 import System.IO ( hPutStr )
 
 import qualified Data.ByteString as S
-import qualified Data.Iteratee as I
 
 main :: IO ()
 main = do
@@ -43,15 +42,15 @@ resample :: MonadIO m => Int -> Int -> Enumeratee [[BamRaw]] [BamRaw] m a
 resample m0 n0 | m0 > n0 = error "upsampling requested"
 resample m0 n0 = eneeCheckIfDone (go m0 n0)
   where
-    go  !m !n k = I.tryHead >>= maybe (return (liftI k)) (go' m n k)
+    go  !m !n k = tryHead >>= maybe (return (liftI k)) (go' m n k)
     go' !m !n k a = do r <- liftIO $ randomRIO (0,n-1)
                        if r < m
                          then eneeCheckIfDone (go (m-1) (n-1)) . k $ Chunk a
                          else go m (n-1) k
 
 groupOn :: (Monad m, Eq b) => (a -> b) -> Enumeratee [a] [[a]] m c
-groupOn f = eneeCheckIfDone (\k -> I.tryHead >>= maybe (return $ liftI k) (\a -> go k [a] (f a)))
+groupOn f = eneeCheckIfDone (\k -> tryHead >>= maybe (return $ liftI k) (\a -> go k [a] (f a)))
   where
-    go  k acc fa = I.tryHead >>= maybe (return . k $ Chunk [reverse acc]) (go' k acc fa)
+    go  k acc fa = tryHead >>= maybe (return . k $ Chunk [reverse acc]) (go' k acc fa)
     go' k acc fa b | fa == f b = go k (b:acc) fa
                    | otherwise = eneeCheckIfDone (\k' -> go k' [b] (f b)) . k $ Chunk [reverse acc]

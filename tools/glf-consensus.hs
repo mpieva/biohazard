@@ -2,7 +2,6 @@
 import Control.Applicative ( (<$>) )
 import Control.Monad
 import Control.Monad.CatchIO
-import Control.Monad.Trans.Class
 import Data.Char ( isSpace, toLower, chr )
 import Data.List ( intercalate, sort )
 import System.Console.GetOpt
@@ -151,13 +150,13 @@ haploid_call lks = zip (map (lks !!) [0,4,7,9]) "ACGT"
 type Formatter = String -> Enumeratee QSeq String IO ()
 
 print_fasta :: Formatter
-print_fasta name = eneeCheckIfDone (\k -> I.mapStream fst ><> toLines 60 $ k $ Chunk ('>' : name ++ "\n"))
+print_fasta name = eneeCheckIfDone (\k -> mapStream fst ><> toLines 60 $ k $ Chunk ('>' : name ++ "\n"))
 
 print_fastq :: Formatter
 print_fastq name = eneeCheckIfDone p'header
   where
     p'header k  = p'seq . k $ Chunk ('@' : name ++ "\n")
-    p'seq it    = I.zip ((I.mapStream fst ><> toLines 60) it) (liftI $ coll [])
+    p'seq it    = I.zip ((mapStream fst ><> toLines 60) it) (liftI $ coll [])
                   >>= \(it', qs) -> eneeCheckIfDone (p'sep qs) it'
     p'sep qs k  = lift $ (enumList (map S.unpack qs) >=> run) (toLines 60 . k $ Chunk "+\n")
 

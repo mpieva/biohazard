@@ -23,13 +23,12 @@ import System.Exit                              ( exitSuccess, exitFailure )
 import System.IO                                ( hPutStrLn )
 
 import qualified Data.ByteString.Char8 as S
-import qualified Data.Iteratee         as I
 import qualified Data.Map              as M
 import qualified Data.Sequence         as Z
 
 data Conf = Conf {
     c_score  :: Maybe (BamPair -> Int),
-    c_output :: BamMeta -> I.Iteratee [BamRec] IO (),
+    c_output :: BamMeta -> Iteratee [BamRec] IO (),
     c_merge  :: Enumeratee [BamPair] [[BamPair]] (Iteratee [[BamPair]] IO) () }
 
 defaultConf :: Conf
@@ -52,7 +51,7 @@ enum_bam_files :: MonadCatchIO m
                -> [ FilePath ]
                -> Enumerator' BamMeta [[BamPair]] m a
 enum_bam_files _etee [    ] = return . ($ mempty)
-enum_bam_files  etee (f1:fs1) = go (decodeAnyBamOrSamFile f1 $== find_pairs $== I.mapStream (:[])) fs1
+enum_bam_files  etee (f1:fs1) = go (decodeAnyBamOrSamFile f1 $== find_pairs $== mapStream (:[])) fs1
   where
     go e1 [    ] k = e1 k
     go e1 (f:fs) k = go e1 fs $
@@ -68,7 +67,7 @@ enum_bam_files  etee (f1:fs1) = go (decodeAnyBamOrSamFile f1 $== find_pairs $== 
     adjust h = let o    = Z.length . meta_refs $ h
                    f br = br { b_rname = b_rname br `plus` o
                              , b_mrnm  = b_mrnm  br `plus` o }
-               in I.mapStream f
+               in mapStream f
 
     r        `plus` _ | r == invalidRefseq = r
     Refseq r `plus` o                      = Refseq (r + fromIntegral o)
@@ -200,7 +199,7 @@ main = do
 iter_transpose :: Monad m => Enumeratee [BamPair] [[BamPair]] (Iteratee [[BamPair]] m) a
 iter_transpose = eneeCheckIfDone step
   where
-    step k = do mx <- I.tryHead ; my <- lift I.tryHead ; step' k mx my
+    step k = do mx <- tryHead ; my <- lift tryHead ; step' k mx my
 
     step' k Nothing Nothing = idone (liftI k) $ EOF Nothing
     step' k (Just x) (Just ys) | p_qname x == p_qname (head ys) = iter_transpose . k $ Chunk [x:ys]
@@ -209,9 +208,9 @@ iter_transpose = eneeCheckIfDone step
 merge_by_name :: Monad m => Enumeratee [BamPair] [[BamPair]] (Iteratee [[BamPair]] m) a
 merge_by_name = ensure_sorting ><> merge'
   where
-    merge'     = eneeCheckIfDone (\k -> I.tryHead >>= \mx -> lift I.tryHead >>= \my -> merge''' k mx my)
-    merge'x my = eneeCheckIfDone (\k -> I.tryHead >>= \mx ->                           merge''' k mx my)
-    merge'y mx = eneeCheckIfDone (\k ->                      lift I.tryHead >>= \my -> merge''' k mx my)
+    merge'     = eneeCheckIfDone (\k -> tryHead >>= \mx -> lift tryHead >>= \my -> merge''' k mx my)
+    merge'x my = eneeCheckIfDone (\k -> tryHead >>= \mx ->                         merge''' k mx my)
+    merge'y mx = eneeCheckIfDone (\k ->                    lift tryHead >>= \my -> merge''' k mx my)
 
     merge''' k  Nothing   Nothing  = idone (liftI k) $ EOF Nothing
     merge''' k  Nothing  (Just ys) = merge'y Nothing . k $ Chunk [ys]
