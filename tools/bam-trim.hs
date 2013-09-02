@@ -1,8 +1,8 @@
 import Bio.Bam
 import Bio.Base
 import Control.Monad                        ( unless, foldM )
-import Paths_biohazard                      ( version )
-import System.Console.GetOpt
+import Paths_biohazard_tools                ( version )
+mport System.Console.GetOpt
 import System.Environment                   ( getArgs )
 import System.Exit                          ( exitFailure, exitSuccess )
 import System.IO                            ( hPutStrLn )

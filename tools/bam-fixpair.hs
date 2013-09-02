@@ -40,7 +40,7 @@ import Data.Binary
 import Data.Bits
 import Data.Hashable
 import Data.List
-import Paths_biohazard                          ( version )
+import Paths_biohazard_tools                    ( version )
 import System.Console.GetOpt
 import System.Environment                       ( getArgs, getProgName )
 import System.Exit                              ( exitFailure, exitSuccess )
