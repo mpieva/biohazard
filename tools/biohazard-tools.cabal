@@ -78,6 +78,11 @@ Executable bam-resample
                        MonadCatchIO-transformers, 
                        filepath, directory, biohazard, random, vector
 
+Executable bam-rewrap
+  Ghc-options:         -Wall -auto-all -threaded -rtsopts
+  Main-is:             bam-rewrap.hs
+  Build-depends:       base ==4.*, biohazard, containers
+
 Executable bam-rmdup
   Ghc-options:         -Wall -auto-all -threaded -rtsopts
   Main-is:             bam-rmdup.hs
