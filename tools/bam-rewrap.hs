@@ -6,7 +6,7 @@
 -- artificially to facilitate alignment.  Now the declared length in the
 -- header is wrong, and the alignments overhang the end.  Here we split
 -- those alignments into two, one for the beginning, one for the end of
--- the sequence, then mask out the inappropriate parts.
+-- the sequence, then soft-mask out the inappropriate parts.
 --
 -- What's the best course of action, operationally?  As usual, we need
 -- to decide whether to rely on sorted input and whether to produce
@@ -17,15 +17,19 @@
 -- unsorted, so is output, output is piped (and hence uncompressed).
 -- We also fix the header while we're at it.
 --
--- Enhancements:
--- * correct MAPQ (to 37 or to 60?) if there is exactly one extra
---   alignment that is arrived at by wrapping
+-- We try to fix the map quality for the affected reads as follows:  if
+-- a read has map quality 0 (meaning multiple equally good hits), we
+-- check the XA field.  If it reports exactly one additional alignment,
+-- and it matches the primary alignment when transformed to canonical
+-- coordinates, we remove XA and set MAPQ to 37.
 
 import Bio.Bam
 import Bio.Base
+import Control.Monad                    ( when )
 import Paths_biohazard_tools            ( version )
 import System.Environment               ( getArgs )
 
+import qualified Data.ByteString.Char8  as S
 import qualified Data.Map               as M
 import qualified Data.Sequence          as Z
 
@@ -37,14 +41,14 @@ main = enumHandle defaultBufSize stdin >=> run $
            joinI $ mapChunks (concatMap (rewrap (M.fromList ltab)))
                  $ pipeRawBamOutput (add_pg hdr { meta_refs = seqs' })
 
-parseArgs :: Refs -> [String] -> ([(Refseq,Int)], Refs)
+parseArgs :: Refs -> [String] -> ([(Refseq,(Int,S.ByteString))], Refs)
 parseArgs = foldl parseArg . (,) []
   where
     parseArg (sqs, h) arg = case break (==':') arg of
         (nm,':':r) -> case reads r of
             [(l,[])] | l > 0 -> case Z.findIndexL ((==) nm . unpackSeqid . sq_name) h of
                 Just k  -> case h `Z.index` k of
-                    a | sq_length a >= l -> ( (Refseq $ fromIntegral k,l):sqs, Z.update k (a { sq_length = l }) h )
+                    a | sq_length a >= l -> ( (Refseq $ fromIntegral k,(l, sq_name a)):sqs, Z.update k (a { sq_length = l }) h )
                       | otherwise -> error $ "cannot wrap " ++ show nm ++ " to " ++ show l
                                           ++ ", which is more than the original " ++ show (sq_length a)
                 Nothing -> error $ "target sequence " ++ show nm ++ " not found"
@@ -148,25 +152,40 @@ setMD b ec = if any interesting md then b { b_exts = M.insert "MD" (Text $ showM
     interesting _ = False
 
 
-rewrap :: M.Map Refseq Int -> BamRaw -> [BamRaw]
+rewrap :: M.Map Refseq (Int,S.ByteString) -> BamRaw -> [BamRaw]
 rewrap m br = case M.lookup (br_rname br) m of
-    Just l | overhangs l    -> do_wrap l
-           | otherwise      -> do_simple_wrap l
-    _                       -> [br]
+    Just (l,nm) | overhangs l    -> do_wrap nm l
+                | otherwise      -> do_simple_wrap nm l
+    _                            -> [br]
   where
     overhangs l = not (br_isUnmapped br) && br_pos br < l
                   && l < br_pos br + br_aln_length br
 
-    do_wrap l = let !b = decodeBamEntry br in
-                case split_ecig (l - b_pos b) $ toECig (b_cigar b) (maybe [] id $ getMd b) of
-                    (left,right) -> [ encodeBamEntry $ b { b_cigar = toCigar  left
-                                                         , b_mpos = b_mpos b `mod` l } `setMD` left
-                                    , encodeBamEntry $ b { b_cigar = toCigar right
-                                                         , b_pos = 0
-                                                         , b_mpos = b_mpos b `mod` l } `setMD` right ]
+    dups_are_fine nm l = br_mapq br == 0 && all_match_XA (br_extAsString "XA" br)
+      where
+        all_match_XA s = case S.split ';' s of [xa1,xa2] | S.null xa2 -> one_match_XA xa1 ; _ -> False
+        one_match_XA s = case S.split ',' s of (sq:pos:_) | sq == nm -> pos_match_XA pos ; _ -> False
+        pos_match_XA s = case S.readInt s of Just (p,z) | S.null z -> int_match_XA p ; _ -> False
+        int_match_XA p | p >= 0    =  (p-1) `mod` l == br_pos br `mod` l && not (br_isReversed br)
+                       | otherwise = (-p-1) `mod` l == br_pos br `mod` l && br_isReversed br
 
-    do_simple_wrap l = [ mutateBamRaw br $ do setPos (br_pos br `mod` l)
-                                              setMpos (br_mpos br `mod` l) ]
+    do_wrap nm l = let !b = decodeBamEntry br ; dp = dups_are_fine nm l in
+                   case split_ecig (l - b_pos b) $ toECig (b_cigar b) (maybe [] id $ getMd b) of
+                       (left,right) -> [ encodeBamEntry $ b { b_cigar = toCigar  left
+                                                            , b_mpos = b_mpos b `mod` l
+                                                            , b_mapq = if dp then 37 else b_mapq b
+                                                            , b_exts = (if dp then M.delete "XA" else id) (b_exts b) }
+                                                          `setMD` left
+                                       , encodeBamEntry $ b { b_cigar = toCigar right
+                                                            , b_pos = 0
+                                                            , b_mpos = b_mpos b `mod` l
+                                                            , b_mapq = if dp then 37 else b_mapq b
+                                                            , b_exts = (if dp then M.delete "XA" else id) (b_exts b) }
+                                                          `setMD` right ]
+
+    do_simple_wrap nm l = [ mutateBamRaw br $ do setPos (br_pos br `mod` l)
+                                                 setMpos (br_mpos br `mod` l)
+                                                 when (dups_are_fine nm l) (setMapq 37 >> removeExt "XA") ]
 
 -- | Split an 'ECig' into two at some position.  The position is counted
 -- in terms of the reference (therefore, deletions count, insertions

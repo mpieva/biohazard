@@ -87,6 +87,7 @@ module Bio.Bam.Raw (
     removeExt,
     appendStringExt,
     setPos,
+    setMapq,
     setFlag,
     setMrnm,
     setMpos,
@@ -109,7 +110,7 @@ import Data.Bits                    ( Bits, shiftL, shiftR, (.&.), (.|.), testBi
 import Data.Int                     ( Int64, Int32, Int16, Int8 )
 import Data.Monoid
 import Data.Sequence                ( (|>) )
-import Data.Word                    ( Word32, Word16 )
+import Data.Word                    ( Word32, Word16, Word8 )
 import Foreign.C.String             ( CString )
 import Foreign.Ptr                  ( plusPtr )
 import Foreign.Marshal.Utils        ( moveBytes )
@@ -533,8 +534,14 @@ setFlag  f = Mut $ \p -> passL $ pokeInt16 p 14 f
 setMpos  x = Mut $ \p -> passL $ pokeInt32 p 24 x
 setIsize x = Mut $ \p -> passL $ pokeInt32 p 28 x
 
+setMapq :: Word8 -> Mutator ()
+setMapq q = Mut $ \p -> passL $ pokeInt8 p 9 q
+
 setMrnm :: Refseq -> Mutator ()
 setMrnm r = Mut $ \p -> passL $ pokeInt32 p 20 (unRefseq r)
+
+pokeInt8 :: Integral a => CString -> Int -> a -> IO ()
+pokeInt8 p o = pokeElemOff p o . fromIntegral
 
 pokeInt16 :: (Bits a, Integral a) => CString -> Int -> a -> IO ()
 pokeInt16 p o x = do pokeElemOff p  o    . fromIntegral $        x   .&. 0xff

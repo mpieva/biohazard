@@ -81,7 +81,7 @@ Executable bam-resample
 Executable bam-rewrap
   Ghc-options:         -Wall -auto-all -threaded -rtsopts
   Main-is:             bam-rewrap.hs
-  Build-depends:       base ==4.*, biohazard, containers
+  Build-depends:       base ==4.*, biohazard, bytestring, containers
 
 Executable bam-rmdup
   Ghc-options:         -Wall -auto-all -threaded -rtsopts
