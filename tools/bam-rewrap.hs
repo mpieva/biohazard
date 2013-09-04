@@ -27,17 +27,29 @@ import Bio.Bam
 import Bio.Base
 import Control.Monad                    ( when )
 import Paths_biohazard_tools            ( version )
-import System.Environment               ( getArgs )
+import System.Environment               ( getArgs, getProgName )
+import System.Exit                      ( exitFailure )
+import System.IO                        ( hPutStr )
 
 import qualified Data.ByteString.Char8  as S
 import qualified Data.Map               as M
 import qualified Data.Sequence          as Z
 
+usage :: IO a
+usage = do pn <- getProgName
+           hPutStr stderr $ "Usage: " ++ pn ++ "[chrom:length...]\n\
+                \Pipes a BAM file from stdin to stdout and for every 'chrom'\n\
+                \mentioned on the command line, wraps alignments to a new \n\
+                \target length of 'length'.\n"
+           exitFailure
+
 main :: IO ()
-main = enumHandle defaultBufSize stdin >=> run $
+main = getArgs >>= \args ->
+       when (null args) usage >>= \_ ->
+       enumHandle defaultBufSize stdin >=> run $
        joinI $ decodeAnyBam $ \hdr -> do
-           add_pg       <- liftIO (addPG $ Just version)
-           (ltab, seqs') <- parseArgs (meta_refs hdr) `fmap` liftIO getArgs
+           add_pg <- liftIO (addPG $ Just version)
+           let (ltab, seqs') = parseArgs (meta_refs hdr) args
            joinI $ mapChunks (concatMap (rewrap (M.fromList ltab)))
                  $ pipeRawBamOutput (add_pg hdr { meta_refs = seqs' })
 

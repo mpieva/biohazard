@@ -37,6 +37,7 @@ Build-type:          Custom
 -- Extra files to be distributed with the package, such as examples or
 -- a README.
 Extra-Source-Files:  man/man1/bam-meld.1
+                     man/man1/bam-rewrap.1
                      man/man1/bam-rmdup.1
 
 -- Constraint on the version of Cabal needed to build this package.
