@@ -1,3 +1,4 @@
+{-# LANGUAGE BangPatterns #-}
 -- Re-wrap alignments to obey the given length of the reference
 -- sequence.
 --
@@ -62,6 +63,7 @@ data ECig = Empty
           | HMa' Int ECig
           | Pad' Int ECig
 
+
 toECig :: Cigar -> [MdOp] -> ECig
 toECig (Cigar cig) md = go cig md
   where
@@ -87,14 +89,60 @@ toECig (Cigar cig) md = go cig md
     go ((HMa,n):cs) mds = HMa' n $ go cs mds
     go ((Pad,n):cs) mds = Pad' n $ go cs mds
 
+
+-- We normalize matches, deletions and soft masks, because these are the
+-- operations we generate.  Everything is either already normalized or
+-- nobody really cares anyway.
 toCigar :: ECig -> Cigar
-toCigar = undefined -- !!!
+toCigar = Cigar . go
+  where
+    go Empty = []
+    go (Ins' n ecs) = (Ins,n) : go ecs
+    go (Nop' n ecs) = (Nop,n) : go ecs
+    go (HMa' n ecs) = (HMa,n) : go ecs
+    go (Pad' n ecs) = (Pad,n) : go ecs
+    go (SMa' n ecs) = go_sma n ecs
+    go (Mat' n ecs) = go_mat n ecs
+    go (Rep' _ ecs) = go_mat 1 ecs
+    go (Del' _ ecs) = go_del 1 ecs
 
-toMD :: ECig -> [MdOp]
-toMD = undefined -- !!!
+    go_sma !n (SMa' m ecs) = go_sma (n+m) ecs
+    go_sma !n         ecs  = (SMa,n) : go ecs
 
-setMD :: BamRec -> [MdOp] -> BamRec
-setMD b [] = b
+    go_mat !n (Mat' m ecs) = go_mat (n+m) ecs
+    go_mat !n (Rep' _ ecs) = go_mat (n+1) ecs
+    go_mat !n         ecs  = (Mat,n) : go ecs
+
+    go_del !n (Del' _ ecs) = go_del (n+1) ecs
+    go_del !n         ecs  = (Del,n) : go ecs
+
+
+
+setMD :: BamRec -> ECig -> BamRec
+setMD b ec = if any interesting md then b { b_exts = M.insert "MD" (Text $ showMd md) (b_exts b) }
+                                   else b { b_exts = M.delete "MD" (b_exts b) }
+  where
+    md = norm $ go ec
+
+    go  Empty       = []
+    go (Ins' _ ecs) = go ecs
+    go (Nop' _ ecs) = go ecs
+    go (SMa' _ ecs) = go ecs
+    go (HMa' _ ecs) = go ecs
+    go (Pad' _ ecs) = go ecs
+    go (Mat' n ecs) = MdNum  n  : go ecs
+    go (Rep' x ecs) = MdRep  x  : go ecs
+    go (Del' x ecs) = MdDel [x] : go ecs
+
+    norm (MdNum n : MdNum m : mds) = norm $ MdNum (n+m) : mds
+    norm (MdDel u : MdDel v : mds) = norm $ MdDel (u++v) : mds
+    norm                (op : mds) = op : norm mds
+    norm                        [] = []
+
+    interesting (MdRep n) = n /= gap
+    interesting (MdDel ns) = all (/= gap) ns
+    interesting _ = False
+
 
 rewrap :: M.Map Refseq Int -> BamRaw -> [BamRaw]
 rewrap m br = case M.lookup (br_rname br) m of
@@ -103,10 +151,41 @@ rewrap m br = case M.lookup (br_rname br) m of
   where
     b = decodeBamEntry br
     do_wrap l = case split_ecig (l - b_pos b) $ toECig (b_cigar b) (maybe [] id $ getMd b) of
-                    (left,right) -> [ encodeBamEntry $ b { b_cigar = toCigar  left } `setMD` toMD  left
-                                    , encodeBamEntry $ b { b_cigar = toCigar right } `setMD` toMD right ]
+                    (left,right) -> [ encodeBamEntry $ b { b_cigar = toCigar  left } `setMD` left
+                                    , encodeBamEntry $ b { b_cigar = toCigar right } `setMD` right ]
 
-    split_ecig n _ = (Empty,Empty) -- !!!
+-- | Split an 'ECig' into two at some position.  The position is counted
+-- in terms of the reference (therefore, deletions count, insertions
+-- don't).  The parts that would be skipped if we were splitting lists
+-- are replaced by soft masks.
+split_ecig :: Int -> ECig -> (ECig, ECig)
+split_ecig _ Empty = (Empty,      Empty)
+split_ecig 0   ecs = (mask_all ecs, ecs)
 
+split_ecig i (Ins' n ecs) = case split_ecig i ecs of (u,v) -> (Ins' n u, SMa' n v)
+split_ecig i (SMa' n ecs) = case split_ecig i ecs of (u,v) -> (SMa' n u, SMa' n v)
+split_ecig i (HMa' n ecs) = case split_ecig i ecs of (u,v) -> (HMa' n u, HMa' n v)
+split_ecig i (Pad' n ecs) = case split_ecig i ecs of (u,v) -> (Pad' n u,        v)
 
+split_ecig i (Mat' n ecs)
+    | i >= n    = case split_ecig (i-n) ecs of (u,v) -> (Mat' n u, SMa' n v)
+    | otherwise = (Mat' i $ SMa' (n-1) $ mask_all ecs, SMa' i $ Mat' (n-i) ecs)
+
+split_ecig i (Rep' x ecs) = case split_ecig (i-1) ecs of (u,v) -> (Rep' x u, SMa' 1 v)
+split_ecig i (Del' x ecs) = case split_ecig (i-1) ecs of (u,v) -> (Del' x u,        v)
+
+split_ecig i (Nop' n ecs)
+    | i >= n    = case split_ecig (i-n) ecs of (u,v) -> (Nop' n u,        v)
+    | otherwise = (Nop' i $ mask_all ecs, Nop' (n-i) ecs)
+
+mask_all :: ECig -> ECig
+mask_all Empty = Empty
+mask_all (Nop' _ ec) =          mask_all ec
+mask_all (HMa' _ ec) =          mask_all ec
+mask_all (Pad' _ ec) =          mask_all ec
+mask_all (Del' _ ec) =          mask_all ec
+mask_all (Rep' _ ec) = SMa' 1 $ mask_all ec
+mask_all (Mat' n ec) = SMa' n $ mask_all ec
+mask_all (Ins' n ec) = SMa' n $ mask_all ec
+mask_all (SMa' n ec) = SMa' n $ mask_all ec
 
