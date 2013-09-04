@@ -86,6 +86,7 @@ module Bio.Bam.Raw (
     mutateBamRaw,
     removeExt,
     appendStringExt,
+    setPos,
     setFlag,
     setMrnm,
     setMpos,
@@ -526,7 +527,8 @@ instance Monad Mutator where
 passL :: IO a -> Int -> [S.ByteString] -> IO (Int,[S.ByteString],a)
 passL io = \l fs -> io >>= \a -> return (l,fs,a)
 
-setFlag, setMpos, setIsize :: Int -> Mutator ()
+setPos, setFlag, setMpos, setIsize :: Int -> Mutator ()
+setPos   x = Mut $ \p -> passL $ pokeInt32 p  4 x
 setFlag  f = Mut $ \p -> passL $ pokeInt16 p 14 f
 setMpos  x = Mut $ \p -> passL $ pokeInt32 p 24 x
 setIsize x = Mut $ \p -> passL $ pokeInt32 p 28 x

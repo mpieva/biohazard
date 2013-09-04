@@ -16,6 +16,10 @@
 -- and output is piped somewhere.  So that's what we do:  input is
 -- unsorted, so is output, output is piped (and hence uncompressed).
 -- We also fix the header while we're at it.
+--
+-- Enhancements:
+-- * correct MAPQ (to 37 or to 60?) if there is exactly one extra
+--   alignment that is arrived at by wrapping
 
 import Bio.Bam
 import Bio.Base
@@ -146,13 +150,23 @@ setMD b ec = if any interesting md then b { b_exts = M.insert "MD" (Text $ showM
 
 rewrap :: M.Map Refseq Int -> BamRaw -> [BamRaw]
 rewrap m br = case M.lookup (br_rname br) m of
-    Just l | not (br_isUnmapped br) && l < br_pos br + br_aln_length br -> do_wrap l
-    _                                                                   -> [br]
+    Just l | overhangs l    -> do_wrap l
+           | otherwise      -> do_simple_wrap l
+    _                       -> [br]
   where
-    b = decodeBamEntry br
-    do_wrap l = case split_ecig (l - b_pos b) $ toECig (b_cigar b) (maybe [] id $ getMd b) of
-                    (left,right) -> [ encodeBamEntry $ b { b_cigar = toCigar  left } `setMD` left
-                                    , encodeBamEntry $ b { b_cigar = toCigar right } `setMD` right ]
+    overhangs l = not (br_isUnmapped br) && br_pos br < l
+                  && l < br_pos br + br_aln_length br
+
+    do_wrap l = let !b = decodeBamEntry br in
+                case split_ecig (l - b_pos b) $ toECig (b_cigar b) (maybe [] id $ getMd b) of
+                    (left,right) -> [ encodeBamEntry $ b { b_cigar = toCigar  left
+                                                         , b_mpos = b_mpos b `mod` l } `setMD` left
+                                    , encodeBamEntry $ b { b_cigar = toCigar right
+                                                         , b_pos = 0
+                                                         , b_mpos = b_mpos b `mod` l } `setMD` right ]
+
+    do_simple_wrap l = [ mutateBamRaw br $ do setPos (br_pos br `mod` l)
+                                              setMpos (br_mpos br `mod` l) ]
 
 -- | Split an 'ECig' into two at some position.  The position is counted
 -- in terms of the reference (therefore, deletions count, insertions
