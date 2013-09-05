@@ -1,5 +1,5 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving, TypeFamilies #-}
-{-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE MultiParamTypeClasses, BangPatterns #-}
 -- | Common data types used everywhere.  This module is a collection of
 -- very basic "bioinformatics" data types that are simple, but don't
 -- make sense to define over and over.
@@ -228,6 +228,7 @@ properBases = [ nucA, nucC, nucG, nucT ]
 isGap :: Nucleotide -> Bool
 isGap x = x == gap
 
+{-# INLINE showNucleotide #-}
 showNucleotide :: Nucleotide -> Char
 showNucleotide (N x) = S.index str $ fromIntegral $ x .&. 15
   where str = S.pack "-ACMGRSVTWYHKDBN"
@@ -243,15 +244,17 @@ instance Read Nucleotide where
                  in [(map toNucleotide $ filter (not . isSpace) hd, tl)]
     
 -- | Reverse-complements a stretch of Nucleotides
+{-# INLINE revcompl #-}
 revcompl :: [Nucleotide] -> [Nucleotide]
 revcompl = reverse . map compl
 
 -- | Complements a Nucleotide.
+{-# INLINE compl #-}
 compl :: Nucleotide -> Nucleotide
 compl (N x) = N $ arr ! (x .&. 15)
   where
     arr :: UArray Word8 Word8
-    arr = listArray (0,15) [ 0, 8, 4, 12, 2, 10, 6, 14, 1, 9, 5, 13, 3, 11, 7, 15 ]
+    !arr = listArray (0,15) [ 0, 8, 4, 12, 2, 10, 6, 14, 1, 9, 5, 13, 3, 11, 7, 15 ]
 
 
 -- | Moves a @Position@.  The position is moved forward according to the
