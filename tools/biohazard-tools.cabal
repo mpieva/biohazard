@@ -1,5 +1,5 @@
 Name:                biohazard-tools
-Version:             0.1.0
+Version:             0.5.2
 Synopsis:            tools separated from biohazard
 -- Description:
 Category:            Bioinformatics
@@ -14,19 +14,20 @@ Copyright:           (C) 2010 Udo Stenzel
 
 -- Extra files to be distributed with the package, such as examples or a README.
 Extra-Source-Files:  man/man1/bam-meld.1
+                     man/man1/bam-rewrap.1
                      man/man1/bam-rmdup.1
 
 Cabal-version:       >=1.9.2
 Build-type:          Custom
 
--- source-repository head
-  -- type:     git
-  -- location: git://github.com/udo-stenzel/biohazard.git
+source-repository head
+  type:     git
+  location: git://github.com/udo-stenzel/biohazard.git
 
--- source-repository this
-  -- type:     git
-  -- location: git://github.com/udo-stenzel/biohazard.git
-  -- tag:      0.5.0
+source-repository this
+  type:     git
+  location: git://github.com/udo-stenzel/biohazard.git
+  tag:      0.5.2
 
 Executable bam-fixpair
   Ghc-options:         -Wall -auto-all -threaded -rtsopts
@@ -42,6 +43,11 @@ Executable bam-resample
   Ghc-options:         -Wall -auto-all -threaded -rtsopts
   Main-is:             bam-resample.hs
   Build-depends:       base == 4.*, biohazard, bytestring, random
+
+Executable bam-rewrap
+  Ghc-options:         -Wall -auto-all -threaded -rtsopts
+  Main-is:             bam-rewrap.hs
+  Build-depends:       base ==4.*, biohazard, bytestring, containers
 
 Executable bam-rmdup
   Ghc-options:         -Wall -auto-all -threaded -rtsopts

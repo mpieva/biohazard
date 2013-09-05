@@ -89,6 +89,8 @@ module Bio.Bam.Raw (
     mutateBamRaw,
     removeExt,
     appendStringExt,
+    setPos,
+    setMapq,
     setFlag,
     setMrnm,
     setMpos,
@@ -425,7 +427,7 @@ br_seq_at br@(BamRaw _ raw) i
 
 {-# INLINE br_qual_at #-}
 br_qual_at :: BamRaw -> Int -> Qual
-br_qual_at br@(BamRaw _ raw) i = fromIntegral $ S.unsafeIndex raw (off0 + i)
+br_qual_at br@(BamRaw _ raw) i = Q $ S.unsafeIndex raw (off0 + i)
   where
     off0 = sum [ 33, br_l_read_name br, 4 * br_n_cigar_op br, (br_l_seq br + 1) `div` 2]
 
@@ -579,16 +581,26 @@ passL :: IO a -> Int -> [S.ByteString] -> IO (Int,[S.ByteString],a)
 passL io = \l fs -> io >>= \a -> return (l,fs,a)
 
 {-# INLINE setFlag  #-}
+{-# INLINE setPos  #-}
 {-# INLINE setMpos  #-}
 {-# INLINE setIsize #-}
-setFlag, setMpos, setIsize :: Int -> Mutator ()
+setPos, setFlag, setMpos, setIsize :: Int -> Mutator ()
+setPos   x = Mut $ \p -> passL $ pokeInt32 p  4 x
 setFlag  f = Mut $ \p -> passL $ pokeInt16 p 14 f
 setMpos  x = Mut $ \p -> passL $ pokeInt32 p 24 x
 setIsize x = Mut $ \p -> passL $ pokeInt32 p 28 x
 
+{-# INLINE setMapq #-}
+setMapq :: Word8 -> Mutator ()
+setMapq q = Mut $ \p -> passL $ pokeInt8 p 9 q
+
 {-# INLINE setMrnm #-}
 setMrnm :: Refseq -> Mutator ()
 setMrnm r = Mut $ \p -> passL $ pokeInt32 p 20 (unRefseq r)
+
+{-# INLINE pokeInt8 #-}
+pokeInt8 :: Integral a => CString -> Int -> a -> IO ()
+pokeInt8 p o = pokeElemOff p o . fromIntegral
 
 {-# INLINE pokeInt16 #-}
 pokeInt16 :: (Bits a, Integral a) => CString -> Int -> a -> IO ()

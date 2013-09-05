@@ -1,5 +1,5 @@
 Name:                biohazard
-Version:             0.5.0
+Version:             0.5.2
 Synopsis:            bioinformatics support library
 Description:         This is a collection of modules I separated from
                      various bioinformatics tools.  The hope is to make
@@ -32,9 +32,24 @@ source-repository this
 
 Library
   -- Modules exported by the library.
-  Exposed-modules:     Bio.Bam, Bio.Bam.Fastq, Bio.Bam.Filter, Bio.Bam.Header, Bio.Bam.Pileup, Bio.Bam.Raw, Bio.Bam.Rec,
-                       Bio.Bam.Rmdup, Bio.Bam.Trim, Bio.Base, Bio.Glf, Bio.Iteratee, Bio.Iteratee.ZLib, Bio.PriorityQueue,
-                       Bio.TwoBit, Bio.Util, Codec.Bgzf
+  Exposed-modules:     Bio.Base,
+                       Bio.Align,
+                       Bio.Bam,
+                       Bio.Bam.Fastq,
+                       Bio.Bam.Filter,
+                       Bio.Bam.Header,
+                       Bio.Bam.Pileup, 
+                       Bio.Bam.Raw,
+                       Bio.Bam.Rec,
+                       Bio.Bam.Rmdup,
+                       Bio.Bam.Trim,
+                       Bio.Glf,
+                       Bio.Iteratee,
+                       Bio.Iteratee.ZLib,
+                       Bio.PriorityQueue,
+                       Bio.TwoBit,
+                       Bio.Util,
+                       Codec.Bgzf
   
   -- Packages needed in order to build this package.
   Build-depends:       array, attoparsec, attoparsec-iteratee, base == 4.*, binary, binary-strict, bytestring, containers,
@@ -42,6 +57,8 @@ Library
                        vector, zlib
   
   Ghc-options:         -Wall -auto-all
+  Include-dirs:        cbits
+  C-sources:           cbits/myers_align.c
 
   -- Modules not exported by this package.
   -- Other-modules:       
