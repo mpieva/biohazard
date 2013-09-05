@@ -56,6 +56,7 @@ source-repository this
 Library
   -- Modules exported by the library.
   Exposed-modules:     Bio.Base,
+                       Bio.Align,
                        Bio.Bam,
                        Bio.Bam.Fastq,
                        Bio.Bam.Filter,
@@ -80,6 +81,8 @@ Library
                        filepath, directory, vector, parallel
   
   Ghc-options:         -Wall
+  Include-dirs:        cbits
+  C-sources:           cbits/myers_align.c
 
   -- Modules not exported by this package.
   -- Other-modules:       
