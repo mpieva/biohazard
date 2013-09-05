@@ -9,8 +9,6 @@ module Bio.Bam (
         module Bio.Iteratee
     ) where
 
--- ^ Umbrella module for most of whats under 'Bio.Bam'.
-
 import Bio.Bam.Fastq
 import Bio.Bam.Filter
 import Bio.Bam.Header
@@ -19,3 +17,6 @@ import Bio.Bam.Rec
 import Bio.Bam.Rmdup
 import Bio.Bam.Trim
 import Bio.Iteratee
+
+-- ^ Umbrella module for most of whats under 'Bio.Bam'.
+

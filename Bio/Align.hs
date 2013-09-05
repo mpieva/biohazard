@@ -1,5 +1,6 @@
 {-# LANGUAGE ForeignFunctionInterface #-}
 module Bio.Align (
+    Mode(..),
     myersAlign,
     showAligned
                  ) where

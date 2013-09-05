@@ -3,11 +3,6 @@ module Bio.Bam.Fastq (
     parseFastq, parseFastq', removeWarts
                           ) where
 
--- ^ Parser for @FastA/FastQ@, 'Iteratee' style, based on
--- "Data.Attoparsec", and written such that it is compatible with module
--- 'Bio.Bam'.  This gives import of @FastA/FastQ@ while respecting some
--- local conventions.
-
 import Bio.Bam.Header
 import Bio.Bam.Rec
 import Bio.Base
@@ -22,6 +17,11 @@ import qualified Data.ByteString        as B
 import qualified Data.ByteString.Char8  as S
 import qualified Data.Iteratee.ListLike as I
 import qualified Data.Map               as M
+
+-- ^ Parser for @FastA/FastQ@, 'Iteratee' style, based on
+-- "Data.Attoparsec", and written such that it is compatible with module
+-- 'Bio.Bam'.  This gives import of @FastA/FastQ@ while respecting some
+-- local conventions.
 
 -- | Reader for DNA (not protein) sequences in FastA and FastQ.  We read
 -- everything vaguely looking like FastA or FastQ, then shoehorn it into
