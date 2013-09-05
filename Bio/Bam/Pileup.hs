@@ -27,7 +27,7 @@ import Prelude hiding ( foldr, concat, mapM_, all )
 --
 -- The goal for this module is to call haploid and diploid single
 -- nucleotide variants the best way we can, including support for aDNA.
--- Indel calling is outr of scope, we only do it "on the side".
+-- Indel calling is out of scope, we only do it "on the side".
 --
 -- The cleanest way to call genotypes under all circumstances is
 -- probably the /Dindel/ approach:  define candidate haplotypes, align
@@ -42,8 +42,9 @@ import Prelude hiding ( foldr, concat, mapM_, all )
 -- these variants are collected and are assigned an affine score.  This
 -- works best if indels are 'left-aligned' first.  In theory, one indel
 -- variant could be another indel variant with a sequencing error---we
--- ignore that possibility.  Once indels are taken care off, SNVs are
--- treated separately as independent columns of the pileup.
+-- ignore that possibility for the most part.  Once indels are taken
+-- care off, SNVs are treated separately as independent columns of the
+-- pileup.
 --
 -- For aDNA, we need a substitution probability.  We have three options:
 -- use an empirically determined PSSM, use an arithmetically defined
@@ -76,9 +77,6 @@ import Prelude hiding ( foldr, concat, mapM_, all )
 
 -- *TODO*
 --
--- * Coordinates in 'decompose' may go wrong in the presence of masking
---   operations.  The meaning of those coordinates is simply not clear to begin
---   with from specifications alone.
 -- * A whole lot of testing.
 -- * Actual genotype calling.
 -- * ML fitting and evaluation of parameters for different possible
@@ -86,14 +84,14 @@ import Prelude hiding ( foldr, concat, mapM_, all )
 -- * Check the 'decompose' logic, in particular, make sure the waiting
 --   time after deletions is exactly right
 
--- | For probabilities for bases @A, C, G, T@.
+-- | For likelihoods for bases @A, C, G, T@.
 data Double4 = D4 !Double !Double !Double !Double
 
 instance Show Double4 where
     showsPrec _ (D4 a c g t) = foldr (.) id . intersperse ((:) ' ') $ map (showFFloat (Just 2)) [a,c,g,t]
 
 -- | The primitive pieces for genotype calling:  A position, a base
--- represented as four probabilities, an inserted sequence, and the
+-- represented as four likelihoods, an inserted sequence, and the
 -- length of a deleted sequence.  The logic is that we look at a base
 -- followed by some indel, and all those indels are combined into a
 -- single insertion and a single deletion.
@@ -156,7 +154,7 @@ decompose dm br
             (Mat, _) -> Seek pos $ nextBase 0 pos     is   ic 0
 
 
-    -- Generate probabilities for the next base.  When this gets called,
+    -- Generate likelihoods for the next base.  When this gets called,
     -- we are looking at an M CIGAR operation and all the subindices are
     -- valid.
     nextBase :: Int -> Int -> Int -> Int -> Int -> PrimBase
@@ -186,16 +184,16 @@ decompose dm br
         isq cl = [ get_seq (,) i | i <- [is..is+cl-1] ] : ins
 
 
--- | A 'DamageModel' is a function that gives probabilities for all
+-- | A 'DamageModel' is a function that gives likelihoods for all
 -- possible four bases, given the sequenced base, the quality, and the
 -- position in the read.  That means it can't take the actual alignment
 -- into account... but nobody seems too keen on doing that anyway.
 type DamageModel = Int              -- ^ position in read
                 -> Nucleotide       -- ^ base
                 -> Qual             -- ^ quality score
-                -> Double4          -- ^ results in four probabilities
+                -> Double4          -- ^ results in four likelihoods
 
--- | 'DamageModel' for undamaged DNA.  The probabilities follow directly
+-- | 'DamageModel' for undamaged DNA.  The likelihoods follow directly
 -- from the quality score.  This needs elaboration to see what to do
 -- with amibiguity codes.
 noDamage :: DamageModel
@@ -511,9 +509,19 @@ appConscall gen0 ccall = eneeCheckIfDone (liftI . go gen0)
 -- | Simple indel calling.  We don't bother with it too much, so here's
 -- the gist:  We collect variants (simply different variants, details
 -- don't matter), so @n@ variants give rise to (n+1)*n/2 PL values.
--- (That's two out of @(n+1)@, the reference allele is there, too.)  To
--- assign these, we need a likelihood for an observed variant given an
--- assumed genotype.
+-- (That's two out of @(n+1)@, the reference allele, represented here as
+-- no deletion and no insertion, is there, too.)  To assign these, we
+-- need a likelihood for an observed variant given an assumed genotype.
+--
+-- For variants of equal length, the likelihood is the sum of qualities
+-- of mismatching bases, but no higher than the mapping quality.  That
+-- is roughly the likelihood of getting the observed sequence even
+-- though the real sequence is a different variant.  For variants of
+-- different length, the likelihood is the map quality.  This
+-- corresponds to the assumption that indel errors in sequencing are
+-- much less likely than mapping errors.  Since this hardly our
+-- priority, the approximations are declared good enough.
+
 simple_indel_call :: VarCall IndelPile -> VarCall IndelVars
 simple_indel_call vc = vc { vc_pl = undefined, vc_vars = vars' }
   where
