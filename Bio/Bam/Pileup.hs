@@ -83,6 +83,9 @@ import Prelude hiding ( foldr, concat, mapM_, all )
 --   error and damage models.
 -- * Check the 'decompose' logic, in particular, make sure the waiting
 --   time after deletions is exactly right
+-- * Ploidy must be a variable; we definitely need calling for diploid
+--   and haploid genomes; higher ploidy is nice to have if it comes at
+--   acceptable cost.
 
 -- | For likelihoods for bases @A, C, G, T@.
 data Double4 = D4 !Double !Double !Double !Double
@@ -206,7 +209,13 @@ noDamage _ b (Q q) | b == nucA = D4 0 p p p
 
 
 -- | A variant call consists of a position, some measure of qualities,
--- genotype likelihood values, and a representation of variants.
+-- genotype likelihood values, and a representation of variants.  A note
+-- about the 'vc_pl' values:  @VCF@ would normalize them so that the
+-- smallest one becomes zero.  We do not do that here, since we might
+-- want to compare raw values for a model test.  We also store them in a
+-- 'Double' to make arithmetics easier.  Normalization is appropriate
+-- when converting to @VCF@.  Also note that 'vc_pl' can be empty at the
+-- stage where we collected variants, but did not do proper var calling.
 
 data VarCall a = VarCall { vc_refseq     :: !Refseq
                          , vc_pos        :: !Int
@@ -214,7 +223,7 @@ data VarCall a = VarCall { vc_refseq     :: !Refseq
                          , vc_mapq0      :: !Int                  -- number of contributing reads with MAPQ==0
                          , vc_sum_mapq   :: !Int                  -- sum of map qualities of contributring reads
                          , vc_sum_mapq2  :: !Int                  -- sum of squared map qualities of contributing reads
-                         , vc_pl         :: !(V.Vector Word8)     -- PL values in dB
+                         , vc_pl         :: !(V.Vector Double)    -- PL values in dB
                          , vc_vars       :: a }                   -- variant calls, depending on context
 
 type SnpVars = ()                           -- no additonal info needed for SNP calls
@@ -521,14 +530,27 @@ appConscall gen0 ccall = eneeCheckIfDone (liftI . go gen0)
 -- corresponds to the assumption that indel errors in sequencing are
 -- much less likely than mapping errors.  Since this hardly our
 -- priority, the approximations are declared good enough.
+--
+-- About the actual computation:  each of the PL values is the product
+-- of the corresponding PL value for each input read.  The PL value for
+-- an input read is the likehood of getting that read from a
 
-simple_indel_call :: VarCall IndelPile -> VarCall IndelVars
-simple_indel_call vc = vc { vc_pl = undefined, vc_vars = vars' }
-  where
-    nub :: Ord a => [a] -> [a]
-    nub = Set.toList . Set.fromList
+simple_indel_call :: Int -> VarCall IndelPile -> VarCall IndelVars
+simple_indel_call ploidy ip = runST $ do
+    let vars' = Set.toList . Set.fromList $ [ (d, map fst i) | (_q,(d,i)) <- vc_vars ip ]
+        nvars = length vars'
 
-    vars' = nub [ (d, map fst i) | (_q,(d,i)) <- vc_vars vc ]
+    pl0 <- V.new ( nvars * (nvars+1) `div` 2 )
+    V.set pl0 0
+    forM (vc_vars_ip) $ \(q,(d,i)) -> do
+        -- for each variant, the likelihood of getting this read if that
+        -- variant is sampled
+        let match = zipWith (\(n,qn) nr -> if n = nr then 0 else qn)
+        let pl1s = [ if d /= dr || length i /= length ir then q else q `min` sum (match i ir) | (dr,ir) <- vars' ]
+        let pls = ... -- hmm, how do we traverse the above the right number of times?
+
+
+    return $ ip { vc_pl = undefined, vc_vars = vars' }
 
 
 smoke_test :: IO ()
