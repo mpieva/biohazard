@@ -387,9 +387,20 @@ do_collapse maxq  brs = ( Right b0 { b_exts  = modify_extensions $ b_exts b0
     to_pairs b | B.null (b_qual b) = zip (V.toList $ b_seq b) (repeat 23)   -- error rate of ~0.5%
                | otherwise         = zip (V.toList $ b_seq b) (B.unpack $ b_qual b)
 
-    md' = case [ (b_seq b,md) | b <- brs', Just md <- [ getMd b ] ] of
-                [             ] -> []
-                (seq1, md1) : _ -> mk_new_md cigar' md1 (V.toList seq1) cons_seq
+    md' = case [ (b_seq b,md,b) | b <- brs', Just md <- [ getMd b ] ] of
+                [               ] -> []
+                (seq1, md1,b) : _ -> case mk_new_md cigar' md1 (V.toList seq1) cons_seq of
+                    Right x -> x
+                    Left (MdFail cigs ms osq nsq) -> error $ unlines
+                                    [ "Broken MD field when trying to construct new MD!"
+                                    , "QNAME: " ++ show (b_qname b)
+                                    , "POS:   " ++ shows (unRefseq (b_rname b)) ":" ++ show (b_pos b)
+                                    , "CIGAR: " ++ show cigs
+                                    , "MD:    " ++ show ms
+                                    , "refseq:  " ++ show osq
+                                    , "readseq: " ++ show nsq ]
+
+
     nm' = sum $ [ n | (Ins,n) <- cigar' ] ++ [ n | (Del,n) <- cigar' ] ++ [ 1 | MdRep _ <- md' ]
     xa' = nub' [ T.split ';' xas | Just (Text xas) <- map (M.lookup "XA" . b_exts) brs ]
 
@@ -418,36 +429,45 @@ minViewBy cmp (x:xs) = go x [] xs
     go m acc (a:as) = case m `cmp` a of GT -> go a (m:acc) as
                                         _  -> go m (a:acc) as
 
-mk_new_md :: [(CigOp, Int)] -> [MdOp] -> [Nucleotide] -> [Nucleotide] -> [MdOp]
-mk_new_md [] [] [] [] = []
+data MdFail = MdFail [(CigOp, Int)] [MdOp] [Nucleotide] [Nucleotide]
 
-mk_new_md (( _ , 0):cigs) mds osq nsq = mk_new_md cigs mds osq nsq
-mk_new_md cigs (MdNum  0 : mds) osq nsq = mk_new_md cigs mds osq nsq
-mk_new_md cigs (MdDel [] : mds) osq nsq = mk_new_md cigs mds osq nsq
+mk_new_md :: [(CigOp, Int)] -> [MdOp] -> [Nucleotide] -> [Nucleotide] -> Either MdFail [MdOp]
+mk_new_md = mk_new_md' []
 
-mk_new_md ((Mat, u):cigs) (MdRep b : mds) (_:osq) (n:nsq)
-    | b == n    = MdNum 1 : mk_new_md ((Mat, u-1):cigs) mds osq nsq
-    | otherwise = MdRep b : mk_new_md ((Mat, u-1):cigs) mds osq nsq
+mk_new_md' :: [MdOp] -> [(CigOp, Int)] -> [MdOp] -> [Nucleotide] -> [Nucleotide] -> Either MdFail [MdOp]
+mk_new_md' acc [] [] [] [] = Right $ normalize [] acc
+    where
+        normalize          a  (MdNum  0:os) = normalize               a  os
+        normalize (MdNum n:a) (MdNum  m:os) = normalize (MdNum  (n+m):a) os
+        normalize          a  (MdDel []:os) = normalize               a  os
+        normalize (MdDel u:a) (MdDel  v:os) = normalize (MdDel (v++u):a) os
+        normalize          a  (       o:os) = normalize            (o:a) os
+        normalize          a  [           ] = a
 
-mk_new_md ((Mat, u):cigs) (MdNum v : mds) (o:osq) (n:nsq)
-    | o == n    = MdNum 1 : mk_new_md ((Mat, u-1):cigs) (MdNum (v-1) : mds) osq nsq
-    | otherwise = MdRep o : mk_new_md ((Mat, u-1):cigs) (MdNum (v-1) : mds) osq nsq
+mk_new_md' acc (( _ , 0):cigs)  mds  osq nsq = mk_new_md' acc cigs mds osq nsq
+mk_new_md' acc cigs (MdNum  0 : mds) osq nsq = mk_new_md' acc cigs mds osq nsq
+mk_new_md' acc cigs (MdDel [] : mds) osq nsq = mk_new_md' acc cigs mds osq nsq
 
-mk_new_md ((Del, n):cigs) (MdDel bs : mds) osq nsq | n == length bs = MdDel bs : mk_new_md cigs mds osq nsq
+mk_new_md' acc ((Mat, u):cigs) (MdRep b : mds) (_:osq) (n:nsq)
+    | b == n    = mk_new_md' (MdNum 1 : acc) ((Mat, u-1):cigs) mds osq nsq
+    | otherwise = mk_new_md' (MdRep b : acc) ((Mat, u-1):cigs) mds osq nsq
 
-mk_new_md ((Ins, n):cigs) md osq nsq = mk_new_md cigs md (drop n osq) (drop n nsq)
-mk_new_md ((SMa, n):cigs) md osq nsq = mk_new_md cigs md (drop n osq) (drop n nsq)
-mk_new_md ((HMa, _):cigs) md osq nsq = mk_new_md cigs md         osq          nsq
-mk_new_md ((Pad, _):cigs) md osq nsq = mk_new_md cigs md         osq          nsq
-mk_new_md ((Nop, _):cigs) md osq nsq = mk_new_md cigs md         osq          nsq
+mk_new_md' acc ((Mat, u):cigs) (MdNum v : mds) (o:osq) (n:nsq)
+    | o == n    = mk_new_md' (MdNum 1 : acc) ((Mat, u-1):cigs) (MdNum (v-1) : mds) osq nsq
+    | otherwise = mk_new_md' (MdRep o : acc) ((Mat, u-1):cigs) (MdNum (v-1) : mds) osq nsq
 
-mk_new_md cigs ms osq nsq = error $ unlines
-    [ "Broken MD field when trying to construct new MD!"
-    , "CIGAR: " ++ show cigs
-    , "MD: " ++ show ms
-    , "refseq: " ++ show osq
-    , "readseq: " ++ show nsq ]
+mk_new_md' acc ((Del, n):cigs) (MdDel bs : mds) osq nsq | n == length bs = mk_new_md' (MdDel bs : acc)   cigs               mds  osq nsq
+mk_new_md' acc ((Del, n):cigs) (MdDel (b:bs) : mds) osq nsq = mk_new_md' (MdDel    [b] : acc) ((Del,n-1):cigs) (MdDel    bs:mds) osq nsq
+mk_new_md' acc ((Del, n):cigs) (MdRep   b    : mds) osq nsq = mk_new_md' (MdDel    [b] : acc) ((Del,n-1):cigs)              mds  osq nsq
+mk_new_md' acc ((Del, n):cigs) (MdNum   m    : mds) osq nsq = mk_new_md' (MdDel [nucN] : acc) ((Del,n-1):cigs) (MdNum (m-1):mds) osq nsq
 
+mk_new_md' acc ((Ins, n):cigs) md osq nsq = mk_new_md' acc cigs md (drop n osq) (drop n nsq)
+mk_new_md' acc ((SMa, n):cigs) md osq nsq = mk_new_md' acc cigs md (drop n osq) (drop n nsq)
+mk_new_md' acc ((HMa, _):cigs) md osq nsq = mk_new_md' acc cigs md         osq          nsq
+mk_new_md' acc ((Pad, _):cigs) md osq nsq = mk_new_md' acc cigs md         osq          nsq
+mk_new_md' acc ((Nop, _):cigs) md osq nsq = mk_new_md' acc cigs md         osq          nsq
+
+mk_new_md' _acc cigs ms osq nsq = Left $ MdFail cigs ms osq nsq
 
 consensus :: Word8 -> [ (Nucleotide, Word8) ] -> (Nucleotide, Word8)
 consensus maxq nqs = if qr > 3 then (n0, qr) else (nucN,0)
