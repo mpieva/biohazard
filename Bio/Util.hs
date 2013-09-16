@@ -1,11 +1,15 @@
--- Random useful stuff I didn't know where to put.
+{-# LANGUAGE ForeignFunctionInterface #-}
 module Bio.Util (
     wilson, invnormcdf,
     showNum, showOOM,
-    estimateComplexity
+    estimateComplexity,
+    phredplus, phredsum, (<#>)
                 ) where
 
 import Data.Char (intToDigit)
+import Data.List (foldl')
+
+-- ^ Random useful stuff I didn't know where to put.
 
 -- | calculates the Wilson Score interval.
 -- If @(l,m,h) = wilson c x n@, then @m@ is the binary proportion and
@@ -137,3 +141,24 @@ estimateComplexity total singles | total   <= singles = Nothing
     zz = iter $! 10*d
     m = fromIntegral singles * zz / log zz
 
+
+-- | Computes @log_10 (10 ** x + 10 ** y)@ without losing precision.
+-- Used to add numbers on "the Phred scale", otherwise known as (deci-)
+-- bans.
+{-# INLINE phredplus #-}
+phredplus :: Double -> Double -> Double
+phredplus x y = if x < y then pp x y else pp y x where
+    pp u v = u - 10 / log 10 * log1p (exp ((u-v) * log 10 / 10))
+
+-- | Computes @log_10 (sum [10 ** x | x <- xs])@ without losing
+-- precision.
+{-# INLINE phredsum #-}
+phredsum :: [Double] -> Double
+phredsum = foldl' (<#>) (1/0)
+
+infixl 3 <#>
+{-# INLINE (<#>) #-}
+(<#>) :: Double -> Double -> Double
+(<#>) = phredplus
+
+foreign import ccall unsafe "math.h log1p" log1p :: Double -> Double

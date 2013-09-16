@@ -9,19 +9,20 @@ import Bio.Base
 import Bio.Bam.Header
 import Bio.Bam.Raw
 import Bio.Iteratee
+import Bio.Util ( (<#>) )
 
 import Control.Applicative
 import Control.Monad hiding ( mapM_ )
 import Control.Monad.Fix ( fix )
 import Data.Foldable
-import Data.List ( intersperse )
+import Data.List ( intersperse, inits )
 import Numeric ( showFFloat )
 
 import qualified Data.ByteString        as B
 import qualified Data.Vector.Unboxed    as V
 import qualified Data.Set               as Set
 
-import Prelude hiding ( foldr, concat, mapM_, all )
+import Prelude hiding ( foldr, concat, mapM_, all, sum )
 
 -- ^ Genotype Calling:  like Samtools(?), but for aDNA
 --
@@ -216,6 +217,12 @@ noDamage _ b (Q q) | b == nucA = D4 0 p p p
 -- 'Double' to make arithmetics easier.  Normalization is appropriate
 -- when converting to @VCF@.  Also note that 'vc_pl' can be empty at the
 -- stage where we collected variants, but did not do proper var calling.
+--
+-- If 'vc_pl' is given, we follow the same order used in VCF:
+-- "the ordering of genotypes for the likelihoods is given by:
+-- F(j/k) = (k*(k+1)/2)+j.  In other words, for biallelic sites the
+-- ordering is: AA,AB,BB; for triallelic sites the ordering is:
+-- AA,AB,BB,AC,BC,CC, etc."
 
 data VarCall a = VarCall { vc_refseq     :: !Refseq
                          , vc_pos        :: !Int
@@ -536,21 +543,35 @@ appConscall gen0 ccall = eneeCheckIfDone (liftI . go gen0)
 -- an input read is the likehood of getting that read from a
 
 simple_indel_call :: Int -> VarCall IndelPile -> VarCall IndelVars
-simple_indel_call ploidy ip = runST $ do
-    let vars' = Set.toList . Set.fromList $ [ (d, map fst i) | (_q,(d,i)) <- vc_vars ip ]
-        nvars = length vars'
+simple_indel_call ploidy ip = ip { vc_pl = pl, vc_vars = vars' }
+  where
+    vars' = Set.toList . Set.fromList $ [ (d, map fst i) | (_q,(d,i)) <- vc_vars ip ]
+    nvars = length vars'
 
-    pl0 <- V.new ( nvars * (nvars+1) `div` 2 )
-    V.set pl0 0
-    forM (vc_vars_ip) $ \(q,(d,i)) -> do
+    pl0 = V.replicate ( nvars * (nvars+1) `div` 2 ) 0
+    pl = foldl' step pl0 (vc_vars ip)
+
+    step pl_o (q,(d,i)) = V.zipWith (+) pl_o pl_n
+      where
         -- for each variant, the likelihood of getting this read if that
         -- variant is sampled
-        let match = zipWith (\(n,qn) nr -> if n = nr then 0 else qn)
-        let pl1s = [ if d /= dr || length i /= length ir then q else q `min` sum (match i ir) | (dr,ir) <- vars' ]
-        let pls = ... -- hmm, how do we traverse the above the right number of times?
+        match = zipWith (\(n,qn) nr -> if n == nr then 0 else fromIntegral $ unQ qn)
+        q' = fromIntegral (unQ q)
+        pl1s = [ if d /= dr || length i /= length ir
+                 then q' else q' <#> sum (match i ir) | (dr,ir) <- vars' ]
 
+        -- "For biallelic sites the ordering is: AA,AB,BB; for
+        -- triallelic sites the ordering is: AA,AB,BB,AC,BC,CC, etc."
+        --
+        -- To get the order right, we reverse the list ('pl1s' above is
+        -- reversed), and reverse the result again.
 
-    return $ ip { vc_pl = undefined, vc_vars = vars' }
+        mk_pls 0  _ = return (1/0)
+        mk_pls n ls = do ls'@(hd:_) <- inits ls
+                         (<#>) hd <$> mk_pls (n-1) ls'
+
+        pl_n = V.fromList . reverse . mk_pls ploidy . reverse $ pl1s
+
 
 
 smoke_test :: IO ()
