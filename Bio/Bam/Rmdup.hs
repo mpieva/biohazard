@@ -23,37 +23,55 @@ import qualified Data.Iteratee          as I
 import qualified Data.Map               as M
 import qualified Data.Vector.Generic    as V
 
-data Collapse = forall a . Collapse {
-                    inject :: BamRaw -> a,                  -- convert BamRaw to internal data type
-                    collapse :: [a] -> (Either a a,[a]),    -- cluster to consensus and stuff or representative and stuff
-                    add_xp_of :: a -> a -> a,               -- modify XP when discarding a record
-                    originals :: [a] -> [a],                -- treatment of the redundant original reads
-                    make_singleton :: a -> a,               -- force to singleton
-                    project :: a -> BamRaw }                -- get it back out
+-- | Uniform treatment of raw and parsed BAM records.  Might grow into
+-- something even bigger.
+
+class BAMREC a where
+    inject          :: BamRaw -> a              -- convert from BamRaw
+    project         :: a -> BamRaw              -- convert to BamRaw
+    is_mate_of      :: a -> a -> Bool           -- check if two records form a mate
+    make_singleton  :: a -> a                   -- remove all PE related flags
+    flag_dup        :: a -> a                   -- flag as duplicate
+    add_xp_of       :: a -> a -> a              -- add XP field of forst read to that of second
+
+data Collapse = forall a . BAMREC a => Collapse {
+                    collapse :: [a] -> (Politics a,[a]),    -- cluster to consensus and stuff or representative and stuff
+                    originals :: [a] -> [a] }               -- treatment of the redundant original reads
+
+data Politics a = Consensus a | Representative a
+
+fromPolitics :: Politics a -> a
+fromPolitics (Consensus      a) = a
+fromPolitics (Representative a) = a
+
 
 cons_collapse :: Word8 -> Collapse
-cons_collapse maxq = Collapse (removeWarts . decodeBamEntry) (do_collapse maxq)
-                              addXPOf (const []) make_singleton_cooked encodeBamEntry
+cons_collapse maxq = Collapse (do_collapse maxq) (const [])
 
 cons_collapse_keep :: Word8 -> Collapse
-cons_collapse_keep maxq = Collapse (removeWarts . decodeBamEntry) (do_collapse maxq)
-                                   addXPOf (map flagDup) make_singleton_cooked encodeBamEntry
-  where
-    flagDup b = b { b_flag = b_flag b .|. flagDuplicate }
+cons_collapse_keep maxq = Collapse (do_collapse maxq) (map flag_dup)
 
 cheap_collapse :: Collapse
-cheap_collapse = Collapse id do_cheap_collapse addXPOf' (const []) make_singleton_raw id
+cheap_collapse = Collapse do_cheap_collapse (const [])
 
 cheap_collapse_keep :: Collapse
-cheap_collapse_keep = Collapse id do_cheap_collapse addXPOf' (map flagDup) make_singleton_raw id
-  where
-    flagDup b = mutateBamRaw b $ setFlag (br_flag b .|. flagDuplicate)
+cheap_collapse_keep = Collapse do_cheap_collapse (map flag_dup)
 
-make_singleton_raw :: BamRaw -> BamRaw
-make_singleton_raw b = mutateBamRaw b $ setFlag (br_flag b .&. complement pflags)
+instance BAMREC BamRaw where
+    inject  = id
+    project = id
+    make_singleton b = mutateBamRaw b $ setFlag (br_flag b .&. complement pflags)
+    flag_dup       b = mutateBamRaw b $ setFlag (br_flag b .|. flagDuplicate)
+    add_xp_of    w v = replaceXP (br_extAsInt 1 "XP" w `oplus` br_extAsInt 1 "XP" v) v
+    is_mate_of   a b = br_qname a == br_qname b && br_isPaired a && br_isPaired b && br_isFirstMate a == br_isSecondMate b
 
-make_singleton_cooked :: BamRec -> BamRec
-make_singleton_cooked b = b { b_flag = b_flag b .&. complement pflags }
+instance BAMREC BamRec where
+    inject  = removeWarts . decodeBamEntry
+    project = encodeBamEntry
+    make_singleton b = b { b_flag = b_flag b .&. complement pflags }
+    flag_dup       b = b { b_flag = b_flag b .|. flagDuplicate }
+    add_xp_of    w v = v { b_exts = M.insert "XP" (Int $ extAsInt 1 "XP" w `oplus` extAsInt 1 "XP" v) (b_exts v) }
+    is_mate_of   a b = b_qname a == b_qname b && isPaired a && isPaired b && isFirstMate a == isSecondMate b
 
 pflags :: Int
 pflags = flagPaired .|. flagProperlyPaired .|. flagMateUnmapped .|. flagMateReversed .|. flagFirstMate .|. flagSecondMate
@@ -128,7 +146,9 @@ rmdup label strand_preserved collapse_cfg =
     -- Easiest way to go about this:  We simply collect everything that
     -- starts at some specific coordinate and group it appropriately.
     -- Treat the groups separately, output, go on.
-    check_sort ><> mapGroups rmdup_group ><> check_sort
+    check_sort "input must be sorted for rmdup to work" ><>
+    mapGroups rmdup_group ><>
+    check_sort "internal error, output isn't sorted anymore"
   where
     rmdup_group = nice_sort . do_rmdup label strand_preserved collapse_cfg
     same_pos u v = br_cpos u == br_cpos v
@@ -142,162 +162,207 @@ rmdup label strand_preserved collapse_cfg =
                         Just b | same_pos a b -> mg1 f a (b:acc) k
                                | otherwise -> eneeCheckIfDone (mg1 f b []) . k . Chunk . f $ a:acc
 
-check_sort :: Monad m => Enumeratee [BamRaw] [BamRaw] m a
-check_sort out = I.tryHead >>= maybe (return out) (\a -> eneeCheckIfDone (step a) out)
+check_sort :: Monad m => String -> Enumeratee [BamRaw] [BamRaw] m a
+check_sort msg out = I.tryHead >>= maybe (return out) (\a -> eneeCheckIfDone (step a) out)
   where
     step a k = I.tryHead >>= maybe (return . k $ Chunk [a]) (step' a k)
-    step' a k b | (br_rname a, br_pos a) > (br_rname b, br_pos b) = fail msg
+    step' a k b | (br_rname a, br_pos a) > (br_rname b, br_pos b) = fail $ "rmdup: " ++ msg
                 | otherwise = eneeCheckIfDone (step b) . k $ Chunk [a]
-    msg = "rmdup: input must be sorted"
 
-{- Unmapped fragments should not be considered to be duplicates of
+
+{- | Workhorse for duplicate removal.
+
+ - Unmapped fragments should not be considered to be duplicates of
    mapped fragments.  The "unmapped" flag can serve for that:  while
    there are two classes of "unmapped reads (those that are not mapped
    and those that are mapped to an invalid position), the two sets will
    always have different coordinates.  (Unfortunately, correct duplicate
    removal now relies on correct "unmapped" and "mate unmapped" flags,
-   and we didn't have those until four hours ago...)
+   and we don't get them from unmodified BWA.)
 
-   . Other definitions (e.g. lack of CIGAR) don't work, because that
+   * Other definitions (e.g. lack of CIGAR) don't work, because that
      information won't be available for the mate.
 
-   . This would amount to making the "unmapped" flag part of the
+   * This would amount to making the "unmapped" flag part of the
      coordinate, but samtools is not going to take it into account when
      sorting.
 
-   . Instead, both flags become part of the "mate pos" grouping criterion.
+   * Instead, both flags become part of the "mate pos" grouping criterion.
 
  - First Mates should (probably) not be considered duplicates of Second
    Mates.  This is unconditionally true for libraries with A/B-style
    adapters (definitely 454, probably Mathias' ds protocol) and the ss
    protocol, it is not true for fork adapter protocols (standard
-   Illumina).  So it's an option for now, which was apparently turned
-   off for the Anuital Man.
-
-   . Taking the option out might simplify stuff.  Do it?
+   Illumina).  So it has to be an option, which would ideally be derived
+   from header information.
 
  - This code ignores read groups, but it will do a majority vote on the
    RG field and call consensi for the index sequences.  If you believe
    that duplicates across read groups are impossible, you must call it
    with an appropriately filtered stream.
+
+ - Half-Aligned Pairs (meaning one known coordinate, the validity of the
+   alignments is immaterial) are rather complicated:
+
+   * Given that only one coordinate is known (5' of the aligned mate),
+     we want to treat them like true singles.  But the unaligned mate
+     should be kept if possible, though it should not contribute to a
+     consensus sequence.  We assume nothing about the unaligned mate,
+     not even that it *shouldn't* be aligned, never mind the fact that
+     it *couldn't* be.  (*groan*)
+
+   * Therefore, aligned reads with unaligned mate go to the same
+     potential duplicate set as true singletons.  If at least one pair
+     exists that might be a duplicate of those, all singletons and
+     half-aligned mates are removed.  Else a consensus is computed and
+     replaces the aligned mates.
+
+   * The unaligned mates end up in the same place as the aligned mates
+     (therefore we see them and can treat them locally).  We cannot call
+     a consensus (these molecules may well have different length), so we
+     select one, doesn't really matter which, and since we're treating
+     both mates at the same time, it doesn't even need to be
+     reproducible without local information.  This becomes the mate of
+     the consensus.
+
+   * see 'merge_singles' for how it's actually done.
 -}
 
 do_rmdup :: Ord l => (BamRaw -> l) -> Bool -> Collapse -> [BamRaw] -> [BamRaw]
 do_rmdup label strand_preserved Collapse{..} =
     concatMap do_rmdup1 . M.elems . accumMap label id
   where
-    do_rmdup1 rds = let (ss,r1) = true_singles'
-                        (ms,r2) = merged'
-                        (ps,r3) = pairs'
-                        ua      = unaligned'
-                    in map project $ results ss ua ms ps ++ originals
-                            (leftovers ss ua ms ps ++ r1 ++ r2 ++ r3)
+    do_rmdup1 rds = map project $ results ++ originals (leftovers ++ r1 ++ r2 ++ r3)
       where
-        -- Treatment of Half-Aligned Pairs (meaning one known
-        -- coordinate, the validity of the alignments is immaterial)
-
-        -- They are to be treated as follows:  Given that only one
-        -- coordinate is known (5' of the aligned mate), we want to
-        -- treat them like true singles.  But the unaligned mate should
-        -- be kept if possible, though it should not contribute to a
-        -- consensus sequence.  We assume nothing about the unaligned
-        -- mate, not even that it *shouldn't* be aligned, never mind the
-        -- fact that it *couldn't* be.  (*groan*)
-        --
-        -- Therefore, aligned reads with unaligned mate go to the same
-        -- potential duplicate set as true singletons.  If a pair exists
-        -- that might be a duplicate of those, the singletons and
-        -- half-aligned pairs are removed.  Else a consensus is computed
-        -- and remains for the aligned mate.
-        --
-        -- The unaligned mates end up in the same place (therefore we
-        -- see them and can treat them locally).  We cannot call a
-        -- consensus (these molecules may well have different length),
-        -- so we select one, doesn't really matter which, and since
-        -- we're treating both mates here, it doesn't even need to
-        -- be reproducible without local information.
-        --
-        -- So to get both:  collect aligned reads with unaligned mates
-        -- together with aligned true singles.  Collect the unaligned
-        -- mates, which necessarily have the exact same alignment
-        -- coordinates, separately.  If we don't find a matching true
-        -- pair (that case is already handled smoothly), we keep the
-        -- highest quality unaligned read, combine with the consensus of
-        -- the half-aligned mates and singletons, and give it the
-        -- lexically smallest name of the half-aligned pairs.
+        (results, leftovers) = merge_singles singles' unaligned' $
+                [ (str, fromPolitics br) | ((_,str  ),br) <- M.toList merged' ] ++
+                [ (str, fromPolitics br) | ((_,str,_),br) <- M.toList pairs' ]
 
         (raw_pairs, raw_singles)       = partition br_isPaired rds
         (merged, true_singles)         = partition br_isMergeTrimmed raw_singles
 
-        (pairs, raw_half_pairs)        = partition is_totally_aligned raw_pairs
+        (pairs, raw_half_pairs)        = partition br_totally_aligned raw_pairs
         (half_unaligned, half_aligned) = partition br_isUnmapped raw_half_pairs
-
-        is_totally_aligned b = not (br_isUnmapped b || br_isMateUnmapped b)
 
         mkMap f x = let m1 = M.map collapse $ accumMap f inject x
                     in (M.map fst m1, concatMap snd $ M.elems m1)
 
-        pairs'        = mkMap (\b -> (br_mate_pos b,   strand_preserved && br_isReversed  b
-                                                     , strand_preserved && br_isFirstMate b)) pairs
-        merged'       = mkMap (\b -> (br_aln_length b, strand_preserved && br_isReversed  b)) merged
+        (pairs',r1)   = mkMap (\b -> (br_mate_pos b,   br_strand b, br_mate b)) pairs
+        (merged',r2)  = mkMap (\b -> (br_aln_length b, br_strand b))            merged
+        (singles',r3) = mkMap                          br_strand (true_singles++half_aligned)
+        unaligned'    = accumMap br_strand inject half_unaligned
 
-        true_singles' = mkMap (\b -> (                 strand_preserved && br_isReversed  b)) (true_singles++half_aligned)
+        br_strand b = strand_preserved && br_isReversed   b
+        br_mate   b = strand_preserved && br_isFirstMate  b
 
 
-        -- What to emit for unaligned mates:  we only emit a mate if we
-        -- did not call a consensus, that is, if there was exactly one
-        -- half-aligned read and no true singleton.  In that case, there
-        -- is also exactly one mate to use and the whole input got
-        -- passed through.  Else we force the result to be a singleton
-        -- (by clearing appropriate flags) and all unaligned mates are
-        -- passed through and marked as duplicates.
+-- | Merging information about true singles, merged singles,
+-- half-aligned pairs, actually aligned pairs.
+--
+-- We collected aligned reads with unaligned mates together with aligned
+-- true singles (@singles@).  We collected the unaligned mates, which
+-- necessarily have the exact same alignment coordinates, separately
+-- (@unaligned@).  If we don't find a matching true pair (that case is
+-- already handled smoothly), we keep the highest quality unaligned
+-- mate, pair it with the consensus of the aligned mates and aligned
+-- singletons, and give it the lexically smallest name of the
+-- half-aligned pairs.
 
-        unaligned'    = accumMap f inject half_unaligned
-            where f b = strand_preserved && br_isReversed b
+-- NOTE:  I need to decide when to run 'make_singleton'.  Basically,
+-- when we call a consensus for half-aligned pairs and keep
+-- everything(?).  Then we don't have a mate for the consensus... though
+-- we could decide to duplicate one mate read to get it.
 
-        results ss ua ms ps = merge_singles ss ua ( [ (rev, v) | ((_, rev),        v) <- M.toList ms ]
-                                                 ++ [ (rev, v) | ((_, rev, False), v) <- M.toList ps ] )
-                                               ++ [ either id id v | ((_, _, True), v) <- M.toList ps ]
+merge_singles :: BAMREC a
+              => M.Map Bool (Politics a)                -- strand --> true singles & half aligned
+              -> M.Map Bool [a]                         -- strand --> half unaligned
+              -> [ (Bool, a) ]                          -- strand --> paireds & mergeds
+              -> ([a],[a])                              -- results, leftovers
 
-        leftovers ss ua ms ps = unmerged_singles ss ua ( [ (rev, v) | ((_, rev),        v) <- M.toList ms ]
-                                                      ++ [ (rev, v) | ((_, rev, False), v) <- M.toList ps ] )
+merge_singles singles unaligneds = go
+  where
+    -- Say we generated a consensus or passed something through.  If
+    -- there is a singleton consensus with the same strand, we should
+    -- add in its XP field and discard it.  If there is a singleton
+    -- representative, we add in its XP field and put it into the
+    -- leftovers.  If there is unaligned stuff here that has the same
+    -- strand, it goes to the leftovers.
+    go ( (str, v) : paireds) =
+        let (r,l) = merge_singles (M.delete str singles) (M.delete str unaligneds) paireds
+            unal  = M.findWithDefault [] str unaligneds ++ l
 
-    -- At every site, we need to check if were producing a consensus or
-    -- if were outputting an original read.  If the latter case, its
-    -- mate should be produced as ordinary else, in the former case, the
-    -- bunch of unmapped mates should be produced as duplicated reads.
+        in case M.lookup str singles of
+            Nothing                 -> (             v : r,     unal )
+            Just (Consensus      w) -> ( add_xp_of w v : r,     unal )      -- XXX do we need this w?!
+            Just (Representative w) -> ( add_xp_of w v : r, w : unal )
 
-    merge_singles m _ [                 ] = map (either id id) $ M.elems m
-    merge_singles m n ((k,Right v) : kvs) = case M.lookup k m of
-            Nothing -> make_singleton v : merge_singles m (M.delete k n) kvs
-            Just  w -> add_xp_of (either id id w) v : merge_singles (M.delete k m) (M.delete k n) kvs
-    merge_singles m n ((k,Left  v) : kvs) = case (M.lookup k m, M.lookup k n) of
-            (Nothing, Nothing) -> v : merge_singles (M.delete k m) (M.delete k n) kvs
-            (Nothing, Just vs) -> v : vs ++ merge_singles (M.delete k m) (M.delete k n) kvs
-            (Just  w,       _) -> add_xp_of (either id id w) v : merge_singles (M.delete k m) (M.delete k n) kvs
+    -- No more pairs, delegate the problem
+    go [] = merge_halves unaligneds (M.toList singles)
 
-    unmerged_singles _ n [           ] = concat $ M.elems n
-    -- the singleton is an actual consensus: emit *all* unmapped mates
-    unmerged_singles m n ((k,Right _) : kvs) = case M.lookup k n of
-            Nothing -> unmerged_singles (M.delete k m) (M.delete k n) kvs
-            Just vs -> vs ++ unmerged_singles (M.delete k m) (M.delete k n) kvs
-    -- the singleton was passed through *and* there is no pair we are
-    -- going to use instead: do not pass the unmapped mates (there can
-    -- be only one, and it was passed in merge_singles)
-    unmerged_singles m n ((k,Left  _) : kvs) = case (M.lookup k m, M.findWithDefault [] k n) of
-            (Nothing,  _) -> unmerged_singles (M.delete k m) (M.delete k n) kvs
-            (Just  w, vs) -> (either id id w) : vs ++ unmerged_singles (M.delete k m) (M.delete k n) kvs
 
-    br_mate_pos       br = (br_mrnm br, br_mpos br, br_isUnmapped br, br_isMateUnmapped br)
-    br_isMergeTrimmed br = let ef = br_extAsInt (br_extAsInt 0 "XF" br) "FF" br
-                           in (ef .&. flagTrimmed .|. flagMerged) /= 0
+-- | Merging of half-aligned reads.  The first argument is a map of
+-- unaligned reads (their mates are aligned to the current position),
+-- the second is a list of reads that are aligned (their mates are not
+-- aligned).
+--
+-- So, suppose we're looking at a 'Representative' that was passed
+-- through.  We need to emit it along with its mate, which may be hidden
+-- inside a list.  (Alternatively, we could force it to single, but that
+-- fails if we're passing everything along somehow.)
+--
+-- Suppose we're looking at a 'Consensus'.  We could pair it with some
+-- mate (which we'd need to duplicate), or we could turn it into a
+-- singleton.  Duplication is ugly, so in this case, we force it to
+-- singleton.
+
+merge_halves :: BAMREC a
+             => M.Map Bool [a]                          -- strand --> half unaligned
+             -> [(Bool, Politics a)]                    -- strand --> true singles & half aligned
+             -> ([a],[a])                               -- results, leftovers
+
+-- Emitting a consensus: make it a single.  Nothing goes to leftovers;
+-- we may still need it for something else to be emitted.  (While that
+-- would be strange, making sure the BAM file stays completely valid is
+-- probably better.)
+merge_halves unaligneds ((_, Consensus v) : singles) =
+    let (r,l) = merge_halves unaligneds singles
+    in (make_singleton v : r, l)
+
+-- Emitting a representative:  find the mate in the list of unaligned
+-- reads (take up to one match to be robust), and emit that, too, as a
+-- result.  Everything else goes to leftovers.  If the representative
+-- happens to be unpaired, no mate is found and that case therefore is
+-- handled smoothly.
+merge_halves unaligneds ((str, Representative v) : singles) =
+    let (r,l) = merge_halves (M.delete str unaligneds) singles
+        (same,diff) = partition (is_mate_of v) $ M.findWithDefault [] str unaligneds
+    in (v : take 1 same ++ r, drop 1 same ++ diff ++ l)
+
+-- No more singles, all unaligneds are leftovers.
+merge_halves unaligneds [] = ( [], concat $ M.elems unaligneds )
+
+
+
+
+type MPos = (Refseq, Int, Bool, Bool)
+
+br_mate_pos :: BamRaw -> MPos
+br_mate_pos br = (br_mrnm br, br_mpos br, br_isUnmapped br, br_isMateUnmapped br)
+
+br_isMergeTrimmed :: BamRaw -> Bool
+br_isMergeTrimmed br = let ef = br_extAsInt (br_extAsInt 0 "XF" br) "FF" br
+                       in (ef .&. (flagTrimmed .|. flagMerged)) /= 0
+
+br_totally_aligned :: BamRaw -> Bool
+br_totally_aligned br = not (br_isUnmapped br || br_isMateUnmapped br)
+
 
 accumMap :: Ord k => (a -> k) -> (a -> v) -> [a] -> M.Map k [v]
 accumMap f g = go M.empty
   where
     go m [    ] = m
-    go m (a:as) = let ws = M.findWithDefault [] (f a) m
-                  in ws `seq` go (M.insert (f a) (g a:ws) m) as
+    go m (a:as) = let ws = M.findWithDefault [] (f a) m ; g' = g a
+                  in g' `seq` go (M.insert (f a) (g':ws) m) as
 
 
 {- We need to deal sensibly with each field, but different fields have
@@ -330,28 +395,22 @@ accumMap f g = go M.empty
    X0, X1, XT, XS, XF, XE, BC, LB, RG
          majority vote -}
 
-addXPOf :: BamRec -> BamRec -> BamRec
-addXPOf w v = v { b_exts = M.insert "XP" (Int $ extAsInt 1 "XP" w `oplus` extAsInt 1 "XP" v) (b_exts v) }
-
-addXPOf' :: BamRaw -> BamRaw -> BamRaw
-addXPOf' w v = replaceXP (br_extAsInt 1 "XP" w `oplus` br_extAsInt 1 "XP" v) v
-
-do_collapse :: Word8 -> [BamRec] -> (Either BamRec BamRec, [BamRec])
-do_collapse maxq [br] | B.all (<= maxq) (b_qual br) = ( Left     br, [  ] )     -- no modifcation, pass through
-                      | otherwise                   = ( Right lq_br, [br] )     -- qualities reduces, must keep original
+do_collapse :: Word8 -> [BamRec] -> (Politics BamRec, [BamRec])
+do_collapse maxq [br] | B.all (<= maxq) (b_qual br) = ( Representative br, [  ] )     -- no modifcation, pass through
+                      | otherwise                   = ( Consensus   lq_br, [br] )     -- qualities reduced, must keep original
   where
     lq_br = br { b_qual  = B.map (min maxq) $ b_qual br
                , b_virtual_offset = 0
                , b_qname = b_qname br `B.snoc` 99 }
 
-do_collapse maxq  brs = ( Right b0 { b_exts  = modify_extensions $ b_exts b0
-                                   , b_flag  = failflag .&. complement flagDuplicate
-                                   , b_mapq  = rmsq $ map b_mapq brs'
-                                   , b_cigar = Cigar cigar'
-                                   , b_seq   = V.fromList $ cons_seq
-                                   , b_qual  = B.pack cons_qual
-                                   , b_qname = b_qname b0 `B.snoc` 99
-                                   , b_virtual_offset = 0 }, brs )              -- many modifications, must keep everything
+do_collapse maxq  brs = ( Consensus b0 { b_exts  = modify_extensions $ b_exts b0
+                                       , b_flag  = failflag .&. complement flagDuplicate
+                                       , b_mapq  = rmsq $ map b_mapq brs'
+                                       , b_cigar = Cigar cigar'
+                                       , b_seq   = V.fromList $ cons_seq
+                                       , b_qual  = B.pack cons_qual
+                                       , b_qname = b_qname b0 `B.snoc` 99
+                                       , b_virtual_offset = 0 }, brs )              -- many modifications, must keep everything
   where
     b0 = minimumBy (comparing b_qname) brs
     most_fail = 2 * length (filter isFailsQC brs) > length brs
@@ -480,9 +539,9 @@ consensus maxq nqs = if qr > 3 then (n0, qr) else (nucN,0)
 
 
 -- Cheap version: simply takes the lexically first record, adds XP field
-do_cheap_collapse :: [BamRaw] -> ( Either BamRaw BamRaw, [BamRaw] )
-do_cheap_collapse [b] = ( Left                     b, [] )
-do_cheap_collapse  bs = ( Left $ replaceXP new_xp b0, bx )
+do_cheap_collapse :: [BamRaw] -> ( Politics BamRaw, [BamRaw] )
+do_cheap_collapse [b] = ( Representative                     b, [] )
+do_cheap_collapse  bs = ( Representative $ replaceXP new_xp b0, bx )
   where
     (b0, bx) = minViewBy (comparing br_qname) bs
     new_xp   = foldl' (\a b -> a `oplus` br_extAsInt 1 "XP" b) 0 bs

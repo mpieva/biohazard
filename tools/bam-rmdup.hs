@@ -30,6 +30,7 @@ data Conf = Conf {
     transform :: BamRaw -> Maybe BamRaw,
     min_len :: Int,
     get_label :: M.Map Seqid Seqid -> BamRaw -> Seqid,
+    putResult :: String -> IO (),
     debug :: String -> IO (),
     which :: Which }
 
@@ -47,6 +48,7 @@ defaults = Conf { output = Nothing
                 , transform = Just
                 , min_len = 0
                 , get_label = get_library
+                , putResult = putStr
                 , debug = \_ -> return ()
                 , which = All }
 
@@ -57,7 +59,7 @@ options = [
     Option  [ ] ["debug"]          (NoArg  set_debug_out)     "Write textual debugging output",
     Option  "R" ["refseq"]         (ReqArg set_range "RANGE") "Read only range of reference sequences",
     Option  "p" ["improper-pairs"] (NoArg  set_improper)      "Include improper pairs",
-    Option  "u" ["unaligned"]      (NoArg  set_unaligned)     "Included unaligned reads and pairs",
+    Option  "u" ["unaligned"]      (NoArg  set_unaligned)     "Include unaligned reads and pairs",
     Option  "1" ["single-read"]    (NoArg  set_single)        "Pretend there is no second mate",
     Option  "m" ["multimappers"]   (NoArg  set_multi)         "Process multi-mappers (by dropping secondary alignments)",
     Option  "c" ["cheap"]          (NoArg  set_cheap)         "Cheap computation: skip the consensus calling",
@@ -70,10 +72,10 @@ options = [
     Option "h?" ["help","usage"]   (NoArg  (const usage))     "Print this message" ]
 
   where
-    set_output "-" c =                    return $ c { output = Just $ \_ -> pipeRawBamOutput }
+    set_output "-" c =                    return $ c { output = Just $ \_ -> pipeRawBamOutput, putResult = hPutStr stderr }
     set_output   f c =                    return $ c { output = Just $ \_ -> writeRawBamFile f }
     set_lib_out  f c =                    return $ c { output = Just $       writeLibBamFiles f }
-    set_debug_out  c =                    return $ c { output = Just $ \_ -> pipeRawSamOutput }
+    set_debug_out  c =                    return $ c { output = Just $ \_ -> pipeRawSamOutput, putResult = hPutStr stderr }
     set_qual     n c = readIO n >>= \a -> return $ c { collapse = cons_collapse' a }
     set_no_strand  c =                    return $ c { strand_preserved = False }
     set_verbose    c =                    return $ c { debug = hPutStr stderr }
@@ -182,7 +184,7 @@ main = do
             _ | keep_unaligned -> joinI $ filters $ ou'
             _                  -> lift (run ou')
 
-    putStr . unlines $
+    putResult . unlines $
         "\27[K#RG\tin\tout\tin@MQ20\tsingle@MQ20\tunseen\ttotal\t%unique\t%exhausted"
         : map (uncurry do_report) (M.toList counts)
 
@@ -230,7 +232,7 @@ is_halfway_aligned :: BamRaw -> Bool
 is_halfway_aligned br = not (br_isUnmapped br) || not (br_isMateUnmapped br)
 
 is_aligned :: BamRaw -> Bool
-is_aligned br = not (br_isUnmapped br) && isValidRefseq (br_rname br)
+is_aligned br = not (br_isUnmapped br && br_isMateUnmapped br) && isValidRefseq (br_rname br)
 
 is_proper :: BamRaw -> Bool
 is_proper br = not (br_isPaired br) ||

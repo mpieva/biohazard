@@ -15,13 +15,17 @@ bam-rmdup \- remove PCR duplicates from BAM files
 searches for PCR duplicates in BAM files.  From each set of duplicates,
 a consensus is formed, which replaces the whole set.  Input files must
 be sorted by coordinate, all inputs will be merged into a single sorted
-output file.
+output file.  Finally, a summary of the number of removed duplicates and
+and estimate of library complexity is printed to standard output.
 
 .SH OPTIONS
 .IP "-o, --output file"
 Send BAM output to
 .IR file .
-The default is to produce no output and count duplicates only.
+The default is to produce no output and count duplicates only.  If 
+.I file
+is '-', BAM output is sent to stdout and the final tally is instead sent
+to stderr.
 
 .IP "-O, --output-lib pat"
 Split output by library (see notes below) and write each into a file

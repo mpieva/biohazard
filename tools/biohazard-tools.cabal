@@ -4,7 +4,7 @@ Name:                biohazard-tools
 -- The package version. See the Haskell package versioning policy
 -- (http://www.haskell.org/haskellwiki/Package_versioning_policy) for
 -- standards guiding when and how versions should be incremented.
-Version:             0.5.2
+Version:             0.5.3
 
 -- A short (one-line) description of the package.
 Synopsis:            tools separated from biohazard
@@ -50,7 +50,7 @@ source-repository head
 source-repository this
   type:     git
   location: git://github.com/udo-stenzel/biohazard.git
-  tag:      0.5.2
+  tag:      0.5.3
 
 Executable bam-fixpair
   Ghc-options:         -Wall -auto-all -threaded -rtsopts
@@ -59,7 +59,7 @@ Executable bam-fixpair
                        zlib, attoparsec-iteratee, attoparsec, iteratee,
                        transformers, binary-strict, ListLike, vector,
                        MonadCatchIO-transformers, filepath, directory,
-                       biohazard, unordered-containers, hashable
+                       biohazard ==0.5.3, unordered-containers, hashable
 
 Executable bam-meld
   Ghc-options:         -Wall -auto-all -threaded -rtsopts
@@ -68,7 +68,7 @@ Executable bam-meld
                        zlib, attoparsec-iteratee, attoparsec, iteratee,
                        transformers, binary-strict, ListLike,
                        MonadCatchIO-transformers, filepath, directory,
-                       biohazard, vector
+                       biohazard ==0.5.3, vector
 
 Executable bam-resample
   Ghc-options:         -Wall -auto-all -threaded -rtsopts
@@ -77,12 +77,12 @@ Executable bam-resample
                        zlib, attoparsec-iteratee, attoparsec, iteratee,
                        transformers, binary-strict, ListLike,
                        MonadCatchIO-transformers, 
-                       filepath, directory, biohazard, random, vector
+                       filepath, directory, biohazard ==0.5.3, random, vector
 
 Executable bam-rewrap
   Ghc-options:         -Wall -auto-all -threaded -rtsopts
   Main-is:             bam-rewrap.hs
-  Build-depends:       base ==4.*, biohazard, bytestring, containers
+  Build-depends:       base ==4.*, biohazard ==0.5.3, bytestring, containers
 
 Executable bam-rmdup
   Ghc-options:         -Wall -auto-all -threaded -rtsopts
@@ -91,7 +91,7 @@ Executable bam-rmdup
                        zlib, attoparsec-iteratee, attoparsec, iteratee,
                        transformers, binary-strict, ListLike,
                        MonadCatchIO-transformers, parallel,
-                       filepath, directory, biohazard, vector
+                       filepath, directory, biohazard ==0.5.3, vector
 
 Executable bam-trim
   Ghc-options:         -Wall -auto-all -threaded -rtsopts
@@ -100,7 +100,7 @@ Executable bam-trim
                        zlib, attoparsec-iteratee, attoparsec, iteratee,
                        transformers, binary-strict, ListLike,
                        MonadCatchIO-transformers, 
-                       filepath, directory, biohazard, vector
+                       filepath, directory, biohazard ==0.5.3, vector
 
 Executable count-coverage
   Ghc-options:         -Wall -auto-all -threaded -rtsopts
@@ -109,7 +109,7 @@ Executable count-coverage
                        zlib, attoparsec-iteratee, attoparsec, iteratee,
                        transformers, binary-strict, ListLike,
                        MonadCatchIO-transformers, 
-                       filepath, directory, biohazard, vector
+                       filepath, directory, biohazard ==0.5.3, vector
 
 Executable glf-consensus
   Ghc-options:         -Wall -auto-all -threaded -rtsopts
@@ -118,7 +118,7 @@ Executable glf-consensus
                        zlib, attoparsec-iteratee, attoparsec, iteratee,
                        transformers, binary-strict, ListLike,
                        MonadCatchIO-transformers, 
-                       filepath, directory, biohazard, vector
+                       filepath, directory, biohazard ==0.5.3, vector
 
 Executable wiggle-coverage
   Ghc-options:         -Wall -auto-all -threaded -rtsopts
@@ -127,4 +127,4 @@ Executable wiggle-coverage
                        zlib, attoparsec-iteratee, attoparsec, iteratee,
                        transformers, binary-strict, ListLike,
                        MonadCatchIO-transformers, 
-                       filepath, directory, biohazard, vector
+                       filepath, directory, biohazard ==0.5.3, vector
