@@ -1,6 +1,6 @@
 {-# LANGUAGE ForeignFunctionInterface #-}
 module Bio.Util (
-    wilson, invnormcdf,
+    wilson, invnormcdf, choose,
     showNum, showOOM,
     estimateComplexity,
     phredplus, phredsum, (<#>)
@@ -162,3 +162,9 @@ infixl 3 <#>
 (<#>) = phredplus
 
 foreign import ccall unsafe "math.h log1p" log1p :: Double -> Double
+
+-- | Binomial coefficient:  @n `choose` k == n! / ((n-k)! k!)@
+{-# INLINE choose #-}
+choose :: Integral a => a -> a -> a
+n `choose` k = product [n-k+1 .. n] `div` product [2..k]
+

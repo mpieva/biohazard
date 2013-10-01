@@ -15,7 +15,7 @@ import Control.Applicative
 import Control.Monad hiding ( mapM_ )
 import Control.Monad.Fix ( fix )
 import Data.Foldable
-import Data.List ( intersperse, inits )
+import Data.List ( tails, intercalate, intersperse )
 import Numeric ( showFFloat )
 
 import qualified Data.ByteString        as B
@@ -136,7 +136,7 @@ decompose dm br
       where
         !n = br_seq_at br i                                         -- nucleotide
         !q = case br_qual_at br i of 0xff -> 30 ; x -> x            -- quality; invalid (0xff) becomes 30
-        !q' | i >= B.length baq = q                                  -- no BAQ available
+        !q' | i >= B.length baq = q                                 -- no BAQ available
             | otherwise = q + Q (B.index baq i - 64)                -- else correct for BAQ
         !q'' = min q' mapq                                          -- use MAPQ as upper limit
 
@@ -498,30 +498,6 @@ dropMin (Node _ _ l r) = l `union` r
 
 -- type Conscall = [Double4] -> Double10
 
--- | The simplest genotype caller imaginable:  majority call, weighted by quality scores.
-{-majorityCall :: Conscall
-majorityCall ns gen = case qns of
-    (n1,q1) : (_,q2) : _ -> Just n1 :!: q1-q2 :!: gen
-    (n1,q1) : []         -> Just n1 :!:    q1 :!: gen
-    []                   -> Nothing :!:     0 :!: gen
-  where
-    qns = sortBy (\(_,a) (_,b) -> b `compare` a) $ M.toList $
-          foldl' (\m (n:!:q) -> M.insertWith' (+) n q m) M.empty ns -}
-
-
--- Applies a consensus caller.  Threads an RNG through, counts length.
--- Useless, except for reference.
-{- appConscall :: Monad m => StdGen -> Conscall -> Enumeratee [Pile] [Column] m a
-appConscall gen0 ccall = eneeCheckIfDone (liftI . go gen0)
-  where
-    go  _  out (EOF      mx) = idone (liftI out) $ EOF mx
-    go gen out (Chunk piles) = eneeCheckIfDone (liftI . go gen') . out . Chunk $ cols
-      where (gen', cols) = mapAccumL step gen piles
-
-    step gen (Pile s p b grs) = case ccall grs gen of
-        mn :!: q :!: gen' -> let !l = length grs in (gen', Column s p [Just b :!: 30 :!: 1, mn :!: q :!: l])
--}
-
 -- | Simple indel calling.  We don't bother with it too much, so here's
 -- the gist:  We collect variants (simply different variants, details
 -- don't matter), so @n@ variants give rise to (n+1)*n/2 PL values.
@@ -543,40 +519,69 @@ appConscall gen0 ccall = eneeCheckIfDone (liftI . go gen0)
 -- an input read is the likehood of getting that read from a
 
 simple_indel_call :: Int -> VarCall IndelPile -> VarCall IndelVars
-simple_indel_call ploidy ip = ip { vc_pl = pl, vc_vars = vars' }
+simple_indel_call ploidy ip = ip { vc_pl = simple_call ploidy mkpls (vc_vars ip), vc_vars = vars' }
   where
     vars' = Set.toList . Set.fromList $ [ (d, map fst i) | (_q,(d,i)) <- vc_vars ip ]
-    nvars = length vars'
+    match = zipWith (\(n,qn) nr -> if n == nr then 0 else fromIntegral $ unQ qn)
+    mkpls (q,(d,i)) = let !q' = fromIntegral (unQ q)
+                      in [ if d /= dr || length i /= length ir
+                           then q' else q' <#> sum (match i ir) | (dr,ir) <- vars' ]
 
-    pl0 = V.replicate ( nvars * (nvars+1) `div` 2 ) 0
-    pl = foldl' step pl0 (vc_vars ip)
+-- | Compute @PL@ values for the simple case.  The simple case is where
+-- where we sample 'ploidy' alleles with equal probability and assume
+-- that error occur independently from each other.
+--
+-- The argument 'pls' is a function that computes the likelihood for
+-- getting the current read, for every variant assuming that variant was
+-- sampled.
 
-    step pl_o (q,(d,i)) = V.zipWith (+) pl_o pl_n
-      where
-        -- for each variant, the likelihood of getting this read if that
-        -- variant is sampled
-        match = zipWith (\(n,qn) nr -> if n == nr then 0 else fromIntegral $ unQ qn)
-        q' = fromIntegral (unQ q)
-        pl1s = [ if d /= dr || length i /= length ir
-                 then q' else q' <#> sum (match i ir) | (dr,ir) <- vars' ]
+simple_call :: Int -> (a -> [Double]) -> [a] -> V.Vector Double
+simple_call ploidy pls = foldl1' (V.zipWith (+)) . map step
+  where
+    foldl1' _ [     ] = V.singleton 0
+    foldl1' f (!a:as) = foldl' f a as
 
-        -- "For biallelic sites the ordering is: AA,AB,BB; for
-        -- triallelic sites the ordering is: AA,AB,BB,AC,BC,CC, etc."
-        --
-        -- To get the order right, we reverse the list ('pl1s' above is
-        -- reversed), and reverse the result again.
+    -- "For biallelic sites the ordering is: AA,AB,BB; for triallelic
+    -- sites the ordering is: AA,AB,BB,AC,BC,CC, etc."
+    --
+    -- To get the order right, we reverse the list, recurse, and reverse
+    -- the result again.
+    step = V.fromList . reverse . mk_pls ploidy . reverse . pls
 
-        mk_pls 0  _ = return (1/0)
-        mk_pls n ls = do ls'@(hd:_) <- inits ls
-                         (<#>) hd <$> mk_pls (n-1) ls'
-
-        pl_n = V.fromList . reverse . mk_pls ploidy . reverse $ pl1s
-
-
+    mk_pls 0  _ = return (1/0)
+    mk_pls n ls = do ls'@(hd:_) <- tails ls
+                     (<#>) hd <$> mk_pls (n-1) ls'
 
 smoke_test :: IO ()
 smoke_test =
     decodeAnyBamFile "/mnt/scratch/udo/test.bam" >=> run $ \_hdr ->
-    joinI $ pileup noDamage $
-    mapStreamM_ (either (\vc -> putStrLn $ shows (vc_refseq vc) ":" ++ shows (vc_pos vc) " " ++ "Bases")
-                        (\vc -> putStrLn $ shows (vc_refseq vc) ":" ++ shows (vc_pos vc) " " ++ "Indel"))
+    joinI $ pileup noDamage $ mapStreamM_ call_and_print
+  where
+    call_and_print (Right ic) = put . showCall show_indels . simple_indel_call 2 $ ic
+    call_and_print (Left  bc) = return () -- put . showCall show_bases                        $ bc
+
+    put f = putStr $ f "\n"
+
+    show_bases :: a -> ShowS
+    show_bases _ = (++) "<<bases>>"
+
+    show_indels :: IndelVars -> ShowS
+    show_indels = (++) . intercalate "," . map show_indel
+
+    show_indel :: (Int, [Nucleotide]) -> String
+    show_indel (d, ins) = shows ins $ '-' : show d
+
+
+showCall :: (a -> ShowS) -> VarCall a -> ShowS
+showCall f vc = shows (vc_refseq vc) . (:) ':' .
+                shows (vc_pos vc) . (:) '\t' .
+                f (vc_vars vc) . (++) "\tDP=" .
+                shows (vc_depth vc) . (++) ":MQ0=" .
+                shows (vc_mapq0 vc) . (++) ":MAPQ=" .
+                shows mapq . (:) '\t' .
+                show_pl (vc_pl vc)
+  where
+    show_pl :: V.Vector Double -> ShowS
+    show_pl = (++) . intercalate "," . map show . V.toList
+
+    mapq = vc_sum_mapq vc `div` vc_depth vc

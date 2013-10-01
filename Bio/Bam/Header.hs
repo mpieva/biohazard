@@ -204,7 +204,10 @@ showBamMeta (BamMeta h ss os cs) =
 -- | Reference sequence in Bam
 -- Bam enumerates the reference sequences and then sorts by index.  We
 -- need to track that index if we want to reproduce the sorting order.
-newtype Refseq = Refseq { unRefseq :: Word32 } deriving (Show, Eq, Ord, Ix)
+newtype Refseq = Refseq { unRefseq :: Word32 } deriving (Eq, Ord, Ix)
+
+instance Show Refseq where
+    showsPrec p (Refseq r) = showsPrec p r
 
 instance Enum Refseq where
     succ = Refseq . succ . unRefseq
