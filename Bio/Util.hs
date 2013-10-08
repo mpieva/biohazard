@@ -3,7 +3,7 @@ module Bio.Util (
     wilson, invnormcdf, choose,
     showNum, showOOM,
     estimateComplexity,
-    phredplus, phredsum, (<#>)
+    phredplus, phredminus, phredsum, (<#>), phredconverse
                 ) where
 
 import Data.Char (intToDigit)
@@ -142,13 +142,21 @@ estimateComplexity total singles | total   <= singles = Nothing
     m = fromIntegral singles * zz / log zz
 
 
--- | Computes @log_10 (10 ** x + 10 ** y)@ without losing precision.
--- Used to add numbers on "the Phred scale", otherwise known as (deci-)
--- bans.
+-- | Computes @-10 * log_10 (10 ** (-x/10) + 10 ** (-y/10))@ without
+-- losing precision.  Used to add numbers on "the Phred scale",
+-- otherwise known as (deci-)bans.
 {-# INLINE phredplus #-}
 phredplus :: Double -> Double -> Double
 phredplus x y = if x < y then pp x y else pp y x where
     pp u v = u - 10 / log 10 * log1p (exp ((u-v) * log 10 / 10))
+
+-- | Computes @-10 * log_10 (10 ** (-x/10) - 10 ** (-y/10))@ without
+-- losing precision.  Used to subtract numbers on "the Phred scale",
+-- otherwise known as (deci-)bans.
+{-# INLINE phredminus #-}
+phredminus :: Double -> Double -> Double
+phredminus x y = if x < y then pm x y else pm y x where
+    pm u v = u - 10 / log 10 * log1p (- exp ((u-v) * log 10 / 10))
 
 -- | Computes @log_10 (sum [10 ** x | x <- xs])@ without losing
 -- precision.
@@ -156,10 +164,14 @@ phredplus x y = if x < y then pp x y else pp y x where
 phredsum :: [Double] -> Double
 phredsum = foldl' (<#>) (1/0)
 
-infixl 3 <#>
+infixl 3 <#>, `phredminus`, `phredplus`
 {-# INLINE (<#>) #-}
 (<#>) :: Double -> Double -> Double
 (<#>) = phredplus
+
+-- | Computes @1-p@ without leaving the "Phred scale"
+phredconverse :: Double -> Double
+phredconverse v = - 10 / log 10 * log1p (- exp ((-v) * log 10 / 10))
 
 foreign import ccall unsafe "math.h log1p" log1p :: Double -> Double
 

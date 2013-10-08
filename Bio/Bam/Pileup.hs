@@ -9,20 +9,20 @@ import Bio.Base
 import Bio.Bam.Header
 import Bio.Bam.Raw
 import Bio.Iteratee
-import Bio.Util ( (<#>) )
+import Bio.Util
 
 import Control.Applicative
 import Control.Monad hiding ( mapM_ )
 import Control.Monad.Fix ( fix )
 import Data.Foldable
-import Data.List ( tails, intercalate, intersperse )
+import Data.List ( tails, intercalate )
 import Numeric ( showFFloat )
 
 import qualified Data.ByteString        as B
 import qualified Data.Vector.Unboxed    as V
 import qualified Data.Set               as Set
 
-import Prelude hiding ( foldr, concat, mapM_, all, sum )
+import Prelude hiding ( foldr, foldr1, concat, mapM_, all, sum )
 
 -- ^ Genotype Calling:  like Samtools(?), but for aDNA
 --
@@ -56,13 +56,14 @@ import Prelude hiding ( foldr, concat, mapM_, all, sum )
 -- account is difficult, somewhat approximate, and therefore not worth
 -- the hassle.
 --
--- Regarding the error model, there's a choice between /samtools/maq/ or
--- the naive model everybody else uses.  Naive is easy to marry to aDNA,
--- samtools is (probably) better.  Either way, we introduce a number of
--- parameters (@eta@ and @kappa@ for /samtools/, @lambda@, @delta@,
--- @delta_ss@ for /Johnson/).  Running a maximum likehood fit for those
--- may be valuable.  It would be cool, if we could do that without
--- rerunning the complete genotype caller, but it's not a priority.
+-- Regarding the error model, there's a choice between /samtools/ or the
+-- naive model everybody else (GATK, RAsmus Nielsen, etc.) uses.  Naive
+-- is easy to marry to aDNA, samtools is (probably) better.  Either way,
+-- we introduce a number of parameters (@eta@ and @kappa@ for
+-- /samtools/, @lambda@, @delta@, @delta_ss@ for /Johnson/).  Running a
+-- maximum likehood fit for those may be valuable.  It would be cool, if
+-- we could do that without rerunning the complete genotype caller, but
+-- it's not a priority.
 --
 -- So, outline of the genotype caller:  We read BAM (minimally
 -- filtering; general filtering is somebody else's problem, but we might
@@ -88,11 +89,12 @@ import Prelude hiding ( foldr, concat, mapM_, all, sum )
 --   and haploid genomes; higher ploidy is nice to have if it comes at
 --   acceptable cost.
 
--- | For likelihoods for bases @A, C, G, T@.
-data Double4 = D4 !Double !Double !Double !Double
+-- | For likelihoods for bases @A, C, G, T@, one quality score.
+data DamagedBase = DB !Double !Double !Double !Double !Qual
 
-instance Show Double4 where
-    showsPrec _ (D4 a c g t) = foldr (.) id . intersperse ((:) ' ') $ map (showFFloat (Just 2)) [a,c,g,t]
+instance Show DamagedBase where
+    showsPrec _ (DB a c g t q) = unwordS $ [ showFFloat (Just 2) p | p <- [a,c,g,t] ] ++ [ shows q ]
+      where unwordS = foldr1 (\u v -> u . (:) ' ' . v)
 
 -- | The primitive pieces for genotype calling:  A position, a base
 -- represented as four likelihoods, an inserted sequence, and the
@@ -105,7 +107,7 @@ data PrimChunks = Seek !Int PrimBase                            -- ^ skip to pos
   deriving Show
 
 data PrimBase = Base { _pb_wait   :: !Int                       -- ^ number of bases to wait due to a deletion
-                     , _pb_likes  :: !Double4                   -- ^ four likelihoods
+                     , _pb_likes  :: !DamagedBase               -- ^ four likelihoods
                      , _pb_mapq   :: !Qual                      -- ^ map quality
                      , _pb_chunks :: PrimChunks }               -- ^ more chunks
   deriving Show
@@ -195,18 +197,17 @@ decompose dm br
 type DamageModel = Int              -- ^ position in read
                 -> Nucleotide       -- ^ base
                 -> Qual             -- ^ quality score
-                -> Double4          -- ^ results in four likelihoods
+                -> DamagedBase      -- ^ results in four likelihoods
 
 -- | 'DamageModel' for undamaged DNA.  The likelihoods follow directly
 -- from the quality score.  This needs elaboration to see what to do
 -- with amibiguity codes.
 noDamage :: DamageModel
-noDamage _ b (Q q) | b == nucA = D4 0 p p p
-                   | b == nucC = D4 p 0 p p
-                   | b == nucG = D4 p p 0 p
-                   | b == nucT = D4 p p p 0
-                   | otherwise = D4 0 0 0 0
-  where !p = fromIntegral q + 4.77
+noDamage _ b | b == nucA = DB 0 1 1 1
+             | b == nucC = DB 1 0 1 1
+             | b == nucG = DB 1 1 0 1
+             | b == nucT = DB 1 1 1 0
+             | otherwise = DB f f f f where f = 0.25
 
 
 -- | A variant call consists of a position, some measure of qualities,
@@ -238,7 +239,7 @@ type IndelVars = [( Int, [Nucleotide] )]    -- indel variant: number of deletion
 
 -- Both types of piles carry along the map quality.  We'll only need it
 -- in the case of Indels.
-type BasePile  = [( Qual, Double4 )]                       -- a list of encountered bases
+type BasePile  = [( Qual, DamagedBase )]                   -- a list of encountered bases
 type IndelPile = [( Qual, (Int, [(Nucleotide, Qual)]) )]   -- a list of indel variants
 
 -- | Running pileup results in a series of piles.  A 'Pile' has the
@@ -496,7 +497,7 @@ dropMin (Node _ _ l r) = l `union` r
 -- complicated.  In hindsight, that's silly.  Application of this
 -- nonsense can be supported externally.)
 
--- type Conscall = [Double4] -> Double10
+-- type Conscall = [DamagedBase] -> Double10
 
 -- | Simple indel calling.  We don't bother with it too much, so here's
 -- the gist:  We collect variants (simply different variants, details
@@ -527,9 +528,23 @@ simple_indel_call ploidy ip = ip { vc_pl = simple_call ploidy mkpls (vc_vars ip)
                       in [ if d /= dr || length i /= length ir
                            then q' else q' <#> sum (match i ir) | (dr,ir) <- vars' ]
 
+-- | Naive SNP call; essentially the GATK model.  We create a function
+-- that computes a likelihood for a given base, then hand over to simple
+-- call.  Since everything is so straight forward. this works even in
+-- the face of damage.
+
+simple_snp_call :: Int -> VarCall BasePile -> VarCall SnpVars
+simple_snp_call ploidy bp = bp { vc_pl = simple_call ploidy mkpls (vc_vars bp), vc_vars = () }
+  where
+    mkpls (q, DB a c g t qq) = [ pt+x <#> pe+s | x <- [a,c,g,t] ]
+      where
+        !pe = fromIntegral . unQ $ min q qq
+        !pt = phredconverse pe
+        !s  = phredsum [a,c,g,t] + 10 * log 4 / log 10
+
 -- | Compute @PL@ values for the simple case.  The simple case is where
--- where we sample 'ploidy' alleles with equal probability and assume
--- that error occur independently from each other.
+-- we sample 'ploidy' alleles with equal probability and assume that
+-- errors occur independently from each other.
 --
 -- The argument 'pls' is a function that computes the likelihood for
 -- getting the current read, for every variant assuming that variant was
@@ -558,12 +573,12 @@ smoke_test =
     joinI $ pileup noDamage $ mapStreamM_ call_and_print
   where
     call_and_print (Right ic) = put . showCall show_indels . simple_indel_call 2 $ ic
-    call_and_print (Left  bc) = return () -- put . showCall show_bases                        $ bc
+    call_and_print (Left  bc) = put . showCall show_bases  . simple_snp_call   2 $ bc
 
     put f = putStr $ f "\n"
 
-    show_bases :: a -> ShowS
-    show_bases _ = (++) "<<bases>>"
+    show_bases :: SnpVars -> ShowS
+    show_bases () = (++) "A,C,G,T"
 
     show_indels :: IndelVars -> ShowS
     show_indels = (++) . intercalate "," . map show_indel

@@ -77,7 +77,7 @@ instance Bounded Nucleotide where
     maxBound = N 15
 
 instance Show Qual where
-    showsPrec p (Q q) = showsPrec p q
+    showsPrec p (Q q) = (:) 'Q' . showsPrec p q
 
 gap, nucA, nucC, nucG, nucT, nucN :: Nucleotide
 gap  = N 0
