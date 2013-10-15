@@ -1,4 +1,4 @@
-{-# LANGUAGE BangPatterns, Rank2Types #-}
+{-# LANGUAGE BangPatterns, Rank2Types, RecordWildCards #-}
 {-# OPTIONS_GHC -funbox-strict-fields #-}
 module Bio.Bam.Pileup where
 
@@ -9,7 +9,6 @@ import Bio.Base
 import Bio.Bam.Header
 import Bio.Bam.Raw
 import Bio.Iteratee
-import Bio.Util
 
 import Control.Applicative
 import Control.Monad hiding ( mapM_ )
@@ -137,9 +136,9 @@ decompose dm br
     get_seq f i = f n q''
       where
         !n = br_seq_at br i                                         -- nucleotide
-        !q = case br_qual_at br i of 0xff -> 30 ; x -> x            -- quality; invalid (0xff) becomes 30
+        !q = case br_qual_at br i of Q 0xff -> Q 30 ; x -> x        -- quality; invalid (0xff) becomes 30
         !q' | i >= B.length baq = q                                 -- no BAQ available
-            | otherwise = q + Q (B.index baq i - 64)                -- else correct for BAQ
+            | otherwise = Q (unQ q + (B.index baq i - 64))          -- else correct for BAQ
         !q'' = min q' mapq                                          -- use MAPQ as upper limit
 
     -- Look for first base following the read's start or a gap (CIGAR
@@ -164,7 +163,7 @@ decompose dm br
     -- we are looking at an M CIGAR operation and all the subindices are
     -- valid.
     nextBase :: Int -> Int -> Int -> Int -> Int -> PrimBase
-    nextBase !wt !pos !is !ic !io = Base wt (get_seq (dm is) is) mapq $ nextIndel  [] 0 (pos+1) (is+1) ic (io+1)
+    nextBase !wt !pos !is !ic !io = Base wt (get_seq (dm br is) is) mapq $ nextIndel  [] 0 (pos+1) (is+1) ic (io+1)
 
 
     -- Look for the next indel after a base.  We collect all indels (I
@@ -194,7 +193,8 @@ decompose dm br
 -- possible four bases, given the sequenced base, the quality, and the
 -- position in the read.  That means it can't take the actual alignment
 -- into account... but nobody seems too keen on doing that anyway.
-type DamageModel = Int              -- ^ position in read
+type DamageModel = BamRaw           -- ^ the read itself
+                -> Int              -- ^ position in read
                 -> Nucleotide       -- ^ base
                 -> Qual             -- ^ quality score
                 -> DamagedBase      -- ^ results in four likelihoods
@@ -203,12 +203,45 @@ type DamageModel = Int              -- ^ position in read
 -- from the quality score.  This needs elaboration to see what to do
 -- with amibiguity codes.
 noDamage :: DamageModel
-noDamage _ b | b == nucA = DB 0 1 1 1
-             | b == nucC = DB 1 0 1 1
-             | b == nucG = DB 1 1 0 1
-             | b == nucT = DB 1 1 1 0
-             | otherwise = DB f f f f where f = 0.25
+noDamage _ _ b | b == nucA = DB 1 0 0 0
+               | b == nucC = DB 0 1 0 0
+               | b == nucG = DB 0 0 1 0
+               | b == nucT = DB 0 0 0 1
+               | otherwise = DB f f f f where f = 0.25
 
+
+-- | 'DamageModel' for single stranded library prep.  Only one kind of
+-- damage occurs (C to T), it occurs at low frequency ('delta_ds')
+-- everywhere, at high frequency ('delta_ss') in single stranded parts,
+-- and the overhang length is distributed exponentially with parameter
+-- 'lambda'.
+--
+-- Parameterization is stolen from @mapDamage 2.0@, for the most part.
+-- We have a deamination rate each for ss and ds dna and average
+-- overhang length parameters for both ends.  (Without UDG treatment,
+-- those will be equal.  With UDG, those are much smaller and unequal.)
+--
+-- L({A,C,G,T}|A) = {1,0,0,0}
+-- L({A,C,G,T}|C) = {0,1-p,0,p}
+-- L({A,C,G,T}|G) = {0,0,1,0}
+-- L({A,C,G,T}|T) = {0,0,0,1}
+--
+-- Here, p is the probability of deamination, modelled as:
+
+data SsDamageParameters = SSD { ssd_delta_ss :: !Double         -- deamination rate in ss DNA
+                              , ssd_delta_ds :: !Double         -- deamination rate in ds DNA
+                              , ssd_lambda5  :: !Double         -- average overhang length at 5' end
+                              , ssd_lambda3  :: !Double }       -- average overhang length at 3' end
+
+ssDamage :: SsDamageParameters -> DamageModel
+ssDamage SSD{..} r i b | b == nucA = DB 1     0     0     0
+                       | b == nucC = DB 0   (1-p)   0     0
+                       | b == nucG = DB 0     0     1     0
+                       | b == nucT = DB 0     p     0     1
+                       | otherwise = DB f (f*(1-p)) f (f*(1+p))
+  where f = 0.25
+        p = ssd_delta_ss * eff_lambda + ssd_delta_ds * (1-eff_lambda)
+        eff_lambda = undefined -- something i ssd_lambda5 + something (br_l_seq b - i-1) ssd_lambda3 -- Hrm.
 
 -- | A variant call consists of a position, some measure of qualities,
 -- genotype likelihood values, and a representation of variants.  A note
@@ -231,9 +264,10 @@ data VarCall a = VarCall { vc_refseq     :: !Refseq
                          , vc_mapq0      :: !Int                  -- number of contributing reads with MAPQ==0
                          , vc_sum_mapq   :: !Int                  -- sum of map qualities of contributring reads
                          , vc_sum_mapq2  :: !Int                  -- sum of squared map qualities of contributing reads
-                         , vc_pl         :: !(V.Vector Double)    -- PL values in dB
+                         , vc_pl         :: !PL                   -- PL values in dB
                          , vc_vars       :: a }                   -- variant calls, depending on context
 
+type PL = V.Vector DQual
 type SnpVars = ()                           -- no additonal info needed for SNP calls
 type IndelVars = [( Int, [Nucleotide] )]    -- indel variant: number of deletions, inserted sequence
 
@@ -490,14 +524,9 @@ dropMin (Node _ _ l r) = l `union` r
 
 -- ------------------------------------------------------------------------------------------------------------
 
--- | A gentoype caller receives a list of bases at a column and is
--- supposed to turn them into something... PL values come to mind.  XXX
--- Trouble is, the 'something' may well change with the concrete caller.
--- (This used to have a random component, which made everything
--- complicated.  In hindsight, that's silly.  Application of this
--- nonsense can be supported externally.)
-
--- type Conscall = [DamagedBase] -> Double10
+app_call :: (obs -> (PL, vars)) -> VarCall obs -> VarCall vars
+app_call call vc = vc { vc_pl = pl, vc_vars = vars }
+  where (pl,vars) = call (vc_vars vc)
 
 -- | Simple indel calling.  We don't bother with it too much, so here's
 -- the gist:  We collect variants (simply different variants, details
@@ -519,28 +548,28 @@ dropMin (Node _ _ l r) = l `union` r
 -- of the corresponding PL value for each input read.  The PL value for
 -- an input read is the likehood of getting that read from a
 
-simple_indel_call :: Int -> VarCall IndelPile -> VarCall IndelVars
-simple_indel_call ploidy ip = ip { vc_pl = simple_call ploidy mkpls (vc_vars ip), vc_vars = vars' }
+simple_indel_call :: Int -> IndelPile -> (PL, IndelVars)
+simple_indel_call ploidy vars = (simple_call ploidy mkpls vars, vars')
   where
-    vars' = Set.toList . Set.fromList $ [ (d, map fst i) | (_q,(d,i)) <- vc_vars ip ]
+    vars' = Set.toList . Set.fromList $ [ (d, map fst i) | (_q,(d,i)) <- vars ]
     match = zipWith (\(n,qn) nr -> if n == nr then 0 else fromIntegral $ unQ qn)
-    mkpls (q,(d,i)) = let !q' = fromIntegral (unQ q)
+    mkpls (q,(d,i)) = let !q' = qualToDQual q
                       in [ if d /= dr || length i /= length ir
-                           then q' else q' <#> sum (match i ir) | (dr,ir) <- vars' ]
+                           then q' else q' + toDQual (sum (match i ir)) | (dr,ir) <- vars' ]
 
 -- | Naive SNP call; essentially the GATK model.  We create a function
 -- that computes a likelihood for a given base, then hand over to simple
 -- call.  Since everything is so straight forward. this works even in
 -- the face of damage.
 
-simple_snp_call :: Int -> VarCall BasePile -> VarCall SnpVars
-simple_snp_call ploidy bp = bp { vc_pl = simple_call ploidy mkpls (vc_vars bp), vc_vars = () }
+simple_snp_call :: Int -> BasePile -> (PL, SnpVars)
+simple_snp_call ploidy vars = (simple_call ploidy mkpls vars, ())
   where
-    mkpls (q, DB a c g t qq) = [ pt+x <#> pe+s | x <- [a,c,g,t] ]
+    mkpls (q, DB a c g t qq) = [ toDQual $ pt*x + pe*s | x <- [a,c,g,t] ]
       where
-        !pe = fromIntegral . unQ $ min q qq
-        !pt = phredconverse pe
-        !s  = phredsum [a,c,g,t] + 10 * log 4 / log 10
+        !pe = fromQual $ max q qq  -- higher of the two error rates
+        !pt = 1 - pe
+        !s  = sum [a,c,g,t] / 4
 
 -- | Compute @PL@ values for the simple case.  The simple case is where
 -- we sample 'ploidy' alleles with equal probability and assume that
@@ -550,7 +579,7 @@ simple_snp_call ploidy bp = bp { vc_pl = simple_call ploidy mkpls (vc_vars bp), 
 -- getting the current read, for every variant assuming that variant was
 -- sampled.
 
-simple_call :: Int -> (a -> [Double]) -> [a] -> V.Vector Double
+simple_call :: Int -> (a -> [DQual]) -> [a] -> PL
 simple_call ploidy pls = foldl1' (V.zipWith (+)) . map step
   where
     foldl1' _ [     ] = V.singleton 0
@@ -563,17 +592,17 @@ simple_call ploidy pls = foldl1' (V.zipWith (+)) . map step
     -- the result again.
     step = V.fromList . reverse . mk_pls ploidy . reverse . pls
 
-    mk_pls 0  _ = return (1/0)
+    mk_pls 0  _ = return 0
     mk_pls n ls = do ls'@(hd:_) <- tails ls
-                     (<#>) hd <$> mk_pls (n-1) ls'
+                     (+) hd <$> mk_pls (n-1) ls'
 
 smoke_test :: IO ()
 smoke_test =
     decodeAnyBamFile "/mnt/scratch/udo/test.bam" >=> run $ \_hdr ->
     joinI $ pileup noDamage $ mapStreamM_ call_and_print
   where
-    call_and_print (Right ic) = put . showCall show_indels . simple_indel_call 2 $ ic
-    call_and_print (Left  bc) = put . showCall show_bases  . simple_snp_call   2 $ bc
+    call_and_print (Right ic) = put . showCall show_indels . app_call (simple_indel_call 2) $ ic
+    call_and_print (Left  bc) = put . showCall show_bases  . app_call (simple_snp_call   2) $ bc
 
     put f = putStr $ f "\n"
 
@@ -596,7 +625,7 @@ showCall f vc = shows (vc_refseq vc) . (:) ':' .
                 shows mapq . (:) '\t' .
                 show_pl (vc_pl vc)
   where
-    show_pl :: V.Vector Double -> ShowS
+    show_pl :: V.Vector DQual -> ShowS
     show_pl = (++) . intercalate "," . map show . V.toList
 
     mapq = vc_sum_mapq vc `div` vc_depth vc

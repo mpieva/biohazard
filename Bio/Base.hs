@@ -1,4 +1,4 @@
-{-# LANGUAGE GeneralizedNewtypeDeriving, TypeFamilies #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving, TypeFamilies, FlexibleInstances #-}
 {-# LANGUAGE MultiParamTypeClasses, BangPatterns #-}
 -- | Common data types used everywhere.  This module is a collection of
 -- very basic "bioinformatics" data types that are simple, but don't
@@ -6,7 +6,9 @@
 
 module Bio.Base(
     Nucleotide(..),
-    Qual(..),
+    Qual(..), DQual(..), qualToDQual,
+    fromQual, toQual, fromDQual, toDQual,
+
     Word8,
     Sequence,
     nucA, nucC, nucG, nucT, nucN, gap,
@@ -41,7 +43,7 @@ module Bio.Base(
     findAuxFile
 ) where
 
-import Control.Monad        ( liftM )
+import Bio.Util             ( phredplus, phredminus )
 import Data.Array.Unboxed
 import Data.Bits
 import Data.Char            ( isAlpha, isSpace, ord, toUpper )
@@ -69,15 +71,92 @@ import Data.ByteString.Internal ( c2w, w2c )
 -- format:  as a 4 bit wide field.  Gaps are encoded as 0 where they
 -- make sense, N is 15.
 
-newtype Nucleotide = N { unN :: Word8 } deriving (Eq, Ord, Ix, Storable)
-newtype Qual       = Q { unQ :: Word8 } deriving (Eq, Ord, Ix, Storable, Bounded, Num)
+newtype Nucleotide = N { unN :: Word8 } deriving
+    ( Eq, Ord, Ix, Storable
+    , VG.Vector VU.Vector, VM.MVector VU.MVector, VU.Unbox )
 
 instance Bounded Nucleotide where
     minBound = N  0
     maxBound = N 15
 
+-- | Qualities are stored in deciban, also known as the Phred scale.  To
+-- represent a value @p@, we store @-10 * log_10 p@.
+newtype Qual = Q { unQ :: Word8 } deriving
+    ( Eq, Storable, Bounded, VG.Vector VU.Vector, VM.MVector VU.MVector, VU.Unbox )
+
+newtype DQual = DQ { unDQ :: Double } deriving
+    ( Eq, Storable, VG.Vector VU.Vector, VM.MVector VU.MVector, VU.Unbox )
+
 instance Show Qual where
     showsPrec p (Q q) = (:) 'Q' . showsPrec p q
+
+instance Show DQual where
+    showsPrec p (DQ q) = (:) 'Q' . showsPrec p q
+
+-- Ord instance for qualities.  Since there is a sign flip in the
+-- definition, we need to reverse the sense here.
+instance Ord Qual where
+    Q a `compare` Q b = b `compare` a
+    Q a   `min`   Q b = Q (a `max` b)
+    Q a   `max`   Q b = Q (a `min` b)
+
+    Q a <  Q b  =  b  < a
+    Q a <= Q b  =  b <= a
+    Q a >  Q b  =  b  > a
+    Q a >= Q b  =  b >= a
+
+instance Num Qual where
+    fromInteger a = Q $ round (-10 * log (fromInteger a :: Double) / log 10)
+    Q a + Q b = Q (a `min`  b)
+    Q a - Q b = Q (a `max` b)
+    Q a * Q b = Q (a + b)
+    negate    _ = error "no negative qualities"
+    abs       _ = error "no negative qualities"
+    signum    _ = error "no negative qualities"
+
+instance Fractional Qual where
+    fromRational a = Q $ round (-10 * log (fromRational a :: Double) / log 10)
+    Q a  /  Q b = Q (a - b)
+    recip (Q a) = Q (negate a)
+
+instance Ord DQual where
+    DQ a `compare` DQ b = b `compare` a
+    DQ a   `min`   DQ b = DQ (a `max` b)
+    DQ a   `max`   DQ b = DQ (a `min` b)
+
+    DQ a <  DQ b  =  b  < a
+    DQ a <= DQ b  =  b <= a
+    DQ a >  DQ b  =  b  > a
+    DQ a >= DQ b  =  b >= a
+
+instance Num DQual where
+    fromInteger a = DQ (-10 * log (fromInteger a) / log 10)
+    DQ a + DQ b = DQ (a `phredplus`  b)
+    DQ a - DQ b = DQ (a `phredminus` b)
+    DQ a * DQ b = DQ (a + b)
+    negate    _ = error "no negative qualities"
+    abs       _ = error "no negative qualities"
+    signum    _ = error "no negative qualities"
+
+instance Fractional DQual where
+    fromRational a = DQ (-10 * log (fromRational a) / log 10)
+    DQ a  /  DQ b = DQ (a - b)
+    recip  (DQ a) = DQ (negate a)
+
+toDQual :: Double -> DQual
+toDQual p = DQ (-10 * log p / log 10)
+
+toQual :: Double -> Qual
+toQual p = Q $ round (-10 * log p / log 10)
+
+fromDQual :: DQual -> Double
+fromDQual (DQ q) = 10 ** (-q / 10)
+
+fromQual :: Qual -> Double
+fromQual (Q q) = 10 ** (-(fromIntegral q) / 10)
+
+qualToDQual :: Qual -> DQual
+qualToDQual (Q q) = DQ (fromIntegral q)
 
 gap, nucA, nucC, nucG, nucT, nucN :: Nucleotide
 gap  = N 0
@@ -86,48 +165,6 @@ nucC = N 2
 nucG = N 4
 nucT = N 8
 nucN = N 15
-
-newtype instance VU.MVector s Nucleotide = MV_Nucleotide (VU.MVector s Word8)
-newtype instance VU.Vector    Nucleotide = V_Nucleotide  (VU.Vector    Word8)
-
-instance VM.MVector VU.MVector Nucleotide where
-    {-# INLINE basicLength #-}
-    basicLength (MV_Nucleotide v) = VM.basicLength v
-
-    {-# INLINE basicUnsafeSlice #-}
-    basicUnsafeSlice i l (MV_Nucleotide v) = MV_Nucleotide (VM.basicUnsafeSlice i l v)
-
-    {-# INLINE basicOverlaps #-}
-    basicOverlaps (MV_Nucleotide v) (MV_Nucleotide w) = VM.basicOverlaps v w
-
-    {-# INLINE basicUnsafeNew #-}
-    basicUnsafeNew l = MV_Nucleotide `liftM` VM.basicUnsafeNew l
-
-    {-# INLINE basicUnsafeRead #-}
-    basicUnsafeRead (MV_Nucleotide v) i = N `liftM` VM.basicUnsafeRead v i
-
-    {-# INLINE basicUnsafeWrite #-}
-    basicUnsafeWrite (MV_Nucleotide v) i (N e) = VM.basicUnsafeWrite v i e
-
-
-instance VG.Vector VU.Vector Nucleotide where
-    {-# INLINE basicUnsafeFreeze #-}
-    basicUnsafeFreeze (MV_Nucleotide v) = V_Nucleotide `liftM` VG.basicUnsafeFreeze v
-
-    {-# INLINE basicUnsafeThaw #-}
-    basicUnsafeThaw (V_Nucleotide v) = MV_Nucleotide `liftM` VG.basicUnsafeThaw v
-
-    {-# INLINE basicLength #-}
-    basicLength (V_Nucleotide v) = VG.basicLength v
-
-    {-# INLINE basicUnsafeSlice #-}
-    basicUnsafeSlice i l (V_Nucleotide v) = V_Nucleotide (VG.basicUnsafeSlice i l v)
-
-    {-# INLINE basicUnsafeIndexM #-}
-    basicUnsafeIndexM (V_Nucleotide v) i = N `liftM` VG.basicUnsafeIndexM v i
-
-
-instance VU.Unbox Nucleotide
 
 
 -- | Sequence identifiers are ASCII strings

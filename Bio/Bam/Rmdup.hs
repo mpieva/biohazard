@@ -372,15 +372,15 @@ do_collapse maxq  brs = ( Right b0 { b_exts  = modify_extensions $ b_exts b0
 
     add_index k1 k2 | null inputs = id
                     | otherwise = M.insert k1 (Text $ T.pack $ show conss) .
-                                  M.insert k2 (Text $ B.pack $ map (unQ . (+) 33) consq)
+                                  M.insert k2 (Text $ B.pack $ map ((+) 33 . unQ) consq)
       where
         inputs = [ zip (map toNucleotide $ T.unpack sq) qs
                  | es <- map b_exts brs
                  , Text sq <- maybe [] (:[]) $ M.lookup k1 es
                  , let qs = case M.lookup k2 es of
-                                Just (Text t) -> map (subtract 33 . Q) $ B.unpack t
-                                _             -> repeat 23 ]
-        (conss,consq) = unzip $ map (consensus 93) $ transpose $ inputs
+                                Just (Text t) -> map (Q . subtract 33) $ B.unpack t
+                                _             -> repeat (Q 23) ]
+        (conss,consq) = unzip $ map (consensus (Q 93)) $ transpose $ inputs
 
 
     to_pairs b | B.null (b_qual b) = zip (V.toList $ b_seq b) (repeat (Q 23))   -- error rate of ~0.5%
