@@ -230,18 +230,52 @@ noDamage _ _ b | b == nucA = DB 1 0 0 0
 
 data SsDamageParameters = SSD { ssd_delta_ss :: !Double         -- deamination rate in ss DNA
                               , ssd_delta_ds :: !Double         -- deamination rate in ds DNA
-                              , ssd_lambda5  :: !Double         -- average overhang length at 5' end
-                              , ssd_lambda3  :: !Double }       -- average overhang length at 3' end
+                              , ssd_prob5    :: !Double         -- average overhang length at 5' end
+                              , ssd_prob3    :: !Double }       -- average overhang length at 3' end
 
+-- forward strand first, C->T only; reverse strand next, G->A instead
+-- N sums over all others, horizontally(!)
 ssDamage :: SsDamageParameters -> DamageModel
-ssDamage SSD{..} r i b | b == nucA = DB 1     0     0     0
-                       | b == nucC = DB 0   (1-p)   0     0
-                       | b == nucG = DB 0     0     1     0
-                       | b == nucT = DB 0     p     0     1
-                       | otherwise = DB f (f*(1-p)) f (f*(1+p))
-  where f = 0.25
-        p = ssd_delta_ss * eff_lambda + ssd_delta_ds * (1-eff_lambda)
-        eff_lambda = undefined -- something i ssd_lambda5 + something (br_l_seq b - i-1) ssd_lambda3 -- Hrm.
+ssDamage SSD{..} r i b | fwd && b == nucA = DB 1   0   0   0
+                       | fwd && b == nucC = DB 0 (1-p) 0   0
+                       | fwd && b == nucG = DB 0   0   1   0
+                       | fwd && b == nucT = DB 0   p   0   1
+                       | fwd             = dbq 1 (1-p) 1 (1+p)
+                       |        b == nucA = DB   1   0   p   0
+                       |        b == nucC = DB   0   1   0   0
+                       |        b == nucG = DB   0   0 (1-p) 0
+                       |        b == nucT = DB   0   0   0   1
+                       | otherwise       = dbq (1+p) 1 (1-p) 1
+  where
+    fwd = not (br_isReversed r)
+    len = br_l_seq r
+    p   = ssd_delta_ss * lam + ssd_delta_ds * (1-lam)
+    lam = 0.5 * (ssd_prob5 ^ (1+i) + ssd_prob3 ^ (len-i))
+    dbq x y z w = DB (0.25*x) (0.25*y) (0.25*z) (0.25*w)
+
+
+-- | 'DamageModel' for double stranded library.  We get C->T damage at
+-- the 5' end and G->A at the 3' end.  Everything is symmetric, and
+-- therefore the orientation of the aligned read doesn't matter either.
+
+data DsDamageParameters = DSD { dsd_delta_ss :: !Double         -- deamination rate in ss DNA
+                              , dsd_delta_ds :: !Double         -- deamination rate in ds DNA
+                              , dsd_prob     :: !Double }       -- average overhang length
+
+dsDamage :: DsDamageParameters -> DamageModel
+dsDamage DSD{..} r i b | b == nucA = DB    1     0     q     0
+                       | b == nucC = DB    0   (1-p)   0     0
+                       | b == nucG = DB    0     0   (1-q)   0
+                       | b == nucT = DB    0     p     0     1
+                       | otherwise = dbq (1+q) (1-p) (1-q) (1+p)
+  where
+    len  = br_l_seq r
+    p    = dsd_delta_ss * lam5 + dsd_delta_ds * (1-lam5)
+    q    = dsd_delta_ss * lam3 + dsd_delta_ds * (1-lam3)
+    lam5 = 0.5 * (dsd_prob ^ (1+i))
+    lam3 = 0.5 * (dsd_prob ^ (len-i))
+    dbq x y z w = DB (0.25*x) (0.25*y) (0.25*z) (0.25*w)
+
 
 -- | A variant call consists of a position, some measure of qualities,
 -- genotype likelihood values, and a representation of variants.  A note
@@ -629,3 +663,50 @@ showCall f vc = shows (vc_refseq vc) . (:) ':' .
     show_pl = (++) . intercalate "," . map show . V.toList
 
     mapq = vc_sum_mapq vc `div` vc_depth vc
+
+
+-- | The 'samtools' error model.
+--
+-- I tried to track down the logic behind samtools' and maq's error
+-- models, which supposedly go back to CAP3.  Near as I can tell, there
+-- is absolutely no reasoning behind any of it.  CAP3 may have
+-- originated the idea of setting the probably of @k@ errors to @p^f(k)@
+-- where @f@ is a function that grows slower than the identity function.
+-- The cited paper doesn't actually mention any of that, though.
+--
+-- Maq has the first implementation of such a model.  The derivation is
+-- rather complicated, starts out with a simplification, then proceeds
+-- to apply approximations, then ends up being incomprehensible.  By
+-- that time, it's no longer clear if that derivation makes any sense.
+--
+-- Samtools improves upon the maq model, where the claimed reason is
+-- that the Maq model is ill-behaved at high coverage and high error
+-- rate.  Unfortunately, the fix in Samtools is only a different
+-- approximation in the last step of an equally convoluted derivation.
+-- The chief difference seems to be that Maq computes a strange quantity
+-- based on a sort of average error rate, while samtools computes a
+-- similar quantity as the product of more strangeness based on many
+-- different error rates.
+--
+-- The take home message is that we model error dependency by having a
+-- more slowly growing exponent, that errors happening on different
+-- strands are independent from each other, and that the combinatorial
+-- constructions in both the Maq and the Samtools model do not seem to
+-- be useful.
+--
+-- We reboot using a simplified version.  Bases from pileup are sorted
+-- by quality.  For each base, we compute the likelihood under the
+-- current genotype.  This is the likelihood of sampling an imagined
+-- base, sampling is influenced by the presence of multiple alleles and
+-- by chemical damage, times the likelihood of seeing the actual base,
+-- which depends on error probability and maybe an error matrix, summed
+-- over the four possible bases.
+--
+-- To get the dependency into the error probability, we have to count
+-- how often we made the same kind of error, which is a matrix with 16
+-- entries (4 are not really errors).  For every base, we count
+-- fractional substitution errors, and the fraction is simply the
+-- contribution of the four bases to the likelihood above.
+--
+--
+--
