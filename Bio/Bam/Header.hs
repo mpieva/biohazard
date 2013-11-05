@@ -37,11 +37,13 @@ module Bio.Bam.Header (
 
         Cigar(..),
         CigOp(..),
-        cigarToAlnLen
+        cigarToAlnLen,
+        distinctBin
     ) where
 
 import Bio.Base
 import Control.Applicative
+import Data.Bits                    ( shiftL, shiftR )
 import Data.Ix
 import Data.List                    ( (\\) )
 import Data.Monoid
@@ -299,6 +301,7 @@ data CigOp = Mat | Ins | Del | Nop | SMa | HMa | Pad
     deriving ( Eq, Ord, Enum, Show, Bounded, Ix )
 
 instance Show Cigar where
+    show (Cigar []) = "*"
     show (Cigar cs) = concat [ shows l (toChr op) | (op,l) <- cs ]
       where toChr = (:[]) . S.index "MIDNSHP=X" . fromEnum
 
@@ -311,4 +314,12 @@ cigarToAlnLen :: Cigar -> Int
 cigarToAlnLen (Cigar cig) = sum $ map l cig
   where l (op,n) = if op == Mat || op == Del || op == Nop then n else 0
 
+-- | Computes the "distinct bin" according to the BAM binning scheme.  If
+-- an alignment starts at @pos@ and its CIGAR implies a length of @len@
+-- on the reference, then it goes into bin @distinctBin pos len@.
+distinctBin :: Int -> Int -> Int
+distinctBin beg len = mkbin 14 $ mkbin 17 $ mkbin 20 $ mkbin 23 $ mkbin 26 $ 0
+  where end = beg + len - 1
+        mkbin n x = if beg `shiftR` n /= end `shiftR` n then x
+                    else ((1 `shiftL` (29-n))-1) `div` 7 + (beg `shiftR` n)
 

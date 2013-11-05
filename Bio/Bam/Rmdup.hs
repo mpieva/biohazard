@@ -173,59 +173,62 @@ check_sort msg out = I.tryHead >>= maybe (return out) (\a -> eneeCheckIfDone (st
 {- | Workhorse for duplicate removal.
 
  - Unmapped fragments should not be considered to be duplicates of
-   mapped fragments.  The "unmapped" flag can serve for that:  while
-   there are two classes of "unmapped reads (those that are not mapped
+   mapped fragments.  The /unmapped/ flag can serve for that:  while
+   there are two classes of /unmapped/ reads (those that are not mapped
    and those that are mapped to an invalid position), the two sets will
    always have different coordinates.  (Unfortunately, correct duplicate
-   removal now relies on correct "unmapped" and "mate unmapped" flags,
-   and we don't get them from unmodified BWA.)
+   removal now relies on correct /unmapped/ and /mate unmapped/ flags,
+   and we don't get them from unmodified BWA.  So correct operation
+   requires patched BWA or a run of @bam-fixpair@.)
 
-   * Other definitions (e.g. lack of CIGAR) don't work, because that
-     information won't be available for the mate.
+   (1) Other definitions (e.g. lack of CIGAR) don't work, because that
+       information won't be available for the mate.
 
-   * This would amount to making the "unmapped" flag part of the
-     coordinate, but samtools is not going to take it into account when
-     sorting.
+   (2) This would amount to making the /unmapped/ flag part of the
+       coordinate, but samtools is not going to take it into account
+       when sorting.
 
-   * Instead, both flags become part of the "mate pos" grouping criterion.
+   (3) Instead, both flags become part of the /mate pos/ grouping
+       criterion.
 
  - First Mates should (probably) not be considered duplicates of Second
-   Mates.  This is unconditionally true for libraries with A/B-style
+   Mates.  This is unconditionally true for libraries with A\/B-style
    adapters (definitely 454, probably Mathias' ds protocol) and the ss
-   protocol, it is not true for fork adapter protocols (standard
-   Illumina).  So it has to be an option, which would ideally be derived
+   protocol, it is not true for fork adapter protocols (vanilla Illumina
+   protocol).  So it has to be an option, which would ideally be derived
    from header information.
 
  - This code ignores read groups, but it will do a majority vote on the
-   RG field and call consensi for the index sequences.  If you believe
+   @RG@ field and call consensi for the index sequences.  If you believe
    that duplicates across read groups are impossible, you must call it
    with an appropriately filtered stream.
 
- - Half-Aligned Pairs (meaning one known coordinate, the validity of the
-   alignments is immaterial) are rather complicated:
+ - Half-Aligned Pairs (meaning one known coordinate, while the validity
+   of the alignments is immaterial) are rather complicated:
 
-   * Given that only one coordinate is known (5' of the aligned mate),
-     we want to treat them like true singles.  But the unaligned mate
-     should be kept if possible, though it should not contribute to a
-     consensus sequence.  We assume nothing about the unaligned mate,
-     not even that it *shouldn't* be aligned, never mind the fact that
-     it *couldn't* be.  (*groan*)
+   (1) Given that only one coordinate is known (5' of the aligned mate),
+       we want to treat them like true singles.  But the unaligned mate
+       should be kept if possible, though it should not contribute to a
+       consensus sequence.  We assume nothing about the unaligned mate,
+       not even that it /shouldn't/ be aligned, never mind the fact that
+       it /couldn't/ be.  (The difference is in the finite abilities of
+       real world aligners, naturally.)
 
-   * Therefore, aligned reads with unaligned mate go to the same
-     potential duplicate set as true singletons.  If at least one pair
-     exists that might be a duplicate of those, all singletons and
-     half-aligned mates are removed.  Else a consensus is computed and
-     replaces the aligned mates.
+   (2) Therefore, aligned reads with unaligned mates go to the same
+       potential duplicate set as true singletons.  If at least one pair
+       exists that might be a duplicate of those, all singletons and
+       half-aligned mates are discarded.  Else a consensus is computed
+       and replaces the aligned mates.
 
-   * The unaligned mates end up in the same place as the aligned mates
-     (therefore we see them and can treat them locally).  We cannot call
-     a consensus (these molecules may well have different length), so we
-     select one, doesn't really matter which, and since we're treating
-     both mates at the same time, it doesn't even need to be
-     reproducible without local information.  This becomes the mate of
-     the consensus.
+   (3) The unaligned mates end up in the same place in a BAM stream as
+       the aligned mates (therefore we see them and can treat them
+       locally).  We cannot call a consensus, since these molecules may
+       well have different length, so we select one.  It doesn't really
+       matter which one is selected, and since we're treating both mates
+       at the same time, it doesn't even need to be reproducible without
+       local information.  This is made to be the mate of the consensus.
 
-   * see 'merge_singles' for how it's actually done.
+   (4) See 'merge_singles' for how it's actually done.
 -}
 
 do_rmdup :: Ord l => (BamRaw -> l) -> Bool -> Collapse -> [BamRaw] -> [BamRaw]

@@ -57,6 +57,7 @@ module Bio.Bam.Raw (
 
     br_rname,
     br_pos,
+    br_bin,
     br_mapq,
     br_mrnm,
     br_mpos,
@@ -89,6 +90,7 @@ module Bio.Bam.Raw (
     removeExt,
     appendStringExt,
     setPos,
+    setBin,
     setMapq,
     setFlag,
     setMrnm,
@@ -393,6 +395,10 @@ br_isDuplicate      = flip testBit 10 . br_flag
 br_rname :: BamRaw -> Refseq
 br_rname (BamRaw _ raw) = Refseq $ getInt raw 0
 
+{-# INLINE br_bin #-}
+br_bin :: BamRaw -> Int
+br_bin (BamRaw _ raw) = getInt16 raw 10
+
 {-# INLINE br_mapq #-}
 br_mapq :: BamRaw -> Int
 br_mapq (BamRaw _ raw) = fromIntegral $ S.unsafeIndex raw 9
@@ -438,9 +444,8 @@ br_cigar_at br@(BamRaw _ raw) i = getInt raw $ cig_off + i * 4
 {-# INLINE br_aln_length #-}
 br_aln_length :: BamRaw -> Int
 br_aln_length br@(BamRaw _ raw)
-    | ncig == 0 = br_l_seq br
-    | otherwise = sum [ x `shiftR` 4 | x <- map (getInt raw) $ take ncig [cig_off, cig_off+4 ..]
-                                     , x .&. 0xF == 0 || x .&. 0xF == 2 || x .&. 0xF == 3 ]
+    = sum [ x `shiftR` 4 | x <- map (getInt raw) $ take ncig [cig_off, cig_off+4 ..]
+          , x .&. 0xF == 0 || x .&. 0xF == 2 || x .&. 0xF == 3 ]
   where
     !ncig    = br_n_cigar_op br
     !cig_off = 33 + br_l_read_name br
@@ -585,6 +590,10 @@ setIsize x = Mut $ \p -> passL $ pokeInt32 p 28 x
 {-# INLINE setMapq #-}
 setMapq :: Word8 -> Mutator ()
 setMapq q = Mut $ \p -> passL $ pokeInt8 p 9 q
+
+{-# INLINE setBin #-}
+setBin :: Int -> Int -> Mutator ()
+setBin b l = Mut $ \p -> passL $ pokeInt16 p 10 (distinctBin b l)
 
 {-# INLINE setMrnm #-}
 setMrnm :: Refseq -> Mutator ()

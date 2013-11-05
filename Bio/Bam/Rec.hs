@@ -306,7 +306,7 @@ encodeBamEntry = bamRaw 0 . S.concat . L.toChunks . runPut . putEntry
                      put_int_32    $ b_pos b
                      put_int_8     $ S.length (b_qname b) + 1
                      put_int_8     $ b_mapq b
-                     put_int_16    $ distinctBin b
+                     put_int_16    $ distinctBin (b_pos b) (cigarToAlnLen (b_cigar b))
                      put_int_16    $ length $ unCigar $ b_cigar b
                      put_int_16    $ b_flag b
                      put_int_32    $ V.length $ b_seq b
@@ -383,13 +383,6 @@ put_int_8  = putWord8 . fromIntegral
 
 putChr :: Char -> Put
 putChr = putWord8 . fromIntegral . ord
-
-distinctBin :: BamRec -> Int
-distinctBin b = mkbin 14 $ mkbin 17 $ mkbin 20 $ mkbin 23 $ mkbin 26 $ 0
-  where beg = b_pos b
-        end = beg + cigarToAlnLen (b_cigar b) - 1
-        mkbin n x = if beg `shiftR` n /= end `shiftR` n then x
-                    else ((1 `shiftL` (29-n))-1) `div` 7 + (beg `shiftR` n)
 
 putValue :: Ext -> Put
 putValue v = case v of

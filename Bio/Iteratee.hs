@@ -15,6 +15,7 @@ module Bio.Iteratee (
     foldStream,
     foldStreamM,
     mapChunksMP,
+    protectTerm,
 
     I.mapStream,
     I.takeWhileE,
@@ -62,7 +63,7 @@ import Data.Iteratee.Iteratee
 import Data.Iteratee.Parallel
 import Data.Monoid
 import Data.ListLike ( ListLike )
-import System.IO ( stdin, stdout, stderr )
+import System.IO ( stdin, stdout, stderr, hIsTerminalDevice )
 import System.Environment ( getArgs )
 
 import qualified Data.ListLike as LL
@@ -293,4 +294,11 @@ mapChunksMP f it = do chan <- liftIO $ Ch `liftM` newEmptyMVar
             Nothing -> do back' <- Ch `liftM` liftIO newEmptyMVar
                           _ <- liftIO . forkIO $ do r <- f c ; putMVar back (Just (r, back'))
                           liftI $ go (num+1) (Ch chan) back' k
+
+protectTerm :: (Nullable s, MonadIO m) => Iteratee s m a -> Iteratee s m a
+protectTerm itr = do
+    t <- liftIO $ hIsTerminalDevice stdout
+    if t then err else itr
+  where
+    err = throwErr $ iterStrExc "cowardly refusing to write binary data to terminal"
 
