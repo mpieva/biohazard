@@ -8,6 +8,7 @@ import Data.List ( intercalate )
 import Data.Maybe
 import Data.Monoid ( mempty )
 import Data.Word ( Word8 )
+import Data.Version ( showVersion )
 import Numeric ( showFFloat )
 import Paths_biohazard_tools ( version )
 import System.Console.GetOpt
@@ -69,7 +70,8 @@ options = [
     Option  "s" ["no-strand"]      (NoArg  set_no_strand)     "Strand of alignments is uninformative",
     Option  "r" ["ignore-rg"]      (NoArg  set_no_rg)         "Ignore read groups when looking for duplicates",
     Option  "v" ["verbose"]        (NoArg  set_verbose)       "Print more diagnostics",
-    Option "h?" ["help","usage"]   (NoArg  (const usage))     "Print this message" ]
+    Option "h?" ["help","usage"]   (NoArg  (const usage))     "Display this message",
+    Option "V"  ["version"]        (NoArg  (const vrsn))      "Display version number and exit" ]
 
   where
     set_output "-" c =                    return $ c { output = Just $ \_ -> pipeRawBamOutput, putResult = hPutStr stderr }
@@ -97,6 +99,10 @@ options = [
                                  return $ c { which = Some (Refseq $ x-1) (Refseq $ y-1) }
                 _ -> fail $ "parse error in " ++ show a
 
+vrsn :: IO a
+vrsn = do pn <- getProgName
+          hPutStrLn stderr $ pn ++ ", version " ++ showVersion version
+          exitSuccess
 
 usage :: IO a
 usage = do p <- getProgName

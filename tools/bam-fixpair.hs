@@ -40,6 +40,7 @@ import Data.Binary
 import Data.Bits
 import Data.Hashable
 import Data.List
+import Data.Version                             ( showVersion )
 import Paths_biohazard_tools                    ( version )
 import System.Console.GetOpt
 import System.Environment                       ( getArgs, getProgName )
@@ -63,7 +64,7 @@ data Config = CF { report_mrnm :: !Bool
                  , output :: BamMeta -> Iteratee [BamRaw] IO () }
 
 config0 :: IO Config
-config0 = return $ CF True True False True False True Errors KillNone pipeRawBamOutput
+config0 = return $ CF True True False True False True Errors KillNone (protectTerm . pipeRawBamOutput)
 
 options :: [OptDescr (Config -> IO Config)]
 options = [
@@ -91,7 +92,8 @@ options = [
     Option "" ["no-report-fflag"] (NoArg (\c -> return $ c { report_fflag = False })) "Do not report commonly inconsistent flags",
     Option "" ["no-report-fflag"] (NoArg (\c -> return $ c { report_ixs = False })) "Do not report mismatched index fields",
 
-    Option "h?" ["help","usage"] (NoArg usage) "Print this helpful message" ]
+    Option "h?" ["help","usage"] (NoArg usage) "Print this helpful message and exit",
+    Option "V"  ["version"]      (NoArg  vrsn) "Print version number and exit" ]
   where
     usage _ = do pn <- getProgName
                  let blah = "Usage: " ++ pn ++ " [OPTION...] [FILE...]\n\
@@ -99,6 +101,10 @@ options = [
                             \output a file with consistent mate pair information."
                  hPutStrLn stderr $ usageInfo blah options
                  exitSuccess
+
+    vrsn _ = do pn <- getProgName
+                hPutStrLn stderr $ pn ++ ", version " ++ showVersion version
+                exitSuccess
 
     set_output "-" c = return $ c { output = pipeRawBamOutput }
     set_output  f  c = return $ c { output = writeRawBamFile f }
