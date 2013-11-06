@@ -300,5 +300,5 @@ protectTerm itr = do
     t <- liftIO $ hIsTerminalDevice stdout
     if t then err else itr
   where
-    err = throwErr $ iterStrExc "cowardly refusing to write binary data to terminal"
+    err = error "cowardly refusing to write binary data to terminal"
 
