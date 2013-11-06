@@ -14,7 +14,7 @@ import Control.Applicative
 import Control.Monad hiding ( mapM_ )
 import Control.Monad.Fix ( fix )
 import Data.Foldable
-import Data.List ( tails, intercalate )
+import Data.List ( tails, intercalate, sortBy )
 import Numeric ( showFFloat )
 
 import qualified Data.ByteString        as B
@@ -302,7 +302,6 @@ data VarCall a = VarCall { vc_refseq     :: !Refseq
                          , vc_vars       :: a }                   -- variant calls, depending on context
 
 type PL = V.Vector DQual
-type SnpVars = ()                           -- no additonal info needed for SNP calls
 type IndelVars = [( Int, [Nucleotide] )]    -- indel variant: number of deletions, inserted sequence
 
 -- Both types of piles carry along the map quality.  We'll only need it
@@ -558,6 +557,9 @@ dropMin (Node _ _ l r) = l `union` r
 
 -- ------------------------------------------------------------------------------------------------------------
 
+app_snp_call :: (obs -> PL) -> VarCall obs -> VarCall ()
+app_snp_call call vc = vc { vc_pl = call (vc_vars vc), vc_vars = () }
+
 app_call :: (obs -> (PL, vars)) -> VarCall obs -> VarCall vars
 app_call call vc = vc { vc_pl = pl, vc_vars = vars }
   where (pl,vars) = call (vc_vars vc)
@@ -596,8 +598,8 @@ simple_indel_call ploidy vars = (simple_call ploidy mkpls vars, vars')
 -- call.  Since everything is so straight forward. this works even in
 -- the face of damage.
 
-simple_snp_call :: Int -> BasePile -> (PL, SnpVars)
-simple_snp_call ploidy vars = (simple_call ploidy mkpls vars, ())
+simple_snp_call :: Int -> BasePile -> PL
+simple_snp_call ploidy vars = simple_call ploidy mkpls vars
   where
     mkpls (q, DB a c g t qq) = [ toDQual $ pt*x + pe*s | x <- [a,c,g,t] ]
       where
@@ -635,12 +637,12 @@ smoke_test =
     decodeAnyBamFile "/mnt/scratch/udo/test.bam" >=> run $ \_hdr ->
     joinI $ pileup noDamage $ mapStreamM_ call_and_print
   where
-    call_and_print (Right ic) = put . showCall show_indels . app_call (simple_indel_call 2) $ ic
-    call_and_print (Left  bc) = put . showCall show_bases  . app_call (simple_snp_call   2) $ bc
+    call_and_print (Right ic) = put . showCall show_indels . app_call     (simple_indel_call 2) $ ic
+    call_and_print (Left  bc) = put . showCall show_bases  . app_snp_call (simple_snp_call   2) $ bc
 
     put f = putStr $ f "\n"
 
-    show_bases :: SnpVars -> ShowS
+    show_bases :: () -> ShowS
     show_bases () = (++) "A,C,G,T"
 
     show_indels :: IndelVars -> ShowS
@@ -704,9 +706,13 @@ showCall f vc = shows (vc_refseq vc) . (:) ':' .
 --
 -- To get the dependency into the error probability, we have to count
 -- how often we made the same kind of error, which is a matrix with 16
--- entries (4 are not really errors).  For every base, we count
+-- entries (4 of which are not really errors).  For every base, we count
 -- fractional substitution errors, and the fraction is simply the
 -- contribution of the four bases to the likelihood above.
---
---
---
+
+maq_snp_call :: Int -> Double -> BasePile -> PL
+maq_snp_call ploidy theta bases = undefined
+  where
+    bases' = sortBy (\(DB _ _ _ _ q1) (DB _ _ _ _ q2) -> compare q2 q1)
+             [ DB a c g t (min q mq) | (mq, DB a c g t q) <- bases ]
+
