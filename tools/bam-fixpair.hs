@@ -40,6 +40,7 @@ import Data.Binary
 import Data.Bits
 import Data.Hashable
 import Data.List
+import Data.Version                             ( showVersion )
 import Paths_biohazard_tools                    ( version )
 import System.Console.GetOpt
 import System.Environment                       ( getArgs, getProgName )
@@ -63,7 +64,7 @@ data Config = CF { report_mrnm :: !Bool
                  , output :: BamMeta -> Iteratee [BamRaw] IO () }
 
 config0 :: IO Config
-config0 = return $ CF True True False True False True Errors KillNone pipeRawBamOutput
+config0 = return $ CF True True False True False True Errors KillNone (protectTerm . pipeRawBamOutput)
 
 options :: [OptDescr (Config -> IO Config)]
 options = [
@@ -91,7 +92,8 @@ options = [
     Option "" ["no-report-fflag"] (NoArg (\c -> return $ c { report_fflag = False })) "Do not report commonly inconsistent flags",
     Option "" ["no-report-fflag"] (NoArg (\c -> return $ c { report_ixs = False })) "Do not report mismatched index fields",
 
-    Option "h?" ["help","usage"] (NoArg usage) "Print this helpful message" ]
+    Option "h?" ["help","usage"] (NoArg usage) "Print this helpful message and exit",
+    Option "V"  ["version"]      (NoArg  vrsn) "Print version number and exit" ]
   where
     usage _ = do pn <- getProgName
                  let blah = "Usage: " ++ pn ++ " [OPTION...] [FILE...]\n\
@@ -99,6 +101,10 @@ options = [
                             \output a file with consistent mate pair information."
                  hPutStrLn stderr $ usageInfo blah options
                  exitSuccess
+
+    vrsn _ = do pn <- getProgName
+                hPutStrLn stderr $ pn ++ ", version " ++ showVersion version
+                exitSuccess
 
     set_output "-" c = return $ c { output = pipeRawBamOutput }
     set_output  f  c = return $ c { output = writeRawBamFile f }
@@ -116,7 +122,7 @@ main = do (opts, files, errors) <- getOpt Permute options `fmap` getArgs
           add_pg <- addPG $ Just version
           withQueues                                           $ \queues ->
             mergeInputs files >=> run                          $ \hdr ->
-            re_pair queues config                             =$
+            re_pair queues config (meta_refs hdr)             =$
             (output config) (add_pg hdr)
 
 
@@ -298,9 +304,11 @@ report br = do i <- gets total_in
                      hs <- getSize right_here
                      os <- getSize in_order
                      ms <- getSize messed_up
+                     rr <- getRefseqs
                      let rs = br_rname br ; p = br_pos br
+                         rn = unpackSeqid . sq_name $ getRef rr rs
                          at = if rs == invalidRefseq || p == invalidPos
-                              then "" else printf "@%d/%d, " (unRefseq rs) p
+                              then "" else printf "@%s/%d, " rn p
                      note $ printf "%sin: %d, out: %d, here: %d, wait: %d, mess: %d" (at::String) i o hs os ms
 
 no_mate_here :: MonadIO m => String -> BamRaw -> Mating r m ()
@@ -326,8 +334,8 @@ no_mate_ever b = do err $ "record " ++ shows (br_qname b) " (" ++
 -- 'Iteratee', too.  Pretty to work with, not pretty to look at.
 type Sink r m = Stream [BamRaw] -> Iteratee [BamRaw] m r
 newtype Mating r m a = Mating { runMating ::
-    (a -> MatingStats -> Sink r m -> Queues -> Config -> Iteratee [BamPair] m (Iteratee [BamRaw] m r))
-       -> MatingStats -> Sink r m -> Queues -> Config -> Iteratee [BamPair] m (Iteratee [BamRaw] m r) }
+    (a -> MatingStats -> Sink r m -> Queues -> Config -> Refs -> Iteratee [BamPair] m (Iteratee [BamRaw] m r))
+       -> MatingStats -> Sink r m -> Queues -> Config -> Refs -> Iteratee [BamPair] m (Iteratee [BamRaw] m r) }
 
 instance Monad m => Monad (Mating r m) where
     return a = Mating $ \k -> k a
@@ -337,13 +345,13 @@ instance Functor (Mating r m) where
     fmap f m = Mating $ \k -> runMating m (k . f)
 
 instance MonadIO m => MonadIO (Mating r m) where
-    liftIO f = Mating $ \k s o q c -> liftIO f >>= \a -> k a s o q c
+    liftIO f = Mating $ \k s o q c r -> liftIO f >>= \a -> k a s o q c r
 
 instance MonadTrans (Mating r) where
-    lift m = Mating $ \k s o q c -> lift m >>= \a -> k a s o q c
+    lift m = Mating $ \k s o q c r -> lift m >>= \a -> k a s o q c r
 
 lift'it :: Monad m => Iteratee [BamPair] m a -> Mating r m a
-lift'it m = Mating $ \k s o q c -> m >>= \a -> k a s o q c
+lift'it m = Mating $ \k s o q c r -> m >>= \a -> k a s o q c r
 
 tells :: (Config -> a) -> Mating r m a
 tells f = Mating $ \k s o q c -> k (f c) s o q c
@@ -357,6 +365,8 @@ getq f = Mating $ \k s o q -> k (f q) s o q
 modify :: (MatingStats -> MatingStats) -> Mating r m ()
 modify f = Mating $ \k s -> (k () $! f s)
 
+getRefseqs :: Mating r m Refs
+getRefseqs = Mating $ \k s o q c r -> k r s o q c r
 
 fetchNext :: MonadIO m => Mating r m (Maybe BamPair)
 fetchNext = do r <- lift'it tryHead
@@ -367,14 +377,14 @@ fetchNext = do r <- lift'it tryHead
                return r
 
 yield :: MonadIO m => [BamRaw] -> Mating r m ()
-yield rs = Mating $ \k s o q c -> let !s' = s { total_out = length rs + total_out s }
-                                  in eneeCheckIfDone (\o' -> k () s' o' q c) . o $ Chunk rs
+yield rs = Mating $ \k s o q c r -> let !s' = s { total_out = length rs + total_out s }
+                                    in eneeCheckIfDone (\o' -> k () s' o' q c r) . o $ Chunk rs
 
 -- To ensure proper cleanup, we require the priority queues to be created
 -- outside.  Since one is continually reused, it is important that a PQ
 -- that is emptied no longer holds on to files on disk.
-re_pair :: MonadIO m => Queues -> Config -> Enumeratee [BamPair] [BamRaw] m a
-re_pair qs cf = eneeCheckIfDone $ \out -> runMating go finish ms0 out qs cf
+re_pair :: MonadIO m => Queues -> Config -> Refs -> Enumeratee [BamPair] [BamRaw] m a
+re_pair qs cf rs = eneeCheckIfDone $ \out -> runMating go finish ms0 out qs cf rs
    where
     go = fetchNext >>= go'
 
@@ -465,8 +475,8 @@ re_pair qs cf = eneeCheckIfDone $ \out -> runMating go finish ms0 out qs cf
 
                        | otherwise -> return ()
 
-    finish () st o _qs _cf = do liftIO $ hPutStrLn stderr $ report_stats st
-                                return (liftI o)
+    finish () st o _qs _cf _rs = do liftIO $ hPutStrLn stderr $ report_stats st
+                                    return (liftI o)
 
 data ByQName = ByQName { _bq_hash :: !Int
                        , _bq_alnid :: !Int

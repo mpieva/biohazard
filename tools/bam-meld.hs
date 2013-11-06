@@ -16,9 +16,10 @@ import Bio.Iteratee
 import Control.Monad                            ( unless, foldM )
 import Data.List                                ( sortBy )
 import Data.Monoid
+import Data.Version                             ( showVersion )
 import Paths_biohazard_tools                    ( version )
 import System.Console.GetOpt
-import System.Environment                       ( getArgs )
+import System.Environment                       ( getArgs, getProgName )
 import System.Exit                              ( exitSuccess, exitFailure )
 import System.IO                                ( hPutStrLn )
 
@@ -32,7 +33,7 @@ data Conf = Conf {
     c_merge  :: Enumeratee [BamPair] [[BamPair]] (Iteratee [[BamPair]] IO) () }
 
 defaultConf :: Conf
-defaultConf = Conf Nothing (writeBamHandle stdout) iter_transpose
+defaultConf = Conf Nothing (protectTerm . pipeBamOutput) iter_transpose
 
 defaultScore :: BamPair -> Int
 defaultScore r = 30 * getExt "XM" r + 45 * getExt "XO" r + 15 * getExt "XG" r
@@ -147,7 +148,13 @@ options =
     , Option [ ] ["anfo"]     (NoArg  set_anfo)          "Preset for alignments from 'anfo' (uses UQ, PQ)"
     , Option [ ] ["blast"]    (NoArg  set_blast)         "Preset for alignments from 'blast' (uses AS)"
     , Option [ ] ["blat"]     (NoArg  set_blat)          "Preset for alignments from 'blat' (uses NM)"
-    , Option "h?" ["help","usage"] (NoArg usage)         "Display this information" ]
+    , Option "h?" ["help","usage"] (NoArg usage)         "Display this information and exit"
+    , Option "V"  ["version"]      (NoArg  vrsn)         "Display version number and exit" ]
+
+vrsn :: Conf -> IO Conf
+vrsn _ = do pn <- getProgName
+            hPutStrLn stderr $ pn ++ ", version " ++ showVersion version
+            exitSuccess
 
 usage :: Conf -> IO Conf
 usage _ = putStrLn (usageInfo blurb options) >> exitSuccess
@@ -157,7 +164,8 @@ usage _ = putStrLn (usageInfo blurb options) >> exitSuccess
             \various sources and attempts to calculate a sensible map quality.\n"
 
 set_output :: String -> Conf -> IO Conf
-set_output fn c = return $ c { c_output = writeBamFile fn }
+set_output "-" c = return $ c { c_output = pipeBamOutput }
+set_output  fn c = return $ c { c_output = writeBamFile fn }
 
 set_unsorted :: Conf -> IO Conf
 set_unsorted c = return $ c { c_merge = iter_transpose }

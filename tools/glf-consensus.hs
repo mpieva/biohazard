@@ -4,6 +4,8 @@ import Control.Monad
 import Control.Monad.CatchIO
 import Data.Char ( isSpace, toLower, chr )
 import Data.List ( intercalate, sort )
+import Data.Version ( showVersion )
+import Paths_biohazard_tools ( version )
 import System.Console.GetOpt
 import System.IO
 import System.Environment ( getArgs, getProgName )
@@ -56,8 +58,15 @@ options = [
         "Read input from FILE instead of stdin",
     Option "h?" ["help", "usage"]
         (NoArg (usage exitSuccess))
-        "Print this help" ]
+        "Print this help",
+    Option "V"  ["version"]
+        (NoArg  vrsn)
+        "Print version number and exit" ]
 
+vrsn :: Config -> IO a
+vrsn _ = do pn <- getProgName
+            hPutStrLn stderr $ pn ++ ", version " ++ showVersion version
+            exitSuccess
 
 usage :: IO a -> Config -> IO a
 usage e _ = getProgName >>= \p -> putStrLn (usageInfo (blurb p) options) >> e

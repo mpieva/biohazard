@@ -3,8 +3,11 @@ import Bio.Bam.Header
 import Bio.Bam.Raw
 import Bio.Base
 import Bio.Iteratee
+import Data.Version ( showVersion )
+import Paths_biohazard_tools ( version )
 import System.Environment
 import System.Exit
+import System.IO ( hPutStr )
 
 import qualified Data.Iteratee          as I
 
@@ -13,7 +16,10 @@ main = do
     mq <- getArgs >>= \args -> case (args, reads (head args)) of
             ([ ], _)        -> return 0
             ([_], [(x,[])]) -> return (Q x)
-            _               -> putStrLn "usage: count-coverage [<min-mapq>]" >> exitFailure
+            _               -> do pn <- getProgName
+                                  hPutStr stderr $ pn ++ ", version " ++ showVersion version
+                                                ++ "\nUsage: " ++ pn ++ "[<min-mapq>]\n"
+                                  exitFailure
 
     let putLine nm cv = putStr $ nm ++ '\t' : shows cv "\n"
         printOne refs (r,c) = putLine (unpackSeqid (sq_name (getRef refs r))) c

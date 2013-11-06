@@ -37,15 +37,17 @@ module Bio.Bam.Header (
 
         Cigar(..),
         CigOp(..),
-        cigarToAlnLen
+        cigarToAlnLen,
+        distinctBin
     ) where
 
 import Bio.Base
 import Control.Applicative
+import Data.Bits                    ( shiftL, shiftR )
 import Data.Ix
-import Data.List                    ( (\\) )
+import Data.List                    ( (\\), foldl' )
 import Data.Monoid
-import Data.Sequence                ( (<|), (><) )
+import Data.Sequence                ( (><), (|>) )
 import Data.Version                 ( Version, showVersion )
 import Data.Word                    ( Word32 )
 import System.Environment           ( getArgs, getProgName )
@@ -58,8 +60,8 @@ import qualified Data.Foldable                  as F
 import qualified Data.Sequence                  as Z
 
 data BamMeta = BamMeta {
-        meta_hdr :: BamHeader,
-        meta_refs :: Refs,
+        meta_hdr :: !BamHeader,
+        meta_refs :: !Refs,
         meta_other_shit :: [(Char, Char, BamOtherShit)],
         meta_comment :: [S.ByteString]
     } deriving Show
@@ -98,7 +100,7 @@ instance Monoid BamMeta where
 
 data BamHeader = BamHeader {
         hdr_version :: (Int, Int),
-        hdr_sorting :: BamSorting,
+        hdr_sorting :: !BamSorting,
         hdr_other_shit :: BamOtherShit
     } deriving Show
 
@@ -123,17 +125,23 @@ data BamSorting = Unsorted | Grouped | Queryname | Coordinate | GroupSorted
 type BamOtherShit = [(Char, Char, S.ByteString)]
 
 parseBamMeta :: P.Parser BamMeta
-parseBamMeta = foldr ($) mempty <$> P.sepBy parseBamMetaLine (P.skipWhile (=='\t') >> P.char '\n')
+parseBamMeta = fixup . foldl' (flip ($)) mempty <$> P.sepBy parseBamMetaLine (P.skipWhile (=='\t') >> P.char '\n')
+  where
+    fixup meta = meta { meta_other_shit = reverse (meta_other_shit meta)
+                      , meta_comment    = reverse (meta_comment    meta) }
 
 parseBamMetaLine :: P.Parser (BamMeta -> BamMeta)
 parseBamMetaLine = P.char '@' >> P.choice [hdLine, sqLine, coLine, otherLine]
   where
     hdLine = P.string "HD\t" >>
-             (\fns meta -> meta { meta_hdr = foldr ($) (meta_hdr meta) fns })
+             (\fns meta -> let fixup hdr = hdr { hdr_other_shit = reverse (hdr_other_shit hdr) }
+                           in meta { meta_hdr = fixup $! foldl' (flip ($)) (meta_hdr meta) fns })
                <$> P.sepBy1 (P.choice [hdvn, hdso, hdother]) tabs
 
     sqLine = P.string "SQ\t" >>
-             (\fns meta -> meta { meta_refs = foldr ($) bad_seq fns <| meta_refs meta })
+             (\fns meta -> let fixup sq = sq { sq_other_shit = reverse (sq_other_shit sq) }
+                               !s = fixup $ foldl' (flip ($)) bad_seq fns
+                           in meta { meta_refs = meta_refs meta |> s })
                <$> P.sepBy1 (P.choice [sqnm, sqln, sqother]) tabs
 
     hdvn = P.string "VN:" >>
@@ -151,11 +159,11 @@ parseBamMetaLine = P.char '@' >> P.choice [hdLine, sqLine, coLine, otherLine]
     sqnm = P.string "SN:" >> (\s sq -> sq { sq_name = s }) <$> pall
     sqln = P.string "LN:" >> (\i sq -> sq { sq_length = i }) <$> P.decimal
 
-    hdother = (\t hdr -> hdr { hdr_other_shit = t : hdr_other_shit hdr }) <$> tagother
-    sqother = (\t sq  -> sq  { sq_other_shit = t : sq_other_shit sq }) <$> tagother
+    hdother = (\t hdr -> t `seq` hdr { hdr_other_shit = t : hdr_other_shit hdr }) <$> tagother
+    sqother = (\t sq  -> t `seq` sq  { sq_other_shit = t : sq_other_shit sq }) <$> tagother
 
     coLine = P.string "CO\t" >>
-             (\s meta -> meta { meta_comment = s : meta_comment meta })
+             (\s meta -> s `seq` meta { meta_comment = s : meta_comment meta })
                <$> P.takeWhile (/= 'n')
 
     otherLine = (\a b ts meta -> meta { meta_other_shit = (a,b,ts) : meta_other_shit meta })
@@ -302,6 +310,7 @@ data CigOp = Mat | Ins | Del | Nop | SMa | HMa | Pad
     deriving ( Eq, Ord, Enum, Show, Bounded, Ix )
 
 instance Show Cigar where
+    show (Cigar []) = "*"
     show (Cigar cs) = concat [ shows l (toChr op) | (op,l) <- cs ]
       where toChr = (:[]) . S.index "MIDNSHP=X" . fromEnum
 
@@ -314,3 +323,11 @@ cigarToAlnLen :: Cigar -> Int
 cigarToAlnLen (Cigar cig) = sum $ map l cig
   where l (op,n) = if op == Mat || op == Del || op == Nop then n else 0
 
+-- | Computes the "distinct bin" according to the BAM binning scheme.  If
+-- an alignment starts at @pos@ and its CIGAR implies a length of @len@
+-- on the reference, then it goes into bin @distinctBin pos len@.
+distinctBin :: Int -> Int -> Int
+distinctBin beg len = mkbin 14 $ mkbin 17 $ mkbin 20 $ mkbin 23 $ mkbin 26 $ 0
+  where end = beg + len - 1
+        mkbin n x = if beg `shiftR` n /= end `shiftR` n then x
+                    else ((1 `shiftL` (29-n))-1) `div` 7 + (beg `shiftR` n)

@@ -1,27 +1,32 @@
 import Bio.Bam
 import Bio.Base
 import Control.Monad                        ( unless, foldM )
+import Data.Version                         ( showVersion )
 import Paths_biohazard_tools                ( version )
 import System.Console.GetOpt
-import System.Environment                   ( getArgs )
+import System.Environment                   ( getArgs, getProgName )
 import System.Exit                          ( exitFailure, exitSuccess )
 import System.IO                            ( hPutStrLn )
-
-import qualified Data.ByteString      as S  ( hPut )
 
 data Conf = Conf { c_trim_pred :: [Nucleotide] -> [Qual] -> Bool
                  , c_pass_pred :: BamRec -> Bool }
 
 options :: [OptDescr (Conf -> IO Conf)]
-options = [ Option "q" ["minq"]   (ReqArg set_minq "Q") "Trim where quality is below Q"
-          , Option "m" ["mapped"] (NoArg set_monly)     "Trim only mapped sequences"
-          , Option "h?" ["help"]  (NoArg usage)         "Display this text" ]
+options = [ Option "q"  ["minq"]    (ReqArg set_minq "Q") "Trim where quality is below Q"
+          , Option "m"  ["mapped"]  (NoArg set_monly)     "Trim only mapped sequences"
+          , Option "h?" ["help"]    (NoArg usage)         "Display this text and exit"
+          , Option "V"  ["version"] (NoArg vrsn)          "Display version number and exit" ]
 
 set_minq :: String -> Conf -> IO Conf
 set_minq s c = readIO s >>= \q -> return $ c { c_trim_pred = trim_low_quality (Q q) }
 
 set_monly :: Conf -> IO Conf
 set_monly c = return $ c { c_pass_pred = \r -> isMerged r || isUnmapped r }
+
+vrsn :: Conf -> IO Conf
+vrsn _ = do pn <- getProgName
+            hPutStrLn stderr $ pn ++ ", version " ++ showVersion version
+            exitSuccess
 
 usage :: Conf -> IO Conf
 usage _ = do hPutStrLn stderr $ usageInfo info options ; exitSuccess
@@ -43,8 +48,7 @@ main = do
             where r' = decodeBamEntry r
 
     add_pg <- addPG (Just version)
-    concatDefaultInputs >=> run             $ \hdr ->           -- IO ()
-        joinI $ mapStream do_trim           $                   -- Iteratee [BamRaw]     IO ()
-        joinI $ encodeBam (add_pg hdr)      $                   -- Iteratee [ByteString] IO ()
-        mapChunksM_ (S.hPut stdout)                             -- Iteratee ByteString   IO ()
+    concatDefaultInputs >=> run $
+        joinI . mapStream do_trim .
+        protectTerm . pipeRawBamOutput . add_pg
 

@@ -7,14 +7,15 @@ module Bio.TwoBit (
         withTwoBit,
 
         getSubseq,
+        getSubseqAscii,
         getSeqnames,
         hasSequence,
         getSeqLength,
         clampPosition,
-        getRandomSeq
-    ) where
+        getRandomSeq,
 
--- TODO: proper masking is unsupported right now
+        Mask(..)
+    ) where
 
 {-
 Would you believe it?  The 2bit format stores blocks of Ns in a table at
@@ -27,21 +28,22 @@ How stupid is that?
 
 The sensible way to treat these is probably to just say there are two
 kinds of implied annotation (repeats and large gaps for a typical
-genome), which can be interpreted in whatever way fits.  All of this
-isn't really supported right now.
+genome), which can be interpreted in whatever way fits.
 
-Note to self:  use Judy for the Int->Int mappings?  Or (gasp!) sorted
-arrays with binary search?
+TODO:  use Judy for the Int->Int mappings?  Or sorted arrays with binary
+       search?
+TODO:  use 'Iteratee's for the IO instead of lazy reading
 -}
 
 import           Bio.Base
+import           Control.Applicative
 import           Control.Exception
 import           Control.Monad
-import           Data.Array.Unboxed
 import           Data.Bits
 import           Data.Binary.Get
 import qualified Data.ByteString.Char8 as S
 import qualified Data.ByteString.Lazy as L
+import           Data.Char (toLower)
 import qualified Data.IntMap as I
 import           Data.IORef
 import qualified Data.Map as M
@@ -58,8 +60,8 @@ data TwoBitFile = TBF {
 }
 
 data TwoBitSequence = Untouched { _tbs_offset    :: {-# UNPACK #-} !Int }
-                    | Indexed   { tbs_s_blocks   :: I.IntMap Int
-                                , tbs_m_blocks   :: I.IntMap Int
+                    | Indexed   { tbs_n_blocks   :: !(I.IntMap Int)
+                                , tbs_m_blocks   :: !(I.IntMap Int)
                                 , tbs_dna_offset :: {-# UNPACK #-} !Int
                                 , tbs_dna_size   :: {-# UNPACK #-} !Int }
 
@@ -67,7 +69,7 @@ openTwoBit :: FilePath -> IO TwoBitFile
 openTwoBit fp = do
     h <- openFile fp ReadMode
     raw <- pGetContents h 0
-    ~(g,ix) <- return . flip runGet raw $ do
+    let (g,ix) = flip runGet raw $ do
                 sig <- getWord32be
                 getWord32 <- case sig of
                         0x1A412743 -> return $ fromIntegral `fmap` getWord32be
@@ -81,15 +83,16 @@ openTwoBit fp = do
                 nseqs <- getWord32
                 _reserved <- getWord32
 
-                (,) getWord32 `fmap` replicateM nseqs ( liftM2 (,)
+                (,) getWord32 `fmap` repM nseqs ( liftM2 (,)
                         ( getWord8 >>= getLazyByteString . fromIntegral )
                         ( getWord32 >>= return . Untouched ) )
 
-    m <- let foldM' [    ] acc = return acc
-             foldM' (x:xs) acc = cons x acc >>= foldM' xs
-             cons (k,v) m = v `seq` newIORef v >>= \r -> return $! M.insert (shelve k) r m
-         in foldM' ix M.empty
-    return $! TBF h g m
+    TBF h g <$> loop ix M.empty
+  where
+    loop [        ] m = return m
+    loop ((k,v):xs) m = do r <- newIORef $! v ; loop xs $! M.insert (shelve k) r m
+
+
 
 closeTwoBit :: TwoBitFile -> IO ()
 closeTwoBit = hClose . tbf_handle
@@ -108,95 +111,113 @@ read_block_index tbf r = do
                                                 mb <- read_block_list
                                                 len <- getWord32 >> bytesRead
 
-                                                return $! Indexed (I.fromList $ to_good_blocks ds nb)
-                                                                  (I.fromList mb)
+                                                return $! Indexed (I.fromList nb) (I.fromList mb)
                                                                   (ofs + fromIntegral len) ds
                                    writeIORef r $! sq'
                                    return sq'
   where
     getWord32 = tbf_get_word32 tbf
-    read_block_list = getWord32 >>= \n -> liftM2 zip (read_word_list n) (read_word_list n)
-    read_word_list n = listArray (0,n-1) `fmap` repM n getWord32 >>= \arr ->
-                       (arr :: UArray Int Int) `seq` return (elems arr)
+    read_block_list = getWord32 >>= \n -> liftM2 zip (repM n getWord32) (repM n getWord32)
 
-to_good_blocks :: Int -> [(Int,Int)] -> [(Int,Int)]
-to_good_blocks total = tgb 0
-  where
-    tgb p [              ] = ( p, total - p ) : []
-    tgb p ((start,l):rest) = ( p, start - p ) : tgb (start+l) rest
-
-
+-- | Repeat monadic action 'n' times.  Returns result in reverse(!) order.
 repM :: Monad m => Int -> m a -> m [a]
-repM 0 _ = return []
-repM n m = m >>= \x -> seq x (repM (n-1) m >>= return . (x:))
-
-do_frag :: Int -> Int -> Bool -> I.IntMap Int -> (Integer -> IO L.ByteString) -> Int -> IO [Nucleotide]
-do_frag start0 len revcomplp s_blocks raw ofs0 = do
-    dna <- get_dna (if revcomplp then cmp_nt else fwd_nt)
-                   start len final_blocks raw ofs0
-    return $ if revcomplp then reverse dna else dna
-
+repM n0 m = go [] n0
   where
-    start = if revcomplp then start0 - len else start0
-    (left_junk, mfirst, left_clipped) = I.splitLookup start s_blocks
+    go acc 0 = return acc
+    go acc n = m >>= \x -> x `seq` go (x:acc) (n-1)
 
-    left_fragment = case I.maxViewWithKey left_junk of
-        Nothing -> Nothing
-        Just ((start1, len1), _) ->
-            let d = start - start1
-            in if d >= len1 then Nothing
-                            else Just (start, len1-d)
+takeOverlap :: Int -> I.IntMap Int -> [(Int,Int)]
+takeOverlap k m = dropWhile far_left $
+                  maybe id (\(kv,_) -> (:) kv) (I.maxViewWithKey left) $
+                  maybe id (\v -> (:) (k,v)) middle $
+                  I.toAscList right
+  where
+    (left, middle, right) = I.splitLookup k m
+    far_left (s,l) = s+l <= k
 
-    (right_clipped, _) = I.split (start+len) .
-                         maybe id (uncurry I.insert) left_fragment .
-                         maybe id (I.insert start) mfirst $ left_clipped
+data Mask = None | Soft | Hard | Both deriving (Eq, Ord, Enum, Show)
 
-    right_fragment = case I.maxViewWithKey right_clipped of
-        Nothing -> Nothing
-        Just ((startn, lenn), _) ->
-            let l' = start + len - startn
-            in if l' <= 0 then Nothing
-                          else Just (startn, min l' lenn)
+getFwdSubseqWith :: (Integer -> IO L.ByteString) -> Int         -- reader fn, dna offset
+                 -> I.IntMap Int -> I.IntMap Int                -- N blocks, M blocks
+                 -> (Word8 -> Mask -> a)                        -- mask function
+                 -> Int -> Int                                  -- start, len
+                 -> IO [a]                                      -- result
+getFwdSubseqWith raw ofs n_blocks m_blocks nt start len =
+    do_mask (takeOverlap start n_blocks `mergeblocks` takeOverlap start m_blocks) start .
+    take len . drop (start .&. 3) . L.foldr toDNA [] <$>
+    raw (fromIntegral $ ofs + (start `shiftR` 2))
+  where
+    toDNA b = (++) [ 3 .&. (b `shiftR` x) | x <- [6,4,2,0] ]
 
-    rdrop1 [] = [] ; rdrop1 [_] = [] ; rdrop1 (x:xs) = x : rdrop1 xs
+    do_mask            _ _ [] = []
+    do_mask [          ] _ ws = map (flip nt None) ws
+    do_mask ((s,l,m):is) p ws = let l0 = (p-s) `max` 0 in
+                                map (flip nt None) (take l0 ws) ++
+                                map (flip nt    m) (take l (drop l0 ws)) ++
+                                do_mask is (p+l0+l) (drop (l+l0) ws)
 
-    final_blocks = rdrop1 (I.toAscList right_clipped) ++ maybe [] (:[]) right_fragment
+-- | Merge blocks of Ns and blocks of Ms into single list of blocks with
+-- masking annotation.  Gaps remain.  Used internally only.
+mergeblocks :: [(Int,Int)] -> [(Int,Int)] -> [(Int,Int,Mask)]
+mergeblocks ((_,0):nbs) mbs = mergeblocks nbs mbs
+mergeblocks nbs ((_,0):mbs) = mergeblocks nbs mbs
 
+mergeblocks ((ns,nl):nbs) ((ms,ml):mbs)
+    | ns < ms   = let l = min (ms-ns) nl in (ns,l, Hard) : mergeblocks ((ns+l,nl-l):nbs) ((ms,ml):mbs)
+    | ms < ns   = let l = min (ns-ms) ml in (ms,l, Soft) : mergeblocks ((ns,nl):nbs) ((ms+l,ml-l):mbs)
+    | otherwise = let l = min nl ml in (ns,l, Both) : mergeblocks ((ns+l,nl-l):nbs) ((ms+l,ml-l):mbs)
+
+mergeblocks ((ns,nl):nbs) [] = (ns,nl, Hard) : mergeblocks nbs []
+mergeblocks [] ((ms,ml):mbs) = (ms,ml, Soft) : mergeblocks [] mbs
+
+mergeblocks [     ] [     ] = []
+
+
+-- | Extract a subsequence and apply masking.  TwoBit file can represent
+-- two kinds of masking (hard and soft), where hard masking is usually
+-- realized by replacing everything by Ns and soft masking is done by
+-- lowercasing.  Here, we take a user supplied function to apply
+-- masking.
+getSubseqWith :: (Nucleotide -> Mask -> a) -> TwoBitFile -> Range -> IO [a]
+getSubseqWith maskf tbf (Range { r_pos = Pos { p_seq = chr, p_start = start }, r_length = len }) = do
+    ref <- maybe (fail $ S.unpack chr ++ " doesn't exist") return $ M.lookup chr (tbf_seqs tbf)
+    sq1 <- read_block_index tbf ref
+
+    let go = getFwdSubseqWith (pGetContents $ tbf_handle tbf) (tbs_dna_offset sq1)
+                              (tbs_n_blocks sq1) (tbs_m_blocks sq1)
+
+    if start < 0 then reverse <$> go (maskf . cmp_nt) (-start-len) len
+                 else             go (maskf . fwd_nt)  start      len
+  where
     fwd_nt = (!!) [nucT, nucC, nucA, nucG] . fromIntegral
     cmp_nt = (!!) [nucA, nucG, nucT, nucC] . fromIntegral
 
 
-
-get_dna :: (Word8 -> Nucleotide) -> Int -> Int -> [(Int, Int)] -> (Integer -> IO L.ByteString) -> Int -> IO [Nucleotide]
-get_dna _nt _start total [] _raw _ofs0              = return $ replicate total nucN
-get_dna _nt _start total _  _raw _ofs0 | total <= 0 = return []
-get_dna  nt  start total blocks0@((start1, len1) : blocks) raw ofs
-    | start /= start1 =
-        (replicate (start1-start) nucN ++) `fmap`
-        get_dna nt start1 (total-start1+start) blocks0 raw ofs
-    | otherwise = do
-        s <- L.take bytes' `fmap` raw (fromIntegral $ ofs + (ofs' `div` 4))
-        let dna = take len1 . drop (start1 .&. 3) . L.foldr toDNA [] $ s
-        (++) dna `fmap` get_dna nt (start+len1) (total-len1) blocks raw ofs
-  where ofs'   = start1 .&. complement 3
-        bytes' = fromIntegral $ (len1 + (start1 .&. 3) + 3) `div` 4
-        toDNA b = (++) [ nt (3 .&. (b `shiftR` x)) | x <- [6,4,2,0] ]
-
-
-
+-- | Extract a subsequence with typical masking:  soft masking is
+-- ignored, hard masked regions are replaced with Ns.
 getSubseq :: TwoBitFile -> Range -> IO [Nucleotide]
-getSubseq tbf (Range { r_pos = Pos { p_seq = chr, p_start = start }, r_length = len }) = do
-             ref <- maybe (fail $ S.unpack chr ++ " doesn't exist") return
-                    $ M.lookup chr (tbf_seqs tbf)
-             sq1 <- read_block_index tbf ref
-             let go | start < 0 = do_frag (-start-len) len True
-                    | otherwise = do_frag   start      len False
-             go (tbs_s_blocks sq1) (pGetContents $ tbf_handle tbf) (tbs_dna_offset sq1)
+getSubseq = getSubseqWith mymask
+  where
+    mymask n None = n
+    mymask n Soft = n
+    mymask _ Hard = nucN
+    mymask _ Both = nucN
+
+-- | Extract a subsequence with masking for biologists:  soft masking is
+-- done by lowercasing, hard masking by printing an N.
+getSubseqAscii :: TwoBitFile -> Range -> IO String
+getSubseqAscii = getSubseqWith mymask
+  where
+    mymask n None = showNucleotide n
+    mymask n Soft = toLower (showNucleotide n)
+    mymask _ Hard = 'N'
+    mymask _ Both = 'N'
+
 
 pGetContents :: Handle -> Integer -> IO L.ByteString
 pGetContents hdl ofs = L.fromChunks `fmap` go ofs
   where
-    chunk_size = 4096
+    chunk_size = 32000
     go o = unsafeInterleaveIO $ liftM2 (:)
             (hSeek hdl AbsoluteSeek o >> S.hGet hdl chunk_size)
             (go $ o + fromIntegral chunk_size)

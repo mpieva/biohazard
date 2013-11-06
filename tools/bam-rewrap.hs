@@ -26,6 +26,7 @@
 import Bio.Bam
 import Bio.Base
 import Control.Monad                    ( when )
+import Data.Version                     ( showVersion )
 import Paths_biohazard_tools            ( version )
 import System.Environment               ( getArgs, getProgName )
 import System.Exit                      ( exitFailure )
@@ -37,7 +38,8 @@ import qualified Data.Sequence          as Z
 
 usage :: IO a
 usage = do pn <- getProgName
-           hPutStr stderr $ "Usage: " ++ pn ++ "[chrom:length...]\n\
+           hPutStr stderr $ pn ++ ", version " ++ showVersion version ++
+                "Usage: " ++ pn ++ "[chrom:length...]\n\
                 \Pipes a BAM file from stdin to stdout and for every 'chrom'\n\
                 \mentioned on the command line, wraps alignments to a new \n\
                 \target length of 'length'.\n"
@@ -51,7 +53,7 @@ main = getArgs >>= \args ->
            add_pg <- liftIO (addPG $ Just version)
            let (ltab, seqs') = parseArgs (meta_refs hdr) args
            joinI $ mapChunks (concatMap (rewrap (M.fromList ltab)))
-                 $ pipeRawBamOutput (add_pg hdr { meta_refs = seqs' })
+                 $ protectTerm $ pipeRawBamOutput (add_pg hdr { meta_refs = seqs' })
 
 parseArgs :: Refs -> [String] -> ([(Refseq,(Int,S.ByteString))], Refs)
 parseArgs = foldl parseArg . (,) []
@@ -197,6 +199,7 @@ rewrap m br = case M.lookup (br_rname br) m of
 
     do_simple_wrap nm l = [ mutateBamRaw br $ do setPos (br_pos br `mod` l)
                                                  setMpos (br_mpos br `mod` l)
+                                                 setBin (br_pos br `mod` l) (br_aln_length br)
                                                  when (dups_are_fine nm l) (setMapq 37 >> removeExt "XA") ]
 
 -- | Split an 'ECig' into two at some position.  The position is counted
