@@ -1,13 +1,10 @@
--- | Basically a reexport of @Data.Iteratee@ less the names that clash
--- with @Prelude@ plus a handful of utilities.
-
 {-# LANGUAGE PatternGuards, BangPatterns #-}
 module Bio.Iteratee (
     groupStreamBy,
     groupStreamOn,
     i'getString,
     i'lookAhead,
-    i'take,
+    takeStream,
     mapStreamM,
     mapStreamM_,
     filterStream,
@@ -50,6 +47,9 @@ module Bio.Iteratee (
     module Data.Iteratee.Parallel
                     ) where
 
+-- ^ Basically a reexport of "Data.Iteratee" less the names that clash
+-- with "Prelude" plus a handful of utilities.
+
 import Bio.Base ( findAuxFile )
 import Control.Concurrent
 import Control.Monad
@@ -71,9 +71,9 @@ import qualified Data.ByteString as S
 import qualified Data.Iteratee as I
 
 
--- | Grouping on @Iteratee@s.  @groupStreamOn proj inner outer@ executes
+-- | Grouping on 'Iteratee's.  @groupStreamOn proj inner outer@ executes
 -- @inner (proj e)@, where @e@ is the first input element, to obtain an
--- @Iteratee i@, then passes elements @e@ to @i@ as long as @proj e@
+-- 'Iteratee' @i@, then passes elements @e@ to @i@ as long as @proj e@
 -- produces the same result.  If @proj e@ changes or the input ends, the
 -- pair of @proj e@ and the result of @run i@ is passed to @outer@.  At
 -- end of input, the resulting @outer@ is returned.
@@ -89,12 +89,12 @@ groupStreamOn proj inner = eneeCheckIfDone (liftI . step)
         | otherwise  = let x = proj (LL.head as)
                        in lift (inner x) >>= \i -> step' x i outer c
 
-    -- We want to feed a @Chunk@ to the inner @Iteratee@, which might be
+    -- We want to feed a 'Chunk' to the inner 'Iteratee', which might be
     -- finished.  In that case, we would want to abort, but we cannot,
     -- since the outer iteration is still going on.  So instead we
-    -- discard data we would have fed to the inner @Iteratee@.  (Use of
-    -- @enumPure1Chunk@ is not appropriate, it would accumulate the
-    -- data, just to have it discarded by the @run@ that eventually
+    -- discard data we would have fed to the inner 'Iteratee'.  (Use of
+    -- 'enumPure1Chunk' is not appropriate, it would accumulate the
+    -- data, just to have it discarded by the 'run' that eventually
     -- happens.
 
     step' c it outer (Chunk as)
@@ -109,11 +109,12 @@ groupStreamOn proj inner = eneeCheckIfDone (liftI . step)
         lift (run it) >>= \b -> eneeCheckIfDone (\k -> step k str) . outer $ Chunk [(c,b)]
 
 
--- | Grouping on @Iteratee@s.  @i'groupBy cmp inner outer@ executes
--- @inner@ to obtain an @Iteratee i@, then passes elements @e@ to @i@ as
--- long as @cmp e' e@, where @e'@ is some preceeding element, is true.
--- Else, the result of @run i@ is passed to @outer@ and @i'groupBy@
--- restarts.  At end of input, the resulting @outer@ is returned.
+-- | Grouping on 'Iteratee's.  @groupStreamBy cmp inner outer@ executes
+-- @inner@ to obtain an 'Iteratee' @i@, then passes elements @e@ to @i@
+-- as long as @cmp e0 e@, where @e0@ is some preceeding element, is
+-- true.  Else, the result of @run i@ is passed to @outer@ and
+-- 'groupStreamBy' restarts.  At end of input, the resulting @outer@ is
+-- returned.
 groupStreamBy :: (Monad m, LL.ListLike l t, NullPoint l, Nullable l)
               => (t -> t -> Bool)
               -> m (Iteratee l m t2)
@@ -137,8 +138,9 @@ groupStreamBy cmp inner = eneeCheckIfDone (liftI . step)
         lift (run it) >>= \b -> eneeCheckIfDone (\k -> step k str) . outer $ Chunk [b]
 
 
-i'take :: (Monad m, Nullable s, ListLike s el) => Int -> Enumeratee s s m a
-i'take = I.take
+-- | Take a prefix of a stream, the equivalent of 'Data.List.take'.
+takeStream :: (Monad m, Nullable s, ListLike s el) => Int -> Enumeratee s s m a
+takeStream = I.take
 
 
 -- | Run an Iteratee, collect the input.  When it finishes, return the
@@ -155,7 +157,7 @@ i'lookAhead = go mempty
 
 
 -- | Collects a string of a given length.  Don't use this for long
--- strings, use @Data.Iteratee.ListLike.take@ instead.
+-- strings, use 'takeStream' instead.
 i'getString :: Monad m => Int -> Iteratee S.ByteString m S.ByteString
 i'getString 0 = idone S.empty (Chunk S.empty)
 i'getString n = liftI $ step [] 0
@@ -166,16 +168,16 @@ i'getString n = liftI $ step [] 0
                          | otherwise           = liftI $ step (c:acc) (l + S.length c)
 
 infixl 1 $==
--- | Compose an @Enumerator'@ with an @Enumeratee@, giving a new
--- @Enumerator'@.
+-- | Compose an 'Enumerator\'' with an 'Enumeratee', giving a new
+-- 'Enumerator\''.
 ($==) :: Monad m => Enumerator' hdr input m (Iteratee output m result)
                  -> Enumeratee      input             output m result
                  -> Enumerator' hdr                   output m result
 ($==) enum enee iter = run =<< enum (\hdr -> enee $ iter hdr)
 
--- | Merge two @Enumerator'@s into one.  The header provided by the
--- inner @Enumerator'@ is passed to the output iterator, the header
--- provided by the outer @Enumerator'@ is passed to the merging iteratee
+-- | Merge two 'Enumerator\''s into one.  The header provided by the
+-- inner 'Enumerator\'' is passed to the output iterator, the header
+-- provided by the outer 'Enumerator\'' is passed to the merging iteratee
 --
 -- XXX  Something about those headers is unsatisfactory... there should
 --      be an unobtrusive way to combine headers.
@@ -187,11 +189,11 @@ mergeEnums' :: (Nullable s2, Nullable s1, Monad m)
             -> Enumerator' hi s1 m a
 mergeEnums' e1 e2 etee i = e1 $ \hi -> e2 (\ho -> joinI . etee ho $ ilift lift (i hi)) >>= run
 
--- | Apply a filter predicate to an @Iteratee@.
+-- | Apply a filter predicate to an 'Iteratee'.
 filterStream :: (Monad m, ListLike s a, NullPoint s) => (a -> Bool) -> Enumeratee s s m r
 filterStream = mapChunks . LL.filter
 
--- | Apply a monadic filter predicate to an @Iteratee@.
+-- | Apply a monadic filter predicate to an 'Iteratee'.
 filterStreamM :: (Monad m, ListLike s a, Nullable s, NullPoint s) => (a -> m Bool) -> Enumeratee s s m r
 filterStreamM k = mapChunksM (go id)
   where
@@ -200,23 +202,23 @@ filterStreamM k = mapChunksM (go id)
                               let acc' = if p then LL.cons (LL.head s) . acc else acc
                               go acc' (LL.tail s)
 
--- | Map a monadic function over an @Iteratee@.
+-- | Map a monadic function over an 'Iteratee'.
 mapStreamM :: (Monad m, ListLike (s el) el, ListLike (s el') el', NullPoint (s el), Nullable (s el), LooseMap s el el')
            => (el -> m el') -> Enumeratee (s el) (s el') m a
 mapStreamM = mapChunksM . LL.mapM
 
--- | Map a monadic function over an @Iteratee@.
+-- | Map a monadic function over an 'Iteratee', discarding the results.
 mapStreamM_ :: (Monad m, Nullable s, ListLike s el) => (el -> m b) -> Iteratee s m ()
 mapStreamM_ = mapChunksM_ . LL.mapM_
 
--- | Fold a monadic function over an @Iteratee@.
+-- | Fold a monadic function over an 'Iteratee'.
 foldStreamM :: (Monad m, Nullable s, ListLike s a) => (b -> a -> m b) -> b -> Iteratee s m b
 foldStreamM k = foldChunksM go
   where
     go b s | LL.null s = return b
            | otherwise = k b (LL.head s) >>= \b' -> go b' (LL.tail s)
 
--- | Fold a function over an @Iteratee@.
+-- | Fold a function over an 'Iteratee'.
 foldStream :: (Monad m, Nullable s, ListLike s a) => (b -> a -> b) -> b -> Iteratee s m b
 foldStream f = foldChunksM (\b s -> return $! LL.foldl' f b s)
 
@@ -236,10 +238,10 @@ enumInputs xs = go xs
         go ( f :fs) = enumFile defaultBufSize f >=> go fs
         go [      ] = return
 
--- | Default buffer size in elements.  This is 1024 in @Iteratee@, which
--- is obviously too small.  Since we want to merge many files, a read
--- should take more time than a seek.  This sets the sensible buffer
--- size to more than about one MB.
+-- | Default buffer size in elements.  This is 1024 in "Data.Iteratee",
+-- which is obviously too small.  Since we want to merge many files, a
+-- read should take more time than a seek.  This sets the sensible
+-- buffer size to more than about one MB.
 defaultBufSize :: Int
 defaultBufSize = 2*1024*1024
 
@@ -259,10 +261,10 @@ mergeSortStreams comp = eneeCheckIfDone step
         (Nothing, Just  y) -> do lift (I.drop 1) ; eneeCheckIfDone step . out . Chunk $ LL.singleton y
         (Nothing, Nothing) -> do idone (liftI out) $ EOF Nothing
 
--- | Map a function over chunks, running in a separate (light weight)
--- thread for each chunk.  MonadIO is needed for the forking.
 newtype Ch a = Ch (MVar (Maybe (a, Ch a)))
 
+-- | Map a function over chunks, running in a separate (light weight)
+-- thread for each chunk.  'MonadIO' is needed for the forking.
 mapChunksMP :: (MonadIO m, Nullable a) => (a -> IO b) -> Enumeratee a b m c
 mapChunksMP f it = do chan <- liftIO $ Ch `liftM` newEmptyMVar
                       eneeCheckIfDone (liftI . go 0 chan chan) it
@@ -295,6 +297,9 @@ mapChunksMP f it = do chan <- liftIO $ Ch `liftM` newEmptyMVar
                           _ <- liftIO . forkIO $ do r <- f c ; putMVar back (Just (r, back'))
                           liftI $ go (num+1) (Ch chan) back' k
 
+-- | Protects the terminal from binary junk.  If @i@ is an 'Iteratee'
+-- that might write binary to 'stdout', then @protectTerm i@ is the same
+-- 'Iteratee', but it will abort if 'stdout' is a terminal device.
 protectTerm :: (Nullable s, MonadIO m) => Iteratee s m a -> Iteratee s m a
 protectTerm itr = do
     t <- liftIO $ hIsTerminalDevice stdout

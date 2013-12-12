@@ -471,7 +471,7 @@ decodeBam inner = do meta <- liftBlock get_bam_header
     get_bam_header  = do magic <- heads "BAM\SOH"
                          when (magic /= 4) $ fail "BAM signature not found"
                          hdr_len <- endianRead4 LSB
-                         joinI $ i'take (fromIntegral hdr_len) $ parserToIteratee parseBamMeta
+                         joinI $ takeStream (fromIntegral hdr_len) $ parserToIteratee parseBamMeta
 
     get_ref_array = do nref <- endianRead4 LSB
                        foldM (\acc _ -> do

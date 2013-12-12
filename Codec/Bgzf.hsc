@@ -6,7 +6,7 @@
 -- file offsets, so that seeking is possible.
 
 module Codec.Bgzf (
-    Block(..), decompressBgzf, decompressPlain, compressBgzf,
+    Block(..), decompressBgzf', decompressBgzf, decompressPlain, compressBgzf,
     maxBlockSize, bgzfEofMarker, liftBlock, getOffset,
     isBgzf, isGzip
                      ) where
@@ -74,8 +74,11 @@ decompressPlain = eneeCheckIfDone (liftI . step 0)
 
 newtype Ch a = Ch (MVar (Maybe (a, Ch a)))
 
--- | Generic decompression where a function determines how to assemble
--- blocks.
+-- | Decompress a BGZF stream into a stream of 'S.ByteString's.
+decompressBgzf' :: MonadIO m => Enumeratee S.ByteString S.ByteString m a
+decompressBgzf' = decompressBgzf ><> mapChunks block_contents
+
+-- | Decompress a BGZF stream into a stream of 'Block's.
 decompressBgzf :: MonadIO m => Enumeratee S.ByteString Block m a
 decompressBgzf it = do chan <- liftIO $ Ch `liftM` newEmptyMVar
                        dc 0 chan chan 0 it
