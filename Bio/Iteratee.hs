@@ -47,9 +47,6 @@ module Bio.Iteratee (
     module Data.Iteratee.Parallel
                     ) where
 
--- ^ Basically a reexport of "Data.Iteratee" less the names that clash
--- with "Prelude" plus a handful of utilities.
-
 import Bio.Base ( findAuxFile )
 import Control.Concurrent
 import Control.Monad
@@ -69,6 +66,9 @@ import System.Environment ( getArgs )
 import qualified Data.ListLike as LL
 import qualified Data.ByteString as S
 import qualified Data.Iteratee as I
+
+-- ^ Basically a reexport of "Data.Iteratee" less the names that clash
+-- with "Prelude" plus a handful of utilities.
 
 
 -- | Grouping on 'Iteratee's.  @groupStreamOn proj inner outer@ executes

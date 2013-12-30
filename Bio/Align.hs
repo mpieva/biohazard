@@ -24,10 +24,28 @@ foreign import ccall unsafe "myers_align.h myers_diff" myers_diff ::
         CString ->                      -- backtracing space B
         IO CInt                         -- returns distance
 
-data Mode = Globally | IsPrefix | HasPrefix deriving Enum
+-- | Mode argument for 'myersAlign', determines where free gaps are
+-- allowed.
+data Mode = Globally  -- ^ align globally, without gaps at either end
+          | IsPrefix  -- ^ align so that the first sequence is a prefix of the second
+          | HasPrefix -- ^ align so that the second sequence is a prefix of the first
+    deriving Enum
 
-myersAlign :: S.ByteString -> S.ByteString -> Mode -> Int -> (Int, S.ByteString, S.ByteString)
-myersAlign seqA seqB mode maxd =
+-- | Align two strings.  @myersAlign maxd seqA mode seqB@ tries to align
+-- @seqA@ to @seqB@, which will work as long as no more than @maxd@ gaps
+-- or mismatches are incurred.  The @mode@ argument determines if either
+-- of the sequences is allowed to have an overhanging tail.
+--
+-- The result is the triple of the actual distance (gaps + mismatches)
+-- and the two padded sequences.  These sequences are the original
+-- sequences with dashes inserted for gaps.
+--
+-- The algorithm is the O(nd) algorithm by Myers, implemented in C.  A
+-- gap and a mismatch score the same, and a match is simply defined as
+-- the exact same byte.
+
+myersAlign :: Int -> S.ByteString -> Mode -> S.ByteString -> (Int, S.ByteString, S.ByteString)
+myersAlign maxd seqA mode seqB =
     unsafePerformIO                                 $
     S.unsafeUseAsCStringLen seqA                    $ \(seq_a, len_a) ->
     S.unsafeUseAsCStringLen seqB                    $ \(seq_b, len_b) ->
@@ -46,11 +64,18 @@ myersAlign seqA seqB mode maxd =
          S.packCString bt_a  <*>
          S.packCString bt_b
 
-showAligned :: Int -> [S.ByteString] -> L.ByteString
-showAligned w ss | all S.null ss = L.empty
-                 | otherwise = L.concat [ L.unlines $ map (L.fromChunks . (:[])) lefts
-                                        , L.pack $ agreement ++ "\n\n"
-                                        , showAligned w rights ]
+
+-- | Nicely print an alignment.  An alignment is simply a list of
+-- strings with inserted gaps to make them align.  We split them into
+-- manageable chunks, stack them vertically and add a line showing
+-- asterisks in every column where all aligned strings agree.  The
+-- result is /almost/ the Clustal format.
+showAligned :: Int -> [S.ByteString] -> [L.ByteString]
+showAligned w ss | all S.null ss = []
+                 | otherwise = map (L.fromChunks . (:[])) lefts ++
+                               L.pack agreement :
+                               L.empty :
+                               showAligned w rights
   where
     (lefts, rights) = unzip $ map (S.splitAt w) ss
     agreement = map star $ S.transpose lefts
