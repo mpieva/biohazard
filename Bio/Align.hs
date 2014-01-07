@@ -27,8 +27,8 @@ foreign import ccall unsafe "myers_align.h myers_diff" myers_diff ::
 -- | Mode argument for 'myersAlign', determines where free gaps are
 -- allowed.
 data Mode = Globally  -- ^ align globally, without gaps at either end
-          | IsPrefix  -- ^ align so that the first sequence is a prefix of the second
           | HasPrefix -- ^ align so that the second sequence is a prefix of the first
+          | IsPrefix  -- ^ align so that the first sequence is a prefix of the second
     deriving Enum
 
 -- | Align two strings.  @myersAlign maxd seqA mode seqB@ tries to align
@@ -41,8 +41,10 @@ data Mode = Globally  -- ^ align globally, without gaps at either end
 -- sequences with dashes inserted for gaps.
 --
 -- The algorithm is the O(nd) algorithm by Myers, implemented in C.  A
--- gap and a mismatch score the same, and a match is simply defined as
--- the exact same byte.
+-- gap and a mismatch score the same.  The strings are supposed to code
+-- for DNA, the code understands IUPAC ambiguity codes.  Two characters
+-- match iff there is at least one nucleotide both can code for.  Note
+-- that N is a wildcard, while X matches nothing.
 
 myersAlign :: Int -> S.ByteString -> Mode -> S.ByteString -> (Int, S.ByteString, S.ByteString)
 myersAlign maxd seqA mode seqB =
@@ -60,9 +62,11 @@ myersAlign maxd seqA mode seqB =
                (fromIntegral $ fromEnum mode)
                seq_b (fromIntegral len_b)
                (fromIntegral maxd) bt_a bt_b      >>= \dist ->
-    (,,) (fromIntegral dist) <$>
-         S.packCString bt_a  <*>
-         S.packCString bt_b
+    if dist < 0
+      then return (maxBound, S.empty, S.empty)
+      else (,,) (fromIntegral dist) <$>
+                S.packCString bt_a  <*>
+                S.packCString bt_b
 
 
 -- | Nicely print an alignment.  An alignment is simply a list of
@@ -79,5 +83,5 @@ showAligned w ss | all S.null ss = []
   where
     (lefts, rights) = unzip $ map (S.splitAt w) ss
     agreement = map star $ S.transpose lefts
-    star str = if S.null str || S.all (== S.head str) str then ' ' else '*'
+    star str = if S.null str || S.all (== S.head str) str then '*' else ' '
 
