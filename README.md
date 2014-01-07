@@ -20,9 +20,12 @@ Installation
 Biohazard uses Cabal, the standard installation mechanism for Haskell.  
 To install, follow these steps:
 
-* install the Haskell Platform or have some one install it (see http://www.haskell.org/platform/ for details),
-* run "cabal update" (takes a while to download the current package list),
-* run "cabal install" in the biohazard directory (takes even longer).
+* install a useable Haskell environment, either
+** install the Haskell Platform or have some one install it (see http://haskell.org/platform/ for details), or
+** install GHC (see http://haskell.org/ghc) and bootstrap Cabal (see
+http://haskell.org/cabal),
+** run "cabal update" (takes a while to download the current package list),
+* run "cabal install <pkg-list>" in the biohazard directory (takes even longer).
 
 That's it.  The "cabal update" step will tell you that there's a new version of
 cabal-install, which you can install.  Feel free to do that, it's not
@@ -33,6 +36,9 @@ then install biohazard.  Before running "cabal install", you can run
 "cabal install --dry-run -v" to check what it will do.  It should tell 
 you that it's going to install a number of new libraries, but it 
 shouldn't try any updates.
+
+It's usually best to install all relevant packages at the same time, so
+you'd probably invoke "cabal install biohazard/ biohazard-tools/"
 
 When done, on an unmodified Cabal setup, you will find the binaries in 
 ${HOME}/cabal/bin.  Cabal can install them in a different place, please 
