@@ -9,7 +9,7 @@ License:             BSD3
 License-File:        LICENSE
 
 Author:              Udo Stenzel
-Maintainer:          udo_stenzel@eva.mpg.de
+Maintainer:          udo.stenzel@eva.mpg.de
 Copyright:           (C) 2010 Udo Stenzel
 
 -- Extra files to be distributed with the package, such as examples or a README.
@@ -27,7 +27,7 @@ source-repository head
 source-repository this
   type:     git
   location: git://github.com/udo-stenzel/biohazard.git
-  tag:      0.5.3
+  tag:      0.5.4
 
 Executable bam-fixpair
   Ghc-options:         -Wall -auto-all -threaded -rtsopts

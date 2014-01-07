@@ -1,0 +1,55 @@
+.\" Process this file with
+.\" groff -man -Tascii bam-rmdup.1
+.\"
+.TH MT-ANNO 1 "JANUARY 2014" Applications "User Manuals"
+.SH NAME
+mt-anno \- annotate a
+.IR human (!)
+mitochondrion
+
+.SH SYNOPSIS
+.B mt-anno 
+<
+.I junk.fa
+> 
+.I crap.txt
+
+.SH DESCRIPTION
+.B mt-anno
+reads a set of
+.IR human (!)
+mitochondrial sequences in fasta format from stdin and for each of them
+writes a Genbank formatted annotation and the set of coded protein
+sequences in fasta format to stdout.
+
+The annotation is built in and applied blindly.  This is a 
+.IR "very stupid" ", " "very useless" " and " "very wasteful"
+thing to do, but biologists have been asking for it repeatedly.  
+.B DO NOT USE
+this tool if you like to think of yourself as a scientist!
+
+.SH OPTIONS
+
+.B mt-anno
+comes without options and is not customizable.  If you think any options
+or any further documentation might be useful, you are confused.
+Actually, if you want to use it at all, you are confused.
+
+.SH BUGS
+
+All 
+.B mt-anno
+does is take the "official" annotation of rCRS and translate its
+coordinates.  If after translation the annotation doesn't make sense
+anymore, there is no warning.  If translated proteins lost their start
+codon or gained a stop codon, there is no warning.  If there is a
+frame shift mutation, there is no warning.  Arguable, the whole idea of
+.B mt-anno
+is one big bug, but it's considered unfixable.
+
+.SH AUTHOR
+Udo Stenzel <udo_stenzel@eva.mpg.de>
+
+.SH "SEE ALSO"
+.BR biohazard (7), fasta (5)
+

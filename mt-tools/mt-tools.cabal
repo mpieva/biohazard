@@ -1,0 +1,23 @@
+Name:                mt-tools
+Version:             0.1.0.0
+Synopsis:            tools that work on mitochondrial sequences
+Category:            Bioinformatics
+Homepage:            http://github.com/udo-stenzel/biohazard
+License:             BSD3
+License-File:        LICENSE
+Author:              Udo Stenzel
+Maintainer:          udo.stenzel@eva.mpg.de
+Copyright:           (C) 2014 Udo Stenzel
+
+-- Extra files to be distributed with the package, such as examples or a README.
+Extra-Source-Files:  man/man1/mt-anno.1
+
+Cabal-Version:       >=1.8
+Build-Type:          Custom
+
+executable mt-anno
+  Main-Is:             mt-anno.hs
+  Other-Modules:       Anno, Seqs, Xlate
+  Build-Depends:       base ==4.*, bytestring, biohazard >=0.5.2, containers ==0.5.*
+
+-- vim:tw=132
