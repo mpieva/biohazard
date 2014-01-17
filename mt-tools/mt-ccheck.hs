@@ -1,3 +1,4 @@
+{-# LANGUAGE OverloadedStrings, BangPatterns, RecordWildCards #-}
 -- Simple Mitochondrial Contamination Check on BAM files.
 --
 -- This is based on Ye Olde Contamination Check for the Neanderthal
@@ -35,52 +36,96 @@
 --     derive diagnostic positions from that.
 --
 --     - Needs the same description of the contaminant thingy.
+--
+-- (4) Consider Read Groups.
+--
+--     - One result per read group (or maybe per library, alternatively
+--       per file) should be produced.
+--     - The "aDNA" setting should be determined from either the @RG
+--       header or from an external source.
+
 
 import Bio.Base
 import Bio.Bam
 import Bio.Iteratee
+import Control.Applicative
+import Control.Monad
+import Data.Bits
+import Data.Monoid
+import Data.List
+import Numeric
+import System.Console.GetOpt
+import System.Environment
+import System.Exit
+import System.IO
 
-import qualified Data.HashMap.Strict as HM
-import qualified Data.IntMap.Strict as IM
-import qualified Data.ByteString as B
+import qualified Data.HashMap.Strict        as HM
+import qualified Data.IntMap.Strict         as IM
+import qualified Data.ByteString.Char8      as S
 
-data Conf = Conf {}
+data Conf = Conf {
+        conf_adna :: Adna,
+        conf_verbosity :: Int,
+        conf_header :: HeaderFn,
+        conf_output :: OutputFn,
+        conf_shoot_foot :: Bool,
+        conf_dp_list :: DpList
+    }
 
 options :: [OptDescr (Conf -> IO Conf)]
-options = []
+options = public_options ++ hidden_options
+  where
+    public_options = [
+        Option "a" ["ancient","dsprot"] (NoArg (set_adna ancientDNAds)) "Treat DNA as ancient, double strand protocol",
+        Option "s" ["ssprot"]           (NoArg (set_adna ancientDNAss)) "Treat DNA as ancient, single strand protocol",
+        Option ""  ["fresh"]            (NoArg (set_adna     freshDNA)) "Treat DNA as fresh (not ancient)",
+        Option "T" ["table"]            (NoArg        set_output_table) "Print output in table form",
+
+        Option "v" ["verbose"]          (NoArg    (mod_verbosity succ)) "Produce more debug output",
+        Option "q" ["quiet"]            (NoArg    (mod_verbosity pred)) "Produce less debug output",
+        Option "h?" ["help","usage"]    (NoArg                   usage) "Print this message and exit"
+      ]
+
+    hidden_options = [
+        Option ""  ["shoot","foot"]     (NoArg set_shoot_foot) []
+      ]
+
+    usage _ = do pn <- getProgName
+                 hPutStrLn stderr $ usageInfo ("Usage: " ++ pn ++ " [OPTION...] [Bam-File...]") public_options
+                 exitSuccess
+
+    set_shoot_foot   c = return $ c { conf_shoot_foot = True }
+    set_adna       a c = return $ c { conf_adna = a }
+    set_output_table c = return $ c { conf_output = show_result_table, conf_header = header_table }
+    mod_verbosity  f c = return $ c { conf_verbosity = f (conf_verbosity c) }
+
+
+conf0 :: IO Conf
+conf0 = return $ Conf { conf_adna = freshDNA
+                      , conf_verbosity = 1
+                      , conf_header = ""
+                      , conf_output = show_result_plain
+                      , conf_shoot_foot = False
+                      , conf_dp_list = error "no diagnostic positions defined"
+                      }
 
 {- Old options... may or may not be of much use.
 
-
 struct option longopts[] = {
 	{ "reference", required_argument, 0, 'r' },
-	{ "ancient", no_argument, 0, 'a' },
-	{ "verbose", no_argument, 0, 'v' },
-	{ "help",    no_argument, 0, 'h' },
 	{ "transversions", no_argument, 0, 't' },
 	{ "span", required_argument, 0, 's' },
 	{ "maxd", required_argument, 0, 'd' },
-    { "table", no_argument, 0, 'T' },
-    { "shoot", no_argument, 0, 'F' },
-    { "foot", no_argument, 0, 'F' },
-	{ 0,0,0,0 }
 } ;
 
 void usage( const char* pname )
 {
-	fputs( "Usage: ", stdout ) ;
-	fputs( pname, stdout ) ;
-	fputs( " [-r <ref.fa>] [-a] [-t] [-s M-N] [-v] <aln.maln> \n\n"
 		"Reads a maln file and tries to quantify contained contamination.\n"
 		"Options:\n"
 		"  -r, --reference FILE     FASTA file with the likely contaminant (default: builtin mt311)\n"
-		"  -a, --ancient            Treat DNA as ancient (i.e. likely deaminated)\n"
 		"  -t, --transversions      Treat only transversions as diagnostic\n"
 		"  -s, --span M-N           Look only at range from M to N\n"
 		"  -n, --numpos N           Require N diagnostic sites in a single read (default: 1)\n"
-        "  -T, --table              Output as tables (easier for scripts, harder on the eyes)\n"
-		"  -v, --verbose            Increase verbosity level (can be repeated)\n"
-		"  -h, --help               Print this help message\n\n", stdout ) ;
 }
 -}
 
@@ -96,14 +141,14 @@ data Dp = Dp { dp_clean_allele :: !Nucleotide
 type DpList = IM.IntMap Dp
 
 show_dp_list :: DpList -> ShowS
-show_dp_list = foldMapWithKey $ \pos (Dp cln drt) ->
+show_dp_list = flip IM.foldrWithKey id $ \pos (Dp cln drt) k ->
     (:) '<' . shows pos . (:) ':' . shows drt .
-    (:) ',' . shows cln . (++) ">, "
+    (:) ',' . shows cln . (++) ">, " . k
 
 
 -- | Reads are classified into one of these.
 data Klass = Unknown | Clean | Dirty | Conflict | Nonsense
-  deriving (Ord, Eq, Enum, Show)
+  deriving (Ord, Eq, Enum, Bounded, Show)
 
 instance Monoid Klass where
     mempty = Unknown
@@ -116,17 +161,44 @@ newtype Summary = Summary (IM.IntMap Int)
 sum_count :: Klass -> Summary -> Summary
 sum_count kl (Summary m) = Summary $ IM.insertWith (+) (fromEnum kl) 1 m
 
+sum_get :: Klass -> Summary -> Int
+sum_get kl (Summary m) = IM.findWithDefault 0 (fromEnum kl) m
+
+
 -- | Determines what an allele could come from.  Does not take
 -- port-mortem modifications into account.
 classify :: Dp -> Nucleotide -> Klass
 classify (Dp cln drt) nuc
-    | maybe_cln && maybe_dirty = Unknown
-    | maybe_cln                = Clean
-    |              maybe_dirty = Dirty
-    | otherwise                = Nonsense
+    | maybe_clean && maybe_dirty = Unknown
+    | maybe_clean                = Clean
+    |                maybe_dirty = Dirty
+    | otherwise                  = Nonsense
   where
     maybe_clean = unN cln .&. unN nuc /= 0
     maybe_dirty = unN drt .&. unN nuc /= 0
+
+
+-- | We deal with aDNA by transforming a base into all the bases it
+-- could have been.  So the configuration is simply the transformation
+-- function.
+type Adna = Nucleotide -> Nucleotide
+
+-- | Fresh DNA: no transformation.
+freshDNA :: Adna
+freshDNA = id
+
+-- | Ancient DNA, single strand protocol.  Deamination can turn C into T
+-- only.
+ancientDNAss :: Adna
+ancientDNAss = N . app . unN
+  where app x = if x .&. unN nucT /= 0 then x .|. unN nucC else x
+
+-- | Ancient DNA, double strand protocol.  Deamination can turn C into T
+-- and G into A.
+ancientDNAds :: Adna
+ancientDNAds = N . app1 . app2 . unN
+  where app1 x = if x .&. unN nucT /= 0 then x .|. unN nucC else x
+        app2 x = if x .&. unN nucA /= 0 then x .|. unN nucG else x
 
 
 -- | Classifying a read.  In an ideal world, we'd be looking at a single
@@ -139,43 +211,55 @@ classify (Dp cln drt) nuc
 -- reads that all have the same qname.  Results in exactly one 'Klass'.
 -- We will ignore mate pairs that are improperly mapped or filtered.
 --
--- Needs options.  At least the Dp list, probably an aDNA kind of
--- setting, too.
+-- May need more options.  Note that application of the aDNA function
+-- depends on the strandedness of the alignment.  FIXME
 --
 -- This is the only place where counting of votes was used before, and
 -- only for debugging purposes.  Everything that was either dirty or
 -- clean (but not both) counted as a vote.
 
-classify_read_set :: Monad m => Iteratee [BamRaw] m Klass
+classify_read_set :: Monad m => DpList -> Adna -> Iteratee [BamRaw] m Klass
 classify_read_set = undefined
 
 -- | Classifying a stream.  We create a map from read name to iteratee.
 -- New names are inserted, known names fed to stored iteratees.
 -- ``Done'' iteratees are disposed of immediately.
 
-classify_stream :: Monad m => Iteratee [BamRaw] m Summary
-classify_stream = foldStreamM classify_read (Summary IM.empty, HM.empty) >>= lift . finish
+classify_stream :: Monad m => DpList -> Adna -> Iteratee [BamRaw] m Summary
+classify_stream dps adna = foldStreamM classify_read (Summary IM.empty, HM.empty) >>= lift . finish
   where
-    classify0 = classify_read_set
+    classify0 = classify_read_set dps adna
 
     classify_read (summary, iters) rd = do
         let it = HM.lookupDefault classify0 (br_qname rd) iters
-        (isdone, it') <- lift $ enumPure1Chunk [rd] it >>= enumCheckIfDone
-        if isdone then do cl <- lift $ run it'
-                          return (sum_count summary, HM.delete (br_qname rd) iters)
+        (isdone, it') <- enumPure1Chunk [rd] it >>= enumCheckIfDone
+        if isdone then do cl <- run it'
+                          return (sum_count cl summary, HM.delete (br_qname rd) iters)
                   else return (summary, HM.insert (br_qname rd) it' iters)
 
-    finish (summary, iters) = foldM (\s it -> sum_count s <$> run it) summary $ HM.elems iters
+    finish (summary, iters) = foldM (\s it -> flip sum_count s `liftM` run it) summary $ HM.elems iters
 
 
-result_labels :: [ S.ByteString ]
+{- Missing from the output right now:
+
+ * filename (library would be better)
+ * alignment distance (only useful if DPs are derived from alignment)
+ * number of difference (likewise)
+ * number of DPs
+ * number of DPs which are transversions
+-}
+
+result_labels :: [ String ]
 result_labels = [ "unclassified", "clean", "polluting", "conflicting", "nonsensical", "LB", "ML", "UB" ]
 
-show_result_plain :: Summary -> Maybe [Double] -> S.ByteString
-show_result_plain summary ests = S.unlines $ flip (:) S.empty $
-    zipWith fmt labels [ sum_get kl summary | kl <- [minBound..maxBound] ] ++ [S.empty]
+type HeaderFn = String
+type OutputFn = Summary -> Maybe [Double] -> String
+
+show_result_plain :: OutputFn
+show_result_plain summary ests = unlines $ zipWith fmt result_labels [minBound..maxBound] ++ [[]]
   where
-    labellen = (+) 2 . maximum . map S.length . zipWith snd [minBound..maxBound::Klass] $ result_labels
+    labellen = (+) 2 . maximum . map length $ zipWith const result_labels [minBound..maxBound::Klass]
+    pad n s  = replicate (n - length s) ' ' ++ s
 
     fmt lbl kl = pad labellen lbl ++ " fragments: " ++ show (sum_get kl summary) ++
                  if kl == Dirty then maybe [] fmt_ests ests else []
@@ -184,18 +268,21 @@ show_result_plain summary ests = S.unlines $ flip (:) S.empty $
                                ++ showFFloat (Just 1) ml " .. "
                                ++ showFFloat (Just 1) ub "%)"
 
-show_result_table :: Summary -> Maybe [Double] -> String
+header_table :: HeaderFn
+header_table = intercalate "\t" result_labels
+
+show_result_table :: OutputFn
 show_result_table summary ests = intercalate "\t" $
-    [ show $ sum_get kl summary | kl <- (minBound, maxBound) ] ++
-    maybe (replicate 3 "N/A") (map (\x -> showFFloat (Just 1) x []))
+    [ show $ sum_get kl summary | kl <- [minBound..maxBound] ] ++
+    maybe (replicate 3 "N/A") (map (\x -> showFFloat (Just 1) x [])) ests
 
 
 show_result_with :: (Summary -> Maybe [Double] -> a) -> Summary -> a
-show_result_with k summary = k summary (if nn != 0 then Just [lb,ml,ub] else Nothing)
+show_result_with f summary = f summary (if nn /= 0 then Just [lb,ml,ub] else Nothing)
   where
     z = 1.96   -- this is Z_{0.975}, giving a 95% confidence interval
-    k =     fromIntegral $ sum_get Dirty summary
-    n = k + fromIntegral $ sum_get Clean summary
+    k =     fromIntegral (sum_get Dirty summary)
+    n = k + fromIntegral (sum_get Clean summary)
     nn = sum_get Dirty summary + sum_get Clean summary
 
     p_ = k / n
@@ -246,25 +333,6 @@ show_result_with k summary = k summary (if nn != 0 then Just [lb,ml,ub] else Not
  * - new consensus sequence has other letters besides N
  */
 
-void print_aln( const char* aln1, const char* aln2 )
-{
-	int p ;
-	const char* a ;
-	while( *aln1 && *aln2 ) {
-		for( p = 0, a = aln1 ; *a && p != 72 ; ++p ) putc( *a++, stderr ) ;
-		putc( '\n', stderr ) ;
-
-		for( p = 0, a = aln2 ; *a && p != 72 ; ++p ) putc( *a++, stderr ) ;
-		putc( '\n', stderr ) ;
-
-		for( p = 0 ; *aln1 && *aln2 && p != 72 ; ++p )
-			putc( *aln1++ == *aln2++ ? '*' : ' ', stderr ) ;
-		putc( '\n', stderr ) ;
-		putc( '\n', stderr ) ;
-	}
-}
-
-
 // Everything that differs is weakly diagnostic, unless it's a gap.
 // Note that this mean that Ns are usually weakly diagnostic.
 bool is_diagnostic( char aln1, char aln2 )
@@ -313,131 +381,55 @@ dp_list mk_dp_list( const char* aln1, const char* aln2, int span_from, int span_
 	}
 	return l ;
 }
+-}
 
-std::pair< dp_list::const_iterator, dp_list::const_iterator >
-overlapped_diagnostic_positions( const dp_list& l, const AlnSeqP s )
-{
-	dp_list::const_iterator left  = l.lower_bound( s->start ) ;
-	dp_list::const_iterator right = l.lower_bound( s->end + 1 ) ;
-	return std::make_pair( left, right ) ;
-}
+-- We won't keep this.  Mt311 should be stored as half a Dp list.
+-- extern       char mt311_sequence[] ;
+-- extern const int  mt311_sequence_size ;
 
-// XXX: linear scan --> O(n)
-// This could be faster (O(log n)) if precompiled into some sort of index.
-std::string lift_over( const char* aln1, const char* aln2, int s, int e )
-{
-	std::string r ;
-	int p ;
-	for( p = 0 ; p < e && *aln1 && *aln2 ; ++aln1, ++aln2 )
-	{
-		if( *aln1 != '-' && p >= s ) r.push_back( *aln1 ) ;
-		if( *aln2 != '-' ) ++p ;
-	}
-	return r ;
-}
+main :: IO ()
+main = do
+    (opts, files, errors) <- getOpt Permute options <$> getArgs
+    unless (null errors) $ mapM_ (hPutStrLn stderr) errors >> exitFailure
+    Conf{..} <- foldl (>>=) conf0 opts
 
-bool consistent( bool adna, char x, char y )
-{
-	char x_ = x == 'G' ? 'R' : x == 'C' ? 'Y' :
-	          x == 'g' ? 'r' : x == 'c' ? 'y' : x ;
-	return x == '-' || y == '-' || (char_to_bitmap( adna ? x_ : x ) & char_to_bitmap(y)) != 0 ;
-}
-
-// We won't keep this.  Mt311 should be stored a half a Dp list.
-extern       char mt311_sequence[] ;
-extern const int  mt311_sequence_size ;
-
-
-int main( int argc, char * const argv[] )
-{
-	bool adna = false ;
+{-
 	bool transversions = false ;
-    bool be_clever = true ;
-    bool mktable = false ;
-    bool really = false ;
 	int min_diag_posns = 1 ;
-	int verbose = 0 ;
 	int maxd = 0 ;
 	int span_from = 0, span_to = INT_MAX ;
-
-	if( argc == 0 ) { usage( argv[0] ) ; return 0 ; }
 
 	int opt ;
 	do {
 		opt = getopt_long( argc, argv, "r:avhts:d:n:MfTF", longopts, 0 ) ;
 		switch( opt )
 		{
-			case 'r':
-				read_fasta_ref( &hum_ref, optarg ) ;
-				break ;
-			case 'a':
-				adna = true ;
-				break ;
-			case 'v':
-				++verbose ;
-				break ;
-			case ':':
-				fputs( "missing option argument\n", stderr ) ;
-				break ;
-			case '?':
-				fputs( "unknown option\n", stderr ) ;
-				break ;
-			case 'h':
-				usage( argv[0] ) ;
-				return 1 ;
-			case 't':
-				transversions = true ;
-				break ;
-			case 's':
-				sscanf( optarg, "%u-%u", &span_from, &span_to ) ;
-				if( span_from ) span_from-- ;
-				break ;
-			case 'n':
-				min_diag_posns = atoi( optarg ) ;
-				break ;
-			case 'd':
-				maxd = atoi( optarg ) ;
-				break ;
-            case 'M':
-                break ;
-            case 'f':
-                be_clever = false ;
-                break ;
-            case 'T':
-                mktable = true ;
-                break ;
-            case 'F':
-                really = true;
-                break ;
+			case 'r': read_fasta_ref( &hum_ref, optarg ) ; break ;
+			case 't': transversions = true ; break ;
+			case 's': sscanf( optarg, "%u-%u", &span_from, &span_to ) ; if( span_from ) span_from-- ; break ;
+			case 'n': min_diag_posns = atoi( optarg ) ; break ;
+			case 'd': maxd = atoi( optarg ) ; break ;
 		}
 	} while( opt != -1 ) ;
+-}
 
-	if( optind == argc ) { usage( argv[0] ) ; return 1 ; }
-	bool hum_ref_ok = sanity_check_sequence( hum_ref.seq ) ;
-	if( !hum_ref_ok ) fputs( "FUBAR'ed FastA file: contaminant sequence contains gap symbols.\n", stderr ) ;
+    when (IM.size conf_dp_list < 40 && not conf_shoot_foot) $ do
+        hPutStrLn stderr $
+            "\n *** Low number (" ++ shows (IM.size conf_dp_list) ") of diagnostic positions found.\n\
+              \ *** I will stop now for your own safety.\n\
+              \ *** If you are sure you want to shoot yourself\n\
+              \ *** in the foot, read the man page to learn\n\
+              \ *** how to lift this restriction.\n\n"
+        exitFailure
 
-	if( !hum_ref.rcseq ) make_reverse_complement( &hum_ref ) ;
+    -- TODO  We will usually want to seek to the mitochondrion, which
+    -- doesn't work with the simple 'mergeInputs' invocation.
+    r <- mergeInputs combineCoordinates files >=> run $ \hdr ->
+            classify_stream conf_dp_list conf_adna
 
-    if( mktable ) {
-        fputs( "#Filename\tAln.dist\t#diff\t#weak\t#tv", stdout ) ;
-        for( int i =0 ; i != 2 ; ++i ) {
-            fputs( i ? "\t#eff" : "\t#strong", stdout ) ;
-            for( int klass = 0 ; klass != sizeof(label)/sizeof(label[0]) ; ++klass )
-            {
-                putchar( '\t' ) ;
-                fputs( label[klass], stdout ) ;
-                if( i ) putchar( '\'' ) ;
-            }
-        }
-        putchar( '\n' ) ;
-    }
+    putStrLn $ unlines $ conf_header : show_result_with conf_output r : []
 
-    for( ; optind != argc ; ++optind )
-    {
-        int summary[ maxwhatsits ] = {0} ;
-        int summary2[ maxwhatsits ] = {0} ;
-
-        std::string infile( be_clever ? find_maln( argv[optind] ) : argv[optind] ) ;
+        {-
         if( mktable ) {
             fputs( infile.c_str(), stdout ) ;
             putchar( '\t' ) ;
@@ -446,21 +438,14 @@ int main( int argc, char * const argv[] )
             puts( infile.c_str() ) ;
             putchar( '\n' ) ;
         }
-        MapAlignmentP maln = read_ma( infile.c_str() ) ;
-        PSSMP submat = maln->fpsm ;
+        -}
 
-        bool maln_ref_ok = sanity_check_sequence( maln->ref->seq ) ;
-        if( !maln_ref_ok ) fputs( "FUBAR'ed maln file: consensus sequence contains gap symbols.\n", stderr ) ;
-        if( !hum_ref_ok || !maln_ref_ok ) {
-            fputs( "Problem might exist between keyboard and chair.  I give up.\n", stderr ) ;
-            return 1 ;
-        }
+        -- if( !maxd ) maxd = max( strlen(hum_ref.seq), strlen(maln->ref->seq) ) / 10 ;
+--         char *aln_con = (char*)malloc( strlen(hum_ref.seq) + maxd + 2 ) ;
+  --       char *aln_ass = (char*)malloc( strlen(maln->ref->seq) + maxd + 2 ) ;
+    --     unsigned d = myers_diff( hum_ref.seq, myers_align_globally, maln->ref->seq, maxd, aln_con, aln_ass ) ;
 
-        if( !maxd ) maxd = max( strlen(hum_ref.seq), strlen(maln->ref->seq) ) / 10 ;
-        char *aln_con = (char*)malloc( strlen(hum_ref.seq) + maxd + 2 ) ;
-        char *aln_ass = (char*)malloc( strlen(maln->ref->seq) + maxd + 2 ) ;
-        unsigned d = myers_diff( hum_ref.seq, myers_align_globally, maln->ref->seq, maxd, aln_con, aln_ass ) ;
-
+        {-
         if( d == UINT_MAX ) {
             fprintf( stderr, "\n *** Could not align references with up to %d mismatches.\n"
                              " *** This is usually a sign of trouble, but\n"
@@ -493,19 +478,9 @@ int main( int argc, char * const argv[] )
             print_dp_list( stderr, l.begin(), l.end(), '\n', 1 ) ;
         }
 
-        if( num_strong < 40 && !really ) {
-            fprintf( stderr, "\n *** Low number (%d) of diagnostic positions found.\n"
-                             " *** I will stop now for your own safety.\n"
-                             " *** If you are sure you want to shoot yourself\n"
-                             " *** in the foot, read the man page to learn\n"
-                             " *** how to lift this restriction.\n\n", num_strong ) ;
-            return 1 ;
-        }
+-}
 
-        typedef std::map< std::string, std::pair< whatsit, int > > Bfrags ;
-        Bfrags bfrags, bfrags2 ;
-        std::deque< cached_pwaln > cached_pwalns ;
-
+        {-
         if( verbose >= 2 ) fputs( "Pass one: finding actually diagnostic positions.\n", stderr ) ;
         for( const AlnSeqP *s = maln->AlnSeqArray ; s != maln->AlnSeqArray + maln->num_aln_seqs ; ++s )
         {
@@ -527,161 +502,10 @@ int main( int argc, char * const argv[] )
                 }
                 fprintf( stderr, "; range:  %d..%d\n", (*s)->start, (*s)->end ) ;
             }
+-}
 
-            // reconstruct read and reference sequences, align them
-            std::string the_read ;
-            for( char *nt = (*s)->seq, **ins = (*s)->ins ; *nt ; ++nt, ++ins )
-            {
-                if( *nt != '-' ) the_read.push_back( *nt ) ;
-                if( *ins ) the_read.append( *ins ) ;
-            }
-            std::string lifted = lift_over( aln_con, aln_ass, (*s)->start, (*s)->end + 2 ) ;
 
-            if( verbose >= 5 )
-            {
-                fprintf( stderr, "\nraw read: %s\nlifted:   %s\nassembly: %s\n\n"
-                        "aln.read: %s\naln.assm: %s\nmatches:  ",
-                        the_read.c_str(), lifted.c_str(), the_ass.c_str(),
-                        (*s)->seq, the_ass.c_str() ) ;
-                std::string::const_iterator b = the_ass.begin(), e = the_ass.end() ;
-                const char* pc = (*s)->seq ;
-                while( b != e && *pc ) putc( *b++ == *pc++ ? '*' : ' ', stderr ) ;
-            }
-
-            int size = std::max( lifted.size(), the_read.size() ) ;
-
-            AlignmentP frag_aln = init_alignment( size, size, 0, 0 ) ;
-
-            std::string ref_for_mia = lifted ;
-            for( size_t i = 0 ; i != ref_for_mia.length() ; ++i )
-            {
-                switch (toupper(ref_for_mia[i]))
-                {
-                    case 'A':
-                    case 'C':
-                    case 'G':
-                    case 'T':
-                        ref_for_mia[i] = toupper( ref_for_mia[i] ) ;
-                        break ;
-                    default:
-                        ref_for_mia[i] = 'N' ;
-                }
-            }
-
-            frag_aln->seq1 = ref_for_mia.c_str() ;
-            frag_aln->len1 = ref_for_mia.size() ;
-            frag_aln->seq2 = the_read.c_str() ;
-            frag_aln->len2 = the_read.size() ;
-            frag_aln->sg5 = 1 ;
-            frag_aln->sg3 = 1 ;
-            frag_aln->submat = submat ;
-            pop_s1c_in_a( frag_aln ) ;
-            pop_s2c_in_a( frag_aln ) ;
-            dyn_prog( frag_aln ) ;
-
-            pw_aln_frag pwaln ;
-            max_sg_score( frag_aln ) ;			// ARGH!  This has a vital side-effect!!!
-            find_align_begin( frag_aln ) ;  	//        And so has this...
-            populate_pwaln_to_begin( frag_aln, &pwaln ) ;
-            pwaln.start = frag_aln->abc;
-
-            char *paln1 = aln_con, *paln2 = aln_ass ;
-            int ass_pos = 0 ;
-            while( ass_pos != (*s)->start && *paln1 && *paln2 )
-            {
-                if( *paln2 != '-' ) ass_pos++ ;
-                ++paln1 ;
-                ++paln2 ;
-            }
-
-            if( verbose >= 5 )
-            {
-                fprintf( stderr, "\n\naln.read: %s\naln.ref:  %s\nmatches:  ",
-                         pwaln.frag_seq, pwaln.ref_seq ) ;
-
-                const char* b = pwaln.ref_seq ;
-                const char* pc = pwaln.frag_seq ;
-                while( *b && *pc ) putc( *b++ == *pc++ ? '*' : ' ', stderr ) ;
-                putc( '\n', stderr ) ;
-                putc( '\n', stderr ) ;
-            }
-
-            cached_pwalns.push_back( cached_pwaln() ) ;
-            cached_pwalns.back().start = pwaln.start ;
-            cached_pwalns.back().ref_seq = pwaln.ref_seq ;
-            cached_pwalns.back().frag_seq = pwaln.frag_seq ;
-
-            std::string in_ref = lifted.substr( 0, pwaln.start ) ;
-            in_ref.append( pwaln.ref_seq ) ;
-
-            char *in_frag_v_ref = pwaln.frag_seq ;
-            char *in_ass = maln->ref->seq + (*s)->start ;
-            char *in_frag_v_ass = (*s)->seq ;
-
-            if( verbose ) {
-                if(*paln1!=in_ref[0]||*paln1=='-') fprintf( stderr, "huh? (R+%d) %.10s %.10s\n", pwaln.start, paln1, in_ref.c_str() ) ;
-                if(*paln2!=in_ass[0]&&*paln2!='-') fprintf( stderr, "huh? (A+%d) %.10s %.10s\n", pwaln.start, paln2, in_ass ) ;
-            }
-
-            // iterate over alignment.  if we see something diagnosable
-            // as contaminant, we mark that position as strong.
-            while( ass_pos != (*s)->end +1 && *paln1 && *paln2 && !in_ref.empty() && *in_ass && *in_frag_v_ass && *in_frag_v_ref )
-            {
-                if( is_diagnostic( *paln1, *paln2 ) ) {
-                    dp_list::iterator iter = l.find( ass_pos ) ;
-                    if( iter == l.end() ) {
-                        fprintf( stderr, "diagnostic site not found: %d\n", ass_pos ) ;
-                    } else {
-                        if( verbose >= 4 )
-                            fprintf( stderr, "diagnostic pos.: %d %c(%c)/%c %c/%c",
-                                    ass_pos, iter->second.consensus, in_ref[0], *in_frag_v_ref, *in_ass, *in_frag_v_ass ) ;
-                        if( *in_frag_v_ref != *in_frag_v_ass )
-                        {
-                            if( verbose >= 4 ) fputs( " in disagreement.", stderr ) ;
-                        } else {
-                            bool maybe_clean = consistent( adna, iter->second.assembly, *in_frag_v_ass ) ;
-                            bool maybe_dirt =  consistent( adna, iter->second.consensus,  *in_frag_v_ref ) ;
-
-                            if( !maybe_clean && maybe_dirt && iter->second.strength == weak ) {
-                                if( verbose >= 4 )
-                                    fputs( " possible contaminant, upgraded to `effective'.", stderr ) ;
-                                iter->second.contaminant = *in_frag_v_ref ;
-                                iter->second.strength = effective ;
-                            }
-                        }
-                    }
-                    if( verbose >= 4 ) putc( '\n', stderr ) ;
-                }
-
-                if( *paln1 != '-' ) {
-                    do {
-                        in_ref=in_ref.substr(1) ;
-                        in_frag_v_ref++ ;
-                    } while( in_ref[0] == '-' ) ;
-                }
-                if( *paln2 != '-' ) {
-                    ass_pos++ ;
-                    do {
-                        in_ass++ ;
-                        in_frag_v_ass++ ;
-                    } while( *in_ass == '-' ) ;
-                }
-                ++paln1 ;
-                ++paln2 ;
-            }
-            if( verbose >= 4 ) fprintf( stderr, "\n" ) ;
-
-            free_alignment( frag_aln ) ;
-        }
-
-        for( dp_list::iterator i = l.begin(), j = l.end() ; i != j ; )
-        {
-            dp_list::iterator k = i ;
-            k++ ;
-            if( i->second.strength == weak ) l.erase( i ) ;
-            i=k ;
-        }
-        {
+        {-
             int t = 0 ;
             for( dp_list::const_iterator i = l.begin() ; i != l.end() ; ++i )
                 if( is_transversion( i->second.consensus, i->second.assembly ) ) ++t ;
@@ -692,15 +516,12 @@ int main( int argc, char * const argv[] )
                     printf( " in range [%d,%d)", span_from, span_to ) ;
                 printf( ", %d of which are transversions.\n\n", t ) ;
             }
-        }
         if( verbose >= 3 ) print_dp_list( stderr, l.begin(), l.end(), '\n' ) ;
 
-        if( verbose >= 2 ) fputs( "Pass two: classifying fragments.\n", stderr ) ;
         std::deque< cached_pwaln >::const_iterator cpwaln = cached_pwalns.begin() ;
         for( const AlnSeqP *s = maln->AlnSeqArray ; s != maln->AlnSeqArray + maln->num_aln_seqs ; ++s, ++cpwaln )
         {
             whatsit klass = unknown ;
-            whatsit klass2 = unknown ;
             int votes = 0, votes2 = 0 ;
 
             std::string the_ass( maln->ref->seq + (*s)->start, (*s)->end - (*s)->start + 1 ) ;
@@ -749,37 +570,6 @@ int main( int argc, char * const argv[] )
 
                 while( ass_pos != (*s)->end +1 && *paln1 && *paln2 && !in_ref.empty() && *in_ass && *in_frag_v_ass && *in_frag_v_ref )
                 {
-                    if( is_diagnostic( *paln1, *paln2 ) ) {
-                        dp_list::const_iterator iter = l.find( ass_pos ) ;
-                        if( iter != l.end() ) {
-                            if( verbose >= 4 )
-                                fprintf( stderr, "diagnostic pos. %s: %d %c(%c)/%c %c/%c",
-                                        iter->second.strength == strong ? "(strong)" : "  (weak)",
-                                        ass_pos, iter->second.consensus, in_ref[0], *in_frag_v_ref, *in_ass, *in_frag_v_ass ) ;
-                            if( *in_frag_v_ref != *in_frag_v_ass )
-                            {
-                                if( verbose >= 4 ) fputs( " in disagreement.\n", stderr ) ;
-                            }
-                            else
-                            {
-                                bool maybe_clean = consistent( adna, iter->second.assembly, *in_frag_v_ass ) ;
-                                bool maybe_dirt  = consistent( adna, iter->second.consensus,  *in_frag_v_ref ) ;
-
-                                if( verbose >= 4 )
-                                {
-                                    fputs( maybe_dirt  ? " " : " in", stderr ) ;
-                                    fputs( "consistent/", stderr ) ;
-                                    fputs( maybe_clean ? "" : "in", stderr ) ;
-                                    fputs( "consistent\n", stderr ) ;
-                                }
-
-                                update_class( klass2, votes2, maybe_clean, maybe_dirt && !maybe_clean ) ;
-                                if( iter->second.strength == strong )
-                                    update_class( klass, votes, maybe_clean, maybe_dirt ) ;
-                            }
-                        }
-                    }
-
                     if( *paln1 != '-' ) {
                         do {
                             in_ref=in_ref.substr(1) ;
@@ -798,73 +588,8 @@ int main( int argc, char * const argv[] )
                 }
                 if( verbose >= 4 ) putc( '\n', stderr ) ;
             }
-
-            Bfrags::const_iterator i = bfrags.find( (*s)->id ) ;
-            Bfrags::const_iterator i2 = bfrags2.find( (*s)->id ) ;
-
-            switch( (*s)->segment )
-            {
-                case 'b':
-                    bfrags[ (*s)->id ] = std::make_pair( klass, votes ) ;
-                    bfrags2[ (*s)->id ] = std::make_pair( klass2, votes2 ) ;
-                    if( verbose >= 3 ) putc( '\n', stderr ) ;
-                    break ;
-
-                case 'f':
-                    if( i == bfrags.end() )
-                    {
-                        fputs( (*s)->id, stderr ) ;
-                        fputs( "/f is missing its back.\n", stderr ) ;
-                    }
-                    else
-                    {
-                        votes += i->second.second ;
-                        klass = merge_whatsit( klass, i->second.first ) ;
-                    }
-
-                    if( i2 == bfrags2.end() )
-                    {
-                        fputs( (*s)->id, stderr ) ;
-                        fputs( "/f is missing its back.\n", stderr ) ;
-                    }
-                    else
-                    {
-                        votes2 += i->second.second ;
-                        klass2 = merge_whatsit( klass2, i->second.first ) ;
-                    }
-
-                case 'a':
-                    if( verbose >= 2 ) fprintf( stderr, "%s is %s (%d votes)\n", (*s)->id, label[klass], votes ) ;
-                    if( verbose >= 2 ) fprintf( stderr, "%s is %s (%d votes)\n", (*s)->id, label[klass2], votes2 ) ;
-                    if( verbose >= 3 ) putc( '\n', stderr ) ;
-                    summary[klass]++ ;
-                    summary2[klass2]++ ;
-                    break ;
-
-                default:
-                    fputs( "don't know how to handle fragment type ", stderr ) ;
-                    putc( (*s)->segment, stderr ) ;
-                    putc( '\n', stderr ) ;
-            }
         }
-
-        if( !mktable ) {
-            int t = 0 ;
-            for( dp_list::const_iterator i = l.begin(), e = l.end() ; i != e ; ++i )
-                if( i->second.strength == strong ) t++ ;
-            printf( "  strongly diagnostic positions: %d\n", t ) ;
-        }
-        print_results( summary, mktable ) ;
-        if( !mktable ) printf( "  effectively diagnostic positions: %d\n", (int)l.size() ) ;
-        else printf( "%d\t", (int)l.size() ) ;
-
-        print_results( summary2, mktable ) ;
-        putc( '\n', stdout ) ;
-
-        free_map_alignment( maln ) ;
-        free( aln_con ) ;
-        free( aln_ass ) ;
     }
 }
+        -}
 
--}

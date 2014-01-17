@@ -20,4 +20,9 @@ executable mt-anno
   Other-Modules:       Anno, Seqs, Xlate
   Build-Depends:       base ==4.*, bytestring, biohazard >=0.5.2, containers ==0.5.*
 
+executable mt-ccheck
+  Main-Is:             mt-ccheck.hs
+  Build-Depends:       base ==4.*, bytestring, biohazard >=0.5.2, containers ==0.5.*,
+                       unordered-containers
+
 -- vim:tw=132
