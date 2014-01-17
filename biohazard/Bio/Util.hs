@@ -142,7 +142,7 @@ estimateComplexity total singles | total   <= singles = Nothing
     m = fromIntegral singles * zz / log zz
 
 
--- | Computes @-10 * log_10 (10 ** (-x/10) + 10 ** (-y/10))@ without
+-- | Computes @-10 * log_10 (10 ** (-x\/10) + 10 ** (-y\/10))@ without
 -- losing precision.  Used to add numbers on "the Phred scale",
 -- otherwise known as (deci-)bans.
 {-# INLINE phredplus #-}
@@ -150,7 +150,7 @@ phredplus :: Double -> Double -> Double
 phredplus x y = if x < y then pp x y else pp y x where
     pp u v = u - 10 / log 10 * log1p (exp ((u-v) * log 10 / 10))
 
--- | Computes @-10 * log_10 (10 ** (-x/10) - 10 ** (-y/10))@ without
+-- | Computes @-10 * log_10 (10 ** (-x\/10) - 10 ** (-y\/10))@ without
 -- losing precision.  Used to subtract numbers on "the Phred scale",
 -- otherwise known as (deci-)bans.
 {-# INLINE phredminus #-}
@@ -158,7 +158,7 @@ phredminus :: Double -> Double -> Double
 phredminus x y = if x < y then pm x y else pm y x where
     pm u v = u - 10 / log 10 * log1p (- exp ((u-v) * log 10 / 10))
 
--- | Computes @log_10 (sum [10 ** x | x <- xs])@ without losing
+-- | Computes @-10 * log_10 (sum [10 ** (-x\/10) | x <- xs])@ without losing
 -- precision.
 {-# INLINE phredsum #-}
 phredsum :: [Double] -> Double
@@ -180,3 +180,16 @@ foreign import ccall unsafe "math.h log1p" log1p :: Double -> Double
 choose :: Integral a => a -> a -> a
 n `choose` k = product [n-k+1 .. n] `div` product [2..k]
 
+
+{-
+    Found this in a comment in Glibc, might be a more direct way to compute log1p.
+
+ * Note: Assuming log() return accurate answer, the following
+ *	 algorithm can be used to compute log1p(x) to within a few ULP:
+ *
+ *		u = 1+x;
+ *		if(u==1.0) return x ; else
+ *			   return log(u)*(x/(u-1.0));
+ *
+ *	 See HP-15C Advanced Functions Handbook, p.193.
+-}
