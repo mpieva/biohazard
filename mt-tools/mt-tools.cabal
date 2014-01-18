@@ -25,4 +25,9 @@ executable mt-ccheck
   Build-Depends:       base ==4.*, bytestring, biohazard >=0.5.2, containers ==0.5.*,
                        unordered-containers
 
+executable mt-cobble
+  Main-Is:             mt-cobble.hs
+  Build-Depends:       base ==4.*, bytestring, biohazard >=0.5.2, containers ==0.5.*,
+                       unordered-containers, array
+
 -- vim:tw=132
