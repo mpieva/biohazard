@@ -2,19 +2,16 @@
 {-# OPTIONS_GHC -Wall #-}
 module Xlate where
 
-import Data.List
-
-import qualified Data.Map as M
-import qualified Data.ByteString.Char8 as S
-import qualified Data.IntMap as I
-
-import Seqs
+import qualified Data.ByteString.Char8  as S
+import qualified Data.IntMap            as I
+import qualified Data.List              as L
+import qualified Data.Map               as M
 
 -- aligned sequences in, coodinate on first in, coordinate on second out
 xpose :: S.ByteString -> S.ByteString -> Int -> Int
-xpose ref smp = \p -> I.findWithDefault (-1) p m
+xpose ref smp = \p -> I.findWithDefault (-1) p mm
   where
-    (!m,_,_) = foldl' advance (I.empty, 0, 0) $ S.zip ref smp
+    (!mm,_,_) = L.foldl' advance (I.empty, 0, 0) $ S.zip ref smp
     advance (!m,!p1,!p2) (r,s) = let !p1' = if r == '-' then p1 else 1+p1
                                      !p2' = if s == '-' then p2 else 1+p2
                                  in if r == '-' then (m,p1',p2')
@@ -35,11 +32,12 @@ get_protein ns (s,e) = translate $ cutout
     compl 'C' = 'G'
     compl 'G' = 'C'
     compl 'T' = 'A'
+    compl  x  =  x
 
 
 translate :: String -> String
 translate (a:b:c:s) = m : translate s
-    where m = M.findWithDefault (error $ show (a,b,c)) (a,b,c) mito_code
+    where m = M.findWithDefault 'X' (a,b,c) mito_code
 translate _ = []
 
 standard_code :: M.Map (Char,Char,Char)  Char

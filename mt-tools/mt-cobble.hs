@@ -11,7 +11,7 @@
 -- called.  This is repeated till it converges.  A bad implementation of
 -- the idea was called MIA.
 
-import Align
+-- import Align
 import SimpleSeed
 
 import Bio.Base
@@ -38,11 +38,11 @@ main :: IO ()
 main = do
     s:rs <- getArgs
     inputs@(reference:_) <- concatMap readFasta <$> mapM L.readFile rs
-    let !rl = length reference
+    let !ln = length reference
         !sm = create_seed_maps inputs
 
-    print (length i1, IM.size sm)
+    print (ln, IM.size sm)
 
-    decodeAnyBamFile s >=> run $ \_ -> mapStreamM_ (do_seed rl sm)
+    decodeAnyBamFile s >=> run $ \_ -> mapStreamM_ (do_seed ln sm)
 
 

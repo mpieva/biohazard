@@ -60,7 +60,7 @@ import System.Exit
 import System.IO
 
 import qualified Data.HashMap.Strict        as HM
-import qualified Data.IntMap.Strict         as IM
+import qualified Data.IntMap                as IM
 import qualified Data.ByteString.Char8      as S
 
 data Conf = Conf {
@@ -159,7 +159,7 @@ instance Monoid Klass where
 newtype Summary = Summary (IM.IntMap Int)
 
 sum_count :: Klass -> Summary -> Summary
-sum_count kl (Summary m) = Summary $ IM.insertWith (+) (fromEnum kl) 1 m
+sum_count kl (Summary m) = Summary $ IM.insertWith' (+) (fromEnum kl) 1 m
 
 sum_get :: Klass -> Summary -> Int
 sum_get kl (Summary m) = IM.findWithDefault 0 (fromEnum kl) m

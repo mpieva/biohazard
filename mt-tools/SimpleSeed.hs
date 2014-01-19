@@ -40,11 +40,14 @@ create_seed_words = drop 32 . go 0x0 (-16) 0x0 0
 -- Turns a list of seed words into a map.  Only the first entry is used,
 -- duplicates are discarded silenty.
 
-create_seed_map :: [Nucleotide] -> IM.IntMap Int
-create_seed_map = cleanup . IM.fromListWith add . map (\(x,y) -> (x,(1::Int,y))) . create_seed_words . pad
+data I2 = I2 !Int !Int
+
+create_seed_map ::  [Nucleotide] -> IM.IntMap Int
+create_seed_map = cleanup . foldl' (\m (k,v) -> IM.insertWith' add k v m) IM.empty .
+                  map (\(x,y) -> (x,(I2 1 y))) . create_seed_words . pad
   where pad ns = ns ++ take 15 ns
-        add (x,i) (y,_) = (x+y,i)
-        cleanup = IM.mapMaybe (\(n,j) -> if n < 8 then Just j else Nothing)
+        add (I2 x i) (I2 y _) = I2 (x+y) i
+        cleanup = IM.mapMaybe $ \(I2 n j) -> if n < 8 then Just j else Nothing
 
 create_seed_maps :: [[Nucleotide]] -> IM.IntMap Int
 create_seed_maps = IM.unionsWith const . map create_seed_map

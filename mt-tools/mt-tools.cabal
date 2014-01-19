@@ -1,3 +1,4 @@
+-- vim:tw=132
 Name:                mt-tools
 Version:             0.1.0.0
 Synopsis:            tools that work on mitochondrial sequences
@@ -18,17 +19,17 @@ Build-Type:          Custom
 executable mt-anno
   Main-Is:             mt-anno.hs
   Other-Modules:       Anno, Seqs, Xlate
-  Build-Depends:       base ==4.*, bytestring, biohazard >=0.5.2, containers ==0.5.*
+  Build-Depends:       base ==4.*, bytestring, biohazard >=0.5.2,
+                       containers >=0.4.1
 
 executable mt-ccheck
   Main-Is:             mt-ccheck.hs
-  Build-Depends:       base ==4.*, bytestring, biohazard >=0.5.2, containers ==0.5.*,
-                       unordered-containers
+  Build-Depends:       base ==4.*, bytestring, biohazard >=0.5.2,
+                       containers >=0.4.1, unordered-containers
 
 executable mt-cobble
   Main-Is:             mt-cobble.hs
   Other-Modules:       SimpleSeed
-  Build-Depends:       base ==4.*, bytestring, biohazard >=0.5.2, containers ==0.5.*,
-                       unordered-containers, array
+  Build-Depends:       base ==4.*, bytestring, biohazard >=0.5.2,
+                       containers >=0.4.1, unordered-containers, array
 
--- vim:tw=132
