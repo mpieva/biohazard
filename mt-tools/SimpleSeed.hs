@@ -93,9 +93,25 @@ do_seed ln sm br = do S.hPut stdout $ S.concat [ br_qname br, key, ":  ", S.pack
 
     more x = (x * 17) `div` 16
 
-    rgns = sortBy (\(_,_,c) (_,_,z) -> compare z c) $ overlap $ sort $
-               [ (j - more i, j + more (br_l_seq br-i), 1::Int)
-               | (k,i) <- seeds, j <- maybeToList $ IM.lookup k sm ]
+    rgns = sortBy (\(_,_,c) (_,_,z) -> compare z c) $ 
+                (wrap_with        id $ overlap $ sort $ map norm_right rgns_fwd) ++
+                (wrap_with norm_left $ overlap $ sort $ map norm_left  rgns_rev)
+
+    (rgns_fwd, rgns_rev) = let put (f,r) (i,j) | j >= 0    = (rgn:f, r)
+                                               | otherwise = (f, rgn:r)
+                                where rgn = (j - more i, j + more (br_l_seq br-i), 1::Int)
+                           in foldl put ([],[]) [ (i,j) | (k,i) <- seeds, j <- maybeToList $ IM.lookup k sm ]
+
+    norm_right (a,b,n) = if a  < 0 then (a+ln, b+ln, n) else (a,b,n)
+    norm_left  (a,b,n) = if b >= 0 then (a-ln, b-ln, n) else (a,b,n)
+
+    wrap_with _    [           ] = []
+    wrap_with _    [     r     ] = [r]
+    wrap_with f rs@((x,y,n):rs')
+        | i <= y+ln && x+ln <= j = f (min (x+ln) i, max (y+ln) j, n+m) : init rs'
+        | otherwise              = rs
+      where
+        (i,j,m) = last rs
 
     overlap ( (x,y,n) : (i,j,m) : rs ) | i <= y = overlap ( (x,max y j,n+m) : rs )
     overlap ( (x,y,n) : rs ) = (x,y,n) : overlap rs
