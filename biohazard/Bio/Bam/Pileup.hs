@@ -287,10 +287,10 @@ dsDamage DSD{..} r i b | b == nucA = DB    1     0     q     0
 -- stage where we collected variants, but did not do proper var calling.
 --
 -- If 'vc_pl' is given, we follow the same order used in VCF:
--- "the ordering of genotypes for the likelihoods is given by:
+-- \"the ordering of genotypes for the likelihoods is given by:
 -- F(j/k) = (k*(k+1)/2)+j.  In other words, for biallelic sites the
 -- ordering is: AA,AB,BB; for triallelic sites the ordering is:
--- AA,AB,BB,AC,BC,CC, etc."
+-- AA,AB,BB,AC,BC,CC, etc.\"
 
 data VarCall a = VarCall { vc_refseq     :: !Refseq
                          , vc_pos        :: !Int
@@ -716,3 +716,12 @@ maq_snp_call ploidy theta bases = undefined
     bases' = sortBy (\(DB _ _ _ _ q1) (DB _ _ _ _ q2) -> compare q2 q1)
              [ DB a c g t (min q mq) | (mq, DB a c g t q) <- bases ]
 
+-- Regaring general substitution errors:
+--
+-- We can express a substitution matrix as (exp M) where M itself is a
+-- matrix with zeroes on the main diagonal.  That introduces 12
+-- parameters, which we should probably estimate.  One is redundant,
+-- this is scaling of them.  Since it will actually appear as (exp (M *
+-- (\phi + q ** (\theta (k-1)))), we can simply set \phi to zero.
+--
+-- Hm.  Probably not completely correct.  :(

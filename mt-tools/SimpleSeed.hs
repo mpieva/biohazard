@@ -66,6 +66,12 @@ create_seed_maps = IM.unionsWith const . map create_seed_map
 -- origin.  A simple fix would confuse both strand... and I haven't come
 -- up with a complicated fix yet.  This should become a simple function,
 -- once sufficiently debugged.
+--
+-- For proper overlapping:  We need to normalize each region to strictly
+-- positive or strictly negative coordinates.  After sorting and
+-- overlapping, we only need to check if the last region overlaps the
+-- first---there can be only one such overlap per strand.  We should
+-- probably discard overly long regions.
 
 do_seed :: Int -> IM.IntMap Int -> BamRaw -> IO ()
 do_seed ln sm br = do S.hPut stdout $ S.concat [ br_qname br, key, ":  ", S.pack (shows br_seq "\n") ]
