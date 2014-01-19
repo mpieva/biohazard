@@ -60,7 +60,7 @@ import System.Exit
 import System.IO
 
 import qualified Data.HashMap.Strict        as HM
-import qualified Data.IntMap.Strict         as IM
+import qualified Data.IntMap                as IM
 import qualified Data.ByteString.Char8      as S
 
 data Conf = Conf {
