@@ -29,7 +29,8 @@ executable mt-ccheck
 
 executable mt-cobble
   Main-Is:             mt-cobble.hs
-  Other-Modules:       SimpleSeed
+  Other-Modules:       Align, SimpleSeed
   Build-Depends:       base ==4.*, bytestring, biohazard >=0.5.2,
-                       containers >=0.4.1, unordered-containers, array
+                       containers >=0.4.1, unordered-containers,
+                       array, vector
 

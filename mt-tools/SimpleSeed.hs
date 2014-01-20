@@ -4,16 +4,13 @@ module SimpleSeed where
 
 import Bio.Base
 import Bio.Bam.Raw
-import Bio.Iteratee
 
 import Data.Array.Unboxed
 import Data.Bits
 import Data.List
 import Data.Maybe
-import System.IO
 
 import qualified Data.IntMap as IM
-import qualified Data.ByteString.Char8 as S
 
 -- | Discontiguous template "12 of 16", stolen from MegaBLAST:
 -- 1,110,110,110,110,111, with two bits per base gives 0xFCF3CF3F
@@ -65,24 +62,19 @@ create_seed_maps = IM.unionsWith const . map create_seed_map
 -- the quality of the first mates' alignment.  Generally, we may want to
 -- check the quality of the initial alignment anyway.
 --
--- Note that the overlapping logic right now doesn't take care of the
--- origin.  A simple fix would confuse both strand... and I haven't come
--- up with a complicated fix yet.  This should become a simple function,
--- once sufficiently debugged.
---
--- For proper overlapping:  We need to normalize each region to strictly
+-- For proper overlapping, we need to normalize each region to strictly
 -- positive or strictly negative coordinates.  After sorting and
 -- overlapping, we only need to check if the last region overlaps the
 -- first---there can be only one such overlap per strand.  We should
 -- probably discard overly long regions.
 
-do_seed :: Int -> IM.IntMap Int -> BamRaw -> IO ()
-do_seed ln sm br = do S.hPut stdout $ S.concat [ br_qname br, key, ":  ", S.pack (shows br_seq "\n") ]
-                      mapM_ (\x -> hPutStrLn stdout $ "  " ++ show x) rgns
-                      case rgns of
-                           [         ] -> putStrLn "discard"
-                           (a,b,_) : _ -> putStrLn $ "seed to " ++ shows a ".." ++ shows b " ("
-                                                             ++ shows (b-a) "/" ++ shows (br_l_seq br) ")"
+do_seed :: Int -> IM.IntMap Int -> BamRaw -> Maybe (Int,Int)
+do_seed ln sm br = -- do S.hPut stdout $ S.concat [ br_qname br, key, ":  ", S.pack (shows br_seq "\n") ]
+                   --    mapM_ (\x -> hPutStrLn stdout $ "  " ++ show x) rgns
+                   case rgns of
+                           [         ] -> Nothing -- putStrLn "discard"
+                           (a,b,_) : _ -> Just (a,b) -- putStrLn $ "seed to " ++ shows a ".." ++ shows b " ("
+                                                         --     ++ shows (b-a) "/" ++ shows (br_l_seq br) ")"
 
   where
     seeds = filter ((/= 0) . fst) $ filter ((/= template) . fst) $
@@ -90,13 +82,9 @@ do_seed ln sm br = do S.hPut stdout $ S.concat [ br_qname br, key, ":  ", S.pack
 
     br_seq = [ br_seq_at br i | i <- [0..br_l_seq br-1] ]
 
-    key | br_isPaired br && br_isFirstMate  br = "/1"
-        | br_isPaired br && br_isSecondMate br = "/2"
-        | otherwise                            = "/m"
-
     more x = (x * 17) `div` 16
 
-    rgns = sortBy (\(_,_,c) (_,_,z) -> compare z c) $ 
+    rgns = sortBy (\(_,_,c) (_,_,z) -> compare z c) $ filter reasonably_short $
                 (wrap_with        id $ overlap $ sort $ map norm_right rgns_fwd) ++
                 (wrap_with norm_left $ overlap $ sort $ map norm_left  rgns_rev)
 
@@ -120,4 +108,7 @@ do_seed ln sm br = do S.hPut stdout $ S.concat [ br_qname br, key, ":  ", S.pack
     overlap ( (x,y,n) : rs ) = (x,y,n) : overlap rs
     overlap [] = []
 
+    -- First cut:  reasonable is less than the whole MT.  Tuning can
+    -- come later.
+    reasonably_short (x,y,_) = y-x < ln
 
