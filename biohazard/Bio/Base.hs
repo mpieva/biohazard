@@ -203,7 +203,7 @@ shelve s = case L.toChunks s of
 --
 -- To encode the strand, we (virtually) reverse-complement any sequence
 -- and prepend it to the normal one.  That way, reversed coordinates
--- have a negative and automatically make sense.  Position 0 could
+-- have a negative sign and automatically make sense.  Position 0 could
 -- either be the beginning of the sequence or the end on the reverse
 -- strand... that ambiguity shouldn't really matter.
 

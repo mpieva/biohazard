@@ -39,15 +39,18 @@ create_seed_words = drop 32 . go 0x0 (-16) 0x0 0
 
 data I2 = I2 !Int !Int
 
-create_seed_map ::  [Nucleotide] -> IM.IntMap Int
-create_seed_map = cleanup . foldl' (\m (k,v) -> IM.insertWith' add k v m) IM.empty .
+newtype SeedMap = SM { unSM :: IM.IntMap Int }
+  deriving Show
+
+create_seed_map ::  [Nucleotide] -> SeedMap
+create_seed_map = SM . cleanup . foldl' (\m (k,v) -> IM.insertWith' add k v m) IM.empty .
                   map (\(x,y) -> (x,(I2 1 y))) . create_seed_words . pad
   where pad ns = ns ++ take 15 ns
         add (I2 x i) (I2 y _) = I2 (x+y) i
         cleanup = IM.mapMaybe $ \(I2 n j) -> if n < 8 then Just j else Nothing
 
-create_seed_maps :: [[Nucleotide]] -> IM.IntMap Int
-create_seed_maps = IM.unionsWith const . map create_seed_map
+create_seed_maps :: [[Nucleotide]] -> SeedMap
+create_seed_maps = SM . IM.unionsWith const . map (unSM . create_seed_map)
 
 -- | Actual seeding.  We take every hit and guesstimate an alignment
 -- region from it (by adding the overhanging sequence parts and rounding
@@ -68,8 +71,8 @@ create_seed_maps = IM.unionsWith const . map create_seed_map
 -- first---there can be only one such overlap per strand.  We should
 -- probably discard overly long regions.
 
-do_seed :: Int -> IM.IntMap Int -> BamRaw -> Maybe (Int,Int)
-do_seed ln sm br = -- do S.hPut stdout $ S.concat [ br_qname br, key, ":  ", S.pack (shows br_seq "\n") ]
+do_seed :: Int -> SeedMap -> BamRaw -> Maybe (Int,Int)
+do_seed ln (SM sm) br = -- do S.hPut stdout $ S.concat [ br_qname br, key, ":  ", S.pack (shows br_seq "\n") ]
                    --    mapM_ (\x -> hPutStrLn stdout $ "  " ++ show x) rgns
                    case rgns of
                            [         ] -> Nothing -- putStrLn "discard"

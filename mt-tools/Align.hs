@@ -21,6 +21,9 @@ data Base = A | C | G | T | None
 
 newtype RefSeq = RS (U.Vector Word8) deriving Show
 
+refseq_len :: RefSeq -> Int
+refseq_len (RS v) = U.length v
+
 prob_of :: Base -> Int -> RefSeq -> Word8
 prob_of b i (RS v) = v ! ( 5*i + fromEnum b )
 
@@ -66,8 +69,10 @@ prep_query_fwd br = QS $ U.fromListN len
     len  = br_l_seq br
     code = U.fromListN 16 [0,0,1,0,2,0,0,0,3,0,0,0,0,0,0,0]
 
-revcompl_query :: QuerySeq -> QuerySeq
-revcompl_query (QS v) = QS $ U.map (xor 3) $ U.reverse v
+prep_query_rev :: BamRaw -> QuerySeq
+prep_query_rev = revcompl_query . prep_query_fwd
+  where
+  revcompl_query (QS v) = QS $ U.map (xor 3) $ U.reverse v
 
 
 -- | Memoization matrix for dynamic programming.  We understand it as a
@@ -80,28 +85,34 @@ newtype MemoMat   = MemoMat (U.Vector Int32)
 newtype Bandwidth = BW Int
 newtype RefPosn   = RP Int
 
-pmax :: Bandwidth -> MemoMat -> IO ()
-pmax (BW bw) (MemoMat v) = print $ U.minimum $ U.drop (U.length v - bw) v
+get_memo_max :: Bandwidth -> MemoMat -> Int
+get_memo_max (BW bw) (MemoMat v) = fromIntegral $ U.minimum $ U.drop (U.length v - bw) v
 
 -- | Smith-Waterman, banded, linear gap costs.
 viterbi_forward :: Int32 -> RefSeq -> QuerySeq -> RefPosn -> Bandwidth -> MemoMat
 viterbi_forward gp (RS rs) (QS qs) (RP p0) (BW bw) = MemoMat $ U.create (do
     v <- UM.unsafeNew $ bw * U.length qs
 
-    let score qpos rpos = let base = (qs ! qpos) .&. 3 :: Word8
+    let score qpos rpos | qpos < 0 || qpos >= U.length qs = error $ "Read from QS: " ++ show qpos
+        score qpos rpos = let base = (qs ! qpos) .&. 3 :: Word8
                               qual = (qs ! qpos) `shiftR` 2 :: Word8
                               prob = let ix = 5*rpos + fromIntegral base in
                                      if ix < 0 then error ("Huh? " ++ show ix) else
-                                     if ix < U.length rs then rs ! ix else rs ! (ix - U.length rs) :: Word8
+                                     if ix < U.length rs then rs ! ix else
+                                     if ix - U.length rs < U.length rs then rs ! (ix - U.length rs) :: Word8 else
+                                     error ("Huh? " ++ show (ix,qpos,rpos,p0,base))
                           in fromIntegral $ min qual prob
 
     let readV row col | row < 0 || col < 0 || col >= bw || row >= U.length qs = error $ "Read from memo: " ++ show (row,col)
-                      | otherwise = UM.read v (bw*row + col)
+                      | ix < 0 || ix >= UM.length v                           = error $ "Read from memo: " ++ show ix
+                      | otherwise = UM.read v ix
+            where ix = bw*row + col
 
     -- match is correct, one of the gaps isn't
-    let match row col = (+ score (row-1) (p0+col-1)) `liftM` readV (row-1) (col+0)
-        gapH  row col = (+ gp)                       `liftM` readV (row+0) (col-1)
-        gapV  row col = (+ gp)                       `liftM` readV (row-1) (col+1)
+    -- Need to double check those indices, too.
+    let match row col = (+ score (row-1) (p0+col)) `liftM` readV (row-1) (col+0)
+        gapH  row col = (+ gp)                     `liftM` readV (row+0) (col-1)
+        gapV  row col = (+ gp)                     `liftM` readV (row-1) (col+1)
 
     -- first line
     forM_ [0] $ \row -> do
