@@ -4,6 +4,7 @@ module Bio.Iteratee (
     groupStreamOn,
     i'getString,
     i'lookAhead,
+    headStream,
     takeStream,
     mapStreamM,
     mapStreamM_,
@@ -142,6 +143,9 @@ groupStreamBy cmp inner = eneeCheckIfDone (liftI . step)
 takeStream :: (Monad m, Nullable s, ListLike s el) => Int -> Enumeratee s s m a
 takeStream = I.take
 
+-- | Take first element of a stream or fail.
+headStream :: ListLike s el => Iteratee s m el
+headStream = I.head
 
 -- | Run an Iteratee, collect the input.  When it finishes, return the
 -- result along with *all* input.  Effectively allows lookahead.  Be
