@@ -22,7 +22,7 @@ data Base = A | C | G | T | None
 newtype RefSeq = RS (U.Vector Word8) deriving Show
 
 refseq_len :: RefSeq -> Int
-refseq_len (RS v) = U.length v
+refseq_len (RS v) = U.length v `div` 5
 
 prob_of :: Base -> Int -> RefSeq -> Word8
 prob_of b i (RS v) = v ! ( 5*i + fromEnum b )
@@ -103,15 +103,20 @@ viterbi_forward gp (RS rs) (QS qs) (RP p0) (BW bw) = MemoMat $ U.create (do
                                      error ("Huh? " ++ show (ix,qpos,rpos,p0,base))
                           in fromIntegral $ min qual prob
 
+    let gscore rpos = let prob = let ix = 5*rpos + 4 in
+                                 if ix < 0 then error ("Huh? " ++ show ix) else
+                                     if ix < U.length rs then rs ! ix else
+                                     if ix - U.length rs < U.length rs then rs ! (ix - U.length rs) :: Word8 else
+                                     error ("Huh? " ++ show (ix,rpos,p0))
+                          in min gp $ fromIntegral prob
+
     let readV row col | row < 0 || col < 0 || col >= bw || row >= U.length qs = error $ "Read from memo: " ++ show (row,col)
                       | ix < 0 || ix >= UM.length v                           = error $ "Read from memo: " ++ show ix
                       | otherwise = UM.read v ix
             where ix = bw*row + col
 
-    -- match is correct, one of the gaps isn't
-    -- Need to double check those indices, too.
     let match row col = (+ score (row-1) (p0+col)) `liftM` readV (row-1) (col+0)
-        gapH  row col = (+ gp)                     `liftM` readV (row+0) (col-1)
+        gapH  row col = (+ gscore (p0+col))        `liftM` readV (row+0) (col-1)
         gapV  row col = (+ gp)                     `liftM` readV (row-1) (col+1)
 
     -- first line

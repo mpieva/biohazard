@@ -76,6 +76,13 @@ do_seed ln (SM sm) br = -- do S.hPut stdout $ S.concat [ br_qname br, key, ":  "
                    --    mapM_ (\x -> hPutStrLn stdout $ "  " ++ show x) rgns
                    case rgns of
                            [         ] -> Nothing -- putStrLn "discard"
+                           (a,b,_) : _ | a > 20000 || a < (-20000) -> error $ concat [
+                                    "Weird region: ",
+                                    shows (a,b,ln) "; ",
+                                    "Primitive regions: ",
+                                    shows (rgns_fwd ++ rgns_rev) "; ",
+                                    "Resulting regions: ",
+                                    show rgns ]
                            (a,b,_) : _ -> Just (a,b) -- putStrLn $ "seed to " ++ shows a ".." ++ shows b " ("
                                                          --     ++ shows (b-a) "/" ++ shows (br_l_seq br) ")"
 

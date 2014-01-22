@@ -89,8 +89,6 @@ main = do
     let !sm = create_seed_maps (map (map (either id id) . snd) inputs)
         !rs = prep_reference reference
 
-    -- print (ln, IM.size sm)
-    -- print rs
     let bamhdr = mempty { meta_hdr = BamHeader (1,4) Unsorted []
                         , meta_refs = Z.singleton $ BamSQ refname (length reference) [] }
 
@@ -110,44 +108,37 @@ main = do
 round1 :: MonadIO m
        => SeedMap -> RefSeq -> Iteratee [BamRec] m ()
        -> Iteratee [BamRaw] m ( Iteratee [BamRec] m () )
-round1 sm rs = go'
+round1 sm rs = convStream (headStream >>= go)
   where
     -- Hmm, better suggestions?
     gap_cost = 50
 
-    go' out = tryHead >>= go out
-
-    go out Nothing = return out
-    go out (Just br) = case do_seed (refseq_len rs) sm br of
-        Nothing    -> go' out
+    go br = case do_seed (refseq_len rs) sm br of
+        Nothing    -> return []
         Just (a,b) -> let bw = BW $ b - a - br_l_seq br
                       in if a >= 0 then aln (prep_query_fwd br) (RP   a ) bw
                                    else aln (prep_query_rev br) (RP (-b)) bw
       where
         aln  qs (RP x) (BW y) = do
-            liftIO $ do putStrLn $ "Rgn " ++ show x ++ ".." ++ show (x+br_l_seq br) ++ "x" ++ show y
-                        hFlush stdout
+            -- liftIO $ do putStrLn $ "Rgn " ++ show x ++ ".." ++ show (x+br_l_seq br) ++ "x" ++ show y
+                        -- hFlush stdout
             -- liftIO $ print qs
             let memo = viterbi_forward gap_cost rs qs (RP x) (BW y)
             let mm = get_memo_max (BW y) memo
-            liftIO $ print mm
-            let bamrec = (decodeBamEntry br) { b_rname = Refseq 0
-                                             -- , b_flag :: !Int
-                                             , b_pos = x
-                                             , b_mapq = 255
-                                             , b_cigar = Cigar []
-                                             , b_mrnm = invalidRefseq
-                                             , b_mpos = 0
-                                             , b_isize = 0
-                                             , b_virtual_offset = 0
-                                             , b_exts = M.singleton "AS" (Int mm)
-                                             }
+            -- liftIO $ print mm
+
+            return [ (decodeBamEntry br) { b_rname = Refseq 0
+                                         -- , b_flag :: !Int
+                                         , b_pos = x
+                                         , b_mapq = 255
+                                         , b_cigar = Cigar []
+                                         , b_mrnm = invalidRefseq
+                                         , b_mpos = 0
+                                         , b_isize = 0
+                                         , b_virtual_offset = 0
+                                         , b_exts = M.singleton "AS" (Int mm)
+                                         } ]
                 -- b_seq :: !Bio.Base.Sequence,
                 -- b_qual :: !Bio.Bam.Rec.ByteString,
                 -- b_exts :: Extensions,
-
-            out' <- lift $ enumPure1Chunk [bamrec] out
-            liftIO $ do putStrLn $ "Rgn " ++ show x ++ ".." ++ show (x+br_l_seq br) ++ "x" ++ show y
-                        hFlush stdout
-            go' out'
 
