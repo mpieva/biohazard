@@ -54,6 +54,7 @@ module Bio.Bam.Rec (
     readMd,
     showMd,
 
+    Sequence, Nucleotide(..),
     Extensions, Ext(..),
     extAsInt, extAsString, setQualFlag,
 

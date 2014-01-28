@@ -71,17 +71,6 @@ module Bio.Bam.Raw (
     br_extAsInt,
     br_extAsString,
 
-    Refs,
-    noRefs,
-    getRef,
-
-    Refseq(..),
-    invalidRefseq,
-    isValidRefseq,
-    invalidPos,
-    isValidPos,
-    unknownMapq,
-
     BamIndex,
     readBamIndex,
     readBamIndex',
@@ -140,22 +129,6 @@ import qualified Data.Sequence                  as Z
 -- This is most compact and often fasted, since it saves the time for
 -- repeated decoding and encoding, if that's not strictly needed.
 
-
--- | The invalid position.
--- Bam uses this value to encode a missing position.
-{-# INLINE invalidPos #-}
-invalidPos :: Int
-invalidPos = 0xFFFFFFFF
-
--- | Tests whether a position is valid.
--- Returns true unless the the argument equals @invalidPos@.
-{-# INLINE isValidPos #-}
-isValidPos :: Int -> Bool
-isValidPos = (/=) invalidPos
-
-{-# INLINE unknownMapq #-}
-unknownMapq :: Int
-unknownMapq = 255
 
 type BamrawEnumeratee m b = Enumeratee' BamMeta S.ByteString [BamRaw] m b
 

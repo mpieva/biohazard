@@ -14,6 +14,10 @@ module Bio.Bam.Header (
         Refseq(..),
         invalidRefseq,
         isValidRefseq,
+        invalidPos,
+        isValidPos,
+        unknownMapq,
+        isKnownMapq,
 
         Refs,
         noRefs,
@@ -237,6 +241,25 @@ isValidRefseq = (/=) invalidRefseq
 -- Bam uses this value to encode a missing reference sequence.
 invalidRefseq :: Refseq
 invalidRefseq = Refseq 0xffffffff
+
+-- | The invalid position.
+-- Bam uses this value to encode a missing position.
+{-# INLINE invalidPos #-}
+invalidPos :: Int
+invalidPos = 0xFFFFFFFF
+
+-- | Tests whether a position is valid.
+-- Returns true unless the the argument equals @invalidPos@.
+{-# INLINE isValidPos #-}
+isValidPos :: Int -> Bool
+isValidPos = (/=) invalidPos
+
+{-# INLINE unknownMapq #-}
+unknownMapq :: Int
+unknownMapq = 255
+
+isKnownMapq :: Int -> Bool
+isKnownMapq = (/=) unknownMapq
 
 -- | A list of reference sequences.
 type Refs = Z.Seq BamSQ
