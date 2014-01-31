@@ -1,6 +1,6 @@
 -- vim:tw=132
 Name:                mt-tools
-Version:             0.1.0.0
+Version:             0.5.4
 Synopsis:            tools that work on mitochondrial sequences
 Category:            Bioinformatics
 Homepage:            http://github.com/udo-stenzel/biohazard

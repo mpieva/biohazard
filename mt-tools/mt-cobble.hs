@@ -26,10 +26,12 @@ import System.Environment
 import System.Exit
 import System.IO
 
+import qualified Data.ByteString            as B
 import qualified Data.ByteString.Char8      as S
 import qualified Data.ByteString.Lazy.Char8 as L
 import qualified Data.Map                   as M
 import qualified Data.Sequence              as Z
+import qualified Data.Vector.Unboxed        as V
 
 
 -- Read a FastA file, drop the names, yield the sequences.
@@ -96,9 +98,15 @@ main = do
                         Nothing -> skipToEof
                         Just nf -> writeBamFile (nf 1) bamhdr
 
-    concatDefaultInputs >=> run >=> run $ \_ -> round1 sm rs round1out
+    concatInputs files >=> run >=> run $ \_ -> round1 sm rs round1out
 
 
+
+test = align 5 rs qs (RP 2) (BW 3)
+  where
+    qs = prep_query_fwd $ encodeBamEntry $ nullBamRec { b_seq = V.fromList $ map toNucleotide "ACGT", b_qual = B.pack [20,21,22,23] }
+    -- qs = prep_query_fwd $ encodeBamEntry $ nullBamRec { b_seq = V.fromList $ map toNucleotide "AC", b_qual = B.pack [20,21] }
+    rs = prep_reference $ map Right . map toNucleotide $ "AAAACCGTTTT"
 
 -- General plan:  In the first round, we read, seed, align, call the new
 -- working sequence, and write a BAM file.  Then write the new working
@@ -119,24 +127,27 @@ round1 sm rs = convStream (headStream >>= go)
                       in if a >= 0 then aln (prep_query_fwd br) (RP   a ) bw
                                    else aln (prep_query_rev br) (RP (-b)) bw
       where
-        aln  qs (RP x) (BW y) = do
+        aln qs (RP x) (BW y) = do
             -- liftIO $ do putStrLn $ "Rgn " ++ show x ++ ".." ++ show (x+br_l_seq br) ++ "x" ++ show y
                         -- hFlush stdout
             -- liftIO $ print qs
-            let memo = viterbi_forward gap_cost rs qs (RP x) (BW y)
-            let mm = get_memo_max (BW y) memo
+            let AlignResult{..} = align gap_cost rs qs (RP x) (BW y)
+            -- let mm = get_memo_max (BW y) memo
             -- liftIO $ print mm
 
-            return [ (decodeBamEntry br) { b_rname = Refseq 0
-                                         -- , b_flag :: !Int
-                                         , b_pos = x
+            return $ if viterbi_score >= (-30) then [] else
+                   [ (decodeBamEntry br) { b_rname = Refseq 0
+                                         , b_flag = 0 -- !!!
+                                         , b_pos = fst $ viterbi_backtrace
                                          , b_mapq = 255
-                                         , b_cigar = Cigar []
+                                         , b_cigar = snd $ viterbi_backtrace
                                          , b_mrnm = invalidRefseq
                                          , b_mpos = 0
                                          , b_isize = 0
+                                         , b_seq = qseqToBamSeq qs
+                                         , b_qual = qseqToBamQual qs
                                          , b_virtual_offset = 0
-                                         , b_exts = M.singleton "AS" (Int mm)
+                                         , b_exts = M.singleton "AS" (Float viterbi_score)
                                          } ]
                 -- b_seq :: !Bio.Base.Sequence,
                 -- b_qual :: !Bio.Bam.Rec.ByteString,
