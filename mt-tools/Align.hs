@@ -16,8 +16,6 @@ import qualified Data.ByteString             as S
 import qualified Data.Vector.Unboxed         as U
 import qualified Data.Vector.Unboxed.Mutable as UM
 
-import Debug.Trace
-
 data Base = A | C | G | T | None
   deriving (Eq, Ord, Enum, Show)
 
@@ -125,7 +123,26 @@ align gp (RS rs) (QS qs) (RP p0) (BW bw) = runST (do
                                      if ix < U.length rs then rs ! ix else
                                      if ix - U.length rs < U.length rs then rs ! (ix - U.length rs) :: Word8 else
                                      error ("Huh? " ++ show (ix,qpos,rpos,p0,base))
-                          in fromIntegral (min qual prob) - 6  -- correcting for random matches
+
+                              -- Improbability of a mismatch, it's the
+                              -- probability of the reference not being
+                              -- correct or the query not being correct,
+                              -- whichever is higher.
+                              mismatch = fromIntegral (min qual prob)
+
+                              -- Improbability of a random match.  It's
+                              -- 6 is we have a good base, corresponding
+                              -- to randomness.  If we have a bad base,
+                              -- it's lower, because we aren't doing
+                              -- better than random.
+                              randmatch = fromIntegral (min qual 6)
+
+                              -- Score is our mismatch probability vs.
+                              -- random sequences.  Note that this ends
+                              -- up being 0 for low quality bases, -6
+                              -- for high quality matches, and 30+ for
+                              -- high quality mismatches.
+                          in mismatch - randmatch
 
     let gscore rpos = let prob = let ix = 5*rpos + 4 in
                                  if ix < 0 then error ("Huh? " ++ show ix) else
@@ -143,7 +160,9 @@ align gp (RS rs) (QS qs) (RP p0) (BW bw) = runST (do
                           z <- if row == 0 || col == bw-1 then return y else min y <$> gapV row col
                           return z
 
-    -- fill the DP matrix
+    -- Fill the DP matrix.  XXX:  there's got to be way to express this
+    -- using 'Vector's bulk operations.  Would that be more readable?
+    -- Faster?
     forM_ [0 .. U.length qs] $ \row ->
         forM_ [0 .. bw-1] $ \col ->
             UM.write v (bw*row + col) . tr_score =<< cell row col
