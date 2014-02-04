@@ -21,6 +21,7 @@ import Control.Applicative
 import Control.Monad
 import Data.Char
 import Data.Monoid
+import Numeric
 import System.Console.GetOpt
 import System.Environment
 import System.Exit
@@ -29,9 +30,10 @@ import System.IO
 import qualified Data.ByteString            as B
 import qualified Data.ByteString.Char8      as S
 import qualified Data.ByteString.Lazy.Char8 as L
+import qualified Data.Iteratee              as I
 import qualified Data.Map                   as M
 import qualified Data.Sequence              as Z
-import qualified Data.Vector.Unboxed        as V
+import qualified Data.Vector.Unboxed        as U
 
 
 -- Read a FastA file, drop the names, yield the sequences.
@@ -54,26 +56,28 @@ readFasta = go . dropWhile (not . isHeader) . L.lines
 -- keep the bare minimum:  name, sequence/quality, seed region, flags
 -- (currently only the strand).  Just enough to write a valig BAM file.
 
-data QueryRec = QR { qr_name :: {-# UNPACK #-} !Seqid
-                   , qr_seq  :: {-# UNPACK #-} !QuerySeq
-                   , qr_pos  :: {-# UNPACK #-} !RefPosn
-                   , qr_band :: {-# UNPACK #-} !Bandwidth
-                   , qr_flag :: {-# UNPACK #-} !Int }
+data QueryRec = QR { qr_name :: {-# UNPACK #-} !Seqid           -- from BAM
+                   , qr_seq  :: {-# UNPACK #-} !QuerySeq        -- sequence and quality
+                   , qr_pos  :: {-# UNPACK #-} !RefPosn         -- start position of band
+                   , qr_band :: {-# UNPACK #-} !Bandwidth }     -- bandwidth (negative to indicate reversed sequence_
 
 data Conf = Conf {
     conf_references :: [FilePath] -> [FilePath],
-    conf_aln_outputs :: Maybe (Int -> FilePath) }
+    conf_aln_outputs :: Maybe (Int -> FilePath),
+    conf_cal_outputs :: Maybe (Int -> FilePath) }
 
 iniconf :: Conf
-iniconf = Conf id Nothing
+iniconf = Conf id Nothing Nothing
 
 options :: [ OptDescr (Conf -> IO Conf) ]
 options = [
-    Option "r" ["reference"] (ReqArg add_ref "FILE") "Read references from FILE",
-    Option "a" ["align-out"] (ReqArg set_aln_out "PAT") "Write intermediate alignments to PAT" ]
+    Option "r" ["reference"]  (ReqArg add_ref "FILE") "Read references from FILE",
+    Option "a" ["align-out"]  (ReqArg set_aln_out "PAT") "Write intermediate alignments to PAT",
+    Option "c" ["called-out"] (ReqArg set_cal_out "PAT") "Write called references to PAT" ]
   where
     add_ref     f c = return $ c { conf_references = conf_references c . (:) f }
     set_aln_out p c = return $ c { conf_aln_outputs = Just (splice_pat p) }
+    set_cal_out p c = return $ c { conf_cal_outputs = Just (splice_pat p) }
 
     splice_pat [] _ = []
     splice_pat ('%':'%':s) x = '%' : splice_pat s x
@@ -96,16 +100,26 @@ main = do
 
     let round1out = case conf_aln_outputs of
                         Nothing -> skipToEof
-                        Just nf -> writeBamFile (nf 1) bamhdr
+                        Just nf -> write_iter_bam (nf 1) bamhdr
 
-    concatInputs files >=> run >=> run $ \_ -> round1 sm rs round1out
+    ((), newref, queries) <- concatInputs files >=> run $ \_ ->
+                                joinI $ round1 sm rs $ I.zip3 round1out (mknewref rs) collect
 
+    case conf_cal_outputs of Nothing -> return ()
+                             Just nf -> write_ref_fasta (nf 1) newref
 
+    putStrLn $ "Kept " ++ shows (length queries) " queries."
+    return ()
+  where
+    collect = foldStream (flip (:)) []
+    mknewref rs = foldStream (\nrs (qr, res) -> add_to_refseq nrs (qr_seq qr) res)
+                             (new_ref_seq rs) >>= return . finalize_ref_seq
 
+test :: AlignResult
 test = align 5 rs qs (RP 2) (BW 3)
   where
-    qs = prep_query_fwd $ encodeBamEntry $ nullBamRec { b_seq = V.fromList $ map toNucleotide "ACGT", b_qual = B.pack [20,21,22,23] }
-    -- qs = prep_query_fwd $ encodeBamEntry $ nullBamRec { b_seq = V.fromList $ map toNucleotide "AC", b_qual = B.pack [20,21] }
+    qs = prep_query_fwd $ encodeBamEntry $ nullBamRec { b_seq = U.fromList $ map toNucleotide "ACGT", b_qual = B.pack [20,21,22,23] }
+    -- qs = prep_query_fwd $ encodeBamEntry $ nullBamRec { b_seq = U.fromList $ map toNucleotide "AC", b_qual = B.pack [20,21] }
     rs = prep_reference $ map Right . map toNucleotide $ "AAAACCGTTTT"
 
 -- General plan:  In the first round, we read, seed, align, call the new
@@ -114,8 +128,8 @@ test = align 5 rs qs (RP 2) (BW 3)
 -- sequences come from memory.
 
 round1 :: MonadIO m
-       => SeedMap -> RefSeq -> Iteratee [BamRec] m ()
-       -> Iteratee [BamRaw] m ( Iteratee [BamRec] m () )
+       => SeedMap -> RefSeq
+       -> Enumeratee [BamRaw] [(QueryRec, AlignResult)] m a
 round1 sm rs = convStream (headStream >>= go)
   where
     -- Hmm, better suggestions?
@@ -123,31 +137,51 @@ round1 sm rs = convStream (headStream >>= go)
 
     go br = case do_seed (refseq_len rs) sm br of
         Nothing    -> return []
-        Just (a,b) -> let bw = BW $ b - a - br_l_seq br
-                      in if a >= 0 then aln (prep_query_fwd br) (RP   a ) bw
-                                   else aln (prep_query_rev br) (RP (-b)) bw
+        Just (a,b) -> let bw = b - a - br_l_seq br
+                      in return $ if a >= 0 then aln (prep_query_fwd br) (RP   a ) (BW bw)
+                                            else aln (prep_query_rev br) (RP (-b)) (BW (-bw))
       where
-        aln qs (RP x) (BW y) = do
-            -- liftIO $ do putStrLn $ "Rgn " ++ show x ++ ".." ++ show (x+br_l_seq br) ++ "x" ++ show y
-                        -- hFlush stdout
-            -- liftIO $ print qs
-            let AlignResult{..} = align gap_cost rs qs (RP x) (BW y)
-            -- let mm = get_memo_max (BW y) memo
-            -- liftIO $ print mm
+        aln qs (RP x) (BW y) =
+            let res = align gap_cost rs qs (RP x) (BW (abs y))
+            in if viterbi_score res >= 0 then [] else
+               [( QR (br_qname br) qs (RP x) (BW y), res )]
 
-            return $ if viterbi_score >= (-30) then [] else
-                   [ (decodeBamEntry br) { b_rname = Refseq 0
-                                         , b_flag = 0 -- !!!
-                                         , b_pos = fst $ viterbi_backtrace
-                                         , b_mapq = 255
-                                         , b_cigar = snd $ viterbi_backtrace
-                                         , b_mrnm = invalidRefseq
-                                         , b_mpos = 0
-                                         , b_isize = 0
-                                         , b_seq = qseqToBamSeq qs
-                                         , b_qual = qseqToBamQual qs
-                                         , b_virtual_offset = 0
-                                         , b_exts = M.singleton "AS" (Float viterbi_score)
-                                         } ]
-                -- b_seq :: !Bio.Base.Sequence,
-                -- b_qual :: !Bio.Bam.Rec.ByteString,
+            -- let AlignResult{..} =
+            --
+
+write_iter_bam :: MonadCatchIO m => FilePath -> BamMeta -> Iteratee [(QueryRec, AlignResult)] m ()
+write_iter_bam fp hdr = mapStream conv =$ writeBamFile fp hdr
+  where
+    conv (QR{..}, AlignResult{..}) = BamRec
+            { b_qname           = qname
+            , b_flag            = if reversed qr_band then flagReversed else 0
+            , b_rname           = Refseq 0
+            , b_pos             = viterbi_position
+            , b_mapq            = 255
+            , b_cigar           = viterbi_backtrace
+            , b_mrnm            = invalidRefseq
+            , b_mpos            = 0
+            , b_isize           = 0
+            , b_seq             = qseqToBamSeq qr_seq
+            , b_qual            = qseqToBamQual qr_seq
+            , b_virtual_offset  = 0
+            , b_exts            = M.empty }
+      where
+        qname = qr_name `S.append` S.pack ("  " ++ showFFloat (Just 1) viterbi_score [])
+        reversed (BW x) = x < 0
+
+-- Call sequence and write to file.  We call a base only if all bases
+-- together are more likely than a gap.  We call a weak base if the gap
+-- has a probality of more than 30%.  The called base is the most
+-- probable one.
+write_ref_fasta :: FilePath -> RefSeq -> IO ()
+write_ref_fasta fp (RS v) = writeFile fp $ unlines $
+    ">genotype_call" : chunk 60 cseq
+  where
+    cseq = [ base | i <- [0, 5 .. U.length v - 5]
+                  , let pgap = v U.! (i+4)
+                  , pgap <= 3
+                  , let letters = if pgap >= 1 then "acgt" else "ACGT"
+                  , let base = letters `S.index` U.maxIndex (U.slice i 4 v) ]
+
+    chunk n s = case splitAt n s of _ | null s -> [] ; (l,r) -> l : chunk n r

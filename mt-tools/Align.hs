@@ -11,8 +11,11 @@ import Control.Monad.ST (runST)
 import Data.Bits
 import Data.List (group)
 import Data.Vector.Unboxed ((!))
+import Data.Sequence ( (<|), (><), ViewL((:<)) )
 
 import qualified Data.ByteString             as S
+import qualified Data.Foldable               as F
+import qualified Data.Sequence               as Z
 import qualified Data.Vector.Unboxed         as U
 import qualified Data.Vector.Unboxed.Mutable as UM
 
@@ -38,6 +41,8 @@ prep_reference = RS . U.concat .  map (either (to probG) (to probB))
   where
     to ps n = U.slice (5 * fromIntegral (unN n)) 5 ps
 
+    -- XXX we should probably add some noise here, so the placement of
+    -- gaps isn't completely random, but merely unpredictable
     probB = U.fromListN 80 $ concatMap (\l ->          l ++ [255]) raw_probs
     probG = U.fromListN 80 $ concatMap (\l -> map (+3) l ++  [3])  raw_probs
 
@@ -94,9 +99,10 @@ newtype Bandwidth = BW Int deriving Show
 newtype RefPosn   = RP Int deriving Show
 
 data AlignResult = AlignResult
-        { viterbi_forward :: MemoMat                    -- DP matrix from running Viterbi
-        , viterbi_score :: Float
-        , viterbi_backtrace :: (Int, Cigar) }       -- backtrace (most probable alignment)
+        { viterbi_forward :: MemoMat         -- DP matrix from running Viterbi
+        , viterbi_score :: Float             -- alignment score (log scale, vs. radom alignment)
+        , viterbi_position :: Int            -- position (start of the most probable alignment)
+        , viterbi_backtrace :: Cigar }       -- backtrace (most probable alignment)
   deriving Show
 
 data Traced = Tr { tr_op :: CigOp, tr_score :: Float }
@@ -115,7 +121,7 @@ align gp (RS rs) (QS qs) (RP p0) (BW bw) = runST (do
                       | otherwise = UM.read v ix
             where ix = bw*row + col
 
-    let score qpos rpos | qpos < 0 || qpos >= U.length qs = error $ "Read from QS: " ++ show qpos
+    let score qpos    _ | qpos < 0 || qpos >= U.length qs = error $ "Read from QS: " ++ show qpos
         score qpos rpos = let base = (qs ! qpos) .&. 3 :: Word8
                               qual = (qs ! qpos) `shiftR` 2 :: Word8
                               prob = let ix = 5*rpos + fromIntegral base in
@@ -176,5 +182,116 @@ align gp (RS rs) (QS qs) (RP p0) (BW bw) = runST (do
 
     viterbi_forward <- MemoMat <$> U.unsafeFreeze v
     (viterbi_score, mincol) <- minimum . flip zip [0..] <$> mapM (readV (U.length qs)) [0..bw-1]
-    viterbi_backtrace <- trace [] (U.length qs) mincol
+    (viterbi_position, viterbi_backtrace) <- trace [] (U.length qs) mincol
     return $ AlignResult{..})
+
+-- For each position, a vector of pseudocounts in the same order as in
+-- 'RefSeq', followed by the same for based inserted after the current
+-- one.
+newtype NewRefSeq = NRS (Z.Seq NewColumn)
+
+-- Inserts come (conceptually) before the base whose coordinate they
+-- bear.  So every column has inserts first, then the single aligned
+-- base.
+data NewColumn = NC { nc_inserts :: U.Vector Float
+                    , nc_base    :: U.Vector Float }
+
+new_ref_seq :: RefSeq -> NewRefSeq
+new_ref_seq rs = NRS $ Z.replicate (refseq_len rs) (NC (U.replicate 0 0) U.empty)
+
+-- Add an alignment to the new reference.  We compute the quality of the
+-- alignment (probability that it belongs vs. probability that it's
+-- random), that's how many votes we're going to cast.  (A perfect
+-- alignment gives a whole vote, a random one gives none.  Call this
+-- with an alignment that's worse than random at your own peril.)
+-- If we're voting for a base, we vote for the called one according to
+-- its quality and for all others with the error probability.
+-- A deletion is a vote against all bases, an insert is a vote for how
+-- ever many bases.  The first five values sum up to the total votes so
+-- far, and they all count as votes against any further extension to an
+-- insert.
+--
+-- Note that this logic was arrived at by "thinking hard".  A clean way
+-- to do it is to maximize the alignment score expected in the next
+-- round, assuming the alignments do not change.  It might work out to
+-- the same thing... who knows?
+--
+-- XXX Alignment to a circular reference works, but the code here will
+-- not.  Need to loop around to the beginning?
+add_to_refseq :: NewRefSeq -> QuerySeq -> AlignResult -> NewRefSeq
+add_to_refseq (NRS nrs0) (QS qs0) AlignResult{..} =
+    NRS $ front >< mat here back qs0 (unCigar viterbi_backtrace)
+  where
+    (front, rest0) = Z.splitAt viterbi_position nrs0
+    here :< back = Z.viewl rest0
+
+    !odds = 10 ** (-viterbi_score / 10)  -- often huge,
+    !votes = odds / (1+odds)             -- often exactly 1
+
+    -- Grrr, this isn't going to work.  We'll split it:
+    -- One function deals with inserts.  As long as we get inserted
+    -- bases, we vote for them.  Then we vote against the remainder and
+    -- pass the buck.
+    -- The other deals with a base.  We vote for it if we matched it,
+    -- against it if we deleted it.  Then we recurse.
+    ins !nc@(NC is b) !nrs !nins !qs cigs = case cigs of
+        [          ] -> nc <| nrs
+        (( _ ,0):cs) -> ins nc nrs nins qs cs
+
+        ((Ins,n):cs) -> let is' = vote_for_at votes (U.sum b) nins (U.head qs) is
+                        in ins (NC is' b) nrs (nins+1) (U.tail qs) ((Ins,n-1):cs)
+
+        _            -> let is' = vote_against_from votes nins is
+                        in mat (NC is' b) nrs qs cigs
+
+    mat !nc@(NC is b) !nrs !qs cigs = case cigs of
+        [          ] -> nc <| nrs
+        (( _ ,0):cs) -> mat nc nrs qs cs
+
+        ((Del,n):cs) -> let nc2 :< rest = Z.viewl nrs
+                            b' = vote_against votes b
+                        in NC is b' <| mat nc2 rest qs ((Del,n-1):cs)
+
+        ((Mat,n):cs) -> let nc2 :< rest = Z.viewl nrs
+                            b' = vote_for votes (U.head qs) b
+                        in NC is b' <| mat nc2 rest (U.tail qs) ((Mat,n-1):cs)
+
+        _            -> ins nc nrs (0::Int) qs cigs
+
+
+
+vote_against_from :: Float -> Int -> U.Vector Float -> U.Vector Float
+vote_against_from votes ix ps = U.accum (+) ps [(i,votes) | i <- [ix+4, ix+8 .. U.length ps]]
+
+vote_against :: Float -> U.Vector Float -> U.Vector Float
+vote_against votes ps = U.accum (+) ps [(4,votes)]
+
+vote_for :: Float -> Word8 -> U.Vector Float -> U.Vector Float
+vote_for votes = vote_for_at votes 0 0
+
+vote_for_at :: Float -> Float -> Int -> Word8 -> U.Vector Float -> U.Vector Float
+vote_for_at votes v0 idx bq ps = U.accum (+) ps' $ (base+5*idx,pt) : [(5*idx+i,pe)|i<-[0,1,2,3]]
+  where
+    base = fromIntegral $ bq .&. 3
+    qual = bq `shiftR` 2
+    perr = 10 ** (fromIntegral qual * (-0.1))
+    pe = votes * perr / 3
+    pt = votes * (1 - perr) - pe
+
+    ps' | U.length ps >= 5*idx+5 = ps
+        | otherwise              = U.concat (ps : replicate (idx+1 - U.length ps `div` 5) (U.fromList [0,0,0,0,v0]))
+
+
+-- Back to compact representation.  Every group of five votes gets
+-- converted to five probabilities, and those to quality scores.  Then
+-- we concatenate.
+finalize_ref_seq :: NewRefSeq -> RefSeq
+finalize_ref_seq (NRS z) = RS $ U.concat $ F.foldr unpack [] z
+  where
+    unpack (NC ins bas) k = map5 call ins ++ call bas : k
+    map5 f v = [ f (U.slice i 5 v) | i <- [0, 5 .. U.length v - 5] ]
+    call v = U.map (\x -> round $ (-10) / log 10 * log ((total-x) / total)) v where total = U.sum v
+
+
+
+
