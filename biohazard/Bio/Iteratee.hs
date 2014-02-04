@@ -45,7 +45,6 @@ module Bio.Iteratee (
     module Data.Iteratee.Char,
     module Data.Iteratee.IO,
     module Data.Iteratee.Iteratee,
-    module Data.Iteratee.Parallel
                     ) where
 
 import Bio.Base ( findAuxFile )
@@ -58,7 +57,6 @@ import Data.Iteratee.Binary
 import Data.Iteratee.Char
 import Data.Iteratee.IO hiding ( defaultBufSize )
 import Data.Iteratee.Iteratee
-import Data.Iteratee.Parallel
 import Data.Monoid
 import Data.ListLike ( ListLike )
 import System.IO ( stdin, stdout, stderr, hIsTerminalDevice )
