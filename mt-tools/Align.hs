@@ -19,6 +19,8 @@ import qualified Data.Sequence               as Z
 import qualified Data.Vector.Unboxed         as U
 import qualified Data.Vector.Unboxed.Mutable as UM
 
+import Debug.Trace
+
 data Base = A | C | G | T | None
   deriving (Eq, Ord, Enum, Show)
 
@@ -174,15 +176,15 @@ align gp (RS rs) (QS qs) (RP p0) (BW bw) = runST (do
             UM.write v (bw*row + col) . tr_score =<< cell row col
 
     let pack_cigar = Cigar . map (\x -> (head x, length x)) . group
-    let trace acc row col = do op <- tr_op <$> cell row col
-                               case op of Mat -> trace (Mat:acc) (row-1) (col+0)
-                                          Ins -> trace (Ins:acc) (row-1) (col+1)
-                                          Del -> trace (Del:acc) (row+0) (col-1)
-                                          Nop | row == 0 -> return (p0+col, pack_cigar acc)
+    let traceback acc row col = do op <- tr_op <$> cell row col
+                                   case op of Mat -> traceback (Mat:acc) (row-1) (col+0)
+                                              Ins -> traceback (Ins:acc) (row-1) (col+1)
+                                              Del -> traceback (Del:acc) (row+0) (col-1)
+                                              Nop | row == 0 -> return (p0+col, pack_cigar acc)
 
     viterbi_forward <- MemoMat <$> U.unsafeFreeze v
     (viterbi_score, mincol) <- minimum . flip zip [0..] <$> mapM (readV (U.length qs)) [0..bw-1]
-    (viterbi_position, viterbi_backtrace) <- trace [] (U.length qs) mincol
+    (viterbi_position, viterbi_backtrace) <- traceback [] (U.length qs) mincol
     return $ AlignResult{..})
 
 -- For each position, a vector of pseudocounts in the same order as in
@@ -197,7 +199,10 @@ data NewColumn = NC { nc_inserts :: U.Vector Float
                     , nc_base    :: U.Vector Float }
 
 new_ref_seq :: RefSeq -> NewRefSeq
-new_ref_seq rs = NRS $ Z.replicate (refseq_len rs) (NC (U.replicate 0 0) U.empty)
+new_ref_seq rs = NRS $ Z.replicate (refseq_len rs) (NC (U.replicate 0 0) (U.replicate 5 0))
+
+mkNC i b | U.length b /= 5 = error "mkNC"
+         | otherwise = NC i b
 
 -- Add an alignment to the new reference.  We compute the quality of the
 -- alignment (probability that it belongs vs. probability that it's
@@ -220,13 +225,15 @@ new_ref_seq rs = NRS $ Z.replicate (refseq_len rs) (NC (U.replicate 0 0) U.empty
 -- not.  Need to loop around to the beginning?
 add_to_refseq :: NewRefSeq -> QuerySeq -> AlignResult -> NewRefSeq
 add_to_refseq (NRS nrs0) (QS qs0) AlignResult{..} =
-    NRS $ front >< mat here back qs0 (unCigar viterbi_backtrace)
+    -- trace (show (odds, votes)) $
+    NRS $ rotateZ (Z.length nrs0 - viterbi_position)
+        $ mat here back qs0 (unCigar viterbi_backtrace)
   where
-    (front, rest0) = Z.splitAt viterbi_position nrs0
-    here :< back = Z.viewl rest0
+    here :< back = Z.viewl $ rotateZ viterbi_position nrs0
+    rotateZ n = uncurry (flip (><)) . Z.splitAt n
 
     !odds = 10 ** (-viterbi_score / 10)  -- often huge,
-    !votes = odds / (1+odds)             -- often exactly 1
+    !votes = 1 - recip (1+odds)             -- often exactly 1
 
     -- Grrr, this isn't going to work.  We'll split it:
     -- One function deals with inserts.  As long as we get inserted
@@ -239,10 +246,10 @@ add_to_refseq (NRS nrs0) (QS qs0) AlignResult{..} =
         (( _ ,0):cs) -> ins nc nrs nins qs cs
 
         ((Ins,n):cs) -> let is' = vote_for_at votes (U.sum b) nins (U.head qs) is
-                        in ins (NC is' b) nrs (nins+1) (U.tail qs) ((Ins,n-1):cs)
+                        in ins (mkNC is' b) nrs (nins+1) (U.tail qs) ((Ins,n-1):cs)
 
         _            -> let is' = vote_against_from votes nins is
-                        in mat (NC is' b) nrs qs cigs
+                        in mat (mkNC is' b) nrs qs cigs
 
     mat !nc@(NC is b) !nrs !qs cigs = case cigs of
         [          ] -> nc <| nrs
@@ -250,27 +257,31 @@ add_to_refseq (NRS nrs0) (QS qs0) AlignResult{..} =
 
         ((Del,n):cs) -> let nc2 :< rest = Z.viewl nrs
                             b' = vote_against votes b
-                        in NC is b' <| mat nc2 rest qs ((Del,n-1):cs)
+                        in mkNC is b' <| mat nc2 rest qs ((Del,n-1):cs)
 
         ((Mat,n):cs) -> let nc2 :< rest = Z.viewl nrs
                             b' = vote_for votes (U.head qs) b
-                        in NC is b' <| mat nc2 rest (U.tail qs) ((Mat,n-1):cs)
+                        in mkNC is b' <| mat nc2 rest (U.tail qs) ((Mat,n-1):cs)
 
         _            -> ins nc nrs (0::Int) qs cigs
 
 
 
 vote_against_from :: Float -> Int -> U.Vector Float -> U.Vector Float
-vote_against_from votes ix ps = U.accum (+) ps [(i,votes) | i <- [ix+4, ix+8 .. U.length ps]]
+-- vote_against_from votes ix ps | trace ("vote_against_from " ++ show (ix, U.length ps)) False = undefined
+vote_against_from votes ix ps = U.accum (+) ps [(i,votes) | i <- [ix+4, ix+9 .. U.length ps-1]]
 
 vote_against :: Float -> U.Vector Float -> U.Vector Float
+-- vote_against votes ps | trace ("vote_against " ++ show (U.length ps)) False = undefined
 vote_against votes ps = U.accum (+) ps [(4,votes)]
 
 vote_for :: Float -> Word8 -> U.Vector Float -> U.Vector Float
 vote_for votes = vote_for_at votes 0 0
 
 vote_for_at :: Float -> Float -> Int -> Word8 -> U.Vector Float -> U.Vector Float
-vote_for_at votes v0 idx bq ps = U.accum (+) ps' $ (base+5*idx,pt) : [(5*idx+i,pe)|i<-[0,1,2,3]]
+vote_for_at votes v0 idx bq ps =
+    -- trace (show (base, qual, votes, pe, pt)) $
+    U.accum (+) ps' $ (base+5*idx,pt) : [(5*idx+i,pe)|i<-[0,1,2,3]]
   where
     base = fromIntegral $ bq .&. 3
     qual = bq `shiftR` 2

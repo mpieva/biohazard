@@ -30,6 +30,7 @@ import System.IO
 import qualified Data.ByteString            as B
 import qualified Data.ByteString.Char8      as S
 import qualified Data.ByteString.Lazy.Char8 as L
+import qualified Data.Foldable              as F
 import qualified Data.Iteratee              as I
 import qualified Data.Map                   as M
 import qualified Data.Sequence              as Z
@@ -60,6 +61,7 @@ data QueryRec = QR { qr_name :: {-# UNPACK #-} !Seqid           -- from BAM
                    , qr_seq  :: {-# UNPACK #-} !QuerySeq        -- sequence and quality
                    , qr_pos  :: {-# UNPACK #-} !RefPosn         -- start position of band
                    , qr_band :: {-# UNPACK #-} !Bandwidth }     -- bandwidth (negative to indicate reversed sequence_
+  deriving Show
 
 data Conf = Conf {
     conf_references :: [FilePath] -> [FilePath],
@@ -103,17 +105,32 @@ main = do
                         Just nf -> write_iter_bam (nf 1) bamhdr
 
     ((), newref, queries) <- concatInputs files >=> run $ \_ ->
+                                -- joinI $ takeStream 1 $
                                 joinI $ round1 sm rs $ I.zip3 round1out (mknewref rs) collect
 
     case conf_cal_outputs of Nothing -> return ()
-                             Just nf -> write_ref_fasta (nf 1) newref
+                             Just nf -> write_ref_fasta (nf 1) 1 newref
 
     putStrLn $ "Kept " ++ shows (length queries) " queries."
+    -- print queries
     return ()
   where
     collect = foldStream (flip (:)) []
     mknewref rs = foldStream (\nrs (qr, res) -> add_to_refseq nrs (qr_seq qr) res)
                              (new_ref_seq rs) >>= return . finalize_ref_seq
+
+add_to_refseq' :: MonadIO m => NewRefSeq -> QuerySeq -> AlignResult -> m NewRefSeq
+add_to_refseq' nrs@(NRS v) qs res = do
+    liftIO $ print (viterbi_position res, viterbi_score res, viterbi_backtrace res)
+    liftIO $ print $ take 200 $ F.foldr foo [] v
+    liftIO $ print $ take 200 $ ref_to_ascii $ finalize_ref_seq nrs
+    let nrs' = add_to_refseq nrs qs res
+    liftIO $ print {- $ take 200 -} $ filter (not . U.all (==0)) $ F.foldr foo [] v
+    liftIO $ print $ take 200 $ ref_to_ascii $ finalize_ref_seq nrs'
+    return nrs'
+  where
+    foo (NC is b) l = is : b : l
+
 
 test :: AlignResult
 test = align 5 rs qs (RP 2) (BW 3)
@@ -174,14 +191,16 @@ write_iter_bam fp hdr = mapStream conv =$ writeBamFile fp hdr
 -- together are more likely than a gap.  We call a weak base if the gap
 -- has a probality of more than 30%.  The called base is the most
 -- probable one.
-write_ref_fasta :: FilePath -> RefSeq -> IO ()
-write_ref_fasta fp (RS v) = writeFile fp $ unlines $
-    ">genotype_call" : chunk 60 cseq
+write_ref_fasta :: FilePath -> Int -> RefSeq -> IO ()
+write_ref_fasta fp num rs = writeFile fp $ unlines $
+    (">genotype_call-" ++ show num) : chunk 70 (ref_to_ascii rs)
   where
-    cseq = [ base | i <- [0, 5 .. U.length v - 5]
-                  , let pgap = v U.! (i+4)
-                  , pgap <= 3
-                  , let letters = if pgap >= 1 then "acgt" else "ACGT"
-                  , let base = letters `S.index` U.maxIndex (U.slice i 4 v) ]
-
     chunk n s = case splitAt n s of _ | null s -> [] ; (l,r) -> l : chunk n r
+
+ref_to_ascii :: RefSeq -> String
+ref_to_ascii (RS v) = [ base | i <- [0, 5 .. U.length v - 5]
+                             , let pgap = v U.! (i+4)
+                             , pgap <= 3
+                             , let letters = if pgap >= 1 then "acgt" else "ACGT"
+                             , let base = letters `S.index` U.maxIndex (U.slice i 4 v) ]
+
