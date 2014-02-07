@@ -176,7 +176,7 @@ decodeAnyBamOrSamFile fn k = enumFileRandom defaultBufSize fn (decodeAnyBamOrSam
 
 -- | Decodes a raw block into a @BamRec@.
 decodeBamEntry :: BamRaw -> BamRec
-decodeBamEntry br = either error fixup . fst . G.runGet go $ raw_data br
+decodeBamEntry br = either error fixup_bam_rec . fst . G.runGet go $ raw_data br
   where
     go = do !rid       <- Refseq       <$> G.getWord32le
             !start     <- fromIntegral <$> G.getWord32le
@@ -204,12 +204,14 @@ decodeBamEntry br = either error fixup . fst . G.runGet go $ raw_data br
                   | otherwise = error "unknown Cigar operation"
       where cc = fromIntegral c .&. 0xf; cl = fromIntegral c `shiftR` 4
 
-    -- fixups for changed conventions
-    fixup b = (if b_flag b .&. flagLowQuality /= 0 then setQualFlag 'Q' else id) $          -- low qual, new convention
-              (if b_flag b .&. flagLowComplexity /= 0 then setQualFlag 'C' else id) $       -- low complexity, new convention
-              b { b_flag = fixPP $ oflags .|. muflag .|. tflags .|. shiftL eflags 16        -- extended flags
-                , b_exts = cleaned_exts }
-      where
+-- | fixes BAM records for changed conventions
+fixup_bam_rec :: BamRec -> BamRec
+fixup_bam_rec b =
+    (if b_flag b .&. flagLowQuality /= 0 then setQualFlag 'Q' else id) $          -- low qual, new convention
+    (if b_flag b .&. flagLowComplexity /= 0 then setQualFlag 'C' else id) $       -- low complexity, new convention
+    b { b_flag = fixPP $ oflags .|. muflag .|. tflags .|. shiftL eflags 16        -- extended flags
+      , b_exts = cleaned_exts }
+  where
         -- removes old flag abuse
         flags' = b_flag b .&. complement (flagLowQuality .|. flagLowComplexity)
         oflags | flags' .&. flagPaired == 0 = flags' .&. complement (flagFirstMate .|. flagSecondMate)
@@ -506,7 +508,7 @@ decodeSamLoop refs inner = I.convStream (liftI parse_record) inner
         parse_record (Chunk []) = liftI parse_record
         parse_record (Chunk (l:ls)) | "@" `S.isPrefixOf` l = parse_record (Chunk ls)
         parse_record (Chunk (l:ls)) = case P.parseOnly (parseSamRec ref) l of
-            Right  r -> idone [r] (Chunk ls)
+            Right  r -> idone [fixup_bam_rec r] (Chunk ls)
             Left err -> icont parse_record (Just $ iterStrExc $ err ++ ", " ++ show l)
 
 -- | Parser for SAM that doesn't look for a header.  Has the advantage
