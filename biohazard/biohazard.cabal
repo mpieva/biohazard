@@ -1,3 +1,4 @@
+-- vim:tw=132
 Name:                biohazard
 Version:             0.5.4
 Synopsis:            bioinformatics support library
@@ -53,8 +54,9 @@ Library
   
   -- Packages needed in order to build this package.
   Build-depends:       array, attoparsec, attoparsec-iteratee, base == 4.*, binary, binary-strict, bytestring, containers,
-                       directory, filepath, iteratee, ListLike, MonadCatchIO-transformers, parallel, random, transformers,
-                       vector, zlib
+                       directory, filepath, iteratee == 0.8.9.*,
+                       ListLike, MonadCatchIO-transformers, parallel,
+                       random, transformers, vector, zlib
   
   Ghc-options:         -Wall -auto-all
   Include-dirs:        cbits

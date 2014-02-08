@@ -32,5 +32,5 @@ executable mt-cobble
   Other-Modules:       Align, SimpleSeed
   Build-Depends:       base ==4.*, bytestring, biohazard >=0.5.2,
                        containers >=0.4.1, unordered-containers,
-                       array, vector, iteratee
+                       array, vector, iteratee == 0.8.9.*
 

@@ -1,3 +1,4 @@
+-- vim:tw=132
 Name:                biohazard-tools
 Version:             0.5.4
 Synopsis:            tools separated from biohazard
@@ -52,7 +53,7 @@ Executable bam-rewrap
 Executable bam-rmdup
   Ghc-options:         -Wall -auto-all -threaded -rtsopts
   Main-is:             bam-rmdup.hs
-  Build-depends:       base ==4.*, biohazard ==0.5.4, bytestring, containers, iteratee
+  Build-depends:       base ==4.*, biohazard ==0.5.4, bytestring, containers, iteratee == 0.8.9.*
 
 Executable bam-trim
   Ghc-options:         -Wall -auto-all -threaded -rtsopts
@@ -62,12 +63,12 @@ Executable bam-trim
 Executable count-coverage
   Ghc-options:         -Wall -auto-all -threaded -rtsopts
   Main-is:             count-coverage.hs
-  Build-depends:       base ==4.*, biohazard ==0.5.4, iteratee
+  Build-depends:       base ==4.*, biohazard ==0.5.4, iteratee == 0.8.9.*
 
 Executable glf-consensus
   Ghc-options:         -Wall -auto-all -threaded -rtsopts
   Main-is:             glf-consensus.hs
-  Build-depends:       base ==4.*, biohazard ==0.5.4, bytestring, containers, iteratee, MonadCatchIO-transformers
+  Build-depends:       base ==4.*, biohazard ==0.5.4, bytestring, containers, iteratee == 0.8.9.*, MonadCatchIO-transformers
 
 Executable wiggle-coverage
   Ghc-options:         -Wall -auto-all -threaded -rtsopts
