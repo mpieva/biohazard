@@ -80,7 +80,9 @@ instance Bounded Nucleotide where
     maxBound = N 15
 
 -- | Qualities are stored in deciban, also known as the Phred scale.  To
--- represent a value @p@, we store @-10 * log_10 p@.
+-- represent a value @p@, we store @-10 * log_10 p@.  Note that this a
+-- representation of error probability, which is where the semantics
+-- derive from.
 newtype Qual = Q { unQ :: Word8 } deriving
     ( Eq, Storable, Bounded, VG.Vector VU.Vector, VM.MVector VU.MVector, VU.Unbox )
 
@@ -94,7 +96,8 @@ instance Show DQual where
     showsPrec p (DQ q) = (:) 'Q' . showsPrec p q
 
 -- Ord instance for qualities.  Since there is a sign flip in the
--- definition, we need to reverse the sense here.
+-- definition, we need to reverse the sense here.  (We are comparing
+-- error probabilities.)
 instance Ord Qual where
     Q a `compare` Q b = b `compare` a
     Q a   `min`   Q b = Q (a `max` b)

@@ -398,10 +398,10 @@ accumMap f g = go M.empty
          majority vote -}
 
 do_collapse :: Qual -> [BamRec] -> (Politics BamRec, [BamRec])
-do_collapse (Q maxq) [br] | B.all (<= maxq) (b_qual br) = ( Representative br, [  ] )     -- no modifcation, pass through
+do_collapse (Q maxq) [br] | B.all (>= maxq) (b_qual br) = ( Representative br, [  ] )     -- no modifcation, pass through
                           | otherwise                   = ( Consensus   lq_br, [br] )     -- qualities reduced, must keep original
   where
-    lq_br = br { b_qual  = B.map (min maxq) $ b_qual br
+    lq_br = br { b_qual  = B.map (max maxq) $ b_qual br
                , b_virtual_offset = 0
                , b_qname = b_qname br `B.snoc` c2w 'c' }
 
@@ -537,7 +537,7 @@ consensus (Q maxq) nqs = if qr > 3 then (n0, Q qr) else (nucN, Q 0)
     accs = accumArray (+) 0 (minBound,maxBound) [ (n,fromIntegral q) | (n,Q q) <- nqs ]
 
     (n0,q0) : (_,q1) : _ = sortBy (flip $ comparing snd) $ assocs accs
-    qr = fromIntegral $ (q0-q1) `min` fromIntegral maxq
+    qr = fromIntegral $ (q0-q1) `max` fromIntegral maxq
 
 
 -- Cheap version: simply takes the lexically first record, adds XP field
