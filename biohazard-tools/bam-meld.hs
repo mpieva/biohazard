@@ -229,7 +229,7 @@ merge_by_name = ensure_sorting ><> merge'
             GT -> merge'y (Just  x) . k $ Chunk [   ys ]
 
 ensure_sorting :: Monad m => Enumeratee [BamPair] [BamPair] m a
-ensure_sorting = eneeCheckIfDone (liftI . step)
+ensure_sorting = eneeCheckIfDonePass (icont . step)
   where
     step k (EOF       mx) = idone (liftI k) $ EOF mx
     step k (Chunk [    ]) = liftI $ step k

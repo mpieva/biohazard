@@ -328,7 +328,7 @@ type Pile = Either (VarCall BasePile) (VarCall IndelPile)
 
 pileup :: MonadIO m => DamageModel -> Enumeratee [BamRaw] [Pile] m a
 pileup dm = takeWhileE (isValidRefseq . br_rname) ><> filterStream useable ><>
-            eneeCheckIfDone (liftI . runPileM pileup' finish (Refseq 0) 0 [] Empty dm)
+            eneeCheckIfDonePass (icont . runPileM pileup' finish (Refseq 0) 0 [] Empty dm)
   where
     useable br = not (br_isUnmapped br || br_isDuplicate br)
 

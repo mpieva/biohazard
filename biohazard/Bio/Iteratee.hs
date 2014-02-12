@@ -14,6 +14,8 @@ module Bio.Iteratee (
     foldStreamM,
     mapChunksMP,
     protectTerm,
+    concatMapStream,
+    mapMaybeStream,
 
     I.mapStream,
     I.takeWhileE,
@@ -47,6 +49,10 @@ module Bio.Iteratee (
     module Data.Iteratee.Iteratee,
                     ) where
 
+-- ^ Basically a reexport of "Data.Iteratee" less the names that clash
+-- with "Prelude" plus a handful of utilities.
+
+
 import Bio.Base ( findAuxFile )
 import Control.Concurrent
 import Control.Monad
@@ -66,10 +72,6 @@ import qualified Data.ListLike as LL
 import qualified Data.ByteString as S
 import qualified Data.Iteratee as I
 
--- ^ Basically a reexport of "Data.Iteratee" less the names that clash
--- with "Prelude" plus a handful of utilities.
-
-
 -- | Grouping on 'Iteratee's.  @groupStreamOn proj inner outer@ executes
 -- @inner (proj e)@, where @e@ is the first input element, to obtain an
 -- 'Iteratee' @i@, then passes elements @e@ to @i@ as long as @proj e@
@@ -80,7 +82,7 @@ groupStreamOn :: (Monad m, LL.ListLike l e, Eq t1, NullPoint l, Nullable l)
               => (e -> t1)
               -> (t1 -> m (Iteratee l m t2))
               -> Enumeratee l [(t1, t2)] m a
-groupStreamOn proj inner = eneeCheckIfDone (liftI . step)
+groupStreamOn proj inner = eneeCheckIfDonePass (icont . step)
   where
     step outer   (EOF   mx) = idone (liftI outer) $ EOF mx
     step outer c@(Chunk as)
@@ -118,7 +120,7 @@ groupStreamBy :: (Monad m, LL.ListLike l t, NullPoint l, Nullable l)
               => (t -> t -> Bool)
               -> m (Iteratee l m t2)
               -> Enumeratee l [t2] m a
-groupStreamBy cmp inner = eneeCheckIfDone (liftI . step)
+groupStreamBy cmp inner = eneeCheckIfDonePass (icont . step)
   where
     step outer    (EOF   mx) = idone (liftI outer) $ EOF mx
     step outer  c@(Chunk as)
@@ -190,6 +192,16 @@ mergeEnums' :: (Nullable s2, Nullable s1, Monad m)
             -> (ho -> Enumeratee  s2 s1 (Iteratee s1 m) a)      -- ^ merging enumeratee
             -> Enumerator' hi s1 m a
 mergeEnums' e1 e2 etee i = e1 $ \hi -> e2 (\ho -> joinI . etee ho $ ilift lift (i hi)) >>= run
+
+concatMapStream :: (Monad m, ListLike s a, NullPoint s, ListLike t b) => (a -> t) -> Enumeratee s t m r
+concatMapStream = mapChunks . LL.concatMap
+
+mapMaybeStream :: (Monad m, ListLike s a, NullPoint s, ListLike t b) => (a -> Maybe b) -> Enumeratee s t m r
+mapMaybeStream f = mapChunks mm
+  where
+    mm l = if LL.null l then LL.empty else
+           case f (LL.head l) of Nothing -> mm (LL.tail l)
+                                 Just b  -> LL.cons b $ mm (LL.tail l)
 
 -- | Apply a filter predicate to an 'Iteratee'.
 filterStream :: (Monad m, ListLike s a, NullPoint s) => (a -> Bool) -> Enumeratee s s m r
@@ -269,7 +281,7 @@ newtype Ch a = Ch (MVar (Maybe (a, Ch a)))
 -- thread for each chunk.  'MonadIO' is needed for the forking.
 mapChunksMP :: (MonadIO m, Nullable a) => (a -> IO b) -> Enumeratee a b m c
 mapChunksMP f it = do chan <- liftIO $ Ch `liftM` newEmptyMVar
-                      eneeCheckIfDone (liftI . go 0 chan chan) it
+                      eneeCheckIfDonePass (icont . go 0 chan chan) it
   where
     maxqueue = 32 :: Int -- arbitrary
 

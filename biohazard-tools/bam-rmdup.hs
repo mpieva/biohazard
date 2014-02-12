@@ -258,7 +258,7 @@ make_single br | br_isPaired br && br_isSecondMate br = Nothing
 
 
 progress :: MonadIO m => (String -> IO ()) -> Refs -> Enumeratee [BamRaw] [BamRaw] m a
-progress put refs = eneeCheckIfDone (liftI . go 0)
+progress put refs = eneeCheckIfDonePass (icont . go 0)
   where
     go !_ k (EOF         mx) = idone (liftI k) (EOF mx)
     go !n k (Chunk    [   ]) = liftI $ go n k
@@ -266,7 +266,7 @@ progress put refs = eneeCheckIfDone (liftI . go 0)
                                       nm = unpackSeqid (sq_name (getRef refs (br_rname a))) ++ ":"
                                   when (n `div` 65536 /= n' `div` 65536) $ liftIO $ put $
                                         "\27[KRmdup at " ++ nm ++ showNum (br_pos a) ++ "\r"
-                                  eneeCheckIfDone (liftI . go n') . k $ Chunk as
+                                  eneeCheckIfDonePass (icont . go n') . k $ Chunk as
 
 
 mergeInputRanges :: MonadCatchIO m

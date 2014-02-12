@@ -265,7 +265,7 @@ encodeBamUncompressed = encodeBamWith 0
 encodeBamWith :: MonadIO m => Int -> BamMeta -> Enumeratee [BamRaw] S.ByteString m a
 encodeBamWith lv meta = eneeBam ><> compressBgzf lv
   where
-    eneeBam = eneeCheckIfDone (\k -> eneeBam2 . k $ Chunk header)
+    eneeBam  = eneeCheckIfDone (\k -> eneeBam2 . k $ Chunk header)
     eneeBam2 = eneeCheckIfDone (\k -> eneeBam3 . k $ Chunk S.empty)
     eneeBam3 = eneeCheckIfDone (liftI . put)
 
