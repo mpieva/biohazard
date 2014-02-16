@@ -40,7 +40,7 @@ data Which = All | Some Refseq Refseq | Unaln deriving Show
 defaults :: Conf
 defaults = Conf { output = Nothing
                 , strand_preserved = True
-                , collapse = cons_collapse' 60
+                , collapse = cons_collapse' (Q 60)
                 , clean_multimap = check_flags
                 , keep_all = False
                 , keep_unaligned = False
@@ -225,8 +225,8 @@ count_all lbl = I.foldl' plus M.empty
       where
         !ti' = ti + br_extAsInt 1 "XP" br
         !to' = to + 1
-        !gs' = if br_mapq br >= 20 && br_extAsInt 1 "XP" br == 1 then gs + 1 else gs
-        !gt' = if br_mapq br >= 20 then gt + 1 else gt
+        !gs' = if br_mapq br <= Q 20 && br_extAsInt 1 "XP" br == 1 then gs + 1 else gs
+        !gt' = if br_mapq br <= Q 20 then gt + 1 else gt
 
 
 eff_len :: BamRaw -> Int

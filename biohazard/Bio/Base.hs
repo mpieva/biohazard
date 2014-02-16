@@ -8,6 +8,7 @@ module Bio.Base(
     Nucleotide(..),
     Qual(..), DQual(..), qualToDQual,
     fromQual, toQual, fromDQual, toDQual,
+    fromRealQ, recipQ, (+?), (*?), (/?),
 
     Word8,
     Sequence,
@@ -108,19 +109,17 @@ instance Ord Qual where
     Q a >  Q b  =  b  > a
     Q a >= Q b  =  b >= a
 
-instance Num Qual where
-    fromInteger a = Q $ round (-10 * log (fromInteger a :: Double) / log 10)
-    Q a + Q b = Q (a `min`  b)
-    Q a - Q b = Q (a `max` b)
-    Q a * Q b = Q (a + b)
-    negate    _ = error "no negative qualities"
-    abs       _ = error "no negative qualities"
-    signum    _ = error "no negative qualities"
 
-instance Fractional Qual where
-    fromRational a = Q $ round (-10 * log (fromRational a :: Double) / log 10)
-    Q a  /  Q b = Q (a - b)
-    recip (Q a) = Q (negate a)
+fromRealQ :: (Floating a, RealFrac a) => a -> Qual
+fromRealQ a = Q $ round (-10 * log a / log 10)
+
+(+?), (*?), (/?) :: Qual -> Qual -> Qual
+Q a +? Q b = Q (a `min`  b)
+Q a *? Q b = Q (a + b)
+Q a  /?  Q b = Q (a - b)
+
+recipQ :: Qual -> Qual
+recipQ (Q a) = Q (negate a)
 
 instance Ord DQual where
     DQ a `compare` DQ b = b `compare` a

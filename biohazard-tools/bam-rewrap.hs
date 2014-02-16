@@ -175,7 +175,7 @@ rewrap m br = case M.lookup (br_rname br) m of
     overhangs l = not (br_isUnmapped br) && br_pos br < l
                   && l < br_pos br + br_aln_length br
 
-    dups_are_fine nm l = br_mapq br == 0 && all_match_XA (br_extAsString "XA" br)
+    dups_are_fine nm l = br_mapq br == Q 0 && all_match_XA (br_extAsString "XA" br)
       where
         all_match_XA s = case S.split ';' s of [xa1,xa2] | S.null xa2 -> one_match_XA xa1 ; _ -> False
         one_match_XA s = case S.split ',' s of (sq:pos:_) | sq == nm -> pos_match_XA pos ; _ -> False

@@ -40,7 +40,7 @@ main = do
     (opts, files, errors) <- getOpt Permute options `fmap` getArgs
 
     unless (null errors) $ mapM_ (hPutStrLn stderr) errors
-    c <- foldM (flip id) (Conf (trim_low_quality 20) isMerged) opts
+    c <- foldM (flip id) (Conf (trim_low_quality (Q 20)) isMerged) opts
     unless (null errors && null files) exitFailure
 
     let do_trim r | c_pass_pred c r' = r
