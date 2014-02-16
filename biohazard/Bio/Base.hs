@@ -7,8 +7,7 @@
 module Bio.Base(
     Nucleotide(..),
     Qual(..), DQual(..), qualToDQual,
-    fromQual, toQual, fromDQual, toDQual,
-    fromRealQ, recipQ, (+?), (*?), (/?),
+    errorProb, fromErrorProb, fromDQual, toDQual,
 
     Word8,
     Sequence,
@@ -81,11 +80,10 @@ instance Bounded Nucleotide where
     maxBound = N 15
 
 -- | Qualities are stored in deciban, also known as the Phred scale.  To
--- represent a value @p@, we store @-10 * log_10 p@.  Note that this a
--- representation of error probability, which is where the semantics
--- derive from.
+-- represent a value @p@, we store @-10 * log_10 p@.  Operations work
+-- directly on the \"Phred\" value, as the name suggests.
 newtype Qual = Q { unQ :: Word8 } deriving
-    ( Eq, Storable, Bounded, VG.Vector VU.Vector, VM.MVector VU.MVector, VU.Unbox )
+    ( Eq, Ord, Storable, Bounded, VG.Vector VU.Vector, VM.MVector VU.MVector, VU.Unbox )
 
 newtype DQual = DQ { unDQ :: Double } deriving
     ( Eq, Storable, VG.Vector VU.Vector, VM.MVector VU.MVector, VU.Unbox )
@@ -96,30 +94,11 @@ instance Show Qual where
 instance Show DQual where
     showsPrec p (DQ q) = (:) 'Q' . showsPrec p q
 
--- Ord instance for qualities.  Since there is a sign flip in the
--- definition, we need to reverse the sense here.  (We are comparing
--- error probabilities.)
-instance Ord Qual where
-    Q a `compare` Q b = b `compare` a
-    Q a   `min`   Q b = Q (a `max` b)
-    Q a   `max`   Q b = Q (a `min` b)
+fromErrorProb :: (Floating a, RealFrac a) => a -> Qual
+fromErrorProb a = Q $ round (-10 * log a / log 10)
 
-    Q a <  Q b  =  b  < a
-    Q a <= Q b  =  b <= a
-    Q a >  Q b  =  b  > a
-    Q a >= Q b  =  b >= a
-
-
-fromRealQ :: (Floating a, RealFrac a) => a -> Qual
-fromRealQ a = Q $ round (-10 * log a / log 10)
-
-(+?), (*?), (/?) :: Qual -> Qual -> Qual
-Q a +? Q b = Q (a `min`  b)
-Q a *? Q b = Q (a + b)
-Q a  /?  Q b = Q (a - b)
-
-recipQ :: Qual -> Qual
-recipQ (Q a) = Q (negate a)
+errorProb :: Qual -> Double
+errorProb (Q q) = 10 ** (-(fromIntegral q) / 10)
 
 instance Ord DQual where
     DQ a `compare` DQ b = b `compare` a
@@ -148,14 +127,8 @@ instance Fractional DQual where
 toDQual :: Double -> DQual
 toDQual p = DQ (-10 * log p / log 10)
 
-toQual :: Double -> Qual
-toQual p = Q $ round (-10 * log p / log 10)
-
 fromDQual :: DQual -> Double
 fromDQual (DQ q) = 10 ** (-q / 10)
-
-fromQual :: Qual -> Double
-fromQual (Q q) = 10 ** (-(fromIntegral q) / 10)
 
 qualToDQual :: Qual -> DQual
 qualToDQual (Q q) = DQ (fromIntegral q)

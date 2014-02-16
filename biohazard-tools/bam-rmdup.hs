@@ -225,8 +225,8 @@ count_all lbl = I.foldl' plus M.empty
       where
         !ti' = ti + br_extAsInt 1 "XP" br
         !to' = to + 1
-        !gs' = if br_mapq br <= Q 20 && br_extAsInt 1 "XP" br == 1 then gs + 1 else gs
-        !gt' = if br_mapq br <= Q 20 then gt + 1 else gt
+        !gs' = if br_mapq br >= Q 20 && br_extAsInt 1 "XP" br == 1 then gs + 1 else gs
+        !gt' = if br_mapq br >= Q 20 then gt + 1 else gt
 
 
 eff_len :: BamRaw -> Int

@@ -1,4 +1,8 @@
 {-# LANGUAGE PatternGuards, BangPatterns #-}
+
+-- | Basically a reexport of "Data.Iteratee" less the names that clash
+-- with "Prelude" plus a handful of utilities.
+
 module Bio.Iteratee (
     groupStreamBy,
     groupStreamOn,
@@ -48,10 +52,6 @@ module Bio.Iteratee (
     module Data.Iteratee.IO,
     module Data.Iteratee.Iteratee,
                     ) where
-
--- ^ Basically a reexport of "Data.Iteratee" less the names that clash
--- with "Prelude" plus a handful of utilities.
-
 
 import Bio.Base ( findAuxFile )
 import Control.Concurrent

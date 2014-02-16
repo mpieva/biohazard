@@ -14,7 +14,7 @@ import qualified Data.Iteratee          as I
 main :: IO ()
 main = do
     mq <- getArgs >>= \args -> case (args, reads (head args)) of
-            ([ ], _)        -> return 0
+            ([ ], _)        -> return (Q 0)
             ([_], [(x,[])]) -> return (Q x)
             _               -> do pn <- getProgName
                                   hPutStr stderr $ pn ++ ", version " ++ showVersion version
