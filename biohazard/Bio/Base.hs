@@ -6,8 +6,8 @@
 
 module Bio.Base(
     Nucleotide(..),
-    Qual(..), DQual(..), qualToDQual,
-    errorProb, fromErrorProb, fromDQual, toDQual,
+    Qual(..), errorProb, fromErrorProb,
+    ErrProb(..), toErrProb, fromErrProb, qualToErrProb,
 
     Word8,
     Sequence,
@@ -81,18 +81,14 @@ instance Bounded Nucleotide where
 
 -- | Qualities are stored in deciban, also known as the Phred scale.  To
 -- represent a value @p@, we store @-10 * log_10 p@.  Operations work
--- directly on the \"Phred\" value, as the name suggests.
+-- directly on the \"Phred\" value, as the name suggests.  The same goes
+-- for the 'Ord' instance:  greater quality means higher \"Phred\"
+-- score, meand lower error probability.
 newtype Qual = Q { unQ :: Word8 } deriving
     ( Eq, Ord, Storable, Bounded, VG.Vector VU.Vector, VM.MVector VU.MVector, VU.Unbox )
 
-newtype DQual = DQ { unDQ :: Double } deriving
-    ( Eq, Storable, VG.Vector VU.Vector, VM.MVector VU.MVector, VU.Unbox )
-
 instance Show Qual where
     showsPrec p (Q q) = (:) 'Q' . showsPrec p q
-
-instance Show DQual where
-    showsPrec p (DQ q) = (:) 'Q' . showsPrec p q
 
 fromErrorProb :: (Floating a, RealFrac a) => a -> Qual
 fromErrorProb a = Q $ round (-10 * log a / log 10)
@@ -100,38 +96,48 @@ fromErrorProb a = Q $ round (-10 * log a / log 10)
 errorProb :: Qual -> Double
 errorProb (Q q) = 10 ** (-(fromIntegral q) / 10)
 
-instance Ord DQual where
-    DQ a `compare` DQ b = b `compare` a
-    DQ a   `min`   DQ b = DQ (a `max` b)
-    DQ a   `max`   DQ b = DQ (a `min` b)
+-- | A positive 'Double' value stored in log domain.  The scale is the
+-- same \"Phred\" scale used for 'Qual' values, but here the semantics
+-- derive from the stored 'Double' value.  In particular, the smaller
+-- 'ErrProb' value would be the greater 'Qual'
+newtype ErrProb = EP { unEP :: Double } deriving
+    ( Eq, Storable, VG.Vector VU.Vector, VM.MVector VU.MVector, VU.Unbox )
 
-    DQ a <  DQ b  =  b  < a
-    DQ a <= DQ b  =  b <= a
-    DQ a >  DQ b  =  b  > a
-    DQ a >= DQ b  =  b >= a
+instance Show ErrProb where
+    showsPrec p (EP q) = (:) 'Q' . showsPrec p q
 
-instance Num DQual where
-    fromInteger a = DQ (-10 * log (fromInteger a) / log 10)
-    DQ a + DQ b = DQ (a `phredplus`  b)
-    DQ a - DQ b = DQ (a `phredminus` b)
-    DQ a * DQ b = DQ (a + b)
-    negate    _ = error "no negative qualities"
-    abs       _ = error "no negative qualities"
-    signum    _ = error "no negative qualities"
+instance Ord ErrProb where
+    EP a `compare` EP b = b `compare` a
+    EP a   `min`   EP b = EP (a `max` b)
+    EP a   `max`   EP b = EP (a `min` b)
 
-instance Fractional DQual where
-    fromRational a = DQ (-10 * log (fromRational a) / log 10)
-    DQ a  /  DQ b = DQ (a - b)
-    recip  (DQ a) = DQ (negate a)
+    EP a <  EP b  =  b  < a
+    EP a <= EP b  =  b <= a
+    EP a >  EP b  =  b  > a
+    EP a >= EP b  =  b >= a
 
-toDQual :: Double -> DQual
-toDQual p = DQ (-10 * log p / log 10)
+instance Num ErrProb where
+    fromInteger a = EP (-10 * log (fromInteger a) / log 10)
+    EP a + EP b = EP (a `phredplus`  b)
+    EP a - EP b = EP (a `phredminus` b)
+    EP a * EP b = EP (a + b)
+    negate    _ = error "no negative error probabilities"
+    abs       x = x
+    signum    _ = EP 0
 
-fromDQual :: DQual -> Double
-fromDQual (DQ q) = 10 ** (-q / 10)
+instance Fractional ErrProb where
+    fromRational a = EP (-10 * log (fromRational a) / log 10)
+    EP a  /  EP b = EP (a - b)
+    recip  (EP a) = EP (negate a)
 
-qualToDQual :: Qual -> DQual
-qualToDQual (Q q) = DQ (fromIntegral q)
+toErrProb :: Double -> ErrProb
+toErrProb p = EP (-10 * log p / log 10)
+
+fromErrProb :: ErrProb -> Double
+fromErrProb (EP q) = 10 ** (-q / 10)
+
+qualToErrProb :: Qual -> ErrProb
+qualToErrProb (Q q) = EP (fromIntegral q)
 
 gap, nucA, nucC, nucG, nucT, nucN :: Nucleotide
 gap  = N 0

@@ -301,7 +301,7 @@ data VarCall a = VarCall { vc_refseq     :: !Refseq
                          , vc_pl         :: !PL                   -- PL values in dB
                          , vc_vars       :: a }                   -- variant calls, depending on context
 
-type PL = V.Vector DQual
+type PL = V.Vector ErrProb
 type IndelVars = [( Int, [Nucleotide] )]    -- indel variant: number of deletions, inserted sequence
 
 -- Both types of piles carry along the map quality.  We'll only need it
@@ -589,9 +589,9 @@ simple_indel_call ploidy vars = (simple_call ploidy mkpls vars, vars')
   where
     vars' = Set.toList . Set.fromList $ [ (d, map fst i) | (_q,(d,i)) <- vars ]
     match = zipWith (\(n,qn) nr -> if n == nr then 0 else fromIntegral $ unQ qn)
-    mkpls (q,(d,i)) = let !q' = qualToDQual q
+    mkpls (q,(d,i)) = let !q' = qualToErrProb q
                       in [ if d /= dr || length i /= length ir
-                           then q' else q' + toDQual (sum (match i ir)) | (dr,ir) <- vars' ]
+                           then q' else q' + toErrProb (sum (match i ir)) | (dr,ir) <- vars' ]
 
 -- | Naive SNP call; essentially the GATK model.  We create a function
 -- that computes a likelihood for a given base, then hand over to simple
@@ -601,7 +601,7 @@ simple_indel_call ploidy vars = (simple_call ploidy mkpls vars, vars')
 simple_snp_call :: Int -> BasePile -> PL
 simple_snp_call ploidy vars = simple_call ploidy mkpls vars
   where
-    mkpls (q, DB a c g t qq) = [ toDQual $ pt*x + pe*s | x <- [a,c,g,t] ]
+    mkpls (q, DB a c g t qq) = [ toErrProb $ pt*x + pe*s | x <- [a,c,g,t] ]
       where
         !pe = errorProb q + errorProb qq
         !pt = 1 - pe
@@ -615,7 +615,7 @@ simple_snp_call ploidy vars = simple_call ploidy mkpls vars
 -- getting the current read, for every variant assuming that variant was
 -- sampled.
 
-simple_call :: Int -> (a -> [DQual]) -> [a] -> PL
+simple_call :: Int -> (a -> [ErrProb]) -> [a] -> PL
 simple_call ploidy pls = foldl1' (V.zipWith (+)) . map step
   where
     foldl1' _ [     ] = V.singleton 0
@@ -661,7 +661,7 @@ showCall f vc = shows (vc_refseq vc) . (:) ':' .
                 shows mapq . (:) '\t' .
                 show_pl (vc_pl vc)
   where
-    show_pl :: V.Vector DQual -> ShowS
+    show_pl :: V.Vector ErrProb -> ShowS
     show_pl = (++) . intercalate "," . map show . V.toList
 
     mapq = vc_sum_mapq vc `div` vc_depth vc

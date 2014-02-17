@@ -1,6 +1,6 @@
 -- vim:tw=132
 Name:                biohazard-tools
-Version:             0.5.4
+Version:             0.5.5
 Synopsis:            tools separated from biohazard
 -- Description:
 Category:            Bioinformatics
@@ -28,12 +28,12 @@ source-repository head
 source-repository this
   type:     git
   location: git://github.com/udo-stenzel/biohazard.git
-  tag:      0.5.4
+  tag:      0.5.5
 
 Executable bam-fixpair
   Ghc-options:         -Wall -auto-all -threaded -rtsopts
   Main-is:             bam-fixpair.hs
-  Build-depends:       base ==4.*, binary, biohazard ==0.5.4, bytestring, hashable, transformers
+  Build-depends:       base ==4.*, binary, biohazard ==0.5.5, bytestring, hashable, transformers
 
 Executable bam-meld
   Ghc-options:         -Wall -auto-all -threaded -rtsopts
@@ -43,36 +43,36 @@ Executable bam-meld
 Executable bam-resample
   Ghc-options:         -Wall -auto-all -threaded -rtsopts
   Main-is:             bam-resample.hs
-  Build-depends:       base ==4.*, biohazard ==0.5.4, bytestring, random
+  Build-depends:       base ==4.*, biohazard ==0.5.5, bytestring, random
 
 Executable bam-rewrap
   Ghc-options:         -Wall -auto-all -threaded -rtsopts
   Main-is:             bam-rewrap.hs
-  Build-depends:       base ==4.*, biohazard ==0.5.4, bytestring, containers
+  Build-depends:       base ==4.*, biohazard ==0.5.5, bytestring, containers
 
 Executable bam-rmdup
   Ghc-options:         -Wall -auto-all -threaded -rtsopts
   Main-is:             bam-rmdup.hs
-  Build-depends:       base ==4.*, biohazard ==0.5.4, bytestring, containers, iteratee == 0.8.9.*
+  Build-depends:       base ==4.*, biohazard ==0.5.5, bytestring, containers, iteratee == 0.8.9.*
 
 Executable bam-trim
   Ghc-options:         -Wall -auto-all -threaded -rtsopts
   Main-is:             bam-trim.hs
-  Build-depends:       base ==4.*, biohazard ==0.5.4, bytestring
+  Build-depends:       base ==4.*, biohazard ==0.5.5, bytestring
   
 Executable count-coverage
   Ghc-options:         -Wall -auto-all -threaded -rtsopts
   Main-is:             count-coverage.hs
-  Build-depends:       base ==4.*, biohazard ==0.5.4, iteratee == 0.8.9.*
+  Build-depends:       base ==4.*, biohazard ==0.5.5, iteratee == 0.8.9.*
 
 Executable glf-consensus
   Ghc-options:         -Wall -auto-all -threaded -rtsopts
   Main-is:             glf-consensus.hs
-  Build-depends:       base ==4.*, biohazard ==0.5.4, bytestring, containers, iteratee == 0.8.9.*, MonadCatchIO-transformers
+  Build-depends:       base ==4.*, biohazard ==0.5.5, bytestring, containers, iteratee == 0.8.9.*, MonadCatchIO-transformers
 
 Executable wiggle-coverage
   Ghc-options:         -Wall -auto-all -threaded -rtsopts
   Main-is:             wiggle-coverage.hs
-  Build-depends:       base ==4.*, biohazard ==0.5.4
+  Build-depends:       base ==4.*, biohazard ==0.5.5
 
 -- vim:tw=132
