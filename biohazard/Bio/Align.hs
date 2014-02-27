@@ -5,11 +5,11 @@ module Bio.Align (
     showAligned
                  ) where
 
-import Control.Applicative
-import Foreign.C.String
-import Foreign.C.Types
-import Foreign.Marshal.Alloc
-import System.IO.Unsafe ( unsafePerformIO )
+import Control.Applicative      ( (<$>), (<*>) )
+import Foreign.C.String         ( CString(..) )
+import Foreign.C.Types          ( CInt(..) )
+import Foreign.Marshal.Alloc    ( allocaBytes )
+import System.IO.Unsafe         ( unsafePerformIO )
 
 import qualified Data.ByteString.Char8      as S
 import qualified Data.ByteString.Unsafe     as S
@@ -65,8 +65,8 @@ myersAlign maxd seqA mode seqB =
     if dist < 0
       then return (maxBound, S.empty, S.empty)
       else (,,) (fromIntegral dist) <$>
-                S.packCString bt_a  <*>
-                S.packCString bt_b
+           S.packCString bt_a <*>
+           S.packCString bt_b
 
 
 -- | Nicely print an alignment.  An alignment is simply a list of

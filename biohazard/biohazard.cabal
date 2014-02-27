@@ -53,10 +53,24 @@ Library
                        Codec.Bgzf
   
   -- Packages needed in order to build this package.
-  Build-depends:       array, attoparsec, attoparsec-iteratee, base == 4.*, binary, binary-strict, bytestring, containers,
-                       directory, filepath, iteratee == 0.8.9.*,
-                       ListLike, MonadCatchIO-transformers, parallel,
-                       random, transformers, vector, zlib
+  Build-depends:       array == 0.4.*,
+                       attoparsec == 0.10.*, 
+                       attoparsec-iteratee == 0.4.*, 
+                       base == 4.*, 
+                       binary == 0.5.*, 
+                       binary-strict == 0.4.*, 
+                       bytestring >= 0.9 && < 0.11, 
+                       containers >= 0.4 && < 0.6,
+                       directory == 1.2.*,
+                       filepath == 1.3.*,
+                       iteratee == 0.8.9.*,
+                       ListLike == 3.*,
+                       MonadCatchIO-transformers == 0.3.*,
+                       -- parallel,
+                       random == 1.0.*,
+                       transformers == 0.3.*,
+                       vector >= 0.9 && < 0.11,
+                       zlib == 0.5.*
   
   Ghc-options:         -Wall -auto-all
   Include-dirs:        cbits

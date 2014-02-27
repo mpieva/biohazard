@@ -31,48 +31,67 @@ source-repository this
   tag:      0.5.5
 
 Executable bam-fixpair
-  Ghc-options:         -Wall -auto-all -threaded -rtsopts
   Main-is:             bam-fixpair.hs
-  Build-depends:       base ==4.*, binary, biohazard ==0.5.5, bytestring, hashable, transformers
+  Build-depends:       base == 4.*,
+                       binary == 0.5.*, 
+                       biohazard == 0.5.5,
+                       bytestring >= 0.9 && < 0.11,
+                       hashable >= 1.0 && < 1.2,
+                       transformers == 0.3.*
 
 Executable bam-meld
-  Ghc-options:         -Wall -auto-all -threaded -rtsopts
   Main-is:             bam-meld.hs
-  Build-depends:       base ==4.*, biohazard, bytestring, containers
+  Build-depends:       base == 4.*,
+                       biohazard == 0.5.5,
+                       bytestring >= 0.9 && < 0.11,
+                       containers >= 0.4 && < 0.6
   
 Executable bam-resample
-  Ghc-options:         -Wall -auto-all -threaded -rtsopts
   Main-is:             bam-resample.hs
-  Build-depends:       base ==4.*, biohazard ==0.5.5, bytestring, random
+  Build-depends:       base == 4.*,
+                       biohazard == 0.5.5,
+                       bytestring >= 0.9 && < 0.11,
+                       random == 1.0.*
 
 Executable bam-rewrap
-  Ghc-options:         -Wall -auto-all -threaded -rtsopts
   Main-is:             bam-rewrap.hs
-  Build-depends:       base ==4.*, biohazard ==0.5.5, bytestring, containers
+  Build-depends:       base == 4.*,
+                       biohazard == 0.5.5,
+                       bytestring >= 0.9 && < 0.11,
+                       containers >= 0.4 && < 0.6
 
 Executable bam-rmdup
-  Ghc-options:         -Wall -auto-all -threaded -rtsopts
   Main-is:             bam-rmdup.hs
-  Build-depends:       base ==4.*, biohazard ==0.5.5, bytestring, containers, iteratee == 0.8.9.*
+  Build-depends:       base == 4.*,
+                       biohazard == 0.5.5,
+                       bytestring >= 0.9 && < 0.11,
+                       containers >= 0.4 && < 0.6,
+                       iteratee == 0.8.9.*
 
 Executable bam-trim
-  Ghc-options:         -Wall -auto-all -threaded -rtsopts
   Main-is:             bam-trim.hs
-  Build-depends:       base ==4.*, biohazard ==0.5.5, bytestring
+  Build-depends:       base == 4.*,
+                       biohazard == 0.5.5,
+                       bytestring >= 0.9 && < 0.11
   
 Executable count-coverage
-  Ghc-options:         -Wall -auto-all -threaded -rtsopts
   Main-is:             count-coverage.hs
-  Build-depends:       base ==4.*, biohazard ==0.5.5, iteratee == 0.8.9.*
+  Build-depends:       base == 4.*,
+                       biohazard == 0.5.5,
+                       iteratee == 0.8.9.*
 
 Executable glf-consensus
-  Ghc-options:         -Wall -auto-all -threaded -rtsopts
   Main-is:             glf-consensus.hs
-  Build-depends:       base ==4.*, biohazard ==0.5.5, bytestring, containers, iteratee == 0.8.9.*, MonadCatchIO-transformers
+  Build-depends:       base == 4.*,
+                       biohazard == 0.5.5,
+                       bytestring >= 0.9 && < 0.11,
+                       containers >= 0.4 && < 0.6,
+                       iteratee == 0.8.9.*,
+                       MonadCatchIO-transformers == 0.3.*
 
 Executable wiggle-coverage
-  Ghc-options:         -Wall -auto-all -threaded -rtsopts
   Main-is:             wiggle-coverage.hs
-  Build-depends:       base ==4.*, biohazard ==0.5.5
+  Build-depends:       base == 4.*,
+                       biohazard == 0.5.5
 
 -- vim:tw=132
