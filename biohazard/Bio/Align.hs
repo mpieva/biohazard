@@ -6,7 +6,7 @@ module Bio.Align (
                  ) where
 
 import Control.Applicative      ( (<$>), (<*>) )
-import Foreign.C.String         ( CString(..) )
+import Foreign.C.String         ( CString )
 import Foreign.C.Types          ( CInt(..) )
 import Foreign.Marshal.Alloc    ( allocaBytes )
 import System.IO.Unsafe         ( unsafePerformIO )

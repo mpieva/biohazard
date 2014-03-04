@@ -13,20 +13,19 @@ module Codec.Bgzf (
 
 import Bio.Iteratee
 import Control.Concurrent
-import Control.Monad
-import Foreign.Marshal.Alloc
-import Foreign.Storable
-import Foreign.C.String
-import Foreign.C.Types
-import Foreign.Ptr
-import Data.Bits
-import Data.Monoid
+import Control.Monad                        ( liftM, forM_, when )
+import Data.Bits                            ( shiftL, shiftR, testBit, (.&.) )
+import Data.Monoid                          ( Monoid(..) )
 import Data.Word                            ( Word32, Word16, Word8 )
+import Foreign.Marshal.Alloc                ( mallocBytes, free ) 
+import Foreign.Storable                     ( peekByteOff, pokeByteOff )
+import Foreign.C.String                     ( withCAString )
+import Foreign.C.Types                      ( CInt(..), CChar(..), CUInt(..), CULong(..) )
+import Foreign.Ptr                          ( nullPtr, castPtr, Ptr, plusPtr, minusPtr )
 
 import qualified Data.ByteString            as S
 import qualified Data.ByteString.Unsafe     as S
 import qualified Data.Iteratee.ListLike     as I
-import qualified Data.ListLike              as LL
 
 #include <zlib.h>
 
@@ -44,23 +43,6 @@ instance Monoid Block where
     mappend (Block x s) (Block _ t) = Block x (s `S.append` t)
     mconcat [] = empty
     mconcat bs@(Block x _:_) = Block x $ S.concat [s|Block _ s <- bs]
-
--- | Minimum definition, only needed because @drop@ depends on it
--- indirectly.
-instance LL.FoldableLL Block Word8 where
-    foldl' f e (Block _ s) = S.foldl' f e s
-    foldl f e (Block _ s) = S.foldl f e s
-    foldr f e (Block _ s) = S.foldr f e s
-
--- | Minimum defintion so it works, plus support for @drop@, which was
--- all we really needed...
-instance LL.ListLike Block Word8 where
-    singleton = Block 0 . S.singleton
-    head (Block _ s) = S.head s
-    tail (Block o s) = Block (o+1) (S.tail s)
-    drop n (Block o s) = Block (o + fromIntegral n) (S.drop n s)
-    genericLength (Block _ s) = fromIntegral $ S.length s
-
 
 -- | "Decompresses" a plain file.  What's actually happening is that the
 -- offset in the input stream is tracked and added to the @ByteString@s
@@ -105,8 +87,8 @@ decompressBgzf it = do chan <- liftIO $ Ch `liftM` newEmptyMVar
             -- track of them...
             chan <- liftIO $ Ch `liftM` newEmptyMVar
             dc 0 chan chan (o `shiftR` 16) $ do
-                    I.drop . fromIntegral $ o .&. 0xffff 
-                    k $ Chunk mempty
+                    block'drop . fromIntegral $ o .&. 0xffff 
+                    liftI k
 
     go' !num !(Ch chan) !(Ch back) !off k = do
             -- First try to get the next finished chunk.  If the queue is
@@ -140,6 +122,12 @@ decompressBgzf it = do chan <- liftIO $ Ch `liftM` newEmptyMVar
         Chunk c | S.length c < sz -> (:) c `liftM` get_block (sz - S.length c)
                 | otherwise       -> idone [S.take sz c] (Chunk (S.drop sz c))
 
+    block'drop sz = liftI $ \s -> case s of
+        EOF _ -> throwErr $ setEOF s 
+        Chunk (Block p c) 
+            | S.length c < sz -> block'drop (sz - S.length c)
+            | otherwise       -> let b' = Block (p + fromIntegral sz) (S.drop sz c)
+                                 in idone () (Chunk b')
     
 
 -- | Decodes a BGZF block header and returns the block size if
@@ -431,3 +419,18 @@ bgzf_test = fileDriverRandom $
             joinI $ decompressBgzf $
             seek 0 >> mapChunksM_ (\(Block o s) -> print (o, S.take 10 s))
 
+-- ----
+
+-- | Parallel compression of BGZF, the comparatively simple plan:
+--
+-- BGZF compressor is an 'Enumeratee', and stays one.  But we fork a
+-- thread to run the output 'Iteratee', we communicate through a limited
+-- queue, and we run the compression of blocks asynchronously.  If
+-- output throws an exception, we rethrow it speedily (using 'link').
+-- Seeking is not supported, because it's hard and there is no need.
+
+-- type QQ a = TVar Int [a] [a]
+
+-- -- putQQ :: Int -> a -> QQ a -> STM ()
+-- putQQ l a qq = do
+    -- (TVar n front back) 
