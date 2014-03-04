@@ -22,14 +22,14 @@ executable mt-anno
   Build-Depends:       base == 4.*,
                        bytestring >= 0.9 && < 0.11,
                        biohazard == 0.5.5,
-                       containers >= 0.4.1 && < 0.5
+                       containers >= 0.4.1 && < 0.6
 
 executable mt-ccheck
   Main-Is:             mt-ccheck.hs
   Build-Depends:       base == 4.*,
                        bytestring, 
                        biohazard == 0.5.5,
-                       containers >= 0.4.1 && < 0.5,
+                       containers >= 0.4.1 && < 0.6,
                        unordered-containers == 0.2.*
 
 executable mt-cobble
@@ -38,9 +38,9 @@ executable mt-cobble
   Build-Depends:       base == 4.*,
                        bytestring, 
                        biohazard == 0.5.5,
-                       containers >= 0.4.1 && < 0.5, 
+                       containers >= 0.4.1 && < 0.6, 
                        unordered-containers == 0.2.*,
-                       array == 0.4*,
+                       array == 0.4.*,
                        vector >= 0.9 && < 0.11,
                        iteratee == 0.8.9.*
 
