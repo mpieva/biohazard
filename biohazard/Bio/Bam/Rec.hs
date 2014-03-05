@@ -349,7 +349,7 @@ encodeBamEntry = bamRaw 0 . S.concat . L.toChunks . runPut . putEntry
 -- XXX This could write indexes on the side---a simple block index
 -- for MapReduce style slicing, a standard BAM index or a name index
 -- would be possible.
-writeBamHandle :: MonadIO m => Handle -> BamMeta -> Iteratee [BamRec] m ()
+writeBamHandle :: Handle -> BamMeta -> Iteratee [BamRec] IO ()
 writeBamHandle hdl meta = I.mapStream encodeBamEntry =$ writeRawBamHandle hdl meta
 
 -- | writes BAM encoded stuff to a file
@@ -357,13 +357,13 @@ writeBamHandle hdl meta = I.mapStream encodeBamEntry =$ writeRawBamHandle hdl me
 -- for MapReduce style slicing, a standard BAM index or a name index
 -- would be possible.  When writing to a file, this makes even more
 -- sense than when writing to a @Handle@.
-writeBamFile :: MonadCatchIO m => FilePath -> BamMeta -> Iteratee [BamRec] m ()
+writeBamFile :: FilePath -> BamMeta -> Iteratee [BamRec] IO ()
 writeBamFile fp meta = I.mapStream encodeBamEntry =$ writeRawBamFile fp meta
 
 -- | write BAM encoded stuff to stdout
 -- This send uncompressed BAM to stdout.  Useful for piping to other
 -- tools.
-pipeBamOutput :: MonadIO m => BamMeta -> Iteratee [BamRec] m ()
+pipeBamOutput :: BamMeta -> Iteratee [BamRec] IO ()
 pipeBamOutput meta = I.mapStream encodeBamEntry =$ pipeRawBamOutput meta
 
 -- | write in SAM format to stdout

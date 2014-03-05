@@ -299,14 +299,15 @@ decodeWithIndex enum fp k0 = do
             enum idx $ hdr >>= k0
 
 
-writeLibBamFiles :: MonadCatchIO m => FilePath -> (BamRaw -> Seqid) -> BamMeta -> Iteratee [BamRaw] m ()
+-- writeLibBamFiles :: MonadCatchIO m => FilePath -> (BamRaw -> Seqid) -> BamMeta -> Iteratee [BamRaw] m ()
+writeLibBamFiles :: FilePath -> (BamRaw -> Seqid) -> BamMeta -> Iteratee [BamRaw] IO ()
 writeLibBamFiles fp lbl hdr = tryHead >>= loop M.empty
   where
-    loop m  Nothing  = mapM_ run $ M.elems m
+    loop m  Nothing  = liftIO . mapM_ run $ M.elems m
     loop m (Just br) = do
         let !l = lbl br
         let !it = M.findWithDefault (writeRawBamFile (fp `subst` l) hdr) l m
-        it' <- enumPure1Chunk [br] it
+        it' <- liftIO $ enumPure1Chunk [br] it
         let !m' = M.insert l it' m
         tryHead >>= loop m'
 

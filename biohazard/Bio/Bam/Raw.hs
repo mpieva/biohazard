@@ -256,14 +256,14 @@ combineNames _ = mergeSortStreams (?)
 -- It would be nice if we were able to write an index on the side.  That
 -- hasn't been designed in, yet.
 
-encodeBam :: MonadIO m => BamMeta -> Enumeratee [BamRaw] S.ByteString m a
+encodeBam :: BamMeta -> Enumeratee [BamRaw] S.ByteString IO a
 encodeBam = encodeBamWith 6 -- sensible default compression level
 
-encodeBamUncompressed :: MonadIO m => BamMeta -> Enumeratee [BamRaw] S.ByteString m a
+encodeBamUncompressed :: BamMeta -> Enumeratee [BamRaw] S.ByteString IO a
 encodeBamUncompressed = encodeBamWith 0
 
-encodeBamWith :: MonadIO m => Int -> BamMeta -> Enumeratee [BamRaw] S.ByteString m a
-encodeBamWith lv meta = eneeBam ><> compressBgzf lv
+encodeBamWith :: Int -> BamMeta -> Enumeratee [BamRaw] S.ByteString IO a
+encodeBamWith lv meta = eneeBam ><> compressBgzfLv lv
   where
     eneeBam  = eneeCheckIfDone (\k -> eneeBam2 . k $ Chunk header)
     eneeBam2 = eneeCheckIfDone (\k -> eneeBam3 . k $ Chunk S.empty)
@@ -525,16 +525,16 @@ readBamIndex' = do magic <- heads "BAI\1"
     reduceM xs nil cons = foldM cons nil xs
 
 
-writeRawBamFile :: MonadCatchIO m => FilePath -> BamMeta -> Iteratee [BamRaw] m ()
+writeRawBamFile :: FilePath -> BamMeta -> Iteratee [BamRaw] IO ()
 writeRawBamFile fp meta =
     CIO.bracket (liftIO $ openBinaryFile fp WriteMode)
                 (liftIO . hClose)
                 (flip writeRawBamHandle meta)
 
-pipeRawBamOutput :: MonadIO m => BamMeta -> Iteratee [BamRaw] m ()
+pipeRawBamOutput :: BamMeta -> Iteratee [BamRaw] IO ()
 pipeRawBamOutput meta = encodeBamUncompressed meta =$ mapChunksM_ (liftIO . S.hPut stdout)
 
-writeRawBamHandle :: MonadIO m => Handle -> BamMeta -> Iteratee [BamRaw] m ()
+writeRawBamHandle :: Handle -> BamMeta -> Iteratee [BamRaw] IO ()
 writeRawBamHandle hdl meta = encodeBam meta =$ mapChunksM_ (liftIO . S.hPut hdl)
 
 

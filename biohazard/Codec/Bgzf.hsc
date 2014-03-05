@@ -6,9 +6,10 @@
 -- file offsets, so that seeking is possible.
 
 module Codec.Bgzf (
-    Block(..), decompressBgzf', decompressBgzf, decompressPlain, compressBgzf,
+    Block(..), decompressBgzf', decompressBgzf, decompressPlain,
     maxBlockSize, bgzfEofMarker, liftBlock, getOffset,
-    isBgzf, isGzip, compressBgzfP
+    isBgzf, isGzip,
+    compressBgzf, compressBgzfLv, compressBgzf', CompressParams(..)
                      ) where
 
 import Bio.Iteratee
@@ -20,7 +21,7 @@ import Control.Monad                        ( liftM, forM_, when, join )
 import Data.Bits                            ( shiftL, shiftR, testBit, (.&.) )
 import Data.Monoid                          ( Monoid(..) )
 import Data.Word                            ( Word32, Word16, Word8 )
-import Foreign.Marshal.Alloc                ( mallocBytes, free ) 
+import Foreign.Marshal.Alloc                ( mallocBytes, free )
 import Foreign.Storable                     ( peekByteOff, pokeByteOff )
 import Foreign.C.String                     ( withCAString )
 import Foreign.C.Types                      ( CInt(..), CChar(..), CUInt(..), CULong(..) )
@@ -41,7 +42,7 @@ data Block = Block { block_offset   :: {-# UNPACK #-} !FileOffset
 instance NullPoint Block where empty = Block 0 S.empty
 instance Nullable Block where nullC (Block _ s) = S.null s
 
-instance Monoid Block where 
+instance Monoid Block where
     mempty = empty
     mappend (Block x s) (Block _ t) = Block x (s `S.append` t)
     mconcat [] = empty
@@ -73,11 +74,11 @@ decompressBgzf it = do chan <- liftIO $ Ch `liftM` newEmptyMVar
     dc !num !front !back !off = eneeCheckIfDonePass $ \k -> go num front back off k . (>>= fromException)
 
     go !num !front !(Ch back) !off k Nothing = do
-            e <- I.isFinished 
+            e <- I.isFinished
             if e then do liftIO $ putMVar back Nothing
                          let loop (Ch c) k' = do
                                 mr <- liftIO $ takeMVar c
-                                case mr of 
+                                case mr of
                                     Nothing -> return $ liftI k'
                                     Just (r,c') -> eneeCheckIfDone (loop c') . k' $ Chunk r
                          loop front k
@@ -90,7 +91,7 @@ decompressBgzf it = do chan <- liftIO $ Ch `liftM` newEmptyMVar
             -- track of them...
             chan <- liftIO $ Ch `liftM` newEmptyMVar
             dc 0 chan chan (o `shiftR` 16) $ do
-                    block'drop . fromIntegral $ o .&. 0xffff 
+                    block'drop . fromIntegral $ o .&. 0xffff
                     liftI k
 
     go' !num !(Ch chan) !(Ch back) !off k = do
@@ -98,7 +99,7 @@ decompressBgzf it = do chan <- liftIO $ Ch `liftM` newEmptyMVar
             -- full, don't try, but wait.  If we get something, pass it on
             -- and recurse immediately.
             mnext <- liftIO $ if num >= maxqueue then Just `liftM` takeMVar chan else tryTakeMVar chan
-            case mnext of 
+            case mnext of
                 -- something is ready
                 Just (Just (r,chan')) -> dc (num-1) chan' (Ch back) off . k $ Chunk r
 
@@ -121,17 +122,17 @@ decompressBgzf it = do chan <- liftIO $ Ch `liftM` newEmptyMVar
     -- Get a block of a prescribed size.  Comes back as a list of
     -- chunks.
     get_block sz = liftI $ \s -> case s of
-        EOF _ -> throwErr $ setEOF s 
+        EOF _ -> throwErr $ setEOF s
         Chunk c | S.length c < sz -> (:) c `liftM` get_block (sz - S.length c)
                 | otherwise       -> idone [S.take sz c] (Chunk (S.drop sz c))
 
     block'drop sz = liftI $ \s -> case s of
-        EOF _ -> throwErr $ setEOF s 
-        Chunk (Block p c) 
+        EOF _ -> throwErr $ setEOF s
+        Chunk (Block p c)
             | S.length c < sz -> block'drop (sz - S.length c)
             | otherwise       -> let b' = Block (p + fromIntegral sz) (S.drop sz c)
                                  in idone () (Chunk b')
-    
+
 
 -- | Decodes a BGZF block header and returns the block size if
 -- successful.
@@ -141,7 +142,7 @@ get_bgzf_header = do n <- I.heads "\31\139"
                      flg <- I.head
                      if flg `testBit` 2 then do
                          I.drop 6
-                         xlen <- endianRead2 LSB 
+                         xlen <- endianRead2 LSB
                          it <- I.take (fromIntegral xlen) get_bsize >>= lift . tryRun
                          case it of Left e -> throwErr e
                                     Right s | n == 2 -> return $! Just (s,xlen)
@@ -151,7 +152,7 @@ get_bgzf_header = do n <- I.heads "\31\139"
     get_bsize = do i1 <- I.head
                    i2 <- I.head
                    len <- endianRead2 LSB
-                   if i1 == 66 && i2 == 67 && len == 2 
+                   if i1 == 66 && i2 == 67 && len == 2
                       then endianRead2 LSB
                       else I.drop (fromIntegral len) >> get_bsize
 
@@ -187,39 +188,6 @@ maxBlockSize = 65450
 bgzfEofMarker :: S.ByteString
 bgzfEofMarker = "\x1f\x8b\x8\x4\0\0\0\0\0\xff\x6\0\x42\x43\x2\0\x1b\0\x3\0\0\0\0\0\0\0\0\0"
 
--- | Compresses a stream of @ByteString@s into a stream of Bgzf blocks.
--- We accumulate an uncompressed block as long as adding a new chunk to
--- it doesn't exceed the max. block size.  If we receive an empty chunk
--- (used as a flush signal), or if we would exceed the block size, we
--- write out a block.  Then we continue writing until we're below block
--- size.  On EOF, we flush and write the end marker.
---
--- XXX Need a way to write an index "on the side".  Additional output
--- streams?  (Implicitly) pair two @Iteratee@s, similar to @I.pair@?
-compressBgzf :: MonadIO m => Int -> Enumeratee S.ByteString S.ByteString m a
-compressBgzf lv = eneeCheckIfDone (liftI . step 0 []) ><> mapChunksM (liftIO . compress1 lv)
-  where
-    step    _ acc it c@(EOF _) = step1 it
-      where
-        step1 i | null acc  = step2 i 
-                | otherwise = eneeCheckIfDone step2 . i $ Chunk acc
-        step2 i = eneeCheckIfDone step3 . i $ Chunk []
-        step3 i = idone (liftI i) c
-
-    step alen acc it (Chunk c) 
-        | alen + S.length c < maxBlockSize
-            = liftI $ step (alen + S.length c) (c:acc) it
-
-        | S.length c < maxBlockSize 
-            = eneeCheckIfDone (liftI . step (S.length c) [c]) . it $ Chunk acc     -- XXX index?
-
-        -- oops, this is borked!
-        | otherwise = loop c it -- XXX index?
-
-    loop s i | S.null s  = liftI $ step 0 [] i
-             | otherwise = eneeCheckIfDone (loop (S.drop maxBlockSize s)) . i $ Chunk [S.take maxBlockSize s]
-
-
 -- | Decompress a collection of strings into a single BGZF block.
 --
 -- Ideally, we receive one decode chunk from a BGZF file, decompress it,
@@ -251,8 +219,8 @@ decompress1 off ss crc usize = do
     #{poke z_stream, next_out}  stream buf
     #{poke z_stream, avail_in}  stream (0 :: CUInt)
     #{poke z_stream, avail_out} stream (fromIntegral usize :: CUInt)
- 
-    z_check "inflateInit2" =<< c_inflateInit2 stream (-15) 
+
+    z_check "inflateInit2" =<< c_inflateInit2 stream (-15)
 
     -- loop over the fragments, forward order
     forM_ ss $ \s -> case fromIntegral $ S.length s of
@@ -309,12 +277,12 @@ compress1 lv ss0 = do
     #{poke z_stream, next_out}  stream (buf `plusPtr` 18)
     #{poke z_stream, avail_in}  stream (0 :: CUInt)
     #{poke z_stream, avail_out} stream (65536-18-8 :: CUInt)
- 
+
     z_check "deflateInit2" =<< c_deflateInit2 stream (fromIntegral lv) #{const Z_DEFLATED}
                                               (-15) 8 #{const Z_DEFAULT_STRATEGY}
 
     -- loop over the fragments.  In reverse order!
-    let loop (s:ss) = do 
+    let loop (s:ss) = do
             crc <- loop ss
             S.unsafeUseAsCString s $ \p ->
               case fromIntegral $ S.length s of
@@ -323,16 +291,16 @@ compress1 lv ss0 = do
                     #{poke z_stream, avail_in} stream (l :: CUInt)
                     z_check "deflate" =<< c_deflate stream #{const Z_NO_FLUSH}
                     c_crc32 crc p l
-                _ -> return crc    
+                _ -> return crc
         loop [] = c_crc32 0 nullPtr 0
     crc <- loop ss0
-        
+
     z_check "deflate" =<< c_deflate stream #{const Z_FINISH}
     z_check "deflateEnd" =<< c_deflateEnd stream
 
     compressed_length <- (+) (18+8) `fmap` #{peek z_stream, total_out} stream
-    when (compressed_length > 65536) $ error "produced too big a block" 
-    
+    when (compressed_length > 65536) $ error "produced too big a block"
+
     -- set length in header
     pokeByteOff buf 16 (fromIntegral $ (compressed_length-1) .&. 0xff :: Word8)
     pokeByteOff buf 17 (fromIntegral $ (compressed_length-1) `shiftR` 8 :: Word8)
@@ -378,7 +346,7 @@ foreign import ccall safe "zlib.h deflateEnd" c_deflateEnd ::
 foreign import ccall safe "zlib.h inflateEnd" c_inflateEnd ::
     Ptr ZStream -> IO CInt
 
-foreign import ccall unsafe "zlib.h crc32" c_crc32 ::
+foreign import ccall safe "zlib.h crc32" c_crc32 ::
     CULong -> Ptr CChar -> CUInt -> IO CULong
 
 -- ------------------------------------------------------------------------------------------------- utils
@@ -396,10 +364,10 @@ getOffset = liftI step
 -- | Runs an @Iteratee@ for @ByteString@s when decompressing BGZF.  Adds
 -- internal bookkeeping.
 liftBlock :: Monad m => Iteratee S.ByteString m a -> Iteratee Block m a
-liftBlock = liftI . step 
+liftBlock = liftI . step
   where
     step it (EOF ex) = joinI $ lift $ enumChunk (EOF ex) it
-                            
+
     step it (Chunk (Block !l !s)) = Iteratee $ \od oc ->
             enumPure1Chunk s it >>= \it' -> runIter it' (onDone od) (oc . step . liftI)
       where
@@ -417,7 +385,7 @@ bgzf_test' :: FilePath -> IO ()
 bgzf_test' = fileDriver $
              joinI $ decompressBgzf $
              mapChunksM_ (\(Block o s) -> print (o, S.take 10 s))
-            
+
 bgzf_test :: FilePath -> IO ()
 bgzf_test = fileDriverRandom $
             joinI $ decompressBgzf $
@@ -425,25 +393,35 @@ bgzf_test = fileDriverRandom $
 
 -- ----
 
--- | Parallel compression of BGZF, the comparatively simple plan:
+-- | Compresses a stream of @ByteString@s into a stream of BGZF blocks,
+-- in parallel
+
+-- We accumulate an uncompressed block as long as adding a new chunk to
+-- it doesn't exceed the max. block size.  If we receive an empty chunk
+-- (used as a flush signal), or if we would exceed the block size, we
+-- write out a block.  Then we continue writing until we're below block
+-- size.  On EOF, we flush and write the end marker.
 --
--- BGZF compressor is an 'Enumeratee', and stays one.  But we fork a
+-- The BGZF compressor is an 'Enumeratee', and stays one.  But we fork a
 -- thread to run the output 'Iteratee', we communicate through a limited
--- queue (TBQueue), and we run the compression of blocks asynchronously.  If
--- output throws an exception, we rethrow it speedily (using 'link').
--- Seeking is not supported, because it's hard and there is no need.
+-- queue ('TBQueue' from stm), and we run the compression of blocks
+-- asynchronously (through 'async' from async).  If output throws an
+-- exception, we rethrow it speedily (using 'link').  Seeking is not
+-- supported, because it's hard and there is no need.
 --
--- Can we support other monads than IO?  Probably not; the output
+-- XXX Could we support other monads than IO?  Probably not; the output
 -- 'Iteratee' cannot run in the correct monad, unless we can embed it
 -- into IO somehow.
 
-compressBgzfP :: Int -> Int -> Enumeratee S.ByteString S.ByteString IO a
-compressBgzfP lv np out = do
+-- XXX Need a way to write an index "on the side".  Additional output
+-- streams?  (Implicitly) pair two @Iteratee@s, similar to @I.pair@?
+
+compressBgzf' :: CompressParams -> Enumeratee S.ByteString S.ByteString IO a
+compressBgzf' (CompressParams lv np) out = do
     qq <- liftIO . atomically $ newTBQueue np
     othread <- liftIO . async $ run_othread qq out
     liftIO $ link othread
-    convStream (to_blocks 0 []) =$ feed othread qq
-    
+    joinI $ to_blocks 0 [] $ feed othread qq
   where
     -- Output thread:  get chunks from queue and send them on.  Returns
     -- with the final 'Iteratee' as result.  We need to signal EOF
@@ -453,7 +431,7 @@ compressBgzfP lv np out = do
         case ck of
             Nothing -> enumPure1Chunk bgzfEofMarker it
             Just  a -> do str <- wait a
-                          (d,it') <- enumPure1Chunk str it >>= enumCheckIfDone 
+                          (d,it') <- enumPure1Chunk str it >>= enumCheckIfDone
                           if d then return it'
                                else run_othread qq it'
 
@@ -475,13 +453,33 @@ compressBgzfP lv np out = do
                       Nothing        -> do writeTBQueue qq ma
                                            return $ maybe (liftIO $ wait thr) (const $ feed thr qq) mc
 
-    to_blocks :: Monad m => Int -> [S.ByteString] -> Iteratee S.ByteString m [[S.ByteString]]
-    to_blocks alen acc = getChunk >>= to_blocks' alen acc
-    
-    to_blocks' alen acc c
-        -- if it fits, we accumulate
-        | alen + S.length c < maxBlockSize = to_blocks (alen + S.length c) (c:acc)
-        -- else if the accumulator is empty, we break the chunk
-        | null acc = idone [[S.take maxBlockSize c]] (Chunk (S.drop maxBlockSize c))
+    to_blocks :: Monad m => Int -> [S.ByteString] -> Enumeratee S.ByteString [[S.ByteString]] m a
+    to_blocks alen acc = eneeCheckIfDone (liftI . to_blocks' alen acc)
+
+    to_blocks' alen acc k (Chunk c)
+        -- if it it empty, we flush,
+        -- else if it fits, we accumulate,
+        -- else if the accumulator is empty, we break the chunk,
         -- else we flush the accumulator
-        | otherwise = idone [acc] (Chunk c)
+        | S.null c                          = eneeCheckIfDone (liftI . to_blocks' 0 []) . k $ Chunk [acc]
+        | alen + S.length c < maxBlockSize  = liftI $ to_blocks' (alen + S.length c) (c:acc) k
+        | null acc                       = let (l,r) = S.splitAt maxBlockSize c
+                                           in eneeCheckIfDone (\k' -> to_blocks' 0 [] k' (Chunk r)) . k $ Chunk [[l]]
+        | otherwise                         = eneeCheckIfDone (\k' -> to_blocks' 0 [] k' (Chunk c)) . k $ Chunk [acc]
+
+    to_blocks' _alen acc k (EOF mx)         = idone (k $ Chunk [acc]) (EOF mx)
+
+
+-- | Like 'compressBgzf'', with sensible defaults.
+compressBgzf :: Enumeratee S.ByteString S.ByteString IO a
+compressBgzf = compressBgzfLv 6
+
+compressBgzfLv :: Int -> Enumeratee S.ByteString S.ByteString IO a
+compressBgzfLv lv out =  do
+    np <- liftIO $ getNumCapabilities
+    compressBgzf' (CompressParams lv (np+2)) out
+
+data CompressParams = CompressParams {
+        compression_level :: Int,
+        queue_depth :: Int }
+    deriving Show
