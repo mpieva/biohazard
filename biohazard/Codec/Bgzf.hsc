@@ -8,12 +8,15 @@
 module Codec.Bgzf (
     Block(..), decompressBgzf', decompressBgzf, decompressPlain, compressBgzf,
     maxBlockSize, bgzfEofMarker, liftBlock, getOffset,
-    isBgzf, isGzip
+    isBgzf, isGzip, compressBgzfP
                      ) where
 
 import Bio.Iteratee
 import Control.Concurrent
-import Control.Monad                        ( liftM, forM_, when )
+import Control.Concurrent.Async             ( async, pollSTM, wait, link, Async )
+import Control.Concurrent.STM               ( atomically )
+import Control.Concurrent.STM.TBQueue
+import Control.Monad                        ( liftM, forM_, when, join )
 import Data.Bits                            ( shiftL, shiftR, testBit, (.&.) )
 import Data.Monoid                          ( Monoid(..) )
 import Data.Word                            ( Word32, Word16, Word8 )
@@ -210,6 +213,7 @@ compressBgzf lv = eneeCheckIfDone (liftI . step 0 []) ><> mapChunksM (liftIO . c
         | S.length c < maxBlockSize 
             = eneeCheckIfDone (liftI . step (S.length c) [c]) . it $ Chunk acc     -- XXX index?
 
+        -- oops, this is borked!
         | otherwise = loop c it -- XXX index?
 
     loop s i | S.null s  = liftI $ step 0 [] i
@@ -425,12 +429,59 @@ bgzf_test = fileDriverRandom $
 --
 -- BGZF compressor is an 'Enumeratee', and stays one.  But we fork a
 -- thread to run the output 'Iteratee', we communicate through a limited
--- queue, and we run the compression of blocks asynchronously.  If
+-- queue (TBQueue), and we run the compression of blocks asynchronously.  If
 -- output throws an exception, we rethrow it speedily (using 'link').
 -- Seeking is not supported, because it's hard and there is no need.
+--
+-- Can we support other monads than IO?  Probably not; the output
+-- 'Iteratee' cannot run in the correct monad, unless we can embed it
+-- into IO somehow.
 
--- type QQ a = TVar Int [a] [a]
+compressBgzfP :: Int -> Int -> Enumeratee S.ByteString S.ByteString IO a
+compressBgzfP lv np out = do
+    qq <- liftIO . atomically $ newTBQueue np
+    othread <- liftIO . async $ run_othread qq out
+    liftIO $ link othread
+    convStream (to_blocks 0 []) =$ feed othread qq
+    
+  where
+    -- Output thread:  get chunks from queue and send them on.  Returns
+    -- with the final 'Iteratee' as result.  We need to signal EOF
+    -- somehow, so just reuse the 'Stream' data type.
+    run_othread qq it = do
+        ck <- atomically $ readTBQueue qq
+        case ck of
+            Nothing -> enumPure1Chunk bgzfEofMarker it
+            Just  a -> do str <- wait a
+                          (d,it') <- enumPure1Chunk str it >>= enumCheckIfDone 
+                          if d then return it'
+                               else run_othread qq it'
 
--- -- putQQ :: Int -> a -> QQ a -> STM ()
--- putQQ l a qq = do
-    -- (TVar n front back) 
+    feed :: Async (Iteratee S.ByteString IO a)
+         -> TBQueue (Maybe (Async S.ByteString))
+         -> Iteratee [[S.ByteString]] IO (Iteratee S.ByteString IO a)
+    feed thr qq = tryHead >>= feed' thr qq
+
+    feed' :: Async (Iteratee S.ByteString IO a)
+          -> TBQueue (Maybe (Async S.ByteString))
+          -> Maybe [S.ByteString]
+          -> Iteratee [[S.ByteString]] IO (Iteratee S.ByteString IO a)
+    feed' thr qq mc = do
+        ma <- maybe (return Nothing) (fmap Just . liftIO . async . compress1 lv) mc
+        join $ liftIO $ atomically $ do
+            r <- pollSTM thr
+            case r of Just (Left  x) -> return $ throwErr x
+                      Just (Right a) -> return $ return a
+                      Nothing        -> do writeTBQueue qq ma
+                                           return $ maybe (liftIO $ wait thr) (const $ feed thr qq) mc
+
+    to_blocks :: Monad m => Int -> [S.ByteString] -> Iteratee S.ByteString m [[S.ByteString]]
+    to_blocks alen acc = getChunk >>= to_blocks' alen acc
+    
+    to_blocks' alen acc c
+        -- if it fits, we accumulate
+        | alen + S.length c < maxBlockSize = to_blocks (alen + S.length c) (c:acc)
+        -- else if the accumulator is empty, we break the chunk
+        | null acc = idone [[S.take maxBlockSize c]] (Chunk (S.drop maxBlockSize c))
+        -- else we flush the accumulator
+        | otherwise = idone [acc] (Chunk c)

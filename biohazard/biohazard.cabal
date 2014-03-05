@@ -54,6 +54,7 @@ Library
   
   -- Packages needed in order to build this package.
   Build-depends:       array == 0.4.*,
+                       async == 2.0.*,
                        attoparsec == 0.10.*, 
                        attoparsec-iteratee == 0.4.*, 
                        base == 4.*, 
@@ -68,6 +69,7 @@ Library
                        MonadCatchIO-transformers == 0.3.*,
                        -- parallel,
                        random == 1.0.*,
+                       stm == 2.4.*,
                        transformers == 0.3.*,
                        vector >= 0.9 && < 0.11,
                        zlib == 0.5.*
