@@ -15,6 +15,7 @@ import Data.Sequence ( (<|), (><), ViewL((:<)) )
 
 import qualified Data.ByteString             as S
 import qualified Data.Foldable               as F
+import qualified Data.IntMap                 as I
 import qualified Data.Sequence               as Z
 import qualified Data.Vector.Unboxed         as U
 import qualified Data.Vector.Unboxed.Mutable as UM
@@ -115,7 +116,8 @@ instance Ord Traced where Tr _ a `compare` Tr _ b = a `compare` b
 -- | All sorts of alignment shit collected in one place, mostly so I can
 -- reuse the scoring functions.
 align :: Float -> RefSeq -> QuerySeq -> RefPosn -> Bandwidth -> AlignResult
-align gp (RS rs) (QS qs) (RP p0) (BW bw) = runST (do
+align gp (RS rs) (QS qs) (RP p0) (BW bw_) = runST (do
+    let bw = abs bw_
     v <- UM.unsafeNew $ bw * U.length qs + bw
 
     let readV row col | row < 0 || col < 0 || col >= bw || row > U.length qs = error $ "Read from memo: " ++ show (row,col)
@@ -195,14 +197,15 @@ newtype NewRefSeq = NRS (Z.Seq NewColumn)
 -- Inserts come (conceptually) before the base whose coordinate they
 -- bear.  So every column has inserts first, then the single aligned
 -- base.
-data NewColumn = NC { nc_inserts :: U.Vector Float
-                    , nc_base    :: U.Vector Float }
+data NewColumn = NC { nc_inserts :: !(U.Vector Float)
+                    , nc_base    :: !(U.Vector Float) }
 
 new_ref_seq :: RefSeq -> NewRefSeq
 new_ref_seq rs = NRS $ Z.replicate (refseq_len rs) (NC (U.replicate 0 0) (U.replicate 5 0))
 
-mkNC i b | U.length b /= 5 = error "mkNC"
-         | otherwise = NC i b
+mkNC :: U.Vector Float -> U.Vector Float -> NewColumn
+mkNC !i !b | U.length b /= 5 = error "mkNC"
+           | otherwise = NC i b
 
 -- Add an alignment to the new reference.  We compute the quality of the
 -- alignment (probability that it belongs vs. probability that it's
@@ -220,12 +223,9 @@ mkNC i b | U.length b /= 5 = error "mkNC"
 -- to do it is to maximize the alignment score expected in the next
 -- round, assuming the alignments do not change.  It might work out to
 -- the same thing... who knows?
---
--- XXX Alignment to a circular reference works, but the code here will
--- not.  Need to loop around to the beginning?
+
 add_to_refseq :: NewRefSeq -> QuerySeq -> AlignResult -> NewRefSeq
 add_to_refseq (NRS nrs0) (QS qs0) AlignResult{..} =
-    -- trace (show (odds, votes)) $
     NRS $ rotateZ (Z.length nrs0 - viterbi_position)
         $ mat here back qs0 (unCigar viterbi_backtrace)
   where
@@ -233,7 +233,7 @@ add_to_refseq (NRS nrs0) (QS qs0) AlignResult{..} =
     rotateZ n = uncurry (flip (><)) . Z.splitAt n
 
     !odds = 10 ** (-viterbi_score / 10)  -- often huge,
-    !votes = 1 - recip (1+odds)             -- often exactly 1
+    !votes = 1 - recip (1+odds)          -- often exactly 1
 
     -- Grrr, this isn't going to work.  We'll split it:
     -- One function deals with inserts.  As long as we get inserted
@@ -257,14 +257,15 @@ add_to_refseq (NRS nrs0) (QS qs0) AlignResult{..} =
 
         ((Del,n):cs) -> let nc2 :< rest = Z.viewl nrs
                             b' = vote_against votes b
-                        in mkNC is b' <| mat nc2 rest qs ((Del,n-1):cs)
+                        in mkNC is b' <!| mat nc2 rest qs ((Del,n-1):cs)
 
         ((Mat,n):cs) -> let nc2 :< rest = Z.viewl nrs
                             b' = vote_for votes (U.head qs) b
-                        in mkNC is b' <| mat nc2 rest (U.tail qs) ((Mat,n-1):cs)
+                        in mkNC is b' <!| mat nc2 rest (U.tail qs) ((Mat,n-1):cs)
 
         _            -> ins nc nrs (0::Int) qs cigs
 
+    (<!|) !a !as = a <| as
 
 
 vote_against_from :: Float -> Int -> U.Vector Float -> U.Vector Float
@@ -280,7 +281,6 @@ vote_for votes = vote_for_at votes 0 0
 
 vote_for_at :: Float -> Float -> Int -> Word8 -> U.Vector Float -> U.Vector Float
 vote_for_at votes v0 idx bq ps =
-    -- trace (show (base, qual, votes, pe, pt)) $
     U.accum (+) ps' $ (base+5*idx,pt) : [(5*idx+i,pe)|i<-[0,1,2,3]]
   where
     base = fromIntegral $ bq .&. 3
@@ -296,13 +296,18 @@ vote_for_at votes v0 idx bq ps =
 -- Back to compact representation.  Every group of five votes gets
 -- converted to five probabilities, and those to quality scores.  Then
 -- we concatenate.
-finalize_ref_seq :: NewRefSeq -> RefSeq
-finalize_ref_seq (NRS z) = RS $ U.concat $ F.foldr unpack [] z
+finalize_ref_seq :: NewRefSeq -> (RefSeq, XTab)
+finalize_ref_seq (NRS z) =
+    ( RS $ U.concat $ F.foldr unpack [] z
+    , Z.fromList $ scanl (+) 0 $ F.foldr tolen [] z)
   where
     unpack (NC ins bas) k = map5 call ins ++ call bas : k
     map5 f v = [ f (U.slice i 5 v) | i <- [0, 5 .. U.length v - 5] ]
     call v = U.map (\x -> round $ (-10) / log 10 * log ((total-x) / total)) v where total = U.sum v
 
+    tolen (NC ins _bas) k = U.length ins `div` 5 + 1 : k
 
+-- Table for coordinate translation
+type XTab = Z.Seq Int
 
 

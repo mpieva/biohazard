@@ -92,7 +92,7 @@ do_seed ln (SM sm) br = -- do S.hPut stdout $ S.concat [ br_qname br, key, ":  "
 
     br_seq = [ br_seq_at br i | i <- [0..br_l_seq br-1] ]
 
-    more x = (x * 17) `div` 16
+    more x = (x * 9) `div` 8 + 16
 
     rgns = sortBy (\(_,_,c) (_,_,z) -> compare z c) $ filter reasonably_short $
                 (wrap_with        id $ overlap $ sort $ map norm_right rgns_fwd) ++
