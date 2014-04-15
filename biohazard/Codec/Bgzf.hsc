@@ -6,18 +6,17 @@
 -- file offsets, so that seeking is possible.
 
 module Codec.Bgzf (
-    Block(..), decompressBgzf', decompressBgzf, decompressPlain,
+    Block(..), decompressBgzfBlocks', decompressBgzfBlocks,
+    decompressBgzf, decompressPlain,
     maxBlockSize, bgzfEofMarker, liftBlock, getOffset,
-    isBgzf, isGzip,
+    isBgzf, isGzip, concatMapStreamIO,
     compressBgzf, compressBgzfLv, compressBgzf', CompressParams(..)
                      ) where
 
 import Bio.Iteratee
-import Control.Concurrent
-import Control.Concurrent.Async             ( async, pollSTM, wait, link, Async )
-import Control.Concurrent.STM               ( atomically )
-import Control.Concurrent.STM.TBQueue
-import Control.Monad                        ( liftM, forM_, when, join )
+import Control.Concurrent                   ( getNumCapabilities )
+import Control.Concurrent.Async             ( Async, async, wait, cancel )
+import Control.Monad                        ( liftM, forM_, when )
 import Data.Bits                            ( shiftL, shiftR, testBit, (.&.) )
 import Data.Monoid                          ( Monoid(..) )
 import Data.Word                            ( Word32, Word16, Word8 )
@@ -58,73 +57,50 @@ decompressPlain = eneeCheckIfDone (liftI . step 0)
     step !o it (Chunk s) = eneeCheckIfDone (liftI . step (o + fromIntegral (S.length s))) . it $ Chunk (Block o s)
     step  _ it (EOF  mx) = idone (liftI it) (EOF mx)
 
-newtype Ch a = Ch (MVar (Maybe (a, Ch a)))
-
 -- | Decompress a BGZF stream into a stream of 'S.ByteString's.
-decompressBgzf' :: MonadIO m => Enumeratee S.ByteString S.ByteString m a
-decompressBgzf' = decompressBgzf ><> mapChunks block_contents
+decompressBgzf :: MonadIO m => Enumeratee S.ByteString S.ByteString m a
+decompressBgzf = decompressBgzfBlocks ><> mapChunks block_contents
 
--- | Decompress a BGZF stream into a stream of 'Block's.
-decompressBgzf :: MonadIO m => Enumeratee S.ByteString Block m a
-decompressBgzf it = do chan <- liftIO $ Ch `liftM` newEmptyMVar
-                       dc 0 chan chan 0 it
+decompressBgzfBlocks :: MonadIO m => Enumeratee S.ByteString Block m a
+decompressBgzfBlocks out =  do
+    np <- liftIO $ getNumCapabilities
+    decompressBgzfBlocks' np out
+
+-- | Decompress a BGZF stream into a stream of 'Block's, 'np' fold parallel.
+decompressBgzfBlocks' :: MonadIO m => Int -> Enumeratee S.ByteString Block m a
+decompressBgzfBlocks' np = eneeCheckIfDonePass (go 0 emptyQ)
   where
-    maxqueue = 32 :: Int -- arbitrary
+    -- check if the queue is full
+    go !off !qq k (Just e) = handleSeek off qq k e
+    go !off !qq k Nothing = case popQ qq of
+        Just (a, qq') | lengthQ qq == np -> liftIO (wait a) >>= eneeCheckIfDonePass (go off qq') . k . Chunk
+        _                                -> liftI $ go' off qq k
 
-    dc !num !front !back !off = eneeCheckIfDonePass $ \k -> go num front back off k . (>>= fromException)
+    -- we have room for input, so try and get a compressed block
+    go' !_   !qq k (EOF  mx) = goE mx qq k Nothing
+    go' !off !qq k (Chunk c)
+        | S.null  c = liftI $ go' off qq k
+        | otherwise = joinIM $ enumPure1Chunk c $ do
+                                  (off', op) <- get_bgzf_block off
+                                  a <- liftIO (async op)
+                                  go off' (pushQ a qq) k Nothing
 
-    go !num !front !(Ch back) !off k Nothing = do
-            e <- I.isFinished
-            if e then do liftIO $ putMVar back Nothing
-                         let loop (Ch c) k' = do
-                                mr <- liftIO $ takeMVar c
-                                case mr of
-                                    Nothing -> return $ liftI k'
-                                    Just (r,c') -> eneeCheckIfDone (loop c') . k' $ Chunk r
-                         loop front k
-                 else go' num front (Ch back) off k
+    -- input ended, empty the queue
+    goE  _ !qq k (Just e) = handleSeek 0 qq k e
+    goE mx !qq k Nothing = case popQ qq of
+        Nothing      -> idone (liftI k) (EOF mx)
+        Just (a,qq') -> liftIO (wait a) >>= eneeCheckIfDonePass (goE mx qq') . k . Chunk
 
-    go !_num !_front !_back !_off k (Just (SeekException !o)) = do
+    handleSeek !off !qq k e = case fromException e of
+        Nothing                -> throwRecoverableErr e $ go' off qq k
+        Just (SeekException o) -> do
+            cancelAll qq
             seek $ o `shiftR` 16
-            -- throw old channel away and recurse
-            -- XXX could kill running threads.  Means I need to keep
-            -- track of them...
-            chan <- liftIO $ Ch `liftM` newEmptyMVar
-            dc 0 chan chan (o `shiftR` 16) $ do
-                    block'drop . fromIntegral $ o .&. 0xffff
-                    liftI k
-
-    go' !num !(Ch chan) !(Ch back) !off k = do
-            -- First try to get the next finished chunk.  If the queue is
-            -- full, don't try, but wait.  If we get something, pass it on
-            -- and recurse immediately.
-            mnext <- liftIO $ if num >= maxqueue then Just `liftM` takeMVar chan else tryTakeMVar chan
-            case mnext of
-                -- something is ready
-                Just (Just (r,chan')) -> dc (num-1) chan' (Ch back) off . k $ Chunk r
-
-                -- end marker... shouldn't actually happen
-                Just Nothing -> return $ liftI k
-
-                -- if we got nothing, read input, fork and recurse
-                Nothing -> do
-                        !(csize,xlen) <- maybe (fail "no BGZF") return =<< get_bgzf_header
-                        !comp  <- get_block . fromIntegral $ csize - xlen - 19
-                        !crc   <- endianRead4 LSB
-                        !isize <- endianRead4 LSB
-
-                        back' <- Ch `liftM` liftIO newEmptyMVar
-                        let blk = decompress1 (off `shiftL` 16) comp crc (fromIntegral isize)
-                        _ <- liftIO . forkIO $ do r <- blk ; putMVar back (Just (r, back'))
-
-                        go (num+1) (Ch chan) back' (off + fromIntegral csize + 1) k Nothing
-
-    -- Get a block of a prescribed size.  Comes back as a list of
-    -- chunks.
-    get_block sz = liftI $ \s -> case s of
-        EOF _ -> throwErr $ setEOF s
-        Chunk c | S.length c < sz -> (:) c `liftM` get_block (sz - S.length c)
-                | otherwise       -> idone [S.take sz c] (Chunk (S.drop sz c))
+            eneeCheckIfDonePass (go (o `shiftR` 16) emptyQ) $ do
+                block'drop . fromIntegral $ o .&. 0xffff
+                k (EOF Nothing)
+                -- I think, 'seek' swallows one 'Stream' value on
+                -- purpose, so we have to give it a dummy one.
 
     block'drop sz = liftI $ \s -> case s of
         EOF _ -> throwErr $ setEOF s
@@ -133,10 +109,26 @@ decompressBgzf it = do chan <- liftIO $ Ch `liftM` newEmptyMVar
             | otherwise       -> let b' = Block (p + fromIntegral sz) (S.drop sz c)
                                  in idone () (Chunk b')
 
+get_bgzf_block :: MonadIO m => FileOffset -> Iteratee S.ByteString m (FileOffset, IO Block)
+get_bgzf_block off = do !(csize,xlen) <- get_bgzf_header
+                        !comp  <- get_block . fromIntegral $ csize - xlen - 19
+                        !crc   <- endianRead4 LSB
+                        !isize <- endianRead4 LSB
+
+                        let !off' = off + fromIntegral csize + 1
+                            op    = decompress1 (off `shiftL` 16) comp crc (fromIntegral isize)
+                        return (off',op)
+  where
+    -- Get a block of a prescribed size.  Comes back as a list of chunks.
+    get_block sz = liftI $ \s -> case s of
+        EOF _ -> throwErr $ setEOF s
+        Chunk c | S.length c < sz -> (:) c `liftM` get_block (sz - S.length c)
+                | otherwise       -> idone [S.take sz c] (Chunk (S.drop sz c))
+
 
 -- | Decodes a BGZF block header and returns the block size if
 -- successful.
-get_bgzf_header :: Monad m => Iteratee S.ByteString m (Maybe (Word16, Word16))
+get_bgzf_header :: Monad m => Iteratee S.ByteString m (Word16, Word16)
 get_bgzf_header = do n <- I.heads "\31\139"
                      _cm <- I.head
                      flg <- I.head
@@ -145,9 +137,9 @@ get_bgzf_header = do n <- I.heads "\31\139"
                          xlen <- endianRead2 LSB
                          it <- I.take (fromIntegral xlen) get_bsize >>= lift . tryRun
                          case it of Left e -> throwErr e
-                                    Right s | n == 2 -> return $! Just (s,xlen)
-                                    _ -> return Nothing
-                      else return Nothing
+                                    Right s | n == 2 -> return (s,xlen)
+                                    _ -> throwErr $ iterStrExc "No BGZF"
+                      else throwErr $ iterStrExc "No BGZF"
   where
     get_bsize = do i1 <- I.head
                    i2 <- I.head
@@ -159,10 +151,9 @@ get_bgzf_header = do n <- I.heads "\31\139"
 -- | Tests whether a stream is in BGZF format.  Does not consume any
 -- input.
 isBgzf :: Monad m => Iteratee S.ByteString m Bool
-isBgzf = liftM check $ checkErr $ i'lookAhead $ get_bgzf_header
-  where check (Left         _) = False
-        check (Right  Nothing) = False
-        check (Right (Just _)) = True
+isBgzf = liftM isRight $ checkErr $ i'lookAhead $ get_bgzf_header
+  where
+    isRight = either (const False) (const True)
 
 -- | Tests whether a stream is in GZip format.  Also returns @True@ on a
 -- Bgzf stream, which is technically a special case of GZip.
@@ -325,7 +316,7 @@ c_deflateInit2 z a b c d e = withCAString #{const_str ZLIB_VERSION} $ \versionSt
 
 foreign import ccall unsafe "zlib.h deflateInit2_" c_deflateInit2_ ::
     Ptr ZStream -> CInt -> CInt -> CInt -> CInt -> CInt
-		        -> Ptr CChar -> CInt -> IO CInt
+                -> Ptr CChar -> CInt -> IO CInt
 
 c_inflateInit2 :: Ptr ZStream -> CInt -> IO CInt
 c_inflateInit2 z a = withCAString #{const_str ZLIB_VERSION} $ \versionStr ->
@@ -376,23 +367,6 @@ liftBlock = liftI . step
         onDone od hdr (EOF      ex) = od hdr (EOF ex)
 
 
--- ----
-
-some_file :: FilePath
-some_file = "/mnt/ngs_data/101203_SOLEXA-GA04_00007_PEDi_MM_QF_SR/Ibis/BWA/s_5_L3280_sequence_mq_hg19_nohap.bam"
-
-bgzf_test' :: FilePath -> IO ()
-bgzf_test' = fileDriver $
-             joinI $ decompressBgzf $
-             mapChunksM_ (\(Block o s) -> print (o, S.take 10 s))
-
-bgzf_test :: FilePath -> IO ()
-bgzf_test = fileDriverRandom $
-            joinI $ decompressBgzf $
-            seek 0 >> mapChunksM_ (\(Block o s) -> print (o, S.take 10 s))
-
--- ----
-
 -- | Compresses a stream of @ByteString@s into a stream of BGZF blocks,
 -- in parallel
 
@@ -401,80 +375,63 @@ bgzf_test = fileDriverRandom $
 -- (used as a flush signal), or if we would exceed the block size, we
 -- write out a block.  Then we continue writing until we're below block
 -- size.  On EOF, we flush and write the end marker.
---
--- The BGZF compressor is an 'Enumeratee', and stays one.  But we fork a
--- thread to run the output 'Iteratee', we communicate through a limited
--- queue ('TBQueue' from stm), and we run the compression of blocks
--- asynchronously (through 'async' from async).  If output throws an
--- exception, we rethrow it speedily (using 'link').  Seeking is not
--- supported, because it's hard and there is no need.
---
--- XXX Could we support other monads than IO?  Probably not; the output
--- 'Iteratee' cannot run in the correct monad, unless we can embed it
--- into IO somehow.
 
--- XXX Need a way to write an index "on the side".  Additional output
--- streams?  (Implicitly) pair two @Iteratee@s, similar to @I.pair@?
+compressBgzf' :: MonadIO m => CompressParams -> Enumeratee S.ByteString S.ByteString m a
+compressBgzf' (CompressParams lv np) = bgzfBlocks ><> concatMapStreamIO np (compress1 lv)
 
-compressBgzf' :: CompressParams -> Enumeratee S.ByteString S.ByteString IO a
-compressBgzf' (CompressParams lv np) out = do
-    qq <- liftIO . atomically $ newTBQueue np
-    othread <- liftIO . async $ run_othread qq out
-    liftIO $ link othread
-    joinI $ to_blocks 0 [] $ feed othread qq
+-- | Parallel map of an IO action over the elements of a stream
+--
+-- This 'Enumeratee' applies an 'IO' action to every chunk of the input
+-- stream.  These 'IO' actions are run asynchronously in a limited
+-- parallel way.
+
+concatMapStreamIO :: (MonadIO m, Nullable s) => Int -> (s -> IO t) -> Enumeratee s t m a
+concatMapStreamIO np f = eneeCheckIfDonePass (go emptyQ)
   where
-    -- Output thread:  get chunks from queue and send them on.  Returns
-    -- with the final 'Iteratee' as result.  We need to signal EOF
-    -- somehow, so just reuse the 'Stream' data type.
-    run_othread qq it = do
-        ck <- atomically $ readTBQueue qq
-        case ck of
-            Nothing -> enumPure1Chunk bgzfEofMarker it
-            Just  a -> do str <- wait a
-                          (d,it') <- enumPure1Chunk str it >>= enumCheckIfDone
-                          if d then return it'
-                               else run_othread qq it'
+    -- check if the queue is full
+    go !qq k (Just e) = cancelAll qq >> icont (go' emptyQ k) (Just e)
+    go !qq k Nothing = case popQ qq of
+        Just (a,qq') | lengthQ qq == np -> liftIO (wait a) >>= eneeCheckIfDonePass (go qq') . k . Chunk
+        _                               -> liftI $ go' qq k
 
-    feed :: Async (Iteratee S.ByteString IO a)
-         -> TBQueue (Maybe (Async S.ByteString))
-         -> Iteratee [[S.ByteString]] IO (Iteratee S.ByteString IO a)
-    feed thr qq = tryHead >>= feed' thr qq
+    -- we have room for input
+    go' !qq k (EOF  mx) = goE mx qq k Nothing
+    go' !qq k (Chunk c) = do a <- liftIO (async (f c))
+                             go (pushQ a qq) k Nothing
 
-    feed' :: Async (Iteratee S.ByteString IO a)
-          -> TBQueue (Maybe (Async S.ByteString))
-          -> Maybe [S.ByteString]
-          -> Iteratee [[S.ByteString]] IO (Iteratee S.ByteString IO a)
-    feed' thr qq mc = do
-        ma <- maybe (return Nothing) (fmap Just . liftIO . async . compress1 lv) mc
-        join $ liftIO $ atomically $ do
-            r <- pollSTM thr
-            case r of Just (Left  x) -> return $ throwErr x
-                      Just (Right a) -> return $ return a
-                      Nothing        -> do writeTBQueue qq ma
-                                           return $ maybe (liftIO $ wait thr) (const $ feed thr qq) mc
+    -- input ended, empty the queue
+    goE  _ !qq k (Just e) = cancelAll qq >> icont (go' emptyQ k) (Just e)
+    goE mx !qq k Nothing = case popQ qq of
+        Nothing      -> idone (liftI k) (EOF mx)
+        Just (a,qq') -> liftIO (wait a) >>= eneeCheckIfDonePass (goE mx qq') . k . Chunk
 
-    to_blocks :: Monad m => Int -> [S.ByteString] -> Enumeratee S.ByteString [[S.ByteString]] m a
-    to_blocks alen acc = eneeCheckIfDone (liftI . to_blocks' alen acc)
+-- | Breaks a stream into chunks suitable to be compressed individually.
+-- Each chunk on output is represented as a list of 'S.ByteString's,
+-- each list must be reversed and concatenated to be compressed.
+-- ('compress1' does that.)
 
-    to_blocks' alen acc k (Chunk c)
+bgzfBlocks :: Monad m => Enumeratee S.ByteString [S.ByteString] m a
+bgzfBlocks = eneeCheckIfDone (liftI . to_blocks 0 [])
+  where
+    to_blocks _alen acc k (EOF mx) = idone (k $ Chunk acc) (EOF mx)
+    to_blocks  alen acc k (Chunk c)
         -- if it it empty, we flush,
         -- else if it fits, we accumulate,
         -- else if the accumulator is empty, we break the chunk,
         -- else we flush the accumulator
-        | S.null c                          = eneeCheckIfDone (liftI . to_blocks' 0 []) . k $ Chunk [acc]
-        | alen + S.length c < maxBlockSize  = liftI $ to_blocks' (alen + S.length c) (c:acc) k
+        | S.null c                          = eneeCheckIfDone (liftI . to_blocks 0 []) . k $ Chunk acc
+        | alen + S.length c < maxBlockSize  = liftI $ to_blocks (alen + S.length c) (c:acc) k
         | null acc                       = let (l,r) = S.splitAt maxBlockSize c
-                                           in eneeCheckIfDone (\k' -> to_blocks' 0 [] k' (Chunk r)) . k $ Chunk [[l]]
-        | otherwise                         = eneeCheckIfDone (\k' -> to_blocks' 0 [] k' (Chunk c)) . k $ Chunk [acc]
+                                           in eneeCheckIfDone (\k' -> to_blocks 0 [] k' (Chunk r)) . k $ Chunk [l]
+        | otherwise                         = eneeCheckIfDone (\k' -> to_blocks 0 [] k' (Chunk c)) . k $ Chunk acc
 
-    to_blocks' _alen acc k (EOF mx)         = idone (k $ Chunk [acc]) (EOF mx)
 
 
 -- | Like 'compressBgzf'', with sensible defaults.
-compressBgzf :: Enumeratee S.ByteString S.ByteString IO a
+compressBgzf :: MonadIO m => Enumeratee S.ByteString S.ByteString m a
 compressBgzf = compressBgzfLv 6
 
-compressBgzfLv :: Int -> Enumeratee S.ByteString S.ByteString IO a
+compressBgzfLv :: MonadIO m => Int -> Enumeratee S.ByteString S.ByteString m a
 compressBgzfLv lv out =  do
     np <- liftIO $ getNumCapabilities
     compressBgzf' (CompressParams lv (np+2)) out
@@ -483,3 +440,28 @@ data CompressParams = CompressParams {
         compression_level :: Int,
         queue_depth :: Int }
     deriving Show
+
+-- A very simple queue data type.
+-- Invariants: q = QQ l f b --> l == length f + length b
+--                          --> l == 0 || not (null f)
+
+data QQ a = QQ !Int [a] [a]
+
+emptyQ :: QQ a
+emptyQ = QQ 0 [] []
+
+lengthQ :: QQ a -> Int
+lengthQ (QQ l _ _) = l
+
+pushQ :: a -> QQ a -> QQ a
+pushQ a (QQ l [] b) = QQ (l+1) (reverse (a:b)) []
+pushQ a (QQ l  f b) = QQ (l+1) f (a:b)
+
+popQ :: QQ a -> Maybe (a, QQ a)
+popQ (QQ l (a:[]) b) = Just (a, QQ (l-1) (reverse b) [])
+popQ (QQ l (a:fs) b) = Just (a, QQ (l-1) fs b)
+popQ (QQ _ [    ] _) = Nothing
+
+cancelAll :: MonadIO m => QQ (Async a) -> m ()
+cancelAll (QQ _ ff bb) = liftIO $ mapM_ cancel (ff ++ bb)
+

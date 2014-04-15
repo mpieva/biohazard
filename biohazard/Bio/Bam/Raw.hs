@@ -2,6 +2,7 @@
 {-# OPTIONS_GHC -funbox-strict-fields #-}
 module Bio.Bam.Raw (
     Block(..),
+    decompressBgzfBlocks,
     decompressBgzf,
     compressBgzf,
 
@@ -158,7 +159,7 @@ isPlainBam = (\n -> if n == 4 then Just (joinI . decompressPlain . decodeBam) el
 isBgzfBam  = do b <- isBgzf
                 k <- if b then i'lookAhead $ joinI $ enumInflate GZip defaultDecompressParams isPlainBam
                           else return Nothing
-                return $ (\_ -> (joinI . decompressBgzf . decodeBam)) `fmap` k
+                return $ (\_ -> (joinI . decompressBgzfBlocks . decodeBam)) `fmap` k
 
 isGzipBam  = do b <- isGzip
                 k <- if b then i'lookAhead $ joinI $ enumInflate GZip defaultDecompressParams isPlainBam
@@ -442,7 +443,8 @@ decodeBam inner = do meta <- liftBlock get_bam_header
                      decodeBamLoop $ inner $! merge meta refs
   where
     get_bam_header  = do magic <- heads "BAM\SOH"
-                         when (magic /= 4) $ fail "BAM signature not found"
+                         when (magic /= 4) $ do s <- i'getString 10
+                                                fail $ "BAM signature not found: " ++ show magic ++ " " ++ show s
                          hdr_len <- endianRead4 LSB
                          joinI $ takeStream (fromIntegral hdr_len) $ parserToIteratee parseBamMeta
 

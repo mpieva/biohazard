@@ -118,7 +118,6 @@ enum_glf_file :: MonadCatchIO m
 enum_glf_file fp per_seq per_file output =
     enumFile defaultBufSize fp >=> run $
     joinI $ decompressBgzf $
-    joinI $ mapChunks block_contents $
     enee_glf_file per_seq per_file output
 
 enum_glf_handle :: MonadCatchIO m
@@ -129,6 +128,5 @@ enum_glf_handle :: MonadCatchIO m
 enum_glf_handle hdl per_seq per_file output =
     enumHandle defaultBufSize hdl >=> run $
     joinI $ decompressBgzf $
-    joinI $ mapChunks block_contents $
     enee_glf_file per_seq per_file output
 
