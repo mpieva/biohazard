@@ -39,7 +39,7 @@ import qualified Data.Sequence          as Z
 usage :: IO a
 usage = do pn <- getProgName
            hPutStr stderr $ pn ++ ", version " ++ showVersion version ++
-                "Usage: " ++ pn ++ "[chrom:length...]\n\
+                "\nUsage: " ++ pn ++ " [chrom:length...]\n\
                 \Pipes a BAM file from stdin to stdout and for every 'chrom'\n\
                 \mentioned on the command line, wraps alignments to a new \n\
                 \target length of 'length'.\n"
@@ -56,7 +56,8 @@ main = getArgs >>= \args ->
                  $ protectTerm $ pipeRawBamOutput (add_pg hdr { meta_refs = seqs' })
 
 parseArgs :: Refs -> [String] -> ([(Refseq,(Int,S.ByteString))], Refs)
-parseArgs = foldl parseArg . (,) []
+parseArgs refs | Z.null refs = error $ "no target sequences found (empty input?)"
+               | otherwise   = foldl parseArg ([],refs)
   where
     parseArg (sqs, h) arg = case break (==':') arg of
         (nm,':':r) -> case reads r of

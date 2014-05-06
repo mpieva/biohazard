@@ -48,3 +48,76 @@ getBlockList = liftI $ step []
     step acc e@(EOF _) = idone (reverse acc) e
 
 
+{- moved from Codec.BGZF and Bio.Bam.Rec
+
+import Bio.Bam
+import Codec.Bgzf
+import System.IO
+
+import Data.ByteString ( hPut )
+import qualified Data.ByteString.Char8 as S
+
+some_file :: FilePath
+some_file = "/mnt/ngs_data/101203_SOLEXA-GA04_00007_PEDi_MM_QF_SR/Ibis/BWA/s_5_L3280_sequence_mq_hg19_nohap.bam"
+
+bgzf_test :: FilePath -> IO ()
+bgzf_test = fileDriver $
+            joinI $ decompressBgzfBlocks $
+            mapChunksM_ (print . block_offset)
+
+bam_test' :: FilePath -> IO ()
+bam_test' = fileDriver $
+            joinI $ decompressBgzfBlocks $
+            joinI $ decodeBam      $
+            dump_bam
+
+bam_test :: FilePath -> IO ()
+bam_test = fileDriverRandom $
+           joinI $ decompressBgzfBlocks $
+           joinI $ do -- decodeBam $ \h -> joinI $ takeStream 100 (dump_bam h)
+                      seek 0
+                      decodeBam dump_bam
+
+dump_bam :: BamMeta -> Iteratee [BamRaw] IO ()
+dump_bam meta = lift (print meta) >> print_names
+
+seek_test :: [Char] -> Word32 -> IO ()
+seek_test fp i = do
+    idx <- readBamIndex $ fp ++ ".bai"
+    flip fileDriverRandom fp $
+           joinI $ decompressBgzfBlocks $
+           joinI $ decodeBamSequence idx (Refseq i) print_names_and_refs
+
+sam_test :: IO ()
+sam_test = fileDriver (joinI $ decodeSam (const print_names')) "foo.sam"
+
+print_names :: Iteratee [BamRaw] IO ()
+print_names = mapStreamM_ $ S.putStrLn . br_qname
+
+print_names_and_refs :: Iteratee [BamRaw] IO ()
+print_names_and_refs = mapStreamM_ pr
+  where pr b = putStrLn $ shows (br_qname b) " " ++ show (br_rname b)
+
+print_names' :: Iteratee [BamRec] IO ()
+print_names' = mapStreamM_ $ S.putStrLn . b_qname
+
+
+bam2bam_test :: IO ()
+bam2bam_test = withFile "foo.bam" WriteMode $       \hdl ->
+               flip fileDriver some_file    $
+               joinI $ decompressBgzfBlocks $
+               joinI $ decodeBam            $       \meta ->
+               joinI $ encodeBam meta       $
+               mapChunksM_ (hPut hdl)
+
+sam2bam_test :: IO ()
+sam2bam_test = withFile "bar.bam" WriteMode       $             \hdl ->
+               flip fileDriver "foo.sam"          $
+               joinI $ decodeSam                  $             \meta ->
+               joinI $ mapStream encodeBamEntry   $
+               lift (print meta)                >>=             \_ ->
+               joinI $ encodeBam meta             $
+               mapChunksM_ (hPut hdl)
+-}
+
+

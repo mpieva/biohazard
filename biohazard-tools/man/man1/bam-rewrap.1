@@ -5,11 +5,8 @@
 .SH NAME
 bam-rewrap \- rewrap alignments in BAM file to real target length
 .SH SYNOPSIS
-.B bam-rewrap [
-.I chrom
-.B :
-.I length
-.B ... ]
+.BI "bam-rewrap [" chrom : length " ...]"
+
 .SH DESCRIPTION
 .B bam-rewrap
 reads a BAM file from standard input and writes a BAM file to standard
@@ -46,7 +43,7 @@ It may or may not work for other aligners.
 .SH OPTIONS
 .IP "chrom:length"
 Indicates that the length of target sequence
-.IR chrom is length .
+.IR chrom " is " length .
 This option can be repeated and each will cause alignments to the
 specified target to be wrapped.
 

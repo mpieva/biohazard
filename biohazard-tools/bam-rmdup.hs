@@ -294,7 +294,7 @@ decodeWithIndex :: MonadCatchIO m
 decodeWithIndex enum fp k0 = do
     idx <- liftIO $ readBamIndex fp
     enumFileRandom defaultBufSize fp >=> run $
-        joinI $ decompressBgzf $ do
+        joinI $ decompressBgzfBlocks $ do
             hdr <- decodeBam return
             enum idx $ hdr >>= k0
 
