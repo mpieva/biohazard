@@ -28,7 +28,7 @@ source-repository head
 source-repository this
   type:     git
   location: git://github.com/udo-stenzel/biohazard.git
-  tag:      0.5.5
+  tag:      0.5.6
 
 Executable bam-fixpair
   Main-is:             bam-fixpair.hs
