@@ -13,7 +13,7 @@ import Bio.Iteratee
 import Control.Applicative
 import Control.Monad hiding ( mapM_ )
 import Control.Monad.Fix ( fix )
-import Data.Foldable
+import Data.Foldable hiding ( sum, product )
 import Data.List ( tails, intercalate, sortBy )
 import Numeric ( showFFloat )
 
@@ -21,7 +21,7 @@ import qualified Data.ByteString        as B
 import qualified Data.Vector.Unboxed    as V
 import qualified Data.Set               as Set
 
-import Prelude hiding ( foldr, foldr1, concat, mapM_, all, sum )
+import Prelude hiding ( foldr, foldr1, concat, mapM_, all )
 
 -- ^ Genotype Calling:  like Samtools(?), but for aDNA
 --
@@ -82,13 +82,15 @@ import Prelude hiding ( foldr, foldr1, concat, mapM_, all, sum )
 -- * Actual genotype calling.
 -- * ML fitting and evaluation of parameters for different possible
 --   error and damage models.
--- * Check the 'decompose' logic, in particular, make sure the waiting
---   time after deletions is exactly right
 -- * Ploidy must be a variable; we definitely need calling for diploid
 --   and haploid genomes; higher ploidy is nice to have if it comes at
 --   acceptable cost.
 
--- | For likelihoods for bases @A, C, G, T@, one quality score.
+-- | For likelihoods for bases @A, C, G, T@, one quality score.  Note
+-- that we cannot roll the quality score into the probabilities:  the
+-- @DB@ only describes changes that happened before sequencing, then
+-- quality describes those that happen while sequencing.  The latter
+-- behave differently (notably, they repeat semi-systematically).
 data DamagedBase = DB !Double !Double !Double !Double !Qual
 
 instance Show DamagedBase where
@@ -100,8 +102,8 @@ instance Show DamagedBase where
 -- length of a deleted sequence.  The logic is that we look at a base
 -- followed by some indel, and all those indels are combined into a
 -- single insertion and a single deletion.
-data PrimChunks = Seek !Int PrimBase                            -- ^ skip to position (at start or after N operation)
-                | Indel !Int [(Nucleotide, Qual)] PrimBase      -- ^ observed deletion and insertion between two bases
+data PrimChunks = Seek !Int !PrimBase                           -- ^ skip to position (at start or after N operation)
+                | Indel !Int [(Nucleotide, Qual)] !PrimBase     -- ^ observed deletion and insertion between two bases
                 | EndOfRead                                     -- ^ nothing anymore
   deriving Show
 
@@ -115,7 +117,9 @@ data PrimBase = Base { _pb_wait   :: !Int                       -- ^ number of b
 -- | Decomposes a BAM record into chunks suitable for piling up.  We
 -- pick apart the CIGAR field, and combine it with sequence and quality
 -- as appropriate.  We ignore the @MD@ field, even if it is present.
--- Clipped bases are removed/skipped as appropriate.
+-- Clipped bases are removed/skipped as appropriate.  We also ignore the
+-- reference allele, if fact, we don't even know it.  Nicely avaoid any
+-- reference bias by construction.
 
 decompose :: DamageModel -> BamRaw -> PrimChunks
 decompose dm br
@@ -150,9 +154,9 @@ decompose dm br
         | is >= max_seq || ic >= max_cig = EndOfRead
         | otherwise = case br_cigar_at br ic of
             (Ins,cl) ->            firstBase  pos (cl+is) (ic+1)
+            (SMa,cl) ->            firstBase  pos (cl+is) (ic+1)
             (Del,cl) ->            firstBase (pos+cl) is  (ic+1)
             (Nop,cl) ->            firstBase (pos+cl) is  (ic+1)
-            (SMa,cl) ->            firstBase  pos (cl+is) (ic+1)
             (HMa, _) ->            firstBase  pos     is  (ic+1)
             (Pad, _) ->            firstBase  pos     is  (ic+1)
             (Mat, 0) ->            firstBase  pos     is  (ic+1)
@@ -167,11 +171,12 @@ decompose dm br
 
 
     -- Look for the next indel after a base.  We collect all indels (I
-    -- and D codes) into one combined operation.  If we hit N, we drop
-    -- it (indels next to a gap indicate trouble).  Other stuff is
-    -- skipped: we could check for stuff that isn't valid in the middle
-    -- of a read (H and S), but then what would we do anyway?  Just
-    -- ignoring it is much easier and arguably as correct.
+    -- and D codes) into one combined operation.  If we hit N or the
+    -- read's end, we drop all of it (indels next to a gap indicate
+    -- trouble).  Other stuff is skipped: we could check for stuff that
+    -- isn't valid in the middle of a read (H and S), but then what
+    -- would we do about it anyway?  Just ignoring it is much easier and
+    -- arguably at least as correct.
     nextIndel :: [[(Nucleotide,Qual)]] -> Int -> Int -> Int -> Int -> Int -> PrimChunks
     nextIndel ins del !pos !is !ic !io
         | is >= max_seq || ic >= max_cig = EndOfRead
@@ -201,7 +206,8 @@ type DamageModel = BamRaw           -- ^ the read itself
 
 -- | 'DamageModel' for undamaged DNA.  The likelihoods follow directly
 -- from the quality score.  This needs elaboration to see what to do
--- with amibiguity codes.
+-- with amibiguity codes (even though those haven't actually been
+-- observed in the wild).
 noDamage :: DamageModel
 noDamage _ _ b | b == nucA = DB 1 0 0 0
                | b == nucC = DB 0 1 0 0
@@ -219,7 +225,8 @@ noDamage _ _ b | b == nucA = DB 1 0 0 0
 -- Parameterization is stolen from @mapDamage 2.0@, for the most part.
 -- We have a deamination rate each for ss and ds dna and average
 -- overhang length parameters for both ends.  (Without UDG treatment,
--- those will be equal.  With UDG, those are much smaller and unequal.)
+-- those will be equal.  With UDG, those are much smaller and unequal,
+-- and in fact don't literally represent overhangs.)
 --
 -- L({A,C,G,T}|A) = {1,0,0,0}
 -- L({A,C,G,T}|C) = {0,1-p,0,p}
@@ -234,24 +241,24 @@ data SsDamageParameters = SSD { ssd_delta_ss :: !Double         -- deamination r
                               , ssd_prob3    :: !Double }       -- average overhang length at 3' end
 
 -- forward strand first, C->T only; reverse strand next, G->A instead
--- N sums over all others, horizontally(!)
+-- N averages over all others, horizontally(!)
 ssDamage :: SsDamageParameters -> DamageModel
-ssDamage SSD{..} r i b | fwd && b == nucA = DB 1   0   0   0
-                       | fwd && b == nucC = DB 0 (1-p) 0   0
-                       | fwd && b == nucG = DB 0   0   1   0
-                       | fwd && b == nucT = DB 0   p   0   1
-                       | fwd             = dbq 1 (1-p) 1 (1+p)
+ssDamage SSD{..} r i b | fwd && b == nucA = DB   1   0   0   0
+                       | fwd && b == nucC = DB   0 (1-p) 0   0
+                       | fwd && b == nucG = DB   0   0   1   0
+                       | fwd && b == nucT = DB   0   p   0   1
+                       | fwd              = dq   1 (1-p) 1 (1+p)
+
                        |        b == nucA = DB   1   0   p   0
                        |        b == nucC = DB   0   1   0   0
                        |        b == nucG = DB   0   0 (1-p) 0
                        |        b == nucT = DB   0   0   0   1
-                       | otherwise       = dbq (1+p) 1 (1-p) 1
+                       | otherwise        = dq (1+p) 1 (1-p) 1
   where
     fwd = not (br_isReversed r)
-    len = br_l_seq r
     p   = ssd_delta_ss * lam + ssd_delta_ds * (1-lam)
-    lam = 0.5 * (ssd_prob5 ^ (1+i) + ssd_prob3 ^ (len-i))
-    dbq x y z w = DB (0.25*x) (0.25*y) (0.25*z) (0.25*w)
+    lam = 0.5 * (ssd_prob5 ^ (1+i) + ssd_prob3 ^ (br_l_seq r - i))
+    dq x y z w = DB (0.25*x) (0.25*y) (0.25*z) (0.25*w)
 
 
 -- | 'DamageModel' for double stranded library.  We get C->T damage at
@@ -279,29 +286,30 @@ dsDamage DSD{..} r i b | b == nucA = DB    1     0     q     0
 
 -- | A variant call consists of a position, some measure of qualities,
 -- genotype likelihood values, and a representation of variants.  A note
--- about the 'vc_pl' values:  @VCF@ would normalize them so that the
+-- about the GL values:  @VCF@ would normalize them so that the
 -- smallest one becomes zero.  We do not do that here, since we might
 -- want to compare raw values for a model test.  We also store them in a
 -- 'Double' to make arithmetics easier.  Normalization is appropriate
--- when converting to @VCF@.  Also note that 'vc_pl' can be empty at the
--- stage where we collected variants, but did not do proper var calling.
+-- when converting to @VCF@.
 --
--- If 'vc_pl' is given, we follow the same order used in VCF:
+-- If GL is given, we follow the same order used in VCF:
 -- \"the ordering of genotypes for the likelihoods is given by:
 -- F(j/k) = (k*(k+1)/2)+j.  In other words, for biallelic sites the
 -- ordering is: AA,AB,BB; for triallelic sites the ordering is:
 -- AA,AB,BB,AC,BC,CC, etc.\"
 
-data VarCall a = VarCall { vc_refseq     :: !Refseq
-                         , vc_pos        :: !Int
+data VarCall a = VarCall { vc_refseq     :: !Refseq               -- coordinate
+                         , vc_pos        :: !Int                  -- coordinate
                          , vc_depth      :: !Int                  -- number of contributing reads
-                         , vc_mapq0      :: !Int                  -- number of contributing reads with MAPQ==0
+                         , vc_mapq0      :: !Int                  -- number of (non-)contributing reads with MAPQ==0
                          , vc_sum_mapq   :: !Int                  -- sum of map qualities of contributring reads
                          , vc_sum_mapq2  :: !Int                  -- sum of squared map qualities of contributing reads
-                         , vc_pl         :: !PL                   -- PL values in dB
-                         , vc_vars       :: a }                   -- variant calls, depending on context
+                         , vc_vars       :: a }                   -- variant calls & GL values in dB
+    deriving Show
 
-type PL = V.Vector ErrProb
+instance Functor VarCall where fmap f vc = vc { vc_vars = f (vc_vars vc) }
+
+type GL = V.Vector ErrProb
 type IndelVars = [( Int, [Nucleotide] )]    -- indel variant: number of deletions, inserted sequence
 
 -- Both types of piles carry along the map quality.  We'll only need it
@@ -310,7 +318,7 @@ type BasePile  = [( Qual, DamagedBase )]                   -- a list of encounte
 type IndelPile = [( Qual, (Int, [(Nucleotide, Qual)]) )]   -- a list of indel variants
 
 -- | Running pileup results in a series of piles.  A 'Pile' has the
--- basic statistics of a 'VarCall', but no PL values and a pristine list
+-- basic statistics of a 'VarCall', but no GL values and a pristine list
 -- of variants instead of a proper call.
 
 type Pile = Either (VarCall BasePile) (VarCall IndelPile)
@@ -469,6 +477,7 @@ pileup'' = do
     -- liftIO $ printf "pileup' @%d:%d, %d active, %d waiting\n"
         -- (unRefseq rs) po (-1::Int) (-1::Int)
 
+    -- feed in input as long as it starts at the current position
     fix $ \loop -> peek >>= mapM_ (\br ->
             when (br_rname br == rs && br_pos br == po) $ do
                 bump
@@ -491,7 +500,7 @@ pileup'' = do
     -- 'PrimChunks':  'Indel's contribute to an 'IndelPile', 'Seek's and
     -- deletions are pushed back to the /waiting/ queue, 'EndOfRead's are
     -- removed, and everything else is added to the fresh /active/ queue.
-    let pile0 = VarCall rs po 0 0 0 0 V.empty
+    let pile0 = VarCall rs po 0 0 0 0
     (fin_bp, fin_ip) <- consume_active (pile0 [], pile0 []) $
         \(!bpile, !ipile) (Base wt qs mq pchunks) ->
                 let put (Q q) x vc = vc { vc_depth     = vc_depth vc + 1
@@ -519,7 +528,9 @@ pileup'' = do
     unless (null              (vc_vars fin_bp)) $ yield $ Left  fin_bp
     unless (all uninteresting (vc_vars fin_ip)) $ yield $ Right fin_ip
 
-    -- Bump coordinate and loop.
+    -- Bump coordinate and loop.  (Note that the bump to the next
+    -- reference sequence is done implicitly, because we will run out of
+    -- reads and restart in 'pileup''.)
     upd_pos succ
     pileup'
 
@@ -557,16 +568,9 @@ dropMin (Node _ _ l r) = l `union` r
 
 -- ------------------------------------------------------------------------------------------------------------
 
-app_snp_call :: (obs -> PL) -> VarCall obs -> VarCall ()
-app_snp_call call vc = vc { vc_pl = call (vc_vars vc), vc_vars = () }
-
-app_call :: (obs -> (PL, vars)) -> VarCall obs -> VarCall vars
-app_call call vc = vc { vc_pl = pl, vc_vars = vars }
-  where (pl,vars) = call (vc_vars vc)
-
 -- | Simple indel calling.  We don't bother with it too much, so here's
 -- the gist:  We collect variants (simply different variants, details
--- don't matter), so @n@ variants give rise to (n+1)*n/2 PL values.
+-- don't matter), so @n@ variants give rise to (n+1)*n/2 GL values.
 -- (That's two out of @(n+1)@, the reference allele, represented here as
 -- no deletion and no insertion, is there, too.)  To assign these, we
 -- need a likelihood for an observed variant given an assumed genotype.
@@ -579,66 +583,84 @@ app_call call vc = vc { vc_pl = pl, vc_vars = vars }
 -- corresponds to the assumption that indel errors in sequencing are
 -- much less likely than mapping errors.  Since this hardly our
 -- priority, the approximations are declared good enough.
---
--- About the actual computation:  each of the PL values is the product
--- of the corresponding PL value for each input read.  The PL value for
--- an input read is the likehood of getting that read from a
 
-simple_indel_call :: Int -> IndelPile -> (PL, IndelVars)
+simple_indel_call :: Int -> IndelPile -> (GL, IndelVars)
 simple_indel_call ploidy vars = (simple_call ploidy mkpls vars, vars')
   where
     vars' = Set.toList . Set.fromList $ [ (d, map fst i) | (_q,(d,i)) <- vars ]
-    match = zipWith (\(n,qn) nr -> if n == nr then 0 else fromIntegral $ unQ qn)
+    match = zipWith (\(n,qn) nr -> if n == nr then EP 0 else qualToErrProb qn)
     mkpls (q,(d,i)) = let !q' = qualToErrProb q
                       in [ if d /= dr || length i /= length ir
-                           then q' else q' + toErrProb (sum (match i ir)) | (dr,ir) <- vars' ]
+                           then q' else q' + product (match i ir) | (dr,ir) <- vars' ]
 
 -- | Naive SNP call; essentially the GATK model.  We create a function
 -- that computes a likelihood for a given base, then hand over to simple
--- call.  Since everything is so straight forward. this works even in
+-- call.  Since everything is so straight forward, this works even in
 -- the face of damage.
 
-simple_snp_call :: Int -> BasePile -> PL
-simple_snp_call ploidy vars = simple_call ploidy mkpls vars
+simple_snp_call :: Int -> BasePile -> (GL,())
+simple_snp_call ploidy vars = (simple_call ploidy mkpls vars, ())
   where
-    mkpls (q, DB a c g t qq) = [ toErrProb $ pt*x + pe*s | x <- [a,c,g,t] ]
+    mkpls (q, DB a c g t qq) = [ toErrProb $ x + pe*(s-x) | x <- [a,c,g,t] ]
       where
-        !pe = errorProb q + errorProb qq
-        !pt = 1 - pe
-        !s  = sum [a,c,g,t] / 4
+        !p1 = errProbFromQual q
+        !p2 = errProbFromQual qq
+        !pe = p1 + p2 - p1*p2
+        !s  = (a+c+g+t) / 4
 
--- | Compute @PL@ values for the simple case.  The simple case is where
+-- | Compute @GL@ values for the simple case.  The simple case is where
 -- we sample 'ploidy' alleles with equal probability and assume that
 -- errors occur independently from each other.
 --
 -- The argument 'pls' is a function that computes the likelihood for
 -- getting the current read, for every variant assuming that variant was
 -- sampled.
+--
+-- NOTE, this may warrant specialization to diploidy and four alleles
+-- (common SNPs) and diploidy and two alleles (common indels).
 
-simple_call :: Int -> (a -> [ErrProb]) -> [a] -> PL
-simple_call ploidy pls = foldl1' (V.zipWith (+)) . map step
+simple_call :: Int -> (a -> [ErrProb]) -> [a] -> GL
+simple_call ploidy pls = foldl1' (V.zipWith (*)) . map step
   where
-    foldl1' _ [     ] = V.singleton 0
+    foldl1' _ [     ] = V.singleton 1
     foldl1' f (!a:as) = foldl' f a as
+
+    norm = toErrProb (fromIntegral ploidy) `raise` (-1)
 
     -- "For biallelic sites the ordering is: AA,AB,BB; for triallelic
     -- sites the ordering is: AA,AB,BB,AC,BC,CC, etc."
     --
     -- To get the order right, we reverse the list, recurse, and reverse
     -- the result again.
-    step = V.fromList . reverse . mk_pls ploidy . reverse . pls
+    step = V.fromList . map (* norm) . reverse . mk_pls ploidy . reverse . pls
 
+    -- Meh.  Pointless, but happens to be the unit.
     mk_pls 0  _ = return 0
+
+    -- Okay, we sample ONE allele.  Likelihood of the data is simply the
+    -- GL value that was passed to us.
+    mk_pls 1 ls = ls
+
+    -- We extend the genotype and sample another allele.
     mk_pls n ls = do ls'@(hd:_) <- tails ls
                      (+) hd <$> mk_pls (n-1) ls'
 
+
+raise :: ErrProb -> Double -> ErrProb
+raise (EP a) e = EP (a*e)
+
+
 smoke_test :: IO ()
 smoke_test =
-    decodeAnyBamFile "/mnt/scratch/udo/test.bam" >=> run $ \_hdr ->
-    joinI $ pileup noDamage $ mapStreamM_ call_and_print
+    decodeAnyBamFile "/mnt/datengrab/test.bam" >=> run $ \_hdr ->
+    -- joinI $ filterStream ((/=) (Q 0) . br_mapq) $
+    joinI $ pileup noDamage $
+    -- joinI $ takeStream 5 $ mapStreamM_ print
+    joinI $ filterStream ((> 0) . either vc_mapq0 vc_mapq0) $
+    joinI $ takeStream 5000 $ mapStreamM_ call_and_print
   where
-    call_and_print (Right ic) = put . showCall show_indels . app_call     (simple_indel_call 2) $ ic
-    call_and_print (Left  bc) = put . showCall show_bases  . app_snp_call (simple_snp_call   2) $ bc
+    call_and_print (Right ic) = put . showCall show_indels . fmap (simple_indel_call 2) $ ic
+    call_and_print (Left  bc) = put . showCall show_bases  . fmap (simple_snp_call   2) $ bc
 
     put f = putStr $ f "\n"
 
@@ -651,15 +673,16 @@ smoke_test =
     show_indel :: (Int, [Nucleotide]) -> String
     show_indel (d, ins) = shows ins $ '-' : show d
 
+    unwrap vc = vc_vars vc >>= \r -> return $ vc { vc_vars = r }
 
-showCall :: (a -> ShowS) -> VarCall a -> ShowS
+showCall :: (a -> ShowS) -> VarCall (GL,a) -> ShowS
 showCall f vc = shows (vc_refseq vc) . (:) ':' .
                 shows (vc_pos vc) . (:) '\t' .
-                f (vc_vars vc) . (++) "\tDP=" .
+                f (snd $ vc_vars vc) . (++) "\tDP=" .
                 shows (vc_depth vc) . (++) ":MQ0=" .
                 shows (vc_mapq0 vc) . (++) ":MAPQ=" .
                 shows mapq . (:) '\t' .
-                show_pl (vc_pl vc)
+                show_pl (fst $ vc_vars vc)
   where
     show_pl :: V.Vector ErrProb -> ShowS
     show_pl = (++) . intercalate "," . map show . V.toList
@@ -692,9 +715,9 @@ showCall f vc = shows (vc_refseq vc) . (:) ':' .
 --
 -- The take home message is that we model error dependency by having a
 -- more slowly growing exponent, that errors happening on different
--- strands are independent from each other, and that the combinatorial
--- constructions in both the Maq and the Samtools model do not seem to
--- be useful.
+-- strands are independent from each other (XXX!), and that the
+-- combinatorial constructions in both the Maq and the Samtools model do
+-- not seem to be useful.
 --
 -- We reboot using a simplified version.  Bases from pileup are sorted
 -- by quality.  For each base, we compute the likelihood under the
@@ -710,7 +733,7 @@ showCall f vc = shows (vc_refseq vc) . (:) ':' .
 -- fractional substitution errors, and the fraction is simply the
 -- contribution of the four bases to the likelihood above.
 
-maq_snp_call :: Int -> Double -> BasePile -> PL
+maq_snp_call :: Int -> Double -> BasePile -> GL
 maq_snp_call ploidy theta bases = undefined
   where
     bases' = sortBy (\(DB _ _ _ _ q1) (DB _ _ _ _ q2) -> compare q2 q1)

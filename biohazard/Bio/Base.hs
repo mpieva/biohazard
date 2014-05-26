@@ -6,7 +6,7 @@
 
 module Bio.Base(
     Nucleotide(..),
-    Qual(..), errorProb, fromErrorProb,
+    Qual(..), qualFromErrProb, errProbFromQual,
     ErrProb(..), toErrProb, fromErrProb, qualToErrProb,
 
     Word8,
@@ -49,6 +49,7 @@ import Data.Bits
 import Data.Char            ( isAlpha, isSpace, ord, toUpper )
 import Data.Word            ( Word8 )
 import Foreign.Storable     ( Storable(..) )
+import Numeric              ( showFFloat )
 import System.Directory     ( doesFileExist )
 import System.FilePath      ( (</>), isAbsolute, splitSearchPath )
 import System.Environment   ( getEnvironment )
@@ -88,13 +89,13 @@ newtype Qual = Q { unQ :: Word8 } deriving
     ( Eq, Ord, Storable, Bounded, VG.Vector VU.Vector, VM.MVector VU.MVector, VU.Unbox )
 
 instance Show Qual where
-    showsPrec p (Q q) = (:) 'Q' . showsPrec p q
+    showsPrec p (Q q) = (:) 'q' . showsPrec p q
 
-fromErrorProb :: (Floating a, RealFrac a) => a -> Qual
-fromErrorProb a = Q $ round (-10 * log a / log 10)
+qualFromErrProb :: (Floating a, RealFrac a) => a -> Qual
+qualFromErrProb a = Q $ round (-10 * log a / log 10)
 
-errorProb :: Qual -> Double
-errorProb (Q q) = 10 ** (-(fromIntegral q) / 10)
+errProbFromQual :: Qual -> Double
+errProbFromQual (Q q) = 10 ** (-(fromIntegral q) / 10)
 
 -- | A positive 'Double' value stored in log domain.  The scale is the
 -- same \"Phred\" scale used for 'Qual' values, but here the semantics
@@ -104,7 +105,7 @@ newtype ErrProb = EP { unEP :: Double } deriving
     ( Eq, Storable, VG.Vector VU.Vector, VM.MVector VU.MVector, VU.Unbox )
 
 instance Show ErrProb where
-    showsPrec p (EP q) = (:) 'Q' . showsPrec p q
+    showsPrec p (EP q) = (:) 'q' . showFFloat (Just 1) q
 
 instance Ord ErrProb where
     EP a `compare` EP b = b `compare` a

@@ -1,8 +1,12 @@
+biohazard/Codec/Bgzf.hs
+
 dist
 tags
+
 cabal-dev
+.virthualenv
+
 *.o
 *.hi
 *.chi
 *.chs.h
-.virthualenv
