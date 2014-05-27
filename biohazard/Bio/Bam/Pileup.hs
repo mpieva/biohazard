@@ -8,18 +8,22 @@ import Text.Printf
 import Bio.Base
 import Bio.Bam.Header
 import Bio.Bam.Raw
+import Bio.Bam.Rec
 import Bio.Iteratee
 
 import Control.Applicative
 import Control.Monad hiding ( mapM_ )
 import Control.Monad.Fix ( fix )
+import Data.Bits ( testBit )
 import Data.Foldable hiding ( sum, product )
 import Data.List ( tails, intercalate, sortBy )
+import Data.Ord
 import Numeric ( showFFloat )
 
 import qualified Data.ByteString        as B
 import qualified Data.Vector.Unboxed    as V
 import qualified Data.Set               as Set
+import qualified Data.Map               as M
 
 import Prelude hiding ( foldr, foldr1, concat, mapM_, all )
 
@@ -74,6 +78,13 @@ import Prelude hiding ( foldr, foldr1, concat, mapM_, all )
 --
 -- So, either way, we need something like "pileup", where indel variants
 -- are collected as they are (any length), while matches are piled up.
+--
+-- Regarding output, we certainly don't want to write VCF or BCF.  (No
+-- VCF because it's ugly, no BCF, because the tool support is
+-- non-existent.)  It will definitely be something binary.  For the GL
+-- values, small floating point formats may make sense: half-precision floating point's
+-- representable range would be 6.1E-5 to 6.5E+5, 0.4.4 minifloat goes
+-- from 0 to 63488.
 
 
 -- *TODO*
@@ -103,7 +114,7 @@ instance Show DamagedBase where
 -- followed by some indel, and all those indels are combined into a
 -- single insertion and a single deletion.
 data PrimChunks = Seek !Int !PrimBase                           -- ^ skip to position (at start or after N operation)
-                | Indel !Int [(Nucleotide, Qual)] !PrimBase     -- ^ observed deletion and insertion between two bases
+                | Indel !Int [DamagedBase] !PrimBase            -- ^ observed deletion and insertion between two bases
                 | EndOfRead                                     -- ^ nothing anymore
   deriving Show
 
@@ -177,7 +188,7 @@ decompose dm br
     -- isn't valid in the middle of a read (H and S), but then what
     -- would we do about it anyway?  Just ignoring it is much easier and
     -- arguably at least as correct.
-    nextIndel :: [[(Nucleotide,Qual)]] -> Int -> Int -> Int -> Int -> Int -> PrimChunks
+    nextIndel :: [[DamagedBase]] -> Int -> Int -> Int -> Int -> Int -> PrimChunks
     nextIndel ins del !pos !is !ic !io
         | is >= max_seq || ic >= max_cig = EndOfRead
         | otherwise = case br_cigar_at br ic of
@@ -191,7 +202,7 @@ decompose dm br
             (Nop,cl) ->             firstBase               (pos+cl) is  (ic+1)     -- ends up generating a 'Seek'
       where
         out    = concat $ reverse ins
-        isq cl = [ get_seq (,) i | i <- [is..is+cl-1] ] : ins
+        isq cl = [ get_seq (dm br i) i | i <- [is..is+cl-1] ] : ins
 
 
 -- | A 'DamageModel' is a function that gives likelihoods for all
@@ -237,28 +248,34 @@ noDamage _ _ b | b == nucA = DB 1 0 0 0
 
 data SsDamageParameters = SSD { ssd_delta_ss :: !Double         -- deamination rate in ss DNA
                               , ssd_delta_ds :: !Double         -- deamination rate in ds DNA
-                              , ssd_prob5    :: !Double         -- average overhang length at 5' end
-                              , ssd_prob3    :: !Double }       -- average overhang length at 3' end
+                              , ssd_prob5    :: !Double         -- 1/average overhang length at 5' end
+                              , ssd_prob3    :: !Double }       -- 1/average overhang length at 3' end
 
--- forward strand first, C->T only; reverse strand next, G->A instead
--- N averages over all others, horizontally(!)
+-- Forward strand first, C->T only; reverse strand next, G->A instead
+-- N averages over all others, horizontally(!).  Distance from end
+-- depends on strand, too :(
 ssDamage :: SsDamageParameters -> DamageModel
-ssDamage SSD{..} r i b | fwd && b == nucA = DB   1   0   0   0
-                       | fwd && b == nucC = DB   0 (1-p) 0   0
-                       | fwd && b == nucG = DB   0   0   1   0
-                       | fwd && b == nucT = DB   0   p   0   1
-                       | fwd              = dq   1 (1-p) 1 (1+p)
-
-                       |        b == nucA = DB   1   0   p   0
-                       |        b == nucC = DB   0   1   0   0
-                       |        b == nucG = DB   0   0 (1-p) 0
-                       |        b == nucT = DB   0   0   0   1
-                       | otherwise        = dq (1+p) 1 (1-p) 1
+ssDamage SSD{..} r i b = if br_isReversed r then ssd_rev else ssd_fwd
   where
-    fwd = not (br_isReversed r)
-    p   = ssd_delta_ss * lam + ssd_delta_ds * (1-lam)
-    lam = 0.5 * (ssd_prob5 ^ (1+i) + ssd_prob3 ^ (br_l_seq r - i))
     dq x y z w = DB (0.25*x) (0.25*y) (0.25*z) (0.25*w)
+
+    ssd_fwd | b == nucA = DB   1   0   0   0
+            | b == nucC = DB   0 (1-p) 0   0
+            | b == nucG = DB   0   0   1   0
+            | b == nucT = DB   0   p   0   1
+            | otherwise = dq   1 (1-p) 1 (1+p)
+      where
+        p   = ssd_delta_ss * lam + ssd_delta_ds * (1-lam)
+        lam = 0.5 * (ssd_prob5 ^ (1+i) + ssd_prob3 ^ (br_l_seq r - i))
+
+    ssd_rev | b == nucA = DB   1   0   p   0
+            | b == nucC = DB   0   1   0   0
+            | b == nucG = DB   0   0 (1-p) 0
+            | b == nucT = DB   0   0   0   1
+            | otherwise = dq (1+p) 1 (1-p) 1
+      where
+        p   = ssd_delta_ss * lam + ssd_delta_ds * (1-lam)
+        lam = 0.5 * (ssd_prob3 ^ (1+i) + ssd_prob5 ^ (br_l_seq r - i))
 
 
 -- | 'DamageModel' for double stranded library.  We get C->T damage at
@@ -267,7 +284,7 @@ ssDamage SSD{..} r i b | fwd && b == nucA = DB   1   0   0   0
 
 data DsDamageParameters = DSD { dsd_delta_ss :: !Double         -- deamination rate in ss DNA
                               , dsd_delta_ds :: !Double         -- deamination rate in ds DNA
-                              , dsd_prob     :: !Double }       -- average overhang length
+                              , dsd_prob     :: !Double }       -- 1/average overhang length
 
 dsDamage :: DsDamageParameters -> DamageModel
 dsDamage DSD{..} r i b | b == nucA = DB    1     0     q     0
@@ -279,8 +296,8 @@ dsDamage DSD{..} r i b | b == nucA = DB    1     0     q     0
     len  = br_l_seq r
     p    = dsd_delta_ss * lam5 + dsd_delta_ds * (1-lam5)
     q    = dsd_delta_ss * lam3 + dsd_delta_ds * (1-lam3)
-    lam5 = 0.5 * (dsd_prob ^ (1+i))
-    lam3 = 0.5 * (dsd_prob ^ (len-i))
+    lam5 = dsd_prob ^ (1+i)
+    lam3 = dsd_prob ^ (len-i)
     dbq x y z w = DB (0.25*x) (0.25*y) (0.25*z) (0.25*w)
 
 
@@ -314,8 +331,8 @@ type IndelVars = [( Int, [Nucleotide] )]    -- indel variant: number of deletion
 
 -- Both types of piles carry along the map quality.  We'll only need it
 -- in the case of Indels.
-type BasePile  = [( Qual, DamagedBase )]                   -- a list of encountered bases
-type IndelPile = [( Qual, (Int, [(Nucleotide, Qual)]) )]   -- a list of indel variants
+type BasePile  = [( Qual,        DamagedBase   )]   -- a list of encountered bases
+type IndelPile = [( Qual, (Int, [DamagedBase]) )]   -- a list of indel variants
 
 -- | Running pileup results in a series of piles.  A 'Pile' has the
 -- basic statistics of a 'VarCall', but no GL values and a pristine list
@@ -587,8 +604,16 @@ dropMin (Node _ _ l r) = l `union` r
 simple_indel_call :: Int -> IndelPile -> (GL, IndelVars)
 simple_indel_call ploidy vars = (simple_call ploidy mkpls vars, vars')
   where
-    vars' = Set.toList . Set.fromList $ [ (d, map fst i) | (_q,(d,i)) <- vars ]
-    match = zipWith (\(n,qn) nr -> if n == nr then EP 0 else qualToErrProb qn)
+    vars' = Set.toList . Set.fromList $ [ (d, map call i) | (_q,(d,i)) <- vars ]
+    call (DB a c g t _) = snd $ maximumBy (comparing fst) [(a,nucA), (c,nucC), (g,nucG), (t, nucT)]
+
+    match = zipWith $ \ (DB a c g t q) (N n) -> let p = sum [ if testBit n 0 then a else 0
+                                                            , if testBit n 1 then c else 0
+                                                            , if testBit n 2 then g else 0
+                                                            , if testBit n 3 then t else 0 ]
+                                                    p' = errProbFromQual q
+                                                in toErrProb $ p + p' - p * p'
+
     mkpls (q,(d,i)) = let !q' = qualToErrProb q
                       in [ if d /= dr || length i /= length ir
                            then q' else q' + product (match i ir) | (dr,ir) <- vars' ]
@@ -652,11 +677,13 @@ raise (EP a) e = EP (a*e)
 
 smoke_test :: IO ()
 smoke_test =
-    decodeAnyBamFile "/mnt/datengrab/test.bam" >=> run $ \_hdr ->
+    -- decodeAnyBamFile "/mnt/datengrab/test.bam" >=> run $ \_hdr ->
+    enumPure1Chunk crap_data >=> run $
     -- joinI $ filterStream ((/=) (Q 0) . br_mapq) $
-    joinI $ pileup noDamage $
+    -- joinI $ pileup (dsDamage $ DSD 0.9 0.02 0.3) $ -- noDamage $
+    joinI $ pileup (ssDamage $ SSD 0.9 0.02 0.3 0.5) $ -- noDamage $
     -- joinI $ takeStream 5 $ mapStreamM_ print
-    joinI $ filterStream ((> 0) . either vc_mapq0 vc_mapq0) $
+    -- joinI $ filterStream ((> 0) . either vc_mapq0 vc_mapq0) $
     joinI $ takeStream 5000 $ mapStreamM_ call_and_print
   where
     call_and_print (Right ic) = put . showCall show_indels . fmap (simple_indel_call 2) $ ic
@@ -731,7 +758,13 @@ showCall f vc = shows (vc_refseq vc) . (:) ':' .
 -- how often we made the same kind of error, which is a matrix with 16
 -- entries (4 of which are not really errors).  For every base, we count
 -- fractional substitution errors, and the fraction is simply the
--- contribution of the four bases to the likelihood above.
+-- contribution of the four bases to the likelihood above.  The BSNP
+-- paper suggests raising error probabilities to decreasing powers,
+-- which is the same as multiplying the quality score by smaller and
+-- smaller numbers.  IOW, to compute the error probability when making
+-- the same error for the k-th time, instead of quality score q we use
+-- q * \theta ** (k-1)
+
 
 maq_snp_call :: Int -> Double -> BasePile -> GL
 maq_snp_call ploidy theta bases = undefined
@@ -748,3 +781,20 @@ maq_snp_call ploidy theta bases = undefined
 -- (\phi + q ** (\theta (k-1)))), we can simply set \phi to zero.
 --
 -- Hm.  Probably not completely correct.  :(
+
+
+-- 0.4.4 format minifloat
+{- mini2float :: Int -> Double
+mini2float w |  e == 0   = fromIntegral w / 8.0
+             | otherwise = fromIntegral (m+16) * 2 ^^ (e-4)
+
+  where
+    m = w .&. 0xF
+    e = w `shiftR` 4 -}
+
+crap_data :: [BamRaw]
+crap_data = map encodeBamEntry [br nucC, br nucT]
+  where
+    br n = BamRec B.empty 0 (Refseq 0) 0 37 (Cigar [(Mat,50)])
+                invalidRefseq invalidPos 0
+                (V.replicate 50 n) (B.replicate 50 30) M.empty 0

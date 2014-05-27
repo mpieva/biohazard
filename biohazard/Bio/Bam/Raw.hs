@@ -326,6 +326,10 @@ br_l_seq (BamRaw _ raw) = getInt raw 16
 getInt16 :: (Num a, Bits a) => S.ByteString -> Int -> a
 getInt16 s o = fromIntegral (S.unsafeIndex s o) .|. fromIntegral (S.unsafeIndex s $ o+1) `shiftL`  8
 
+-- | Load an unaligned, little-endian int.  This is probably quite slow
+-- and unnecessary on some platforms.  On i386, ix86_64 and powerPC, we
+-- could cast the pointer and do a direct load.  Other may have special
+-- primitives.  Worth investigating?
 {-# INLINE getInt #-}
 getInt :: (Num a, Bits a) => S.ByteString -> Int -> a
 getInt s o = fromIntegral (S.unsafeIndex s $ o+0)             .|. fromIntegral (S.unsafeIndex s $ o+1) `shiftL`  8 .|.

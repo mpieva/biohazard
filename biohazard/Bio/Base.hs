@@ -105,7 +105,7 @@ newtype ErrProb = EP { unEP :: Double } deriving
     ( Eq, Storable, VG.Vector VU.Vector, VM.MVector VU.MVector, VU.Unbox )
 
 instance Show ErrProb where
-    showsPrec p (EP q) = (:) 'q' . showFFloat (Just 1) q
+    showsPrec _ (EP q) = (:) 'q' . showFFloat (Just 1) q
 
 instance Ord ErrProb where
     EP a `compare` EP b = b `compare` a
