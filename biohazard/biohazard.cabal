@@ -28,7 +28,7 @@ source-repository head
 source-repository this
   type:     git
   location: git://github.com/udo-stenzel/biohazard.git
-  tag:      0.5.5
+  tag:      0.5.6
 
 
 Library
@@ -67,7 +67,6 @@ Library
                        iteratee == 0.8.9.*,
                        ListLike == 3.*,
                        MonadCatchIO-transformers == 0.3.*,
-                       -- parallel,
                        random == 1.0.*,
                        stm == 2.4.*,
                        transformers == 0.3.*,
