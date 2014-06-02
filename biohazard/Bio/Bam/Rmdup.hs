@@ -579,9 +579,10 @@ normalizeTo nm l br = mutateBamRaw br $ do setPos (br_pos br `mod` l)
                                            setBin (br_pos br `mod` l) (br_aln_length br)
                                            when dups_are_fine $ setMapq 37 >> removeExt "XA"
   where
-    dups_are_fine = br_mapq br == Q 0 && all_match_XA (br_extAsString "XA" br)
-
-    all_match_XA s = case T.split ';' s of [xa1, xa2] | T.null xa2 -> one_match_XA xa1 ; _ -> False
+    dups_are_fine  = all_match_XA (br_extAsString "XA" br)
+    all_match_XA s = case T.split ';' s of [xa1, xa2] | T.null xa2 -> one_match_XA xa1
+                                           [xa1]                   -> one_match_XA xa1
+                                           _                       -> False
     one_match_XA s = case T.split ',' s of (sq:pos:_) | sq == nm   -> pos_match_XA pos ; _ -> False
     pos_match_XA s = case T.readInt s   of Just (p,z) | T.null z   -> int_match_XA p ;   _ -> False
     int_match_XA p | p >= 0    =  (p-1) `mod` l == br_pos br `mod` l && not (br_isReversed br)
