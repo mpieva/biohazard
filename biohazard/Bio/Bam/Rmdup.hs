@@ -606,8 +606,8 @@ wrapTo l br = if overhangs then do_wrap else [br]
 -- don't).  The parts that would be skipped if we were splitting lists
 -- are replaced by soft masks.
 split_ecig :: Int -> ECig -> (ECig, ECig)
-split_ecig _ Empty = (Empty,      Empty)
-split_ecig 0   ecs = (mask_all ecs, ecs)
+split_ecig _ Empty = (Empty,        Empty)
+split_ecig 0   ecs = (mask_all ecs,   ecs)
 
 split_ecig i (Ins' n ecs) = case split_ecig i ecs of (u,v) -> (Ins' n u, SMa' n v)
 split_ecig i (SMa' n ecs) = case split_ecig i ecs of (u,v) -> (SMa' n u, SMa' n v)
@@ -616,7 +616,7 @@ split_ecig i (Pad' n ecs) = case split_ecig i ecs of (u,v) -> (Pad' n u,        
 
 split_ecig i (Mat' n ecs)
     | i >= n    = case split_ecig (i-n) ecs of (u,v) -> (Mat' n u, SMa' n v)
-    | otherwise = (Mat' i $ SMa' (n-1) $ mask_all ecs, SMa' i $ Mat' (n-i) ecs)
+    | otherwise = (Mat' i $ SMa' (n-i) $ mask_all ecs, SMa' i $ Mat' (n-i) ecs)
 
 split_ecig i (Rep' x ecs) = case split_ecig (i-1) ecs of (u,v) -> (Rep' x u, SMa' 1 v)
 split_ecig i (Del' x ecs) = case split_ecig (i-1) ecs of (u,v) -> (Del' x u,        v)
