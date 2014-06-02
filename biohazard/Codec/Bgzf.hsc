@@ -236,11 +236,11 @@ decompress1 off ss crc usize = do
 -- | Compress a collection of strings into a single BGZF block.
 --
 -- Okay, performance was lacking... let's do it again, in a more direct
--- style.  We build out block manually.  First check if the compressed
+-- style.  We build our block manually.  First check if the compressed
 -- data is going to fit---if not, that's a bug.  Then alloc a buffer,
--- fill with adummy header, alloc a ZStream, compress the pieces we were
--- handed one at a time.  Calculate CRC32, finalize header, construct a
--- byte string, return it.
+-- fill with a dummy header, alloc a ZStream, compress the pieces we
+-- were handed one at a time.  Calculate CRC32, finalize header,
+-- construct a byte string, return it.
 --
 -- We could probably get away with @unsafePerformIO@'ing everything in
 -- here, but then again, we only do this when we're writing output
@@ -413,7 +413,11 @@ concatMapStreamIO np f = eneeCheckIfDonePass (go emptyQ)
 bgzfBlocks :: Monad m => Enumeratee S.ByteString [S.ByteString] m a
 bgzfBlocks = eneeCheckIfDone (liftI . to_blocks 0 [])
   where
-    to_blocks _alen acc k (EOF mx) = idone (k $ Chunk acc) (EOF mx)
+    -- terminate by sending the last block and then an empty block,
+    -- which becomes the EOF marker
+    to_blocks _alen acc k (EOF mx) =
+        lift (enumPure1Chunk [S.empty] (k $ Chunk acc)) >>= flip idone (EOF mx)
+
     to_blocks  alen acc k (Chunk c)
         -- if it it empty, we flush,
         -- else if it fits, we accumulate,
