@@ -5,6 +5,7 @@ import Bio.Util ( showNum, showOOM, estimateComplexity )
 import Control.Monad
 import Control.Monad.ST ( runST )
 import Data.Bits
+import Data.Foldable ( toList )
 import Data.List ( intercalate )
 import Data.Maybe
 import Data.Monoid ( mempty )
@@ -18,7 +19,7 @@ import System.Environment ( getArgs, getProgName )
 import System.Exit
 import System.IO
 
-import qualified Data.ByteString        as S
+import qualified Data.ByteString.Char8  as S
 import qualified Data.HashMap.Strict    as M
 import qualified Data.IntMap.Strict     as IM
 import qualified Data.Iteratee          as I
@@ -109,21 +110,20 @@ options = [
 
     add_circular a c = case break ((==) ':') a of
         (nm,':':r) -> case reads r of
-            [(l,[])] | l > 0 -> return $ c { circulars = add_circular' nm l (circulars c) }
+            [(l,[])] | l > 0 -> return $ c { circulars = add_circular' (S.pack nm) l (circulars c) }
             _ -> fail $ "couldn't parse length " ++ show r ++ " for " ++ show nm
         _ -> fail $ "couldn't parse \"circular\" argument " ++ show a
 
     add_circular' nm l io refs = do
         (m1, refs') <- io refs
-        case Z.findIndexL ((==) nm . unpackSeqid . sq_name) refs' of
-            Just k  -> case refs' `Z.index` k of
-                a | sq_length a >= l -> let m2     = IM.insert k (sq_name a,l) m1
-                                            refs'' = Z.update k (a { sq_length = l }) refs'
-                                        in return (m2, refs'')
-                  | otherwise -> fail $ "cannot wrap " ++ show nm ++ " to " ++ show l
-                                     ++ ", which is more than the original " ++ show (sq_length a)
-            Nothing -> fail $ "target sequence " ++ show nm ++ " not found"
-
+        case filter (S.isPrefixOf nm . sq_name . snd) $ zip [0..] $ toList refs' of
+            [(k,a)] | sq_length a >= l -> let m2     = IM.insert k (sq_name a,l) m1
+                                              refs'' = Z.update k (a { sq_length = l }) refs'
+                                          in return (m2, refs'')
+                    | otherwise -> fail $ "cannot wrap " ++ show nm ++ " to " ++ show l
+                                       ++ ", which is more than the original " ++ show (sq_length a)
+            [] -> fail $ "no match for target sequence " ++ show nm
+            _ -> fail $ "target sequence " ++ show nm ++ " is ambiguous"
 
 vrsn :: IO a
 vrsn = do pn <- getProgName

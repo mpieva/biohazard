@@ -70,6 +70,8 @@ Specify that the reference sequence
 .I CHR
 is circular and has length 
 .IR LEN .
+A unique prefix of the sequence name is sufficient.
+
 The effect is that reads that align to one or more position that is
 duplicated in the reference are normalized to a small start coordinate
 and have their mapping quality fixed where possible.  After removal of
