@@ -21,7 +21,7 @@ import System.IO
 
 import qualified Data.ByteString.Char8  as S
 import qualified Data.HashMap.Strict    as M
-import qualified Data.IntMap.Strict     as IM
+import qualified Data.IntMap            as IM
 import qualified Data.Iteratee          as I
 import qualified Data.Sequence          as Z
 import qualified Data.Vector            as V
