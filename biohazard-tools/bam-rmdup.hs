@@ -3,10 +3,13 @@ import Bio.Bam
 import Bio.Base
 import Bio.Util ( showNum, showOOM, estimateComplexity )
 import Control.Monad
+import Control.Monad.ST ( runST )
 import Data.Bits
 import Data.List ( intercalate )
 import Data.Maybe
 import Data.Monoid ( mempty )
+import Data.Ord ( comparing )
+import Data.Vector.Algorithms.Intro ( sortBy )
 import Data.Version ( showVersion )
 import Numeric ( showFFloat )
 import Paths_biohazard_tools ( version )
@@ -15,9 +18,12 @@ import System.Environment ( getArgs, getProgName )
 import System.Exit
 import System.IO
 
-import qualified Data.ByteString    as S
-import qualified Data.Map           as M
-import qualified Data.Iteratee      as I
+import qualified Data.ByteString        as S
+import qualified Data.HashMap.Strict    as M
+import qualified Data.IntMap.Strict     as IM
+import qualified Data.Iteratee          as I
+import qualified Data.Sequence          as Z
+import qualified Data.Vector            as V
 
 data Conf = Conf {
     output :: Maybe ((BamRaw -> Seqid) -> BamMeta -> Iteratee [BamRaw] IO ()),
@@ -29,10 +35,11 @@ data Conf = Conf {
     keep_improper :: Bool,
     transform :: BamRaw -> Maybe BamRaw,
     min_len :: Int,
-    get_label :: M.Map Seqid Seqid -> BamRaw -> Seqid,
+    get_label :: M.HashMap Seqid Seqid -> BamRaw -> Seqid,
     putResult :: String -> IO (),
     debug :: String -> IO (),
-    which :: Which }
+    which :: Which,
+    circulars :: Refs -> IO (IM.IntMap (Seqid,Int), Refs) }
 
 -- | Which reference sequences to scan
 data Which = All | Some Refseq Refseq | Unaln deriving Show
@@ -50,13 +57,15 @@ defaults = Conf { output = Nothing
                 , get_label = get_library
                 , putResult = putStr
                 , debug = \_ -> return ()
-                , which = All }
+                , which = All
+                , circulars = \rs -> return (IM.empty, rs) }
 
 options :: [OptDescr (Conf -> IO Conf)]
 options = [
     Option  "o" ["output"]         (ReqArg set_output "FILE") "Write to FILE (default: no output, count only)",
     Option  "O" ["output-lib"]     (ReqArg set_lib_out "PAT") "Write each lib to file named following PAT",
     Option  [ ] ["debug"]          (NoArg  set_debug_out)     "Write textual debugging output",
+    Option  "z" ["circular"]       (ReqArg add_circular "CHR:LEN") "Refseq CHR is circular with length LEN",
     Option  "R" ["refseq"]         (ReqArg set_range "RANGE") "Read only range of reference sequences",
     Option  "p" ["improper-pairs"] (NoArg  set_improper)      "Include improper pairs",
     Option  "u" ["unaligned"]      (NoArg  set_unaligned)     "Include unaligned reads and pairs",
@@ -98,6 +107,24 @@ options = [
                                  return $ c { which = Some (Refseq $ x-1) (Refseq $ y-1) }
                 _ -> fail $ "parse error in " ++ show a
 
+    add_circular a c = case break ((==) ':') a of
+        (nm,':':r) -> case reads r of
+            [(l,[])] | l > 0 -> return $ c { circulars = add_circular' nm l (circulars c) }
+            _ -> fail $ "couldn't parse length " ++ show r ++ " for " ++ show nm
+        _ -> fail $ "couldn't parse \"circular\" argument " ++ show a
+
+    add_circular' nm l io refs = do
+        (m1, refs') <- io refs
+        case Z.findIndexL ((==) nm . unpackSeqid . sq_name) refs' of
+            Just k  -> case refs' `Z.index` k of
+                a | sq_length a >= l -> let m2     = IM.insert k (sq_name a,l) m1
+                                            refs'' = Z.update k (a { sq_length = l }) refs'
+                                        in return (m2, refs'')
+                  | otherwise -> fail $ "cannot wrap " ++ show nm ++ " to " ++ show l
+                                     ++ ", which is more than the original " ++ show (sq_length a)
+            Nothing -> fail $ "target sequence " ++ show nm ++ " not found"
+
+
 vrsn :: IO a
 vrsn = do pn <- getProgName
           hPutStrLn stderr $ pn ++ ", version " ++ showVersion version
@@ -135,11 +162,11 @@ cheap_collapse'  True  = cheap_collapse_keep
 -- If no RG is present, the empty string is returned.  This serves as
 -- fall-back.
 
-get_library, get_no_library :: M.Map Seqid Seqid -> BamRaw -> Seqid
-get_library  tbl br = M.findWithDefault rg rg tbl where rg = br_extAsString "RG" br
+get_library, get_no_library :: M.HashMap Seqid Seqid -> BamRaw -> Seqid
+get_library  tbl br = M.lookupDefault rg rg tbl where rg = br_extAsString "RG" br
 get_no_library _  _ = S.empty
 
-mk_rg_tbl :: BamMeta -> M.Map Seqid Seqid
+mk_rg_tbl :: BamMeta -> M.HashMap Seqid Seqid
 mk_rg_tbl hdr = M.fromList
     [ (rg_id, rg_lb)
     | ('R','G',fields) <- meta_other_shit hdr
@@ -163,6 +190,7 @@ main = do
 
     add_pg <- addPG $ Just version
     (counts, ()) <- mergeInputRanges which files >=> run $ \hdr -> do
+       (circtable, refs') <- liftIO $ circulars (meta_refs hdr)
        let tbl = mk_rg_tbl hdr
        unless (M.null tbl) $ liftIO $ do
                 debug "mapping of read groups to libraries:\n"
@@ -173,20 +201,22 @@ main = do
                      filterStream (\br -> (keep_unaligned || is_aligned br) &&
                                           (keep_improper || is_proper br) &&
                                           eff_len br >= min_len) ><>
-                     progress debug (meta_refs hdr)
+                     progress debug refs'
 
-       let (co, ou) = case output of Nothing -> (cheap_collapse', \_ _ -> skipToEof)
-                                     Just  o -> (collapse, o)
+       let (co, ou) = case output of Nothing -> (cheap_collapse', skipToEof)
+                                     Just  o -> (collapse, joinI $ wrapSortWith circtable $
+                                                           o (get_label tbl) (add_pg hdr { meta_refs = refs' }))
 
        ou' <- takeWhileE is_halfway_aligned ><> filters ><>
+              normalizeSortWith circtable ><>
               rmdup (get_label tbl) strand_preserved (co keep_all) $
-              count_all (get_label tbl) `I.zip` ou (get_label tbl) (add_pg hdr)
+              count_all (get_label tbl) `I.zip` ou
 
        liftIO $ debug "rmdup done; copying junk\n"
 
        case which of
-            Unaln              -> joinI $ filters $ ou'
-            _ | keep_unaligned -> joinI $ filters $ ou'
+            Unaln              -> joinI $ filters ou'
+            _ | keep_unaligned -> joinI $ filters ou'
             _                  -> lift (run ou')
 
     putResult . unlines $
@@ -214,12 +244,12 @@ do_report lbl Counts{..} = intercalate "\t" fs
         rate        = 100 * fromIntegral tout / fromIntegral tin :: Double
 
 
-count_all :: (BamRaw -> Seqid) -> Iteratee [BamRaw] m (M.Map Seqid Counts)
+count_all :: (BamRaw -> Seqid) -> Iteratee [BamRaw] m (M.HashMap Seqid Counts)
 count_all lbl = I.foldl' plus M.empty
   where
     plus m br = M.insert (lbl br) cs m
       where
-        !cs = plus1 (M.findWithDefault (Counts 0 0 0 0) (lbl br) m) br
+        !cs = plus1 (M.lookupDefault (Counts 0 0 0 0) (lbl br) m) br
 
     plus1 (Counts ti to gs gt) br = Counts ti' to' gs' gt'
       where
@@ -299,14 +329,13 @@ decodeWithIndex enum fp k0 = do
             enum idx $ hdr >>= k0
 
 
--- writeLibBamFiles :: MonadCatchIO m => FilePath -> (BamRaw -> Seqid) -> BamMeta -> Iteratee [BamRaw] m ()
-writeLibBamFiles :: FilePath -> (BamRaw -> Seqid) -> BamMeta -> Iteratee [BamRaw] IO ()
+writeLibBamFiles :: MonadCatchIO m => FilePath -> (BamRaw -> Seqid) -> BamMeta -> Iteratee [BamRaw] m ()
 writeLibBamFiles fp lbl hdr = tryHead >>= loop M.empty
   where
     loop m  Nothing  = liftIO . mapM_ run $ M.elems m
     loop m (Just br) = do
         let !l = lbl br
-        let !it = M.findWithDefault (writeRawBamFile (fp `subst` l) hdr) l m
+        let !it = M.lookupDefault (writeRawBamFile (fp `subst` l) hdr) l m
         it' <- liftIO $ enumPure1Chunk [br] it
         let !m' = M.insert l it' m
         tryHead >>= loop m'
@@ -335,3 +364,37 @@ clean_multi_flags b = return $ if br_extAsInt 1 "HI" b /= 1 then Nothing else Ju
   where
     b' = mutateBamRaw b $ mapM_ removeExt ["HI","IH","NH"]
 
+
+-- Given a map from reference sequences to arguments, extract those
+-- groups as list, apply a function to the argument and the list, pass
+-- the result on.  Absent groups are passed on as they are.  Note that
+-- ordering within groups is messed up (it doesn't matter here).
+mapAtGroups :: Monad m => IM.IntMap a -> (a -> [BamRaw] -> [BamRaw]) -> Enumeratee [BamRaw] [BamRaw] m b
+mapAtGroups m f = eneeCheckIfDonePass no_group
+  where
+    no_group k (Just e) = idone (liftI k) $ EOF (Just e)
+    no_group k Nothing  = tryHead >>= maybe (idone (liftI k) $ EOF Nothing) (\a -> no_group_1 a k Nothing)
+
+    no_group_1 _ k (Just e) = idone (liftI k) $ EOF (Just e)
+    no_group_1 a k Nothing  = case IM.lookup (br_rname_int a) m of
+            Nothing  -> eneeCheckIfDonePass no_group . k $ Chunk [a]
+            Just arg -> cont_group (br_rname a) arg [a] k Nothing
+
+    cont_group rn arg acc k (Just e) = idone (liftI k) $ EOF (Just e)
+    cont_group rn arg acc k Nothing = tryHead >>= maybe flush_eof check1
+      where
+        flush_eof  = idone (k $ Chunk $ f arg acc) (EOF Nothing)
+        flush_go a = eneeCheckIfDonePass (no_group_1 a) . k . Chunk $ f arg acc
+        check1 a | br_rname a == rn = cont_group rn arg (a:acc) k Nothing
+                 | otherwise        = flush_go a
+
+    br_rname_int = fromIntegral . unRefseq . br_rname
+
+normalizeSortWith :: Monad m => IM.IntMap (Seqid, Int) -> Enumeratee [BamRaw] [BamRaw] m a
+normalizeSortWith m = mapAtGroups m $ \(nm,l) -> sortPos . map (normalizeTo nm l)
+
+wrapSortWith :: Monad m => IM.IntMap (Seqid, Int) -> Enumeratee [BamRaw] [BamRaw] m a
+wrapSortWith m = mapAtGroups m $ \(_,l) -> sortPos . concatMap (wrapTo l)
+
+sortPos :: [BamRaw] -> [BamRaw]
+sortPos l = V.toList $ runST (V.unsafeThaw (V.fromList l) >>= \vm -> sortBy (comparing br_pos) vm >> V.unsafeFreeze vm)

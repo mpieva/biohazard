@@ -1,8 +1,8 @@
-{-# LANGUAGE ExistentialQuantification, RecordWildCards, NamedFieldPuns #-}
+{-# LANGUAGE ExistentialQuantification, RecordWildCards, NamedFieldPuns, BangPatterns #-}
 module Bio.Bam.Rmdup(
             rmdup, Collapse, cons_collapse, cheap_collapse,
             cons_collapse_keep, cheap_collapse_keep,
-            check_sort
+            check_sort, normalizeTo, wrapTo
     ) where
 
 import Bio.Bam.Fastq                    ( removeWarts )
@@ -11,6 +11,7 @@ import Bio.Bam.Raw
 import Bio.Bam.Rec
 import Bio.Base
 import Bio.Iteratee
+import Control.Monad                    ( when )
 import Data.Array.Unboxed
 import Data.Bits
 import Data.List
@@ -570,3 +571,163 @@ _ `oplus` (-1) = -1
 (-1) `oplus` _ = -1
 a `oplus` b = a + b
 
+-- | Normalize a read's alignment to fall into the canonical region
+-- of [0..l].  Takes the name of the reference sequence and its length.
+normalizeTo :: Seqid -> Int -> BamRaw -> BamRaw
+normalizeTo nm l br = mutateBamRaw br $ do setPos (br_pos br `mod` l)
+                                           setMpos (br_mpos br `mod` l)
+                                           setBin (br_pos br `mod` l) (br_aln_length br)
+                                           when dups_are_fine $ setMapq 37 >> removeExt "XA"
+  where
+    dups_are_fine = br_mapq br == Q 0 && all_match_XA (br_extAsString "XA" br)
+
+    all_match_XA s = case T.split ';' s of [xa1, xa2] | T.null xa2 -> one_match_XA xa1 ; _ -> False
+    one_match_XA s = case T.split ',' s of (sq:pos:_) | sq == nm   -> pos_match_XA pos ; _ -> False
+    pos_match_XA s = case T.readInt s   of Just (p,z) | T.null z   -> int_match_XA p ;   _ -> False
+    int_match_XA p | p >= 0    =  (p-1) `mod` l == br_pos br `mod` l && not (br_isReversed br)
+                   | otherwise = (-p-1) `mod` l == br_pos br `mod` l && br_isReversed br
+
+
+-- | Wraps a read to be fully contained in the canonical interval
+-- [0..l].  If the read overhangs, it is duplicated and both copies are
+-- suitably masked.
+wrapTo :: Int -> BamRaw -> [BamRaw]
+wrapTo l br = if overhangs then do_wrap else [br]
+  where
+    overhangs = not (br_isUnmapped br) && br_pos br < l && l < br_pos br + br_aln_length br
+
+    do_wrap = let b = decodeBamEntry br in
+              case split_ecig (l - b_pos b) $ toECig (b_cigar b) (maybe [] id $ getMd b) of
+                  (left,right) -> [ encodeBamEntry $ b { b_cigar = toCigar  left }            `setMD` left
+                                  , encodeBamEntry $ b { b_cigar = toCigar right, b_pos = 0 } `setMD` right ]
+
+-- | Split an 'ECig' into two at some position.  The position is counted
+-- in terms of the reference (therefore, deletions count, insertions
+-- don't).  The parts that would be skipped if we were splitting lists
+-- are replaced by soft masks.
+split_ecig :: Int -> ECig -> (ECig, ECig)
+split_ecig _ Empty = (Empty,      Empty)
+split_ecig 0   ecs = (mask_all ecs, ecs)
+
+split_ecig i (Ins' n ecs) = case split_ecig i ecs of (u,v) -> (Ins' n u, SMa' n v)
+split_ecig i (SMa' n ecs) = case split_ecig i ecs of (u,v) -> (SMa' n u, SMa' n v)
+split_ecig i (HMa' n ecs) = case split_ecig i ecs of (u,v) -> (HMa' n u, HMa' n v)
+split_ecig i (Pad' n ecs) = case split_ecig i ecs of (u,v) -> (Pad' n u,        v)
+
+split_ecig i (Mat' n ecs)
+    | i >= n    = case split_ecig (i-n) ecs of (u,v) -> (Mat' n u, SMa' n v)
+    | otherwise = (Mat' i $ SMa' (n-1) $ mask_all ecs, SMa' i $ Mat' (n-i) ecs)
+
+split_ecig i (Rep' x ecs) = case split_ecig (i-1) ecs of (u,v) -> (Rep' x u, SMa' 1 v)
+split_ecig i (Del' x ecs) = case split_ecig (i-1) ecs of (u,v) -> (Del' x u,        v)
+
+split_ecig i (Nop' n ecs)
+    | i >= n    = case split_ecig (i-n) ecs of (u,v) -> (Nop' n u,        v)
+    | otherwise = (Nop' i $ mask_all ecs, Nop' (n-i) ecs)
+
+mask_all :: ECig -> ECig
+mask_all Empty = Empty
+mask_all (Nop' _ ec) =          mask_all ec
+mask_all (HMa' _ ec) =          mask_all ec
+mask_all (Pad' _ ec) =          mask_all ec
+mask_all (Del' _ ec) =          mask_all ec
+mask_all (Rep' _ ec) = SMa' 1 $ mask_all ec
+mask_all (Mat' n ec) = SMa' n $ mask_all ec
+mask_all (Ins' n ec) = SMa' n $ mask_all ec
+mask_all (SMa' n ec) = SMa' n $ mask_all ec
+
+-- | Argh, this business with the CIGAR operations is a mess, it gets
+-- worse when combined with MD.  Okay, we will support CIGAR (no "=" and
+-- "X" operations) and MD.  If we have MD on input, we generate it on
+-- output, too.  And in between, we break everything into /very small/
+-- operations.
+
+data ECig = Empty
+          | Mat' Int ECig
+          | Rep' Nucleotide ECig
+          | Ins' Int ECig
+          | Del' Nucleotide ECig
+          | Nop' Int ECig
+          | SMa' Int ECig
+          | HMa' Int ECig
+          | Pad' Int ECig
+
+
+toECig :: Cigar -> [MdOp] -> ECig
+toECig (Cigar cig) md = go cig md
+  where
+    go [       ]             _  = Empty
+    go        cs (MdNum  0:mds) = go cs mds
+    go        cs (MdDel []:mds) = go cs mds
+    go ((_,0):cs)          mds  = go cs mds
+
+    go ((Mat,n):cs) [           ]      = Mat'   n  $ go            cs              [ ]
+    go ((Mat,n):cs) (MdRep x:mds)      = Rep'   x  $ go ((Mat,n-1):cs)             mds
+    go ((Mat,n):cs) (MdDel z:mds)      = Mat'   n  $ go            cs     (MdDel z:mds)
+    go ((Mat,n):cs) (MdNum m:mds)
+       | n < m                         = Mat'   n  $ go            cs (MdNum (m-n):mds)
+       | n > m                         = Mat'   m  $ go ((Mat,n-m):cs)             mds
+       | otherwise                     = Mat'   n  $ go            cs              mds
+
+    go ((Ins,n):cs)               mds  = Ins'   n  $ go            cs              mds
+    go ((Del,n):cs) (MdDel (x:xs):mds) = Del'   x  $ go ((Del,n-1):cs)   (MdDel xs:mds)
+    go ((Del,n):cs)               mds  = Del' nucN $ go ((Del,n-1):cs)             mds
+
+    go ((Nop,n):cs) mds = Nop' n $ go cs mds
+    go ((SMa,n):cs) mds = SMa' n $ go cs mds
+    go ((HMa,n):cs) mds = HMa' n $ go cs mds
+    go ((Pad,n):cs) mds = Pad' n $ go cs mds
+
+
+-- We normalize matches, deletions and soft masks, because these are the
+-- operations we generate.  Everything else is either already normalized
+-- or nobody really cares anyway.
+toCigar :: ECig -> Cigar
+toCigar = Cigar . go
+  where
+    go Empty = []
+    go (Ins' n ecs) = (Ins,n) : go ecs
+    go (Nop' n ecs) = (Nop,n) : go ecs
+    go (HMa' n ecs) = (HMa,n) : go ecs
+    go (Pad' n ecs) = (Pad,n) : go ecs
+    go (SMa' n ecs) = go_sma n ecs
+    go (Mat' n ecs) = go_mat n ecs
+    go (Rep' _ ecs) = go_mat 1 ecs
+    go (Del' _ ecs) = go_del 1 ecs
+
+    go_sma !n (SMa' m ecs) = go_sma (n+m) ecs
+    go_sma !n         ecs  = (SMa,n) : go ecs
+
+    go_mat !n (Mat' m ecs) = go_mat (n+m) ecs
+    go_mat !n (Rep' _ ecs) = go_mat (n+1) ecs
+    go_mat !n         ecs  = (Mat,n) : go ecs
+
+    go_del !n (Del' _ ecs) = go_del (n+1) ecs
+    go_del !n         ecs  = (Del,n) : go ecs
+
+
+
+setMD :: BamRec -> ECig -> BamRec
+setMD b ec = if any interesting md then b { b_exts = M.insert "MD" (Text $ showMd md) (b_exts b) }
+                                   else b { b_exts = M.delete "MD" (b_exts b) }
+  where
+    md = norm $ go ec
+
+    go  Empty       = []
+    go (Ins' _ ecs) = go ecs
+    go (Nop' _ ecs) = go ecs
+    go (SMa' _ ecs) = go ecs
+    go (HMa' _ ecs) = go ecs
+    go (Pad' _ ecs) = go ecs
+    go (Mat' n ecs) = MdNum  n  : go ecs
+    go (Rep' x ecs) = MdRep  x  : go ecs
+    go (Del' x ecs) = MdDel [x] : go ecs
+
+    norm (MdNum n : MdNum m : mds) = norm $ MdNum (n+m) : mds
+    norm (MdDel u : MdDel v : mds) = norm $ MdDel (u++v) : mds
+    norm                (op : mds) = op : norm mds
+    norm                        [] = []
+
+    interesting (MdRep n) = n /= gap
+    interesting (MdDel ns) = all (/= gap) ns
+    interesting _ = False
