@@ -244,8 +244,15 @@ do_report lbl Counts{..} = intercalate "\t" fs
         rate        = 100 * fromIntegral tout / fromIntegral tin :: Double
 
 
-count_all :: (BamRaw -> Seqid) -> Iteratee [BamRaw] m (M.HashMap Seqid Counts)
-count_all lbl = I.foldl' plus M.empty
+-- | Counting reads:  we count total read in (ti), total reads out (to),
+-- good (confidently mapped) singletons out (gs), total good
+-- (confidently mapped) reads out (gt).  Paired reads count 1, unpaired
+-- reads count 2, and at the end we divide by 2.  This ensures that we
+-- don't double count mate pairs, while still working mostly sensibly in
+-- the presence of broken BAM files.
+
+count_all :: Functor m => (BamRaw -> Seqid) -> Iteratee [BamRaw] m (M.HashMap Seqid Counts)
+count_all lbl = M.map fixup `fmap` I.foldl' plus M.empty
   where
     plus m br = M.insert (lbl br) cs m
       where
@@ -253,11 +260,13 @@ count_all lbl = I.foldl' plus M.empty
 
     plus1 (Counts ti to gs gt) br = Counts ti' to' gs' gt'
       where
-        !ti' = ti + br_extAsInt 1 "XP" br
-        !to' = to + 1
-        !gs' = if br_mapq br >= Q 20 && br_extAsInt 1 "XP" br == 1 then gs + 1 else gs
-        !gt' = if br_mapq br >= Q 20 then gt + 1 else gt
+        !w   = if br_isPaired br then 1 else 2
+        !ti' = ti + w * br_extAsInt 1 "XP" br
+        !to' = to + w
+        !gs' = if br_mapq br >= Q 20 && br_extAsInt 1 "XP" br == 1 then gs + w else gs
+        !gt' = if br_mapq br >= Q 20                               then gt + w else gt
 
+    fixup (Counts ti to gs gt) = Counts (div ti 2) (div to 2) (div gs 2) (div gt 2)
 
 eff_len :: BamRaw -> Int
 eff_len br | br_isProperlyPaired br = abs $ br_isize br
