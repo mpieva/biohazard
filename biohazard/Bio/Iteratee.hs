@@ -9,6 +9,7 @@ module Bio.Iteratee (
     i'getString,
     i'lookAhead,
     headStream,
+    peekStream,
     takeStream,
     mapStreamM,
     mapStreamM_,
@@ -147,6 +148,9 @@ takeStream = I.take
 headStream :: ListLike s el => Iteratee s m el
 headStream = I.head
 
+peekStream :: ListLike s el => Iteratee s m (Maybe el)
+peekStream = I.peek
+
 -- | Run an Iteratee, collect the input.  When it finishes, return the
 -- result along with *all* input.  Effectively allows lookahead.  Be
 -- careful, this will eat memory if the @Iteratee@ doesn't return
@@ -265,7 +269,7 @@ data Ordering' a = Less | Equal a | NotLess
 mergeSortStreams :: (Monad m, ListLike s a, Nullable s) => (a -> a -> Ordering' a) -> Enumeratee s s (Iteratee s m) b
 mergeSortStreams comp = eneeCheckIfDone step
   where
-    step out = I.peek >>= \mx -> lift I.peek >>= \my -> case (mx, my) of
+    step out = peekStream >>= \mx -> lift peekStream >>= \my -> case (mx, my) of
         (Just x, Just y) -> case x `comp` y of
             Less    -> do I.drop 1 ;                   eneeCheckIfDone step . out . Chunk $ LL.singleton x
             NotLess -> do            lift (I.drop 1) ; eneeCheckIfDone step . out . Chunk $ LL.singleton y

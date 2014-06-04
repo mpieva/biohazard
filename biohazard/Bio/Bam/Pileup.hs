@@ -250,6 +250,7 @@ data SsDamageParameters = SSD { ssd_delta_ss :: !Double         -- deamination r
                               , ssd_delta_ds :: !Double         -- deamination rate in ds DNA
                               , ssd_prob5    :: !Double         -- 1/average overhang length at 5' end
                               , ssd_prob3    :: !Double }       -- 1/average overhang length at 3' end
+  deriving Show
 
 -- Forward strand first, C->T only; reverse strand next, G->A instead
 -- N averages over all others, horizontally(!).  Distance from end
@@ -285,6 +286,7 @@ ssDamage SSD{..} r i b = if br_isReversed r then ssd_rev else ssd_fwd
 data DsDamageParameters = DSD { dsd_delta_ss :: !Double         -- deamination rate in ss DNA
                               , dsd_delta_ds :: !Double         -- deamination rate in ds DNA
                               , dsd_prob     :: !Double }       -- 1/average overhang length
+  deriving Show
 
 dsDamage :: DsDamageParameters -> DamageModel
 dsDamage DSD{..} r i b | b == nucA = DB    1     0     q     0

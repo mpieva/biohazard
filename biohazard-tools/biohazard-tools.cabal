@@ -92,6 +92,16 @@ Executable glf-consensus
                        iteratee == 0.8.9.*,
                        MonadCatchIO-transformers == 0.3.*
 
+Executable gt-call
+  Main-is:             gt-call.hs
+  Build-depends:       base == 4.*,
+                       biohazard == 0.5.6,
+                       bytestring >= 0.9 && < 0.11,
+                       -- containers >= 0.4 && < 0.6,
+                       iteratee == 0.8.9.*,
+                       -- MonadCatchIO-transformers == 0.3.*
+                       vector == 0.10.*
+
 Executable wiggle-coverage
   Main-is:             wiggle-coverage.hs
   Build-depends:       base == 4.*,
