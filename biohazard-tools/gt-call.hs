@@ -181,7 +181,7 @@ main = do
                 out' <- lift $ enumPure1Chunk [S.singleton '>' `S.append` sname `S.append` S.pack (' ':show (conf_ploidy sname))] out
                 pileup dmg_model =$
                     mapStream (calls $! conf_ploidy sname) =$
-                    mapChunks (S.concat . map format_either_call) =$
+                    convStream format_either_call =$
                     collect_lines out') $
             mapStreamM_ (S.hPut ohdl . (flip S.snoc '\n'))
 
@@ -193,16 +193,45 @@ calls ploidy = either (Left . fmap (simple_snp_call pl)) (Right . fmap (simple_i
   where
     !pl = case ploidy of Hap -> 1 ; Dip -> 2
 
--- | Meh, this isn't going to work for deletions.  XXX
-format_either_call :: Either (VarCall (GL,())) (VarCall (GL, IndelVars)) -> S.ByteString
-format_either_call (Left  vc) | V.length gl ==  4 = S.take 1 $ S.drop (maxQualIndex gl) hapbases
-                              | V.length gl == 10 = S.take 1 $ S.drop (maxQualIndex gl) dipbases
+type EitherCall = Either (VarCall (GL,())) (VarCall (GL, IndelVars))
+
+format_either_call :: Monad m => Iteratee [EitherCall] m S.ByteString
+format_either_call = headStream >>= either format_snp_call format_indel_call
+
+-- | Formatting a SNP call.  If this was a haplopid call (four GL
+-- values), we pick the most likely base and pass it on.  If it was
+-- diploid, we pick the most likely dinucleotide and pass it on.
+--
+-- XXX This needs a prior for heterozygosity.  Done properly, it needs a
+--     notion of reference base and a prior for being variant.
+
+format_snp_call :: Monad m => VarCall (GL,()) -> Iteratee [EitherCall] m S.ByteString
+format_snp_call vc | V.length gl ==  4 = return $ S.take 1 $ S.drop (maxQualIndex gl) hapbases
+                   | V.length gl == 10 = return $ S.take 1 $ S.drop (maxQualIndex gl) dipbases
     where (gl,()) = vc_vars vc
           hapbases = S.pack "NACGT"
           dipbases = S.pack "NAMCRSGWYKT"
 
-format_either_call (Right vc) | V.length gl == length vars = S.pack $ show $ ([]:map snd vars) !! maxQualIndex gl
-    where (gl,vars) = vc_vars vc
+-- | Formatting an Indel call.  We pick the most likely variant and
+-- pass its sequence on.  Then we drop incoming calls that should be
+-- deleted according to the chosen variant.  We disregard heterozygotes,
+-- as there is no sensible way to format them anyway.
+--
+-- XXX This needs a prior for being variant.
+format_indel_call :: Monad m => VarCall (GL, IndelVars) -> Iteratee [EitherCall] m S.ByteString
+format_indel_call vc = I.dropWhile skip >> return (S.pack $ show ins)
+    where
+        (gl,vars) = vc_vars vc
+        (del,ins) = ( (0,[]) : vars ) !! maxQualIndex eff_gl
+        skip evc  = let rs  = either vc_refseq vc_refseq evc
+                        pos = either vc_pos    vc_pos    evc
+                    in rs == vc_refseq vc && pos < vc_pos vc + del
+
+        !nvars = length vars
+
+        eff_gl | V.length gl == nvars                     = gl
+               | V.length gl == nvars * (nvars-1) `div` 2 =
+                    V.fromListN  nvars [ V.unsafeIndex gl i | i <- scanl (+) 0 [2..nvars] ]
 
 maxQualIndex :: V.Vector ErrProb -> Int
 maxQualIndex vec = if m / m2 > 2 then i else 0
