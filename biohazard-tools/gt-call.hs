@@ -1,4 +1,4 @@
-{-# LANGUAGE RecordWildCards, BangPatterns #-}
+{-# LANGUAGE RecordWildCards, BangPatterns, OverloadedStrings #-}
 -- Command line driver for genotype calling.
 
 import Bio.Base
@@ -113,17 +113,19 @@ data Ploidy = Hap | Dip deriving Show
 
 data Conf = Conf {
     conf_output :: (Handle -> IO ()) -> IO (),
+    conf_sample :: S.ByteString,
     conf_ploidy :: S.ByteString -> Ploidy,
     conf_loverhang :: Maybe Double,
     conf_roverhang :: Maybe Double,
-    conf_ds_deam :: Maybe Double,
-    conf_ss_deam :: Maybe Double }
+    conf_ds_deam :: Double,
+    conf_ss_deam :: Double }
 
-defaultConf = Conf ($ stdout) (const Dip) Nothing Nothing Nothing Nothing
+defaultConf = Conf ($ stdout) "John_Doe" (const Dip) Nothing Nothing 0.02 0.45
 
 options :: [OptDescr (Conf -> IO Conf)]
 options = [
     Option "o" ["output"]                   (ReqArg set_output "FILE")      "Write output to FILE",
+    Option "N" ["name","sample-name"]       (ReqArg set_sample "NAME")      "Set sample name to NAME",
     Option "1" ["haploid-chromosomes"]      (ReqArg set_haploid "PRF")      "Targets starting with PRF are haploid",
     Option "2" ["diploid-chromosomes"]      (ReqArg set_diploid "PRF")      "Targets starting with PRF are diploid",
     Option "l" ["overhang-length","left-overhang-length"]
@@ -143,13 +145,15 @@ options = [
     set_output "-" c = return $ c { conf_output = ($ stdout) }
     set_output  fn c = return $ c { conf_output = withFile fn WriteMode }
 
+    set_sample   nm c = return $ c { conf_sample = S.pack nm }
+
     set_haploid arg c = return $ c { conf_ploidy = \chr -> if S.pack arg `S.isPrefixOf` chr then Hap else conf_ploidy c chr }
     set_diploid arg c = return $ c { conf_ploidy = \chr -> if S.pack arg `S.isPrefixOf` chr then Dip else conf_ploidy c chr }
 
     set_loverhang a c = (\l -> c { conf_loverhang = Just l }) <$> readIO a
     set_roverhang a c = (\l -> c { conf_roverhang = Just l }) <$> readIO a
-    set_ss_deam   a c = (\r -> c { conf_ss_deam   = Just r }) <$> readIO a
-    set_ds_deam   a c = (\r -> c { conf_ds_deam   = Just r }) <$> readIO a
+    set_ss_deam   a c = (\r -> c { conf_ss_deam   =      r }) <$> readIO a
+    set_ds_deam   a c = (\r -> c { conf_ds_deam   =      r }) <$> readIO a
 
 no_damage = hPutStrLn stderr "using no damage model" >> return noDamage
 ss_damage p = hPutStrLn stderr ("using single strand damage model with " ++ show p) >> return (ssDamage p)
@@ -162,15 +166,9 @@ main = do
 
     dmg_model <- case (conf_loverhang, conf_roverhang) of
             (Nothing, Nothing) -> no_damage
-            (Just ll, Nothing) -> ds_damage $ DSD (fromMaybe 0.45 conf_ss_deam)
-                                                  (fromMaybe 0.02 conf_ds_deam)
-                                                  (recip ll)
-            (Nothing, Just lr) -> ss_damage $ SSD (fromMaybe 0.45 conf_ss_deam)
-                                                  (fromMaybe 0.02 conf_ds_deam)
-                                                  (recip lr) (recip lr)
-            (Just ll, Just lr) -> ss_damage $ SSD (fromMaybe 0.45 conf_ss_deam)
-                                                  (fromMaybe 0.02 conf_ds_deam)
-                                                  (recip ll) (recip lr)
+            (Just ll, Nothing) -> ds_damage $ DSD conf_ss_deam conf_ds_deam (recip ll)
+            (Nothing, Just lr) -> ss_damage $ SSD conf_ss_deam conf_ds_deam (recip lr) (recip lr)
+            (Just ll, Just lr) -> ss_damage $ SSD conf_ss_deam conf_ds_deam (recip ll) (recip lr)
 
     conf_output $ \ohdl ->
         mergeInputs combineCoordinates files >=> run $ \hdr ->
@@ -178,7 +176,9 @@ main = do
             joinI $ filterStream (isValidRefseq . br_rname) $
             joinI $ by_groups same_ref (\br out -> do
                 let sname = sq_name $ getRef (meta_refs hdr) $ br_rname br
-                out' <- lift $ enumPure1Chunk [S.singleton '>' `S.append` sname `S.append` S.pack (' ':show (conf_ploidy sname))] out
+                liftIO $ hPutStrLn stderr $ S.unpack sname ++ case conf_ploidy sname of
+                            Hap -> ": haploid call" ; Dip -> ": diploid call"
+                out' <- lift $ enumPure1Chunk [S.concat [">", conf_sample, "--", sname]] out
                 pileup dmg_model =$
                     mapStream (calls $! conf_ploidy sname) =$
                     convStream format_either_call =$
@@ -209,29 +209,25 @@ format_snp_call :: Monad m => VarCall (GL,()) -> Iteratee [EitherCall] m S.ByteS
 format_snp_call vc | V.length gl ==  4 = return $ S.take 1 $ S.drop (maxQualIndex gl) hapbases
                    | V.length gl == 10 = return $ S.take 1 $ S.drop (maxQualIndex gl) dipbases
     where (gl,()) = vc_vars vc
-          hapbases = S.pack "NACGT"
-          dipbases = S.pack "NAMCRSGWYKT"
+          hapbases = "NACGT"
+          dipbases = "NAMCRSGWYKT"
 
 -- | Formatting an Indel call.  We pick the most likely variant and
 -- pass its sequence on.  Then we drop incoming calls that should be
--- deleted according to the chosen variant.  We disregard heterozygotes,
--- as there is no sensible way to format them anyway.
+-- deleted according to the chosen variant.  Note that this will blow up
+-- unless the call was done assuming a haploid genome (which is
+-- guaranteeed /in this program/)!
 --
 -- XXX This needs a prior for being variant.
 format_indel_call :: Monad m => VarCall (GL, IndelVars) -> Iteratee [EitherCall] m S.ByteString
-format_indel_call vc = I.dropWhile skip >> return (S.pack $ show ins)
+format_indel_call vc | V.length gl == length vars = I.dropWhile skip >> return (S.pack $ show ins)
+                     | otherwise = error "Thou shalt not have calleth format_indel_call unless thou madeth a haploid call!"
     where
         (gl,vars) = vc_vars vc
-        (del,ins) = ( (0,[]) : vars ) !! maxQualIndex eff_gl
+        (del,ins) = ( (0,[]) : vars ) !! maxQualIndex gl
         skip evc  = let rs  = either vc_refseq vc_refseq evc
                         pos = either vc_pos    vc_pos    evc
                     in rs == vc_refseq vc && pos < vc_pos vc + del
-
-        !nvars = length vars
-
-        eff_gl | V.length gl == nvars                     = gl
-               | V.length gl == nvars * (nvars-1) `div` 2 =
-                    V.fromListN  nvars [ V.unsafeIndex gl i | i <- scanl (+) 0 [2..nvars] ]
 
 maxQualIndex :: V.Vector ErrProb -> Int
 maxQualIndex vec = if m / m2 > 2 then i else 0

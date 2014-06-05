@@ -232,6 +232,51 @@ noDamage _ _ b | b == nucA = DB 1 0 0 0
 -- everywhere, at high frequency ('delta_ss') in single stranded parts,
 -- and the overhang length is distributed exponentially with parameter
 -- 'lambda'.
+
+data SsDamageParameters = SSD { ssd_sigma  :: !Double         -- deamination rate in ss DNA
+                              , ssd_delta  :: !Double         -- deamination rate in ds DNA
+                              , ssd_lambda :: !Double         -- expected overhang length at 5' end
+                              , ssd_kappa  :: !Double }       -- expected overhang length at 3' end
+  deriving Show
+
+-- Forward strand first, C->T only; reverse strand next, G->A instead
+-- N averages over all others, horizontally(!).  Distance from end
+-- depends on strand, too :(
+ssDamage :: SsDamageParameters -> DamageModel
+ssDamage SSD{..} r i b = if br_isReversed r then ssd_rev else ssd_fwd
+  where
+    dq x y z w = DB (0.25*x) (0.25*y) (0.25*z) (0.25*w)
+    prob5 | ssd_lambda >= 0 = ssd_lambda / (1 + ssd_lambda)
+    prob3 | ssd_kappa  >= 0 = ssd_kappa  / (1 + ssd_kappa)
+
+    ssd_fwd | b == nucA = DB   1   0   0   0
+            | b == nucC = DB   0 (1-p) 0   0
+            | b == nucG = DB   0   0   1   0
+            | b == nucT = DB   0   p   0   1
+            | otherwise = dq   1 (1-p) 1 (1+p)
+      where
+        p   = ssd_sigma * lam + ssd_delta * (1-lam)
+        lam = 0.5 * (prob5 ^ (1+i) + prob3 ^ (br_l_seq r - i))
+
+    ssd_rev | b == nucA = DB   1   0   p   0
+            | b == nucC = DB   0   1   0   0
+            | b == nucG = DB   0   0 (1-p) 0
+            | b == nucT = DB   0   0   0   1
+            | otherwise = dq (1+p) 1 (1-p) 1
+      where
+        p   = ssd_sigma * lam + ssd_delta * (1-lam)
+        --- Huh?  Average?!
+        lam = 0.5 * (prob3 ^ (1+i) + prob5 ^ (br_l_seq r - i))
+
+
+data DsDamageParameters = DSD { dsd_sigma  :: !Double         -- deamination rate in ss DNA
+                              , dsd_delta  :: !Double         -- deamination rate in ds DNA
+                              , dsd_lambda :: !Double }       -- expected overhang length
+  deriving Show
+
+-- | 'DamageModel' for double stranded library.  We get C->T damage at
+-- the 5' end and G->A at the 3' end.  Everything is symmetric, and
+-- therefore the orientation of the aligned read doesn't matter either.
 --
 -- Parameterization is stolen from @mapDamage 2.0@, for the most part.
 -- We have a deamination rate each for ss and ds dna and average
@@ -244,50 +289,12 @@ noDamage _ _ b | b == nucA = DB 1 0 0 0
 -- L({A,C,G,T}|G) = {0,0,1,0}
 -- L({A,C,G,T}|T) = {0,0,0,1}
 --
--- Here, p is the probability of deamination, modelled as:
-
-data SsDamageParameters = SSD { ssd_delta_ss :: !Double         -- deamination rate in ss DNA
-                              , ssd_delta_ds :: !Double         -- deamination rate in ds DNA
-                              , ssd_prob5    :: !Double         -- 1/average overhang length at 5' end
-                              , ssd_prob3    :: !Double }       -- 1/average overhang length at 3' end
-  deriving Show
-
--- Forward strand first, C->T only; reverse strand next, G->A instead
--- N averages over all others, horizontally(!).  Distance from end
--- depends on strand, too :(
-ssDamage :: SsDamageParameters -> DamageModel
-ssDamage SSD{..} r i b = if br_isReversed r then ssd_rev else ssd_fwd
-  where
-    dq x y z w = DB (0.25*x) (0.25*y) (0.25*z) (0.25*w)
-
-    ssd_fwd | b == nucA = DB   1   0   0   0
-            | b == nucC = DB   0 (1-p) 0   0
-            | b == nucG = DB   0   0   1   0
-            | b == nucT = DB   0   p   0   1
-            | otherwise = dq   1 (1-p) 1 (1+p)
-      where
-        p   = ssd_delta_ss * lam + ssd_delta_ds * (1-lam)
-        lam = 0.5 * (ssd_prob5 ^ (1+i) + ssd_prob3 ^ (br_l_seq r - i))
-
-    ssd_rev | b == nucA = DB   1   0   p   0
-            | b == nucC = DB   0   1   0   0
-            | b == nucG = DB   0   0 (1-p) 0
-            | b == nucT = DB   0   0   0   1
-            | otherwise = dq (1+p) 1 (1-p) 1
-      where
-        p   = ssd_delta_ss * lam + ssd_delta_ds * (1-lam)
-        lam = 0.5 * (ssd_prob3 ^ (1+i) + ssd_prob5 ^ (br_l_seq r - i))
-
-
--- | 'DamageModel' for double stranded library.  We get C->T damage at
--- the 5' end and G->A at the 3' end.  Everything is symmetric, and
--- therefore the orientation of the aligned read doesn't matter either.
-
-data DsDamageParameters = DSD { dsd_delta_ss :: !Double         -- deamination rate in ss DNA
-                              , dsd_delta_ds :: !Double         -- deamination rate in ds DNA
-                              , dsd_prob     :: !Double }       -- 1/average overhang length
-  deriving Show
-
+-- Here, p is the probability of deamination, which is dsd_delta if
+-- double strande, dsd_sigma if single stranded.  The probability of
+-- begin single stranded is prob ^ (i+1).  This gives an average
+-- overhang length of (prob / (1-prob)).  We invert this and define
+-- dsd_lambda as the expected overhang length.
+--
 dsDamage :: DsDamageParameters -> DamageModel
 dsDamage DSD{..} r i b | b == nucA = DB    1     0     q     0
                        | b == nucC = DB    0   (1-p)   0     0
@@ -295,11 +302,12 @@ dsDamage DSD{..} r i b | b == nucA = DB    1     0     q     0
                        | b == nucT = DB    0     p     0     1
                        | otherwise = dbq (1+q) (1-p) (1-q) (1+p)
   where
-    len  = br_l_seq r
-    p    = dsd_delta_ss * lam5 + dsd_delta_ds * (1-lam5)
-    q    = dsd_delta_ss * lam3 + dsd_delta_ds * (1-lam3)
-    lam5 = dsd_prob ^ (1+i)
-    lam3 = dsd_prob ^ (len-i)
+    prob | dsd_lambda >= 0 = dsd_lambda / (1 + dsd_lambda)
+
+    p    = dsd_sigma * lam5 + dsd_delta * (1-lam5)
+    q    = dsd_sigma * lam3 + dsd_delta * (1-lam3)
+    lam5 = prob ^ (         1 + i)
+    lam3 = prob ^ (br_l_seq r - i)
     dbq x y z w = DB (0.25*x) (0.25*y) (0.25*z) (0.25*w)
 
 
