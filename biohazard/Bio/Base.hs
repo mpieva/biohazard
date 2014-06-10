@@ -1,12 +1,12 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving, TypeFamilies, FlexibleInstances #-}
-{-# LANGUAGE MultiParamTypeClasses, BangPatterns #-}
+{-# LANGUAGE MultiParamTypeClasses, BangPatterns, ForeignFunctionInterface #-}
 -- | Common data types used everywhere.  This module is a collection of
 -- very basic "bioinformatics" data types that are simple, but don't
 -- make sense to define over and over.
 
 module Bio.Base(
     Nucleotide(..),
-    Qual(..), toQual, fromQual,
+    Qual(..), toQual, fromQual, probToQual,
     Prob(..), toProb, fromProb, qualToProb,
 
     Word8,
@@ -43,7 +43,6 @@ module Bio.Base(
     findAuxFile
 ) where
 
-import Bio.Util             ( phredplus, phredminus )
 import Data.Array.Unboxed
 import Data.Bits
 import Data.Char            ( isAlpha, isSpace, ord, toUpper )
@@ -101,12 +100,13 @@ fromQual (Q q) = 10 ** (-(fromIntegral q) / 10)
 -- natural logarithm (makes computation easier), but allow conversions
 -- to the familiar \"Phred\" scale used for 'Qual' values.
 newtype Prob = Pr { unPr :: Double } deriving
-    ( Eq, Storable, VG.Vector VU.Vector, VM.MVector VU.MVector, VU.Unbox )
+    ( Eq, Ord, Storable, VG.Vector VU.Vector, VM.MVector VU.MVector, VU.Unbox )
 
 instance Show Prob where
-    showsPrec _ (Pr q) = (:) 'q' . showFFloat (Just 1) q -- XXX
+    showsPrec _ (Pr p) = (:) 'q' . showFFloat (Just 1) q
+      where q = - 10 * p / log 10
 
-instance Ord Prob where
+{- instance Ord Prob where
     Pr a `compare` Pr b = b `compare` a
     Pr a   `min`   Pr b = Pr (a `max` b)
     Pr a   `max`   Pr b = Pr (a `min` b)
@@ -114,30 +114,38 @@ instance Ord Prob where
     Pr a <  Pr b  =  b  < a
     Pr a <= Pr b  =  b <= a
     Pr a >  Pr b  =  b  > a
-    Pr a >= Pr b  =  b >= a
+    Pr a >= Pr b  =  b >= a -}
 
 instance Num Prob where
-    fromInteger a = Pr (-10 * log (fromInteger a) / log 10) -- XXX
-    Pr a + Pr b = Pr (a `phredplus`  b) -- XXX
-    Pr a - Pr b = Pr (a `phredminus` b) -- XXX
+    fromInteger a = Pr (log (fromInteger a))
+    Pr x + Pr y = if x >= y then Pr (x + log1p (  exp (y-x))) else Pr (y + log1p (exp (x-y)))
+    Pr x - Pr y = if x >= y then Pr (x + log1p (- exp (y-x))) else err_neg
     Pr a * Pr b = Pr (a + b)
-    negate    _ = error "no negative error probabilities"
+    negate    _ = err_neg
     abs       x = x
     signum    _ = Pr 0
 
+foreign import ccall unsafe "math.h log1p" log1p :: Double -> Double
+
+err_neg :: Prob
+err_neg = error "no negative error probabilities"
+
 instance Fractional Prob where
-    fromRational a = Pr (-10 * log (fromRational a) / log 10) -- XXX
+    fromRational a = Pr (log (fromRational a))
     Pr a  /  Pr b = Pr (a - b)
     recip  (Pr a) = Pr (negate a)
 
 toProb :: Double -> Prob
-toProb p = Pr (-10 * log p / log 10) -- XXX
+toProb p = Pr (log p)
 
 fromProb :: Prob -> Double
-fromProb (Pr q) = 10 ** (-q / 10) -- XXX
+fromProb (Pr q) = exp q
 
 qualToProb :: Qual -> Prob
-qualToProb (Q q) = Pr (fromIntegral q) -- XXX
+qualToProb (Q q) = Pr (- log 10 * fromIntegral q / 10)
+
+probToQual :: Prob -> Qual
+probToQual (Pr p) = Q (round (- 10 * p / log 10))
 
 gap, nucA, nucC, nucG, nucT, nucN :: Nucleotide
 gap  = N 0
