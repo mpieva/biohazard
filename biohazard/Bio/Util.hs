@@ -1,13 +1,15 @@
 {-# LANGUAGE ForeignFunctionInterface #-}
 module Bio.Util (
     wilson, invnormcdf, choose,
-    showNum, showOOM,
-    estimateComplexity,
+    estimateComplexity, showNum, showOOM,
+    float2mini, mini2float,
     phredplus, phredminus, phredsum, (<#>), phredconverse
                 ) where
 
-import Data.Char (intToDigit)
-import Data.List (foldl')
+import Data.Bits
+import Data.Char ( intToDigit )
+import Data.List ( foldl' )
+import Data.Word ( Word8 )
 
 -- ^ Random useful stuff I didn't know where to put.
 
@@ -181,15 +183,27 @@ choose :: Integral a => a -> a -> a
 n `choose` k = product [n-k+1 .. n] `div` product [2..k]
 
 
-{-
-    Found this in a comment in Glibc, might be a more direct way to compute log1p.
+-- | Conversion to 0.4.4 format minifloat:  This minifloat fits into a
+-- byte.  It has no sign, four bits of precision, and the range is from
+-- 0 to 63488, initially in steps of 1/8.  Nice to store quality scores
+-- with reasonable precision and range.
+float2mini :: Double -> Word8
+float2mini f | f  <  0 = error "no negative minifloats"
+             | f  <  2 = round (8*f)
+             | e >= 17 = 0xff
+             | s  < 16 = error $ "oops: " ++ show (e,s)
+             | s  < 32 = (e-1) `shiftL` 4 .|. (s .&. 0xf)
+             | s == 32 = (e) `shiftL` 4
+             | True    = error $ "oops: " ++ show (e,s)
+  where
+    e = fromIntegral $ exponent f
+    s = round $ 32 * significand f
 
- * Note: Assuming log() return accurate answer, the following
- *	 algorithm can be used to compute log1p(x) to within a few ULP:
- *
- *		u = 1+x;
- *		if(u==1.0) return x ; else
- *			   return log(u)*(x/(u-1.0));
- *
- *	 See HP-15C Advanced Functions Handbook, p.193.
--}
+-- | Conversion from 0.4.4 format minifloat, see 'float2mini'.
+mini2float :: Word8 -> Double
+mini2float w |  e == 0   =       fromIntegral w / 8.0
+             | otherwise = 2^e * fromIntegral m / 16.0
+  where
+    m = (w .&. 0xF) .|. 0x10
+    e = w `shiftR` 4
+
