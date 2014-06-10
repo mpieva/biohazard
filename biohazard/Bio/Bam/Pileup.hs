@@ -255,8 +255,10 @@ ssDamage SSD{..} r i b = if br_isReversed r then ssd_rev else ssd_fwd
             | b == nucT = DB   0   p   0   1
             | otherwise = dq   1 (1-p) 1 (1+p)
       where
-        p   = ssd_sigma * lam + ssd_delta * (1-lam)
-        lam = 0.5 * (prob5 ^ (1+i) + prob3 ^ (br_l_seq r - i))
+        !lam5 = prob5 ^ (1+i)
+        !lam3 = prob3 ^ (br_l_seq r - i)
+        !lam  = lam3 + lam5 - lam3 * lam5
+        !p    = ssd_sigma * lam + ssd_delta * (1-lam)
 
     ssd_rev | b == nucA = DB   1   0   p   0
             | b == nucC = DB   0   1   0   0
@@ -264,9 +266,10 @@ ssDamage SSD{..} r i b = if br_isReversed r then ssd_rev else ssd_fwd
             | b == nucT = DB   0   0   0   1
             | otherwise = dq (1+p) 1 (1-p) 1
       where
-        p   = ssd_sigma * lam + ssd_delta * (1-lam)
-        --- Huh?  Average?!
-        lam = 0.5 * (prob3 ^ (1+i) + prob5 ^ (br_l_seq r - i))
+        !lam5 = prob5 ^ (br_l_seq r - i)
+        !lam3 = prob3 ^ (1+i)
+        !lam  = lam3 + lam5 - lam3 * lam5
+        !p    = ssd_sigma * lam + ssd_delta * (1-lam)
 
 
 data DsDamageParameters = DSD { dsd_sigma  :: !Double         -- deamination rate in ss DNA
@@ -336,7 +339,7 @@ data VarCall a = VarCall { vc_refseq     :: !Refseq               -- coordinate
 
 instance Functor VarCall where fmap f vc = vc { vc_vars = f (vc_vars vc) }
 
-type GL = V.Vector ErrProb
+type GL = V.Vector Prob
 type IndelVars = [( Int, [Nucleotide] )]    -- indel variant: number of deletions, inserted sequence
 
 -- Both types of piles carry along the map quality.  We'll only need it
@@ -621,10 +624,10 @@ simple_indel_call ploidy vars = (simple_call ploidy mkpls vars, vars')
                                                             , if testBit n 1 then c else 0
                                                             , if testBit n 2 then g else 0
                                                             , if testBit n 3 then t else 0 ]
-                                                    p' = errProbFromQual q
-                                                in toErrProb $ p + p' - p * p'
+                                                    p' = fromQual q
+                                                in toProb $ p + p' - p * p'
 
-    mkpls (q,(d,i)) = let !q' = qualToErrProb q
+    mkpls (q,(d,i)) = let !q' = qualToProb q
                       in [ if d /= dr || length i /= length ir
                            then q' else q' + product (match i ir) | (dr,ir) <- vars' ]
 
@@ -636,10 +639,10 @@ simple_indel_call ploidy vars = (simple_call ploidy mkpls vars, vars')
 simple_snp_call :: Int -> BasePile -> (GL,())
 simple_snp_call ploidy vars = (simple_call ploidy mkpls vars, ())
   where
-    mkpls (q, DB a c g t qq) = [ toErrProb $ x + pe*(s-x) | x <- [a,c,g,t] ]
+    mkpls (q, DB a c g t qq) = [ toProb $ x + pe*(s-x) | x <- [a,c,g,t] ]
       where
-        !p1 = errProbFromQual q
-        !p2 = errProbFromQual qq
+        !p1 = fromQual q
+        !p2 = fromQual qq
         !pe = p1 + p2 - p1*p2
         !s  = (a+c+g+t) / 4
 
@@ -654,13 +657,13 @@ simple_snp_call ploidy vars = (simple_call ploidy mkpls vars, ())
 -- NOTE, this may warrant specialization to diploidy and four alleles
 -- (common SNPs) and diploidy and two alleles (common indels).
 
-simple_call :: Int -> (a -> [ErrProb]) -> [a] -> GL
+simple_call :: Int -> (a -> [Prob]) -> [a] -> GL
 simple_call ploidy pls = foldl1' (V.zipWith (*)) . map step
   where
     foldl1' _ [     ] = V.singleton 1
     foldl1' f (!a:as) = foldl' f a as
 
-    norm = toErrProb (fromIntegral ploidy) `raise` (-1)
+    norm = toProb (fromIntegral ploidy) `pow` (-1)
 
     -- "For biallelic sites the ordering is: AA,AB,BB; for triallelic
     -- sites the ordering is: AA,AB,BB,AC,BC,CC, etc."
@@ -681,8 +684,9 @@ simple_call ploidy pls = foldl1' (V.zipWith (*)) . map step
                      (+) hd <$> mk_pls (n-1) ls'
 
 
-raise :: ErrProb -> Double -> ErrProb
-raise (EP a) e = EP (a*e)
+infixr 8 `pow`
+pow :: Prob -> Double -> Prob
+pow (Pr a) e = Pr (a*e)
 
 
 smoke_test :: IO ()
@@ -710,7 +714,6 @@ smoke_test =
     show_indel :: (Int, [Nucleotide]) -> String
     show_indel (d, ins) = shows ins $ '-' : show d
 
-    unwrap vc = vc_vars vc >>= \r -> return $ vc { vc_vars = r }
 
 showCall :: (a -> ShowS) -> VarCall (GL,a) -> ShowS
 showCall f vc = shows (vc_refseq vc) . (:) ':' .
@@ -721,7 +724,7 @@ showCall f vc = shows (vc_refseq vc) . (:) ':' .
                 shows mapq . (:) '\t' .
                 show_pl (fst $ vc_vars vc)
   where
-    show_pl :: V.Vector ErrProb -> ShowS
+    show_pl :: V.Vector Prob -> ShowS
     show_pl = (++) . intercalate "," . map show . V.toList
 
     mapq = vc_sum_mapq vc `div` vc_depth vc
@@ -792,15 +795,6 @@ maq_snp_call ploidy theta bases = undefined
 --
 -- Hm.  Probably not completely correct.  :(
 
-
--- 0.4.4 format minifloat
-{- mini2float :: Int -> Double
-mini2float w |  e == 0   = fromIntegral w / 8.0
-             | otherwise = fromIntegral (m+16) * 2 ^^ (e-4)
-
-  where
-    m = w .&. 0xF
-    e = w `shiftR` 4 -}
 
 crap_data :: [BamRaw]
 crap_data = map encodeBamEntry [br nucC, br nucT]

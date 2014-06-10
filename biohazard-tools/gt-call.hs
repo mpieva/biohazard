@@ -1,5 +1,5 @@
 {-# LANGUAGE RecordWildCards, BangPatterns, OverloadedStrings #-}
--- Command line driver for genotype calling.
+-- Command line driver for simple genotype calling.
 
 import Bio.Base
 import Bio.Bam.Header
@@ -8,7 +8,6 @@ import Bio.Bam.Pileup
 import Bio.Iteratee
 import Control.Applicative
 import Control.Monad
-import Data.Maybe
 import System.Console.GetOpt
 import System.Environment
 import System.Exit
@@ -18,9 +17,7 @@ import qualified Data.ByteString.Char8          as S
 import qualified Data.Iteratee                  as I
 import qualified Data.Vector.Unboxed            as V
 
-import Debug.Trace
-
--- Ultimately, we'll produce a VCF file looking somewhat like this:
+-- Ultimately, we might produce a VCF file looking somewhat like this:
 --
 -- ##FORMAT=<ID=A,Number=2,Type=Integer,Description="Number of A bases on forward and reverse strand">
 -- ##FORMAT=<ID=C,Number=2,Type=Integer,Description="Number of C bases on forward and reverse strand">
@@ -112,15 +109,19 @@ import Debug.Trace
 data Ploidy = Hap | Dip deriving Show
 
 data Conf = Conf {
-    conf_output :: (Handle -> IO ()) -> IO (),
-    conf_sample :: S.ByteString,
-    conf_ploidy :: S.ByteString -> Ploidy,
-    conf_loverhang :: Maybe Double,
-    conf_roverhang :: Maybe Double,
-    conf_ds_deam :: Double,
-    conf_ss_deam :: Double }
+    conf_output      :: (Handle -> IO ()) -> IO (),
+    conf_sample      :: S.ByteString,
+    conf_ploidy      :: S.ByteString -> Ploidy,
+    conf_loverhang   :: Maybe Double,
+    conf_roverhang   :: Maybe Double,
+    conf_ds_deam     :: Double,
+    conf_ss_deam     :: Double,
+    conf_prior_het   :: Prob,
+    conf_prior_indel :: Prob }
 
-defaultConf = Conf ($ stdout) "John_Doe" (const Dip) Nothing Nothing 0.02 0.45
+defaultConf :: Conf
+defaultConf = Conf ($ stdout) "John_Doe" (const Dip) Nothing Nothing
+                   0.02 0.45 (qualToProb $ Q 30) (qualToProb $ Q 45)
 
 options :: [OptDescr (Conf -> IO Conf)]
 options = [
@@ -132,9 +133,12 @@ options = [
                                             (ReqArg set_loverhang "LEN")    "Expected 5' overhang length is LEN",
     Option "r" ["right-overhang-length"]    (ReqArg set_roverhang "LEN")    "Expected 3' overhang length is LEN, assume single-strand prep",
     Option "d" ["deamination-rate","ds-deamination-rate","double-strand-deamination-rate"]
-                                            (ReqArg set_ds_deam "FRAC")      "Deamination rate in double stranded section is FRAC",
+                                            (ReqArg set_ds_deam "FRAC")     "Deamination rate in double stranded section is FRAC",
     Option "s" ["ss-deamination-rate","single-strand-deamination-rate"]
                                             (ReqArg set_ss_deam "FRAC")     "Deamination rate in single stranded section is FRAC",
+    Option "p" ["priot-heterozygosity", "heterozygosity"]
+                                            (ReqArg set_phet "PROB")        "Set prior for a heterozygous variant to PROB",
+    Option "P" ["priot-indel","indel-rate"] (ReqArg set_pindel "PROB")      "Set prior for an indel variant to PROB",
     Option "h?" ["help","usage"]            (NoArg disp_usage)              "Display this message" ]
   where
     disp_usage _ = do pn <- getProgName
@@ -150,19 +154,22 @@ options = [
     set_haploid arg c = return $ c { conf_ploidy = \chr -> if S.pack arg `S.isPrefixOf` chr then Hap else conf_ploidy c chr }
     set_diploid arg c = return $ c { conf_ploidy = \chr -> if S.pack arg `S.isPrefixOf` chr then Dip else conf_ploidy c chr }
 
-    set_loverhang a c = (\l -> c { conf_loverhang = Just l }) <$> readIO a
-    set_roverhang a c = (\l -> c { conf_roverhang = Just l }) <$> readIO a
-    set_ss_deam   a c = (\r -> c { conf_ss_deam   =      r }) <$> readIO a
-    set_ds_deam   a c = (\r -> c { conf_ds_deam   =      r }) <$> readIO a
+    set_loverhang a c = (\l -> c { conf_loverhang   = Just   l }) <$> readIO a
+    set_roverhang a c = (\l -> c { conf_roverhang   = Just   l }) <$> readIO a
+    set_ss_deam   a c = (\r -> c { conf_ss_deam     =        r }) <$> readIO a
+    set_ds_deam   a c = (\r -> c { conf_ds_deam     =        r }) <$> readIO a
+    set_phet      a c = (\r -> c { conf_prior_het   = toProb r }) <$> readIO a
+    set_pindel    a c = (\r -> c { conf_prior_indel = toProb r }) <$> readIO a
 
-no_damage = hPutStrLn stderr "using no damage model" >> return noDamage
-ss_damage p = hPutStrLn stderr ("using single strand damage model with " ++ show p) >> return (ssDamage p)
-ds_damage p = hPutStrLn stderr ("using double strand damage model with " ++ show p) >> return (dsDamage p)
-
+main :: IO ()
 main = do
     (opts, files, errs) <- getOpt Permute options <$> getArgs
     unless (null errs) $ mapM_ (hPutStrLn stderr) errs >> exitFailure
     Conf{..} <- foldl (>>=) (return defaultConf) opts
+
+    let no_damage = hPutStrLn stderr "using no damage model" >> return noDamage
+        ss_damage p = hPutStrLn stderr ("using single strand damage model with " ++ show p) >> return (ssDamage p)
+        ds_damage p = hPutStrLn stderr ("using double strand damage model with " ++ show p) >> return (dsDamage p)
 
     dmg_model <- case (conf_loverhang, conf_roverhang) of
             (Nothing, Nothing) -> no_damage
@@ -181,7 +188,9 @@ main = do
                 out' <- lift $ enumPure1Chunk [S.concat [">", conf_sample, "--", sname]] out
                 pileup dmg_model =$
                     mapStream (calls $! conf_ploidy sname) =$
-                    convStream format_either_call =$
+                    convStream (headStream >>= either
+                        (format_snp_call conf_prior_het)
+                        (format_indel_call conf_prior_indel)) =$
                     collect_lines out') $
             mapStreamM_ (S.hPut ohdl . (flip S.snoc '\n'))
 
@@ -195,20 +204,16 @@ calls ploidy = either (Left . fmap (simple_snp_call pl)) (Right . fmap (simple_i
 
 type EitherCall = Either (VarCall (GL,())) (VarCall (GL, IndelVars))
 
-format_either_call :: Monad m => Iteratee [EitherCall] m S.ByteString
-format_either_call = headStream >>= either format_snp_call format_indel_call
-
 -- | Formatting a SNP call.  If this was a haplopid call (four GL
 -- values), we pick the most likely base and pass it on.  If it was
 -- diploid, we pick the most likely dinucleotide and pass it on.
---
--- XXX This needs a prior for heterozygosity.  Done properly, it needs a
---     notion of reference base and a prior for being variant.
 
-format_snp_call :: Monad m => VarCall (GL,()) -> Iteratee [EitherCall] m S.ByteString
-format_snp_call vc | V.length gl ==  4 = return $ S.take 1 $ S.drop (maxQualIndex gl) hapbases
-                   | V.length gl == 10 = return $ S.take 1 $ S.drop (maxQualIndex gl) dipbases
+format_snp_call :: Monad m => Prob -> VarCall (GL,()) -> Iteratee [EitherCall] m S.ByteString
+format_snp_call p vc | V.length gl ==  4 = return $ S.take 1 $ S.drop (maxQualIndex gl) hapbases
+                     | V.length gl == 10 = return $ S.take 1 $ S.drop (maxQualIndex $ V.zipWith (*) ps gl) dipbases
+                     | otherwise = error "Thou shalt not try to format_snp_call unless thou madeth a haploid or diploid call!"
     where (gl,()) = vc_vars vc
+          ps = V.fromListN 10 [p,1,p,1,1,p,1,1,1,p]
           hapbases = "NACGT"
           dipbases = "NAMCRSGWYKT"
 
@@ -217,22 +222,23 @@ format_snp_call vc | V.length gl ==  4 = return $ S.take 1 $ S.drop (maxQualInde
 -- deleted according to the chosen variant.  Note that this will blow up
 -- unless the call was done assuming a haploid genome (which is
 -- guaranteeed /in this program/)!
---
--- XXX This needs a prior for being variant.
-format_indel_call :: Monad m => VarCall (GL, IndelVars) -> Iteratee [EitherCall] m S.ByteString
-format_indel_call vc | V.length gl == length vars = I.dropWhile skip >> return (S.pack $ show ins)
-                     | otherwise = error "Thou shalt not have calleth format_indel_call unless thou madeth a haploid call!"
+format_indel_call :: Monad m => Prob -> VarCall (GL, IndelVars) -> Iteratee [EitherCall] m S.ByteString
+format_indel_call p vc | V.length gl == length vars = I.dropWhile skip >> return (S.pack $ show ins)
+                       | otherwise = error "Thou shalt not have calleth format_indel_call unless thou madeth a haploid call!"
     where
         (gl,vars) = vc_vars vc
-        (del,ins) = ( (0,[]) : vars ) !! maxQualIndex gl
+        eff_gl = V.fromList $ zipWith adjust (V.toList gl) vars
+        adjust q (0,[]) = q ; adjust q _ = p * q
+
+        (del,ins) = ( (0,[]) : vars ) !! maxQualIndex eff_gl
         skip evc  = let rs  = either vc_refseq vc_refseq evc
                         pos = either vc_pos    vc_pos    evc
                     in rs == vc_refseq vc && pos < vc_pos vc + del
 
-maxQualIndex :: V.Vector ErrProb -> Int
-maxQualIndex vec = if m / m2 > 2 then i else 0
+maxQualIndex :: V.Vector Prob -> Int
+maxQualIndex vec = case V.ifoldl' step (0, 0, 0) vec of
+    (!i, !m, !m2) -> if m / m2 > 2 then i else 0
   where
-    (!i, !m, !m2) = V.ifoldl' step (0, 0, 0) vec
     step (!i,!m,!m2) j v = if v >= m then (j+1,v,m) else (i,m,m2)
 
 collect_lines :: Monad m => Enumeratee S.ByteString [S.ByteString] m r
@@ -248,10 +254,10 @@ same_ref a b = br_rname a == br_rname b
 
 by_groups :: ( Monad m, ListLike s a, Nullable s )
           => (a -> a -> Bool) -> (a -> Enumeratee s b m r) -> Enumeratee s b m r
-by_groups pred k out = do
+by_groups pr k out = do
     mhd <- peekStream
     case mhd of
         Nothing -> return out
-        Just hd -> do out' <- joinI $ takeWhileE (pred hd) $ k hd out
-                      by_groups pred k out'
+        Just hd -> do out' <- joinI $ takeWhileE (pr hd) $ k hd out
+                      by_groups pr k out'
 

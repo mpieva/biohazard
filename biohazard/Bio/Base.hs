@@ -6,8 +6,8 @@
 
 module Bio.Base(
     Nucleotide(..),
-    Qual(..), qualFromErrProb, errProbFromQual,
-    ErrProb(..), toErrProb, fromErrProb, qualToErrProb,
+    Qual(..), toQual, fromQual,
+    Prob(..), toProb, fromProb, qualToProb,
 
     Word8,
     Sequence,
@@ -91,54 +91,53 @@ newtype Qual = Q { unQ :: Word8 } deriving
 instance Show Qual where
     showsPrec p (Q q) = (:) 'q' . showsPrec p q
 
-qualFromErrProb :: (Floating a, RealFrac a) => a -> Qual
-qualFromErrProb a = Q $ round (-10 * log a / log 10)
+toQual :: (Floating a, RealFrac a) => a -> Qual
+toQual a = Q $ round (-10 * log a / log 10)
 
-errProbFromQual :: Qual -> Double
-errProbFromQual (Q q) = 10 ** (-(fromIntegral q) / 10)
+fromQual :: Qual -> Double
+fromQual (Q q) = 10 ** (-(fromIntegral q) / 10)
 
--- | A positive 'Double' value stored in log domain.  The scale is the
--- same \"Phred\" scale used for 'Qual' values, but here the semantics
--- derive from the stored 'Double' value.  In particular, the smaller
--- 'ErrProb' value would be the greater 'Qual'
-newtype ErrProb = EP { unEP :: Double } deriving
+-- | A positive 'Double' value stored in log domain.  We store the
+-- natural logarithm (makes computation easier), but allow conversions
+-- to the familiar \"Phred\" scale used for 'Qual' values.
+newtype Prob = Pr { unPr :: Double } deriving
     ( Eq, Storable, VG.Vector VU.Vector, VM.MVector VU.MVector, VU.Unbox )
 
-instance Show ErrProb where
-    showsPrec _ (EP q) = (:) 'q' . showFFloat (Just 1) q
+instance Show Prob where
+    showsPrec _ (Pr q) = (:) 'q' . showFFloat (Just 1) q -- XXX
 
-instance Ord ErrProb where
-    EP a `compare` EP b = b `compare` a
-    EP a   `min`   EP b = EP (a `max` b)
-    EP a   `max`   EP b = EP (a `min` b)
+instance Ord Prob where
+    Pr a `compare` Pr b = b `compare` a
+    Pr a   `min`   Pr b = Pr (a `max` b)
+    Pr a   `max`   Pr b = Pr (a `min` b)
 
-    EP a <  EP b  =  b  < a
-    EP a <= EP b  =  b <= a
-    EP a >  EP b  =  b  > a
-    EP a >= EP b  =  b >= a
+    Pr a <  Pr b  =  b  < a
+    Pr a <= Pr b  =  b <= a
+    Pr a >  Pr b  =  b  > a
+    Pr a >= Pr b  =  b >= a
 
-instance Num ErrProb where
-    fromInteger a = EP (-10 * log (fromInteger a) / log 10)
-    EP a + EP b = EP (a `phredplus`  b)
-    EP a - EP b = EP (a `phredminus` b)
-    EP a * EP b = EP (a + b)
+instance Num Prob where
+    fromInteger a = Pr (-10 * log (fromInteger a) / log 10) -- XXX
+    Pr a + Pr b = Pr (a `phredplus`  b) -- XXX
+    Pr a - Pr b = Pr (a `phredminus` b) -- XXX
+    Pr a * Pr b = Pr (a + b)
     negate    _ = error "no negative error probabilities"
     abs       x = x
-    signum    _ = EP 0
+    signum    _ = Pr 0
 
-instance Fractional ErrProb where
-    fromRational a = EP (-10 * log (fromRational a) / log 10)
-    EP a  /  EP b = EP (a - b)
-    recip  (EP a) = EP (negate a)
+instance Fractional Prob where
+    fromRational a = Pr (-10 * log (fromRational a) / log 10) -- XXX
+    Pr a  /  Pr b = Pr (a - b)
+    recip  (Pr a) = Pr (negate a)
 
-toErrProb :: Double -> ErrProb
-toErrProb p = EP (-10 * log p / log 10)
+toProb :: Double -> Prob
+toProb p = Pr (-10 * log p / log 10) -- XXX
 
-fromErrProb :: ErrProb -> Double
-fromErrProb (EP q) = 10 ** (-q / 10)
+fromProb :: Prob -> Double
+fromProb (Pr q) = 10 ** (-q / 10) -- XXX
 
-qualToErrProb :: Qual -> ErrProb
-qualToErrProb (Q q) = EP (fromIntegral q)
+qualToProb :: Qual -> Prob
+qualToProb (Q q) = Pr (fromIntegral q) -- XXX
 
 gap, nucA, nucC, nucG, nucT, nucN :: Nucleotide
 gap  = N 0
