@@ -607,8 +607,9 @@ wrapTo l br = if overhangs then do_wrap else [br]
 -- don't).  The parts that would be skipped if we were splitting lists
 -- are replaced by soft masks.
 split_ecig :: Int -> ECig -> (ECig, ECig)
-split_ecig _ Empty = (Empty,        Empty)
-split_ecig 0   ecs = (mask_all ecs,   ecs)
+split_ecig _    WithMD = (WithMD,       WithMD)
+split_ecig _ WithoutMD = (WithoutMD, WithoutMD)
+split_ecig 0       ecs = (mask_all ecs,    ecs)
 
 split_ecig i (Ins' n ecs) = case split_ecig i ecs of (u,v) -> (Ins' n u, SMa' n v)
 split_ecig i (SMa' n ecs) = case split_ecig i ecs of (u,v) -> (SMa' n u, SMa' n v)
@@ -627,7 +628,8 @@ split_ecig i (Nop' n ecs)
     | otherwise = (Nop' i $ mask_all ecs, Nop' (n-i) ecs)
 
 mask_all :: ECig -> ECig
-mask_all Empty = Empty
+mask_all      WithMD = WithMD
+mask_all   WithoutMD = WithoutMD
 mask_all (Nop' _ ec) =          mask_all ec
 mask_all (HMa' _ ec) =          mask_all ec
 mask_all (Pad' _ ec) =          mask_all ec
@@ -641,9 +643,11 @@ mask_all (SMa' n ec) = SMa' n $ mask_all ec
 -- worse when combined with MD.  Okay, we will support CIGAR (no "=" and
 -- "X" operations) and MD.  If we have MD on input, we generate it on
 -- output, too.  And in between, we break everything into /very small/
--- operations.
+-- operations.  (Yes, the two terminating constructors are a weird
+-- hack.)
 
-data ECig = Empty
+data ECig = WithMD                      -- terminate, do generate MD field
+          | WithoutMD                   -- terminate, don't bother with MD
           | Mat' Int ECig
           | Rep' Nucleotide ECig
           | Ins' Int ECig
@@ -657,27 +661,42 @@ data ECig = Empty
 toECig :: Cigar -> [MdOp] -> ECig
 toECig (Cigar cig) md = go cig md
   where
-    go [       ]             _  = Empty
-    go        cs (MdNum  0:mds) = go cs mds
-    go        cs (MdDel []:mds) = go cs mds
-    go ((_,0):cs)          mds  = go cs mds
+    go        cs  (MdNum  0:mds) = go cs mds
+    go        cs  (MdDel []:mds) = go cs mds
+    go ((_,0):cs)           mds  = go cs mds
+    go [        ] [            ] = WithMD               -- all was fine to the very end
+    go [        ]              _ = WithoutMD            -- here it wasn't fine
 
-    go ((Mat,n):cs) [           ]      = Mat'   n  $ go            cs              [ ]
-    go ((Mat,n):cs) (MdRep x:mds)      = Rep'   x  $ go ((Mat,n-1):cs)             mds
-    go ((Mat,n):cs) (MdDel z:mds)      = Mat'   n  $ go            cs     (MdDel z:mds)
+    go ((Mat,n):cs) (MdRep x:mds)      = Rep'   x  $ go  ((Mat,n-1):cs)             mds
     go ((Mat,n):cs) (MdNum m:mds)
-       | n < m                         = Mat'   n  $ go            cs (MdNum (m-n):mds)
-       | n > m                         = Mat'   m  $ go ((Mat,n-m):cs)             mds
-       | otherwise                     = Mat'   n  $ go            cs              mds
+       | n < m                         = Mat'   n  $ go             cs (MdNum (m-n):mds)
+       | n > m                         = Mat'   m  $ go  ((Mat,n-m):cs)             mds
+       | otherwise                     = Mat'   n  $ go             cs              mds
+    go ((Mat,n):cs)            _       = Mat'   n  $ go'            cs
 
-    go ((Ins,n):cs)               mds  = Ins'   n  $ go            cs              mds
-    go ((Del,n):cs) (MdDel (x:xs):mds) = Del'   x  $ go ((Del,n-1):cs)   (MdDel xs:mds)
-    go ((Del,n):cs)               mds  = Del' nucN $ go ((Del,n-1):cs)             mds
+    go ((Ins,n):cs)               mds  = Ins'   n  $ go             cs              mds
+    go ((Del,n):cs) (MdDel (x:xs):mds) = Del'   x  $ go  ((Del,n-1):cs)   (MdDel xs:mds)
+    go ((Del,n):cs)                 _  = Del' nucN $ go' ((Del,n-1):cs)
 
     go ((Nop,n):cs) mds = Nop' n $ go cs mds
     go ((SMa,n):cs) mds = SMa' n $ go cs mds
     go ((HMa,n):cs) mds = HMa' n $ go cs mds
     go ((Pad,n):cs) mds = Pad' n $ go cs mds
+
+    -- We jump here once the MD fiels ran out early or was messed up.
+    -- We no longer bother with it (this also happens if the MD isn't
+    -- present to begin with).
+    go' ((_,0):cs)   = go' cs
+    go' [        ]   = WithoutMD                        -- we didn't have MD or it was broken
+
+    go' ((Mat,n):cs) = Mat'   n  $ go'            cs
+    go' ((Ins,n):cs) = Ins'   n  $ go'            cs
+    go' ((Del,n):cs) = Del' nucN $ go' ((Del,n-1):cs)
+
+    go' ((Nop,n):cs) = Nop'   n  $ go' cs
+    go' ((SMa,n):cs) = SMa'   n  $ go' cs
+    go' ((HMa,n):cs) = HMa'   n  $ go' cs
+    go' ((Pad,n):cs) = Pad'   n  $ go' cs
 
 
 -- We normalize matches, deletions and soft masks, because these are the
@@ -686,7 +705,9 @@ toECig (Cigar cig) md = go cig md
 toCigar :: ECig -> Cigar
 toCigar = Cigar . go
   where
-    go Empty = []
+    go       WithMD = []
+    go    WithoutMD = []
+
     go (Ins' n ecs) = (Ins,n) : go ecs
     go (Nop' n ecs) = (Nop,n) : go ecs
     go (HMa' n ecs) = (HMa,n) : go ecs
@@ -708,27 +729,32 @@ toCigar = Cigar . go
 
 
 
+-- | Create an MD field from an extended CIGAR and place it in a record.
+-- We build it piecemeal (in 'go'), call out to 'addNum', 'addRep',
+-- 'addDel' to make sure the operations are not generated in a
+-- degenerate manner, and finally check if we're even supposed to create
+-- an MD field.
 setMD :: BamRec -> ECig -> BamRec
-setMD b ec = if any interesting md then b { b_exts = M.insert "MD" (Text $ showMd md) (b_exts b) }
-                                   else b { b_exts = M.delete "MD" (b_exts b) }
+setMD b ec = case go ec of
+    Just md -> b { b_exts = M.insert "MD" (Text $ showMd md) (b_exts b) }
+    Nothing -> b { b_exts = M.delete "MD"                    (b_exts b) }
   where
-    md = norm $ go ec
+    go  WithMD      = Just []
+    go  WithoutMD   = Nothing
 
-    go  Empty       = []
     go (Ins' _ ecs) = go ecs
     go (Nop' _ ecs) = go ecs
     go (SMa' _ ecs) = go ecs
     go (HMa' _ ecs) = go ecs
     go (Pad' _ ecs) = go ecs
-    go (Mat' n ecs) = MdNum  n  : go ecs
-    go (Rep' x ecs) = MdRep  x  : go ecs
-    go (Del' x ecs) = MdDel [x] : go ecs
+    go (Mat' n ecs) = (if n ==  0 then id else fmap (addNum n)) $ go ecs
+    go (Rep' x ecs) = (if isGap x then id else fmap (addRep x)) $ go ecs
+    go (Del' x ecs) = (if isGap x then id else fmap (addDel x)) $ go ecs
 
-    norm (MdNum n : MdNum m : mds) = norm $ MdNum (n+m) : mds
-    norm (MdDel u : MdDel v : mds) = norm $ MdDel (u++v) : mds
-    norm                (op : mds) = op : norm mds
-    norm                        [] = []
+    addNum n (MdNum m : mds) = MdNum (n+m) : mds
+    addNum n            mds  = MdNum   n   : mds
 
-    interesting (MdRep n) = n /= gap
-    interesting (MdDel ns) = all (/= gap) ns
-    interesting _ = False
+    addRep x            mds  = MdRep   x   : mds
+
+    addDel x (MdDel y : mds) = MdDel (x:y) : mds
+    addDel x            mds  = MdDel  [x]  : mds
