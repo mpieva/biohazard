@@ -1,3 +1,4 @@
+{-# LANGUAGE RecordWildCards #-}
 {-# OPTIONS_GHC -Wall #-}
 import Anno
 import Seqs
@@ -32,14 +33,14 @@ do_anno smp_name raw_sample = (tab, fa)
 
 
 to_fasta :: S.ByteString -> S.ByteString -> (Int -> Int) -> Anno -> [String]
-to_fasta smp_name smp f g = case what g of CDS -> go ; CDS' -> go ; _ -> []
+to_fasta smp_name smp f Gene{..} = case what of CDS -> go ; CDS' -> go ; _ -> []
   where
-    go = let s' = f (start g)
-             e' = f (end g)
+    go = let s' = f start
+             e' = f end
              prot = case init $ get_protein smp (s',e') of
                         'I' : rest -> 'M' : rest ; x -> x
              hdr = printf ">%s [gene=%s] [protein=%s] [location=%s]"
-                          (S.unpack smp_name) (name g) (Anno.product g) loc
+                          (S.unpack smp_name) name prod loc
              loc | s' <= e'  = shows s' ".." ++ show e'
                  | otherwise = "complement(" ++ shows e' ".." ++ shows s' ")"
          in hdr : chunk prot

@@ -10,17 +10,13 @@ import Control.Monad
 import Control.Monad.ST (runST)
 import Data.Bits
 import Data.List (group)
-import Data.Vector.Unboxed ((!))
 import Data.Sequence ( (<|), (><), ViewL((:<)) )
 
 import qualified Data.ByteString             as S
 import qualified Data.Foldable               as F
-import qualified Data.IntMap                 as I
 import qualified Data.Sequence               as Z
 import qualified Data.Vector.Unboxed         as U
 import qualified Data.Vector.Unboxed.Mutable as UM
-
-import Debug.Trace
 
 data Base = A | C | G | T | None
   deriving (Eq, Ord, Enum, Show)
@@ -34,7 +30,7 @@ refseq_len :: RefSeq -> Int
 refseq_len (RS v) = U.length v `div` 5
 
 prob_of :: Base -> Int -> RefSeq -> Word8
-prob_of b i (RS v) = v ! ( 5*i + fromEnum b )
+prob_of b i (RS v) = indexV "prob_of" v ( 5*i + fromEnum b )
 
 -- | Turns a sequence into probabilities.  @Right n@ is an ordinary
 -- 'Nucleotide', @Left n@ is one we think might be absent (e.g. because
@@ -73,7 +69,7 @@ newtype QuerySeq = QS { unQS :: U.Vector Word8 } deriving Show
 -- | Prepare query for subsequent alignment to the forward strand.
 prep_query_fwd :: BamRaw -> QuerySeq
 prep_query_fwd br = QS $ U.fromListN len
-    [ q `shiftL` 2 .|. code ! b | i <- [0 .. len-1]
+    [ q `shiftL` 2 .|. indexV "prep_query_fwd" code b | i <- [0 .. len-1]
     , let b = fromIntegral $ unN $ br_seq_at  br i
     , let q = fromIntegral $ unQ $ br_qual_at br i ]
   where
@@ -126,12 +122,12 @@ align gp (RS rs) (QS qs) (RP p0) (BW bw_) = runST (do
             where ix = bw*row + col
 
     let score qpos    _ | qpos < 0 || qpos >= U.length qs = error $ "Read from QS: " ++ show qpos
-        score qpos rpos = let base = (qs ! qpos) .&. 3 :: Word8
-                              qual = (qs ! qpos) `shiftR` 2 :: Word8
+        score qpos rpos = let base = (indexV "align/score/base" qs qpos) .&. 3 :: Word8
+                              qual = (indexV "align/score/qual" qs qpos) `shiftR` 2 :: Word8
                               prob = let ix = 5*rpos + fromIntegral base in
                                      if ix < 0 then error ("Huh? " ++ show ix) else
-                                     if ix < U.length rs then rs ! ix else
-                                     if ix - U.length rs < U.length rs then rs ! (ix - U.length rs) :: Word8 else
+                                     if ix < U.length rs then indexV "align/score/prob/A" rs ix else
+                                     if ix - U.length rs < U.length rs then indexV "align/score/prob/B" rs (ix - U.length rs) :: Word8 else
                                      error ("Huh? " ++ show (ix,qpos,rpos,p0,base))
 
                               -- Improbability of a mismatch, it's the
@@ -156,8 +152,8 @@ align gp (RS rs) (QS qs) (RP p0) (BW bw_) = runST (do
 
     let gscore rpos = let prob = let ix = 5*rpos + 4 in
                                  if ix < 0 then error ("Huh? " ++ show ix) else
-                                     if ix < U.length rs then rs ! ix else
-                                     if ix - U.length rs < U.length rs then rs ! (ix - U.length rs) :: Word8 else
+                                     if ix < U.length rs then indexV "align/gscore/prob/A" rs ix else
+                                     if ix - U.length rs < U.length rs then indexV "align/gscore/prob/B" rs (ix - U.length rs) :: Word8 else
                                      error ("Huh? " ++ show (ix,rpos,p0))
                           in min gp $ fromIntegral prob
 
@@ -217,7 +213,8 @@ mkNC !i !b | U.length b /= 5 = error "mkNC"
 -- A deletion is a vote against all bases, an insert is a vote for how
 -- ever many bases.  The first five values sum up to the total votes so
 -- far, and they all count as votes against any further extension to an
--- insert.
+-- insert.  We start with five pseudo-votes to get the numerics under
+-- control (or to have a uniform Dirichlet-prior, if you prefer).
 --
 -- Note that this logic was arrived at by "thinking hard".  A clean way
 -- to do it is to maximize the alignment score expected in the next
@@ -303,7 +300,7 @@ finalize_ref_seq (NRS z) =
   where
     unpack (NC ins bas) k = map5 call ins ++ call bas : k
     map5 f v = [ f (U.slice i 5 v) | i <- [0, 5 .. U.length v - 5] ]
-    call v = U.map (\x -> round $ (-10) / log 10 * log ((total-x) / total)) v where total = U.sum v
+    call v = U.map (\x -> round $ (-10) / log 10 * log ((x+1) / total)) v where total = U.sum v + 5
 
     tolen (NC ins _bas) k = U.length ins `div` 5 + 1 : k
 
@@ -311,3 +308,9 @@ finalize_ref_seq (NRS z) =
 type XTab = Z.Seq Int
 
 
+{-# INLINE indexV #-}
+indexV :: String -> U.Vector Word8 -> Int -> Word8
+-- indexV m v i | i  <          0 = error $ m ++ ": index too large"
+             -- | i >= U.length v = error $ m ++ ": negative index"
+             -- | otherwise       = v U.! i
+indexV _ = (U.!)

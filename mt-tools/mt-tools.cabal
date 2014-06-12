@@ -16,6 +16,18 @@ Extra-Source-Files:  man/man1/mt-anno.1
 Cabal-Version:       >=1.8
 Build-Type:          Custom
 
+executable afroengineer
+  Main-Is:             afroengineer.hs
+  Other-Modules:       Align, SimpleSeed
+  Build-Depends:       base == 4.*,
+                       bytestring, 
+                       biohazard == 0.5.6,
+                       containers >= 0.4.1 && < 0.6, 
+                       unordered-containers == 0.2.*,
+                       array == 0.4.*,
+                       vector >= 0.9 && < 0.11,
+                       iteratee == 0.8.9.*
+
 executable mt-anno
   Main-Is:             mt-anno.hs
   Other-Modules:       Anno, Seqs, Xlate
@@ -31,16 +43,4 @@ executable mt-ccheck
                        biohazard == 0.5.6,
                        containers >= 0.4.1 && < 0.6,
                        unordered-containers == 0.2.*
-
-executable mt-cobble
-  Main-Is:             mt-cobble.hs
-  Other-Modules:       Align, SimpleSeed
-  Build-Depends:       base == 4.*,
-                       bytestring, 
-                       biohazard == 0.5.6,
-                       containers >= 0.4.1 && < 0.6, 
-                       unordered-containers == 0.2.*,
-                       array == 0.4.*,
-                       vector >= 0.9 && < 0.11,
-                       iteratee == 0.8.9.*
 

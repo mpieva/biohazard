@@ -1,3 +1,4 @@
+{-# LANGUAGE RecordWildCards #-}
 {-# OPTIONS_GHC -Wall #-}
 module Anno where
 
@@ -10,13 +11,13 @@ to_tab :: String -> [Anno] -> [String]
 to_tab nm ann = (">Feature " ++ nm) : (map (intercalate "\t") $ concatMap to_tab1 ann)
   where
     to_tab1 :: Anno -> [[String]]
-    to_tab1 (Gene s e n syns what ps ns) =
-        [ show s, show e, label what n ] :
-        ( if has_gene what then [[ "", "", "", "gene", n ]] else [] ) ++
+    to_tab1 Gene{..} =
+        [ show start, show end, label what name ] :
+        ( if has_gene what then [[ "", "", "", "gene", name ]] else [] ) ++
         [ [ "", "", "", "gene_syn", sy ] | sy <- syns ] ++
-        [ [ show s, show e, w ] | w <- describe what ] ++
-        [ [ "", "", "", "product", p ] | p <- [ps], not (null p) ] ++
-        [ [ "", "", "", "note", n ] | n <- ns ] ++
+        [ [ show start, show end, w ] | w <- describe what ] ++
+        [ [ "", "", "", "product", p ] | p <- [prod], not (null p) ] ++
+        [ [ "", "", "", "note", n ] | n <- notes ] ++
         more what
 
     describe CDS = ["CDS"]
@@ -39,12 +40,12 @@ to_tab nm ann = (">Feature " ++ nm) : (map (intercalate "\t") $ concatMap to_tab
 
 data Anno
     = Gene { start :: Int
-           , end :: Int
-           , name :: String
-           , syn :: [String]
-           , what :: What
-           , product :: String
-           , note :: [String] }
+           , end   :: Int
+           , name  :: String
+           , syns  :: [String]
+           , what  :: What
+           , prod  :: String
+           , notes :: [String] }
     deriving Show
 
 data What = CDS | CDS' | TRNA | RRNA | Other | STS String deriving Show

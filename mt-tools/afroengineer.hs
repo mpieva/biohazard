@@ -1,7 +1,8 @@
 {-# LANGUAGE OverloadedStrings, BangPatterns, RecordWildCards #-}
 {-# OPTIONS_GHC -Wall #-}
 
--- Cobble up a mitochondrion, or something similar.
+-- Cobble up a mitochondrion, or something similar.  This is not an
+-- assembly, but something that could serve in stead of one :)
 --
 -- The goal is to reconstruct a mitochondrion (or similar small, haploid
 -- locus) from a set of sequencing reads and a reference sequence.  The
@@ -36,6 +37,7 @@ import qualified Data.Map                   as M
 import qualified Data.Sequence              as Z
 import qualified Data.Vector.Unboxed        as U
 
+import Debug.Trace
 
 -- Read a FastA file, drop the names, yield the sequences.
 readFasta :: L.ByteString -> [( S.ByteString, [Either Nucleotide Nucleotide] )]
@@ -109,7 +111,7 @@ main = do
                            case conf_cal_outputs of Nothing -> return ()
                                                     Just nf -> write_ref_fasta (nf n) n newref
                            putStrLn $ "Round " ++ shows n ": Kept " ++ shows (length queries) " queries."
-                           round (n+1) (\out -> enumPure1Chunk queries >=> run $ roundN undefined out)
+                           round (n+1) (\out -> enumPure1Chunk queries >=> run $ roundN newref out)
 
     round 1 (\out -> concatInputs files >=> run $ \_ -> round1 sm rs out)
 
@@ -118,27 +120,6 @@ main = do
     return ()
   where
 
-{- XXX
-add_to_refseq' :: MonadIO m => NewRefSeq -> QuerySeq -> AlignResult -> m NewRefSeq
-add_to_refseq' nrs@(NRS v) qs res = do
-    liftIO $ print (viterbi_position res, viterbi_score res, viterbi_backtrace res)
-    liftIO $ print $ take 200 $ F.foldr foo [] v
-    liftIO $ print $ take 200 $ ref_to_ascii $ finalize_ref_seq nrs
-    let nrs' = add_to_refseq nrs qs res
-    liftIO $ print {- $ take 200 -} $ filter (not . U.all (==0)) $ F.foldr foo [] v
-    liftIO $ print $ take 200 $ ref_to_ascii $ finalize_ref_seq nrs'
-    return nrs'
-  where
-    foo (NC is b) l = is : b : l
-
-
-test :: AlignResult
-test = align 5 rs qs (RP 2) (BW 3)
-  where
-    qs = prep_query_fwd $ encodeBamEntry $ nullBamRec { b_seq = U.fromList $ map toNucleotide "ACGT", b_qual = B.pack [20,21,22,23] }
-    -- qs = prep_query_fwd $ encodeBamEntry $ nullBamRec { b_seq = U.fromList $ map toNucleotide "AC", b_qual = B.pack [20,21] }
-    rs = prep_reference $ map Right . map toNucleotide $ "AAAACCGTTTT"
--}
 
 -- General plan:  In the first round, we read, seed, align, call the new
 -- working sequence, and write a BAM file.  Then write the new working
@@ -150,29 +131,28 @@ test = align 5 rs qs (RP 2) (BW 3)
 
 round1 :: MonadIO m
        => SeedMap -> RefSeq
-       -> Iteratee [(QueryRec, AlignResult)] m ()        -- BAM output
-       -> Iteratee [BamRaw] m         -- queries in
-            (RefSeq, [QueryRec])  -- new reference & queries out
+       -> Iteratee [(QueryRec, AlignResult)] m ()       -- BAM output
+       -> Iteratee [BamRaw] m                           -- queries in
+            (RefSeq, [QueryRec])                        -- new reference & queries out
 round1 sm rs out = convStream (headStream >>= seed) =$ roundN rs out
   where
-    seed br | low_qual br = return []
     seed br = case do_seed (refseq_len rs) sm br of
-        Nothing    -> return []
-        Just (a,b) -> let bw = b - a - br_l_seq br
-                      in return $ if a >= 0
-                         then [ QR (br_qname br) (prep_query_fwd br) (RP   a ) (BW   bw ) ]
-                         else [ QR (br_qname br) (prep_query_rev br) (RP (-b)) (BW (-bw)) ]
+        _ | low_qual br        -> return []
+        Nothing                -> return []
+        Just (a,b) | a >= 0    -> return [ QR (br_qname br) (prep_query_fwd br) (RP   a ) (BW   bw ) ]
+                   | otherwise -> return [ QR (br_qname br) (prep_query_rev br) (RP (-b)) (BW (-bw)) ]
+            where bw = b - a - br_l_seq br
 
-    low_qual br = 2 * l1 > l2 where
+    low_qual br = 2 * l1 < l2 where
         l2 = br_l_seq br
         l1 = F.foldl' step 0 [0 .. l2-1]
         step a i = if br_qual_at br i > Q 10 then a+1 else a
 
 roundN :: Monad m
        => RefSeq
-       -> Iteratee [(QueryRec, AlignResult)] m ()        -- BAM output
-       -> Iteratee [QueryRec] m         -- queries in
-            (RefSeq, [QueryRec])  -- new reference & queries out
+       -> Iteratee [(QueryRec, AlignResult)] m ()       -- BAM output
+       -> Iteratee [QueryRec] m                         -- queries in
+            (RefSeq, [QueryRec])                        -- new reference & queries out
 roundN rs out = do
     ((), (rs', xtab), qry') <- mapStream aln =$ filterStream good =$
                                I.zip3 out mkref collect
@@ -192,19 +172,28 @@ roundN rs out = do
     collect :: Monad m => Iteratee [(QueryRec, AlignResult)] m [(Int,Int,QueryRec)]
     collect = foldStream (\l (!qr,!ar) ->
                 -- get alignment ends from ar, add some buffer
+                -- XXX does this yield invalid coordinates?
                 let !left  = viterbi_position ar - 8
                     !right = viterbi_position ar + 8 + cigarToAlnLen (viterbi_backtrace ar)
                 in (left,right,qr) : l) []
 
     xlate :: XTab -> (Int, Int, QueryRec) -> QueryRec
-    xlate tab (l,r,qr) =
-        let !left  = Z.index tab l
-            !right = Z.index tab r
-        in qr { qr_pos = RP left, qr_band = BW $ right - left }
+    xlate tab (l,r,qr)
+        | r <= l = error "confused reft and light"
+        | left < 0 || right < 0 = error "too far left"
+        | right' < left = error "flipped over"
+        | otherwise = qr { qr_pos = RP left, qr_band = BW $ right' - left }
+      where
+        lk x | x < 0            = Z.index tab (x + Z.length tab - 1)
+             | x < Z.length tab = Z.index tab  x
+             | otherwise        = Z.index tab (x - Z.length tab + 1)
 
-    new_coords qr rs = qr { qr_pos  = RP $ viterbi_position rs - pad
+        left = lk l ; right = lk r ; _ Z.:> newlen = Z.viewr tab
+        right' = if left < right then right else right + newlen
+
+    new_coords qr rr = qr { qr_pos  = RP $ viterbi_position rr - pad
                           , qr_band = BW $ (if reversed (qr_band qr) then negate else id) $
-                                      2*pad + max_bandwidth (viterbi_backtrace rs) }
+                                      2*pad + max_bandwidth (viterbi_backtrace rr) }
 
     reversed (BW x) = x < 0
 
@@ -244,10 +233,11 @@ write_iter_bam fp hdr = mapStream conv =$ writeBamFile fp hdr
         qname = qr_name `S.append` S.pack ("  " ++ showFFloat (Just 1) viterbi_score [])
         reversed (BW x) = x < 0
 
--- Call sequence and write to file.  We call a base only if all bases
--- together are more likely than a gap.  We call a weak base if the gap
--- has a probality of more than 30%.  The called base is the most
--- probable one.
+-- | Calls sequence and writes to file.  We call a base only if the gap
+-- has a probability lower than 50%.  We call a weak base if the gap has
+-- a probality of more than 25%.  If the most likely base is at least
+-- twice as likely as the second most likely one, we call it.  Else we
+-- call an N or n.
 write_ref_fasta :: FilePath -> Int -> RefSeq -> IO ()
 write_ref_fasta fp num rs = writeFile fp $ unlines $
     (">genotype_call-" ++ show num) : chunk 70 (ref_to_ascii rs)
@@ -256,10 +246,14 @@ write_ref_fasta fp num rs = writeFile fp $ unlines $
 
 ref_to_ascii :: RefSeq -> String
 ref_to_ascii (RS v) = [ base | i <- [0, 5 .. U.length v - 5]
-                             , let pgap = v U.! (i+4)
-                             , pgap <= 3
-                             , let letters = if pgap >= 1 then "acgtn" else "ACGTN"
-                             , let index = U.maxIndex (U.slice i 4 v)
-                             , let good = U.maximum (U.slice i 4 v) > 3
-                             , let base = S.index letters $ if good then index else 4 ]
-
+                             , let pgap = indexV "ref_to_ascii/pgap" v (i+4)
+                             , pgap > 3
+                             , let letters = if pgap <= 6 then "acgtn" else "ACGTN"
+                             , let (index, p1, p2) = minmin i 4
+                             , let good = p2 - p1 >= 3 -- probably nonsense
+                             , let base = S.index letters $ if good then index else  trace (show (U.slice i 5 v)) 4 ]
+  where
+    minmin i0 l = U.ifoldl' step (l, 255, 255) $ U.slice i0 l v
+    step (!i, !m, !n) j x | x <= m    = (j, x, m)
+                          | x <= n    = (i, m, x)
+                          | otherwise = (i, m, n)
