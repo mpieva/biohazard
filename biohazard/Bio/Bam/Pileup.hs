@@ -5,25 +5,20 @@ module Bio.Bam.Pileup where
 import Debug.Trace
 import Text.Printf
 
+import Bio.Adna
 import Bio.Base
 import Bio.Bam.Header
 import Bio.Bam.Raw
-import Bio.Bam.Rec
 import Bio.Iteratee
 
 import Control.Applicative
 import Control.Monad hiding ( mapM_ )
 import Control.Monad.Fix ( fix )
-import Data.Bits ( testBit )
 import Data.Foldable hiding ( sum, product )
-import Data.List ( tails, intercalate, sortBy )
 import Data.Ord
-import Numeric ( showFFloat )
 
 import qualified Data.ByteString        as B
 import qualified Data.Vector.Unboxed    as V
-import qualified Data.Set               as Set
-import qualified Data.Map               as M
 
 import Prelude hiding ( foldr, foldr1, concat, mapM_, all )
 
@@ -50,17 +45,8 @@ import Prelude hiding ( foldr, foldr1, concat, mapM_, all )
 -- care off, SNVs are treated separately as independent columns of the
 -- pileup.
 --
--- For aDNA, we need a substitution probability.  We have three options:
--- use an empirically determined PSSM, use an arithmetically defined
--- PSSM based on the /Johnson/ model, use a context sensitive PSSM based
--- on the /Johnson/ model and an alignment.  Using /Dindel/, actual
--- substitutions relative to a called haplotype would be taken into
--- account.  Since we're not going to do that, taking alignments into
--- account is difficult, somewhat approximate, and therefore not worth
--- the hassle.
---
 -- Regarding the error model, there's a choice between /samtools/ or the
--- naive model everybody else (GATK, RAsmus Nielsen, etc.) uses.  Naive
+-- naive model everybody else (GATK, Rasmus Nielsen, etc.) uses.  Naive
 -- is easy to marry to aDNA, samtools is (probably) better.  Either way,
 -- we introduce a number of parameters (@eta@ and @kappa@ for
 -- /samtools/, @lambda@, @delta@, @delta_ss@ for /Johnson/).  Running a
@@ -82,9 +68,9 @@ import Prelude hiding ( foldr, foldr1, concat, mapM_, all )
 -- Regarding output, we certainly don't want to write VCF or BCF.  (No
 -- VCF because it's ugly, no BCF, because the tool support is
 -- non-existent.)  It will definitely be something binary.  For the GL
--- values, small floating point formats may make sense: half-precision floating point's
--- representable range would be 6.1E-5 to 6.5E+5, 0.4.4 minifloat goes
--- from 0 to 63488.
+-- values, small floating point formats may make sense: half-precision
+-- floating point's representable range would be 6.1E-5 to 6.5E+5, 0.4.4
+-- minifloat from Bio.Util goes from 0 to 63488.
 
 
 -- *TODO*
@@ -93,20 +79,7 @@ import Prelude hiding ( foldr, foldr1, concat, mapM_, all )
 -- * Actual genotype calling.
 -- * ML fitting and evaluation of parameters for different possible
 --   error and damage models.
--- * Ploidy must be a variable; we definitely need calling for diploid
---   and haploid genomes; higher ploidy is nice to have if it comes at
---   acceptable cost.
-
--- | For likelihoods for bases @A, C, G, T@, one quality score.  Note
--- that we cannot roll the quality score into the probabilities:  the
--- @DB@ only describes changes that happened before sequencing, then
--- quality describes those that happen while sequencing.  The latter
--- behave differently (notably, they repeat semi-systematically).
-data DamagedBase = DB !Double !Double !Double !Double !Qual
-
-instance Show DamagedBase where
-    showsPrec _ (DB a c g t q) = unwordS $ [ showFFloat (Just 2) p | p <- [a,c,g,t] ] ++ [ shows q ]
-      where unwordS = foldr1 (\u v -> u . (:) ' ' . v)
+-- * Maybe specialize to ploidy one and two.
 
 -- | The primitive pieces for genotype calling:  A position, a base
 -- represented as four likelihoods, an inserted sequence, and the
@@ -205,115 +178,6 @@ decompose dm br
         isq cl = [ get_seq (dm br i) i | i <- [is..is+cl-1] ] : ins
 
 
--- | A 'DamageModel' is a function that gives likelihoods for all
--- possible four bases, given the sequenced base, the quality, and the
--- position in the read.  That means it can't take the actual alignment
--- into account... but nobody seems too keen on doing that anyway.
-type DamageModel = BamRaw           -- ^ the read itself
-                -> Int              -- ^ position in read
-                -> Nucleotide       -- ^ base
-                -> Qual             -- ^ quality score
-                -> DamagedBase      -- ^ results in four likelihoods
-
--- | 'DamageModel' for undamaged DNA.  The likelihoods follow directly
--- from the quality score.  This needs elaboration to see what to do
--- with amibiguity codes (even though those haven't actually been
--- observed in the wild).
-noDamage :: DamageModel
-noDamage _ _ b | b == nucA = DB 1 0 0 0
-               | b == nucC = DB 0 1 0 0
-               | b == nucG = DB 0 0 1 0
-               | b == nucT = DB 0 0 0 1
-               | otherwise = DB f f f f where f = 0.25
-
-
--- | 'DamageModel' for single stranded library prep.  Only one kind of
--- damage occurs (C to T), it occurs at low frequency ('delta_ds')
--- everywhere, at high frequency ('delta_ss') in single stranded parts,
--- and the overhang length is distributed exponentially with parameter
--- 'lambda'.
-
-data SsDamageParameters = SSD { ssd_sigma  :: !Double         -- deamination rate in ss DNA
-                              , ssd_delta  :: !Double         -- deamination rate in ds DNA
-                              , ssd_lambda :: !Double         -- expected overhang length at 5' end
-                              , ssd_kappa  :: !Double }       -- expected overhang length at 3' end
-  deriving Show
-
--- Forward strand first, C->T only; reverse strand next, G->A instead
--- N averages over all others, horizontally(!).  Distance from end
--- depends on strand, too :(
-ssDamage :: SsDamageParameters -> DamageModel
-ssDamage SSD{..} r i b = if br_isReversed r then ssd_rev else ssd_fwd
-  where
-    dq x y z w = DB (0.25*x) (0.25*y) (0.25*z) (0.25*w)
-    prob5 | ssd_lambda >= 0 = ssd_lambda / (1 + ssd_lambda)
-    prob3 | ssd_kappa  >= 0 = ssd_kappa  / (1 + ssd_kappa)
-
-    ssd_fwd | b == nucA = DB   1   0   0   0
-            | b == nucC = DB   0 (1-p) 0   0
-            | b == nucG = DB   0   0   1   0
-            | b == nucT = DB   0   p   0   1
-            | otherwise = dq   1 (1-p) 1 (1+p)
-      where
-        !lam5 = prob5 ^ (1+i)
-        !lam3 = prob3 ^ (br_l_seq r - i)
-        !lam  = lam3 + lam5 - lam3 * lam5
-        !p    = ssd_sigma * lam + ssd_delta * (1-lam)
-
-    ssd_rev | b == nucA = DB   1   0   p   0
-            | b == nucC = DB   0   1   0   0
-            | b == nucG = DB   0   0 (1-p) 0
-            | b == nucT = DB   0   0   0   1
-            | otherwise = dq (1+p) 1 (1-p) 1
-      where
-        !lam5 = prob5 ^ (br_l_seq r - i)
-        !lam3 = prob3 ^ (1+i)
-        !lam  = lam3 + lam5 - lam3 * lam5
-        !p    = ssd_sigma * lam + ssd_delta * (1-lam)
-
-
-data DsDamageParameters = DSD { dsd_sigma  :: !Double         -- deamination rate in ss DNA
-                              , dsd_delta  :: !Double         -- deamination rate in ds DNA
-                              , dsd_lambda :: !Double }       -- expected overhang length
-  deriving Show
-
--- | 'DamageModel' for double stranded library.  We get C->T damage at
--- the 5' end and G->A at the 3' end.  Everything is symmetric, and
--- therefore the orientation of the aligned read doesn't matter either.
---
--- Parameterization is stolen from @mapDamage 2.0@, for the most part.
--- We have a deamination rate each for ss and ds dna and average
--- overhang length parameters for both ends.  (Without UDG treatment,
--- those will be equal.  With UDG, those are much smaller and unequal,
--- and in fact don't literally represent overhangs.)
---
--- L({A,C,G,T}|A) = {1,0,0,0}
--- L({A,C,G,T}|C) = {0,1-p,0,p}
--- L({A,C,G,T}|G) = {0,0,1,0}
--- L({A,C,G,T}|T) = {0,0,0,1}
---
--- Here, p is the probability of deamination, which is dsd_delta if
--- double strande, dsd_sigma if single stranded.  The probability of
--- begin single stranded is prob ^ (i+1).  This gives an average
--- overhang length of (prob / (1-prob)).  We invert this and define
--- dsd_lambda as the expected overhang length.
---
-dsDamage :: DsDamageParameters -> DamageModel
-dsDamage DSD{..} r i b | b == nucA = DB    1     0     q     0
-                       | b == nucC = DB    0   (1-p)   0     0
-                       | b == nucG = DB    0     0   (1-q)   0
-                       | b == nucT = DB    0     p     0     1
-                       | otherwise = dbq (1+q) (1-p) (1-q) (1+p)
-  where
-    prob | dsd_lambda >= 0 = dsd_lambda / (1 + dsd_lambda)
-
-    p    = dsd_sigma * lam5 + dsd_delta * (1-lam5)
-    q    = dsd_sigma * lam3 + dsd_delta * (1-lam3)
-    lam5 = prob ^ (         1 + i)
-    lam3 = prob ^ (br_l_seq r - i)
-    dbq x y z w = DB (0.25*x) (0.25*y) (0.25*z) (0.25*w)
-
-
 -- | A variant call consists of a position, some measure of qualities,
 -- genotype likelihood values, and a representation of variants.  A note
 -- about the GL values:  @VCF@ would normalize them so that the
@@ -375,9 +239,9 @@ pileup dm = takeWhileE (isValidRefseq . br_rname) ><> filterStream useable ><>
 
 
 -- | The pileup logic keeps a current coordinate (just two integers) and
--- two running queues: one of /active/ 'PrimBases' that contribute to
--- current genotype calling and on of /waiting/ 'PrimBases' that will
--- contribute at later point.
+-- two running queues: one of /active/ 'PrimBase's that contribute to
+-- current genotype calling and on of /waiting/ 'PrimBase's that will
+-- contribute at a later point.
 --
 -- Oppan continuation passing style!  Not only is the CPS version of the
 -- state monad (we have five distinct pieces of state) somewhat faster,
@@ -392,11 +256,12 @@ newtype PileM m a = PileM { runPileM :: forall r . (a -> PileF m r) -> PileF m r
 --   reads backwards, but since we accumulate the 'BasePile', it gets reversed
 --   back.  The new /active/ queue, however, is no longer reversed (as it should
 --   be).  So after the traversal, we reverse it again.  (Yes, it is harder to
---   understand than using a proper deque type, but it is cheaper.)
+--   understand than using a proper deque type, but it is cheaper.
+--   There may not be much point in the reversing, though.)
 
 type PileF m r = Refseq -> Int ->                               -- current position
                  [PrimBase] ->                                  -- active queue
-                 Heap PrimBase ->                               -- waiting queue
+                 Heap ->                                        -- waiting queue
                  DamageModel ->
                  (Stream [Pile] -> Iteratee [Pile] m r) ->      -- output function
                  Stream [BamRaw] ->                             -- pending input
@@ -430,20 +295,14 @@ get_active = PileM $ \k r p a -> k a r p a
 upd_active :: ([PrimBase] -> [PrimBase]) -> PileM m ()
 upd_active f = PileM $ \k r p a -> k () r p $! f a
 
-get_waiting :: PileM m (Heap PrimBase)
+get_waiting :: PileM m Heap
 get_waiting = PileM $ \k r p a w -> k w r p a w
 
-upd_waiting :: (Heap PrimBase -> Heap PrimBase) -> PileM m ()
+upd_waiting :: (Heap -> Heap) -> PileM m ()
 upd_waiting f = PileM $ \k r p a w -> k () r p a $! f w
 
 get_damage_model :: PileM m DamageModel
 get_damage_model = PileM $ \k r p a w d -> k d r p a w d
-
-maybe_min :: Ord a => Maybe a -> Maybe a -> Maybe a
-maybe_min Nothing   Nothing = Nothing
-maybe_min (Just a)  Nothing = Just a
-maybe_min Nothing  (Just b) = Just b
-maybe_min (Just a) (Just b) = Just $ min a b
 
 yield :: Monad m => Pile -> PileM m ()
 yield x = PileM $ \k r p a w d out inp ->
@@ -481,19 +340,16 @@ pileup' = do
     next_waiting <- fmap ((,) refseq) . getMinKey <$> get_waiting
     next_input   <- fmap (\b -> (br_rname b, br_pos b)) <$> peek
 
-    -- posn         <- get_pos
-    -- liftIO $ printf "pileup' @%d:%d, %d active, %d waiting\n"
-        -- (unRefseq refseq) posn (length active) (-1::Int)
-
-
     -- If /active/ contains something, continue here.  Else find the coordinate
     -- to continue from, which is the minimum of the next /waiting/ coordinate
     -- and the next coordinate in input; if found, continue there, else we're
     -- all done.
-    case (active, maybe_min next_waiting next_input) of
-        ( (_:_),       _ ) -> pileup''
-        ( [   ], Just mp ) -> set_pos mp >> pileup''
-        ( [   ], Nothing ) -> return ()
+    case (active, next_waiting, next_input) of
+        ( (_:_),       _,       _ ) ->                        pileup''
+        ( [   ], Just nw, Nothing ) -> set_pos      nw     >> pileup''
+        ( [   ], Nothing, Just ni ) -> set_pos         ni  >> pileup''
+        ( [   ], Just nw, Just ni ) -> set_pos (min nw ni) >> pileup''
+        ( [   ], Nothing, Nothing ) -> return ()
 
 pileup'' :: MonadIO m => PileM m ()
 pileup'' = do
@@ -520,11 +376,10 @@ pileup'' = do
 
     -- Check /waiting/ queue.  If there is anything waiting for the
     -- current position, move it to /active/ queue.
-    fix $ \loop -> (getMin <$> get_waiting) >>= mapM_ (\(mk,pb) ->
-            when (mk == po) $ do
-                upd_active (pb:)
-                upd_waiting $ dropMin
-                loop)
+    fix $ \loop -> (viewMin <$> get_waiting) >>= mapM_ (\(mk,pb,w') ->
+            when (mk == po) $ do upd_active (pb:)
+                                 upd_waiting (const w')
+                                 loop)
 
     -- Scan /active/ queue and make a 'BasePile'.  Also see what's next in the
     -- 'PrimChunks':  'Indel's contribute to an 'IndelPile', 'Seek's and
@@ -559,246 +414,31 @@ pileup'' = do
     unless (all uninteresting (vc_vars fin_ip)) $ yield $ Right fin_ip
 
     -- Bump coordinate and loop.  (Note that the bump to the next
-    -- reference sequence is done implicitly, because we will run out of
+    -- reference /sequence/ is done implicitly, because we will run out of
     -- reads and restart in 'pileup''.)
     upd_pos succ
     pileup'
 
 
--- | We need a simple priority queue.  Here's a skew heap (lightly
--- specialized to strict 'Int' priorities).
-data Heap a = Empty | Node !Int a (Heap a) (Heap a)
+-- | We need a simple priority queue.  Here's a skew heap (specialized
+-- to strict 'Int' priorities and 'PrimBase' values).
+data Heap = Empty | Node {-# UNPACK #-} !Int {-# UNPACK #-} !PrimBase Heap Heap
 
-union :: Heap a -> Heap a -> Heap a
+union :: Heap -> Heap -> Heap
 Empty                 `union` t2                    = t2
 t1                    `union` Empty                 = t1
 t1@(Node k1 x1 l1 r1) `union` t2@(Node k2 x2 l2 r2)
    | k1 <= k2                                       = Node k1 x1 (t2 `union` r1) l1
    | otherwise                                      = Node k2 x2 (t1 `union` r2) l2
 
-insert :: Int -> a -> Heap a -> Heap a
+insert :: Int -> PrimBase -> Heap -> Heap
 insert k v heap = Node k v Empty Empty `union` heap
 
-getMinKey :: Heap a -> Maybe Int
+getMinKey :: Heap -> Maybe Int
 getMinKey Empty          = Nothing
 getMinKey (Node x _ _ _) = Just x
 
-getMinVal :: Heap a -> Maybe a
-getMinVal Empty          = Nothing
-getMinVal (Node _ x _ _) = Just x
+viewMin :: Heap -> Maybe (Int, PrimBase, Heap)
+viewMin Empty          = Nothing
+viewMin (Node k v l r) = Just (k, v, l `union` r)
 
-getMin :: Heap a -> Maybe (Int,a)
-getMin Empty          = Nothing
-getMin (Node k v _ _) = Just (k,v)
-
-dropMin :: Heap a -> Heap a
-dropMin Empty          = error "dropMin on empty queue... are you sure?!"
-dropMin (Node _ _ l r) = l `union` r
-
-
--- ------------------------------------------------------------------------------------------------------------
-
--- | Simple indel calling.  We don't bother with it too much, so here's
--- the gist:  We collect variants (simply different variants, details
--- don't matter), so @n@ variants give rise to (n+1)*n/2 GL values.
--- (That's two out of @(n+1)@, the reference allele, represented here as
--- no deletion and no insertion, is there, too.)  To assign these, we
--- need a likelihood for an observed variant given an assumed genotype.
---
--- For variants of equal length, the likelihood is the sum of qualities
--- of mismatching bases, but no higher than the mapping quality.  That
--- is roughly the likelihood of getting the observed sequence even
--- though the real sequence is a different variant.  For variants of
--- different length, the likelihood is the map quality.  This
--- corresponds to the assumption that indel errors in sequencing are
--- much less likely than mapping errors.  Since this hardly our
--- priority, the approximations are declared good enough.
-
-simple_indel_call :: Int -> IndelPile -> (GL, IndelVars)
-simple_indel_call ploidy vars = (simple_call ploidy mkpls vars, vars')
-  where
-    vars' = Set.toList . Set.fromList $ [ (d, map call i) | (_q,(d,i)) <- vars ]
-    call (DB a c g t _) = snd $ maximumBy (comparing fst) [(a,nucA), (c,nucC), (g,nucG), (t, nucT)]
-
-    match = zipWith $ \ (DB a c g t q) (N n) -> let p = sum [ if testBit n 0 then a else 0
-                                                            , if testBit n 1 then c else 0
-                                                            , if testBit n 2 then g else 0
-                                                            , if testBit n 3 then t else 0 ]
-                                                    p' = fromQual q
-                                                in toProb $ p + p' - p * p'
-
-    mkpls (q,(d,i)) = let !q' = qualToProb q
-                      in [ if d /= dr || length i /= length ir
-                           then q' else q' + product (match i ir) | (dr,ir) <- vars' ]
-
--- | Naive SNP call; essentially the GATK model.  We create a function
--- that computes a likelihood for a given base, then hand over to simple
--- call.  Since everything is so straight forward, this works even in
--- the face of damage.
-
-simple_snp_call :: Int -> BasePile -> (GL,())
-simple_snp_call ploidy vars = (simple_call ploidy mkpls vars, ())
-  where
-    mkpls (q, DB a c g t qq) = [ toProb $ x + pe*(s-x) | x <- [a,c,g,t] ]
-      where
-        !p1 = fromQual q
-        !p2 = fromQual qq
-        !pe = p1 + p2 - p1*p2
-        !s  = (a+c+g+t) / 4
-
--- | Compute @GL@ values for the simple case.  The simple case is where
--- we sample 'ploidy' alleles with equal probability and assume that
--- errors occur independently from each other.
---
--- The argument 'pls' is a function that computes the likelihood for
--- getting the current read, for every variant assuming that variant was
--- sampled.
---
--- NOTE, this may warrant specialization to diploidy and four alleles
--- (common SNPs) and diploidy and two alleles (common indels).
-
-simple_call :: Int -> (a -> [Prob]) -> [a] -> GL
-simple_call ploidy pls = foldl1' (V.zipWith (*)) . map step
-  where
-    foldl1' _ [     ] = V.singleton 1
-    foldl1' f (!a:as) = foldl' f a as
-
-    norm = toProb (fromIntegral ploidy) `pow` (-1)
-
-    -- "For biallelic sites the ordering is: AA,AB,BB; for triallelic
-    -- sites the ordering is: AA,AB,BB,AC,BC,CC, etc."
-    --
-    -- To get the order right, we reverse the list, recurse, and reverse
-    -- the result again.
-    step = V.fromList . map (* norm) . reverse . mk_pls ploidy . reverse . pls
-
-    -- Meh.  Pointless, but happens to be the unit.
-    mk_pls 0  _ = return 0
-
-    -- Okay, we sample ONE allele.  Likelihood of the data is simply the
-    -- GL value that was passed to us.
-    mk_pls 1 ls = ls
-
-    -- We extend the genotype and sample another allele.
-    mk_pls n ls = do ls'@(hd:_) <- tails ls
-                     (+) hd <$> mk_pls (n-1) ls'
-
-
-infixr 8 `pow`
-pow :: Prob -> Double -> Prob
-pow (Pr a) e = Pr (a*e)
-
-
-smoke_test :: IO ()
-smoke_test =
-    -- decodeAnyBamFile "/mnt/datengrab/test.bam" >=> run $ \_hdr ->
-    enumPure1Chunk crap_data >=> run $
-    -- joinI $ filterStream ((/=) (Q 0) . br_mapq) $
-    -- joinI $ pileup (dsDamage $ DSD 0.9 0.02 0.3) $ -- noDamage $
-    joinI $ pileup (ssDamage $ SSD 0.9 0.02 0.3 0.5) $ -- noDamage $
-    -- joinI $ takeStream 5 $ mapStreamM_ print
-    -- joinI $ filterStream ((> 0) . either vc_mapq0 vc_mapq0) $
-    joinI $ takeStream 5000 $ mapStreamM_ call_and_print
-  where
-    call_and_print (Right ic) = put . showCall show_indels . fmap (simple_indel_call 2) $ ic
-    call_and_print (Left  bc) = put . showCall show_bases  . fmap (simple_snp_call   2) $ bc
-
-    put f = putStr $ f "\n"
-
-    show_bases :: () -> ShowS
-    show_bases () = (++) "A,C,G,T"
-
-    show_indels :: IndelVars -> ShowS
-    show_indels = (++) . intercalate "," . map show_indel
-
-    show_indel :: (Int, [Nucleotide]) -> String
-    show_indel (d, ins) = shows ins $ '-' : show d
-
-
-showCall :: (a -> ShowS) -> VarCall (GL,a) -> ShowS
-showCall f vc = shows (vc_refseq vc) . (:) ':' .
-                shows (vc_pos vc) . (:) '\t' .
-                f (snd $ vc_vars vc) . (++) "\tDP=" .
-                shows (vc_depth vc) . (++) ":MQ0=" .
-                shows (vc_mapq0 vc) . (++) ":MAPQ=" .
-                shows mapq . (:) '\t' .
-                show_pl (fst $ vc_vars vc)
-  where
-    show_pl :: V.Vector Prob -> ShowS
-    show_pl = (++) . intercalate "," . map show . V.toList
-
-    mapq = vc_sum_mapq vc `div` vc_depth vc
-
-
--- | The 'samtools' error model.
---
--- I tried to track down the logic behind samtools' and maq's error
--- models, which supposedly go back to CAP3.  Near as I can tell, there
--- is absolutely no reasoning behind any of it.  CAP3 may have
--- originated the idea of setting the probably of @k@ errors to @p^f(k)@
--- where @f@ is a function that grows slower than the identity function.
--- The cited paper doesn't actually mention any of that, though.
---
--- Maq has the first implementation of such a model.  The derivation is
--- rather complicated, starts out with a simplification, then proceeds
--- to apply approximations, then ends up being incomprehensible.  By
--- that time, it's no longer clear if that derivation makes any sense.
---
--- Samtools improves upon the maq model, where the claimed reason is
--- that the Maq model is ill-behaved at high coverage and high error
--- rate.  Unfortunately, the fix in Samtools is only a different
--- approximation in the last step of an equally convoluted derivation.
--- The chief difference seems to be that Maq computes a strange quantity
--- based on a sort of average error rate, while samtools computes a
--- similar quantity as the product of more strangeness based on many
--- different error rates.
---
--- The take home message is that we model error dependency by having a
--- more slowly growing exponent, that errors happening on different
--- strands are independent from each other (XXX!), and that the
--- combinatorial constructions in both the Maq and the Samtools model do
--- not seem to be useful.
---
--- We reboot using a simplified version.  Bases from pileup are sorted
--- by quality.  For each base, we compute the likelihood under the
--- current genotype.  This is the likelihood of sampling an imagined
--- base, sampling is influenced by the presence of multiple alleles and
--- by chemical damage, times the likelihood of seeing the actual base,
--- which depends on error probability and maybe an error matrix, summed
--- over the four possible bases.
---
--- To get the dependency into the error probability, we have to count
--- how often we made the same kind of error, which is a matrix with 16
--- entries (4 of which are not really errors).  For every base, we count
--- fractional substitution errors, and the fraction is simply the
--- contribution of the four bases to the likelihood above.  The BSNP
--- paper suggests raising error probabilities to decreasing powers,
--- which is the same as multiplying the quality score by smaller and
--- smaller numbers.  IOW, to compute the error probability when making
--- the same error for the k-th time, instead of quality score q we use
--- q * \theta ** (k-1)
-
-
-maq_snp_call :: Int -> Double -> BasePile -> GL
-maq_snp_call ploidy theta bases = undefined
-  where
-    bases' = sortBy (\(DB _ _ _ _ q1) (DB _ _ _ _ q2) -> compare q2 q1)
-             [ DB a c g t (min q mq) | (mq, DB a c g t q) <- bases ]
-
--- Regarding general substitution errors:
---
--- We can express a substitution matrix as (exp M) where M itself is a
--- matrix with zeroes on the main diagonal.  That introduces 12
--- parameters, which we should probably estimate.  One is redundant,
--- this is scaling of them.  Since it will actually appear as (exp (M *
--- (\phi + q ** (\theta (k-1)))), we can simply set \phi to zero.
---
--- Hm.  Probably not completely correct.  :(
-
-
-crap_data :: [BamRaw]
-crap_data = map encodeBamEntry [br nucC, br nucT]
-  where
-    br n = BamRec B.empty 0 (Refseq 0) 0 37 (Cigar [(Mat,50)])
-                invalidRefseq invalidPos 0
-                (V.replicate 50 n) (B.replicate 50 30) M.empty 0

@@ -1,10 +1,12 @@
 {-# LANGUAGE RecordWildCards, BangPatterns, OverloadedStrings #-}
 -- Command line driver for simple genotype calling.
 
+import Bio.Adna
 import Bio.Base
 import Bio.Bam.Header
 import Bio.Bam.Raw
 import Bio.Bam.Pileup
+import Bio.GenoCall
 import Bio.Iteratee
 import Control.Applicative
 import Control.Monad
@@ -106,12 +108,10 @@ import qualified Data.Vector.Unboxed            as V
 --  TSV1:  chr start end score
 --  TSV2:  chr pos score
 
-data Ploidy = Hap | Dip deriving Show
-
 data Conf = Conf {
     conf_output      :: (Handle -> IO ()) -> IO (),
     conf_sample      :: S.ByteString,
-    conf_ploidy      :: S.ByteString -> Ploidy,
+    conf_ploidy      :: S.ByteString -> Int,
     conf_loverhang   :: Maybe Double,
     conf_roverhang   :: Maybe Double,
     conf_ds_deam     :: Double,
@@ -120,7 +120,7 @@ data Conf = Conf {
     conf_prior_indel :: Prob }
 
 defaultConf :: Conf
-defaultConf = Conf ($ stdout) "John_Doe" (const Dip) Nothing Nothing
+defaultConf = Conf ($ stdout) "John_Doe" (const 2) Nothing Nothing
                    0.02 0.45 (qualToProb $ Q 30) (qualToProb $ Q 45)
 
 options :: [OptDescr (Conf -> IO Conf)]
@@ -136,9 +136,11 @@ options = [
                                             (ReqArg set_ds_deam "FRAC")     "Deamination rate in double stranded section is FRAC",
     Option "s" ["ss-deamination-rate","single-strand-deamination-rate"]
                                             (ReqArg set_ss_deam "FRAC")     "Deamination rate in single stranded section is FRAC",
-    Option "p" ["priot-heterozygosity", "heterozygosity"]
+    Option "H" ["prior-heterozygous", "heterozygosity"]
                                             (ReqArg set_phet "PROB")        "Set prior for a heterozygous variant to PROB",
-    Option "P" ["priot-indel","indel-rate"] (ReqArg set_pindel "PROB")      "Set prior for an indel variant to PROB",
+    -- Option "S" ["prior-snp","snp-rate","divergence"]
+                                            -- (ReqArg set_pdiv "PROB")        "Set prior for an indel variant to PROB",
+    Option "I" ["prior-indel","indel-rate"] (ReqArg set_pindel "PROB")      "Set prior for an indel variant to PROB",
     Option "h?" ["help","usage"]            (NoArg disp_usage)              "Display this message" ]
   where
     disp_usage _ = do pn <- getProgName
@@ -151,8 +153,8 @@ options = [
 
     set_sample   nm c = return $ c { conf_sample = S.pack nm }
 
-    set_haploid arg c = return $ c { conf_ploidy = \chr -> if S.pack arg `S.isPrefixOf` chr then Hap else conf_ploidy c chr }
-    set_diploid arg c = return $ c { conf_ploidy = \chr -> if S.pack arg `S.isPrefixOf` chr then Dip else conf_ploidy c chr }
+    set_haploid arg c = return $ c { conf_ploidy = \chr -> if S.pack arg `S.isPrefixOf` chr then 1 else conf_ploidy c chr }
+    set_diploid arg c = return $ c { conf_ploidy = \chr -> if S.pack arg `S.isPrefixOf` chr then 2 else conf_ploidy c chr }
 
     set_loverhang a c = (\l -> c { conf_loverhang   = Just   l }) <$> readIO a
     set_roverhang a c = (\l -> c { conf_roverhang   = Just   l }) <$> readIO a
@@ -184,7 +186,7 @@ main = do
             joinI $ by_groups same_ref (\br out -> do
                 let sname = sq_name $ getRef (meta_refs hdr) $ br_rname br
                 liftIO $ hPutStrLn stderr $ S.unpack sname ++ case conf_ploidy sname of
-                            Hap -> ": haploid call" ; Dip -> ": diploid call"
+                            1 -> ": haploid call" ; 2 -> ": diploid call"
                 out' <- lift $ enumPure1Chunk [S.concat [">", conf_sample, "--", sname]] out
                 pileup dmg_model =$
                     mapStream (calls $! conf_ploidy sname) =$
@@ -197,10 +199,8 @@ main = do
 -- | This is a white lie:  We do haploid or diploid *SNP* calls, but
 -- indel calls are always haploid.  Otherwise there is no good way to
 -- print the result!
-calls :: Ploidy -> Pile -> Either (VarCall (GL,())) (VarCall (GL, IndelVars))
-calls ploidy = either (Left . fmap (simple_snp_call pl)) (Right . fmap (simple_indel_call 1))
-  where
-    !pl = case ploidy of Hap -> 1 ; Dip -> 2
+calls :: Int -> Pile -> Either (VarCall (GL,())) (VarCall (GL, IndelVars))
+calls pl = either (Left . fmap (simple_snp_call pl)) (Right . fmap (simple_indel_call 1))
 
 type EitherCall = Either (VarCall (GL,())) (VarCall (GL, IndelVars))
 

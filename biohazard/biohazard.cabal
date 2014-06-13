@@ -34,6 +34,7 @@ source-repository this
 Library
   -- Modules exported by the library.
   Exposed-modules:     Bio.Base,
+                       Bio.Adna,
                        Bio.Align,
                        Bio.Bam,
                        Bio.Bam.Fastq,
@@ -44,6 +45,7 @@ Library
                        Bio.Bam.Rec,
                        Bio.Bam.Rmdup,
                        Bio.Bam.Trim,
+                       Bio.GenoCall,
                        Bio.Glf,
                        Bio.Iteratee,
                        Bio.Iteratee.ZLib,

@@ -7,7 +7,7 @@
 module Bio.Base(
     Nucleotide(..),
     Qual(..), toQual, fromQual, probToQual,
-    Prob(..), toProb, fromProb, qualToProb,
+    Prob(..), toProb, fromProb, qualToProb, pow,
 
     Word8,
     Sequence,
@@ -106,16 +106,6 @@ instance Show Prob where
     showsPrec _ (Pr p) = (:) 'q' . showFFloat (Just 1) q
       where q = - 10 * p / log 10
 
-{- instance Ord Prob where
-    Pr a `compare` Pr b = b `compare` a
-    Pr a   `min`   Pr b = Pr (a `max` b)
-    Pr a   `max`   Pr b = Pr (a `min` b)
-
-    Pr a <  Pr b  =  b  < a
-    Pr a <= Pr b  =  b <= a
-    Pr a >  Pr b  =  b  > a
-    Pr a >= Pr b  =  b >= a -}
-
 instance Num Prob where
     fromInteger a = Pr (log (fromInteger a))
     Pr x + Pr y = if x >= y then Pr (x + log1p (  exp (y-x))) else Pr (y + log1p (exp (x-y)))
@@ -134,6 +124,11 @@ instance Fractional Prob where
     fromRational a = Pr (log (fromRational a))
     Pr a  /  Pr b = Pr (a - b)
     recip  (Pr a) = Pr (negate a)
+
+infixr 8 `pow`
+pow :: Prob -> Double -> Prob
+pow (Pr a) e = Pr (a*e)
+
 
 toProb :: Double -> Prob
 toProb p = Pr (log p)
