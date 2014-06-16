@@ -1,5 +1,5 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving, TypeFamilies, FlexibleInstances #-}
-{-# LANGUAGE MultiParamTypeClasses, BangPatterns, ForeignFunctionInterface #-}
+{-# LANGUAGE MultiParamTypeClasses, BangPatterns #-}
 -- | Common data types used everywhere.  This module is a collection of
 -- very basic "bioinformatics" data types that are simple, but don't
 -- make sense to define over and over.
@@ -43,6 +43,7 @@ module Bio.Base(
     findAuxFile
 ) where
 
+import Bio.Util             ( log1p )
 import Data.Array.Unboxed
 import Data.Bits
 import Data.Char            ( isAlpha, isSpace, ord, toUpper )
@@ -114,8 +115,6 @@ instance Num Prob where
     negate    _ = err_neg
     abs       x = x
     signum    _ = Pr 0
-
-foreign import ccall unsafe "math.h log1p" log1p :: Double -> Double
 
 err_neg :: Prob
 err_neg = error "no negative error probabilities"

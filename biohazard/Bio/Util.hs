@@ -1,8 +1,7 @@
-{-# LANGUAGE ForeignFunctionInterface #-}
 module Bio.Util (
     wilson, invnormcdf, choose,
     estimateComplexity, showNum, showOOM,
-    float2mini, mini2float,
+    float2mini, mini2float, log1p, expm1,
     phredplus, phredminus, phredsum, (<#>), phredconverse
                 ) where
 
@@ -103,7 +102,7 @@ invnormcdf p =
             nan
 
 
--- Try to estimate complexity of a whole from a sample.  Suppose we
+-- | Try to estimate complexity of a whole from a sample.  Suppose we
 -- sampled @total@ things and among those @singles@ occured only once.
 -- How many different things are there?
 --
@@ -131,12 +130,12 @@ invnormcdf p =
 -- It converges as long as the initial @z@ is large enough, and @10D@
 -- (in the line for @zz@ below) appears to work well.
 
-estimateComplexity :: Integral a => a -> a -> Maybe Double
+estimateComplexity :: (Integral a, Floating b, Ord b) => a -> a -> Maybe b
 estimateComplexity total singles | total   <= singles = Nothing
                                  | singles <= 0       = Nothing
                                  | otherwise          = Just m
   where
-    d = fromIntegral total / fromIntegral singles :: Double
+    d = fromIntegral total / fromIntegral singles
     step z = z * (z - 1 - d * log z) / (z - d)
     iter z = case step z of zd | abs zd < 1e-12 -> z
                                | otherwise -> iter $! z-zd
@@ -175,7 +174,24 @@ infixl 3 <#>, `phredminus`, `phredplus`
 phredconverse :: Double -> Double
 phredconverse v = - 10 / log 10 * log1p (- exp ((-v) * log 10 / 10))
 
-foreign import ccall unsafe "math.h log1p" log1p :: Double -> Double
+-- | Computes @log (1+x)@ to a relative precision of @10^-8@ even for
+-- very small @x@.  Stolen from http://www.johndcook.com/cpp_log_one_plus_x.html
+{-# INLINE log1p #-}
+log1p :: (Floating a, Ord a) => a -> a
+log1p x | x < -1 = error "log1p: argument must be greater than -1"
+        -- x is large enough that the obvious evaluation is OK:
+        | x > 0.0001 || x < -0.0001 = log $ 1 + x
+        -- Use Taylor approx. log(1 + x) = x - x^2/2 with error roughly x^3/3
+        -- Since |x| < 10^-4, |x|^3 < 10^-12, relative error less than 10^-8:
+        | otherwise = (1 - 0.5*x) * x
+
+
+-- | Computes @exp x - 1@ to a relative precision of @10^-10@ even for
+-- very small @x@.  Stolen from http://www.johndcook.com/cpp_expm1.html
+expm1 :: (Floating a, Ord a) => a -> a
+expm1 x | x > -0.00001 && x < 0.00001 = (1 + 0.5 * x) * x       -- Taylor approx
+        | otherwise                   = exp x - 1               -- direct eval
+
 
 -- | Binomial coefficient:  @n `choose` k == n! / ((n-k)! k!)@
 {-# INLINE choose #-}
@@ -187,7 +203,7 @@ n `choose` k = product [n-k+1 .. n] `div` product [2..k]
 -- byte.  It has no sign, four bits of precision, and the range is from
 -- 0 to 63488, initially in steps of 1/8.  Nice to store quality scores
 -- with reasonable precision and range.
-float2mini :: Double -> Word8
+float2mini :: RealFloat a => a -> Word8
 float2mini f | f  <  0 = error "no negative minifloats"
              | f  <  2 = round (8*f)
              | e >= 17 = 0xff
@@ -200,7 +216,7 @@ float2mini f | f  <  0 = error "no negative minifloats"
     s = round $ 32 * significand f
 
 -- | Conversion from 0.4.4 format minifloat, see 'float2mini'.
-mini2float :: Word8 -> Double
+mini2float :: Fractional a => Word8 -> a
 mini2float w |  e == 0   =       fromIntegral w / 8.0
              | otherwise = 2^e * fromIntegral m / 16.0
   where
