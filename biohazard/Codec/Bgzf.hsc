@@ -385,7 +385,7 @@ compressBgzf' (CompressParams lv np) = bgzfBlocks ><> concatMapStreamIO np (comp
 -- stream.  These 'IO' actions are run asynchronously in a limited
 -- parallel way.
 
-concatMapStreamIO :: (MonadIO m, Nullable s) => Int -> (s -> IO t) -> Enumeratee s t m a
+concatMapStreamIO :: (MonadIO m, Nullable s, NullPoint s) => Int -> (s -> IO t) -> Enumeratee s t m a
 concatMapStreamIO np f = eneeCheckIfDonePass (go emptyQ)
   where
     -- check if the queue is full
@@ -395,7 +395,8 @@ concatMapStreamIO np f = eneeCheckIfDonePass (go emptyQ)
         _                               -> liftI $ go' qq k
 
     -- we have room for input
-    go' !qq k (EOF  mx) = goE mx qq k Nothing
+    go' !qq k (EOF  mx) = do a <- liftIO (async (f empty))
+                             goE mx (pushQ a qq) k Nothing
     go' !qq k (Chunk c) = do a <- liftIO (async (f c))
                              go (pushQ a qq) k Nothing
 
