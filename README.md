@@ -14,6 +14,10 @@ of command line tools for operations on BAM files:
 * `bam-rmdup`: removes PCR duplicates from BAM files and computes a
   consensus sequence for each cluster of dups
 
+* `bam-rewrap`: wraps alignments around the origin of a circular reference.
+  (Use this to get sensible alignments to mitochondria.  `bam-rmdup` 
+  includes similar functionality.)
+
 Installation
 ------------
 
