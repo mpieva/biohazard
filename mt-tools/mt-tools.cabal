@@ -20,13 +20,14 @@ executable afroengineer
   Main-Is:             afroengineer.hs
   Other-Modules:       Align, SimpleSeed
   Build-Depends:       base == 4.*,
-                       bytestring, 
-                       biohazard == 0.5.6,
-                       containers >= 0.4.1 && < 0.6, 
-                       unordered-containers == 0.2.*,
                        array == 0.4.*,
-                       vector >= 0.9 && < 0.11,
-                       iteratee == 0.8.9.*
+                       biohazard == 0.5.6,
+                       bytestring >= 0.9 && < 0.11,
+                       containers >= 0.4.1 && < 0.6,
+                       directory == 1.*,
+                       iteratee == 0.8.9.*,
+                       unordered-containers == 0.2.*,
+                       vector >= 0.9 && < 0.11
 
 executable mt-anno
   Main-Is:             mt-anno.hs
@@ -39,7 +40,7 @@ executable mt-anno
 executable mt-ccheck
   Main-Is:             mt-ccheck.hs
   Build-Depends:       base == 4.*,
-                       bytestring, 
+                       bytestring >= 0.9 && < 0.11,
                        biohazard == 0.5.6,
                        containers >= 0.4.1 && < 0.6,
                        unordered-containers == 0.2.*

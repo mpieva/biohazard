@@ -137,7 +137,7 @@ align gp (RS rs) (QS qs) (RP p0) (BW bw_) = runST (do
                               mismatch = fromIntegral (min qual prob)
 
                               -- Improbability of a random match.  It's
-                              -- 6 is we have a good base, corresponding
+                              -- 6 if we have a good base, corresponding
                               -- to randomness.  If we have a bad base,
                               -- it's lower, because we aren't doing
                               -- better than random.

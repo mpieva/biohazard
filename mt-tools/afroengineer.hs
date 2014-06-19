@@ -1,4 +1,4 @@
-{-# LANGUAGE OverloadedStrings, BangPatterns, RecordWildCards #-}
+{-# LANGUAGE OverloadedStrings, BangPatterns, RecordWildCards, RankNTypes #-}
 {-# OPTIONS_GHC -Wall #-}
 
 -- Cobble up a mitochondrion, or something similar.  This is not an
@@ -17,18 +17,21 @@ import SimpleSeed
 
 import Bio.Base
 import Bio.Bam
-import Bio.Iteratee
 import Control.Applicative
 import Control.Monad
+import Data.Bits
 import Data.Char
+import Data.List ( isSuffixOf )
 import Data.Monoid
 import Numeric
+import Prelude hiding ( round )
 import System.Console.GetOpt
+import System.Directory ( doesFileExist )
 import System.Environment
 import System.Exit
 import System.IO
 
-import qualified Data.ByteString            as B
+import qualified Bio.Iteratee.ZLib          as ZLib
 import qualified Data.ByteString.Char8      as S
 import qualified Data.ByteString.Lazy.Char8 as L
 import qualified Data.Foldable              as F
@@ -113,12 +116,10 @@ main = do
                            putStrLn $ "Round " ++ shows n ": Kept " ++ shows (length queries) " queries."
                            round (n+1) (\out -> enumPure1Chunk queries >=> run $ roundN newref out)
 
-    round 1 (\out -> concatInputs files >=> run $ \_ -> round1 sm rs out)
-
+    round 1 (\out -> foldr ((>=>) . readFreakingInput) run files $ round1 sm rs out)
 
     -- print queries
-    return ()
-  where
+    -- return ()
 
 
 -- General plan:  In the first round, we read, seed, align, call the new
@@ -257,3 +258,43 @@ ref_to_ascii (RS v) = [ base | i <- [0, 5 .. U.length v - 5]
     step (!i, !m, !n) j x | x <= m    = (j, x, m)
                           | x <= n    = (i, m, x)
                           | otherwise = (i, m, n)
+
+
+
+readFreakingInput :: MonadCatchIO m => FilePath -> Enumerator [BamRaw] m b
+readFreakingInput fp k | ".bam" `isSuffixOf` fp = do liftIO (hPutStrLn stderr $ "Reading BAM from " ++ fp)
+                                                     decodeAnyBamFile fp $ const k
+                       | ".gz"  `isSuffixOf` fp = maybe_read_two fp unzipFastq k
+                       | otherwise              = maybe_read_two fp parseFastq k
+
+check_r2 :: FilePath -> IO (Maybe FilePath)
+check_r2 fp = go [] (reverse fp)
+  where
+    go acc ('1':'r':fp) = do let fp' = reverse fp ++ 'r' : '2' : acc
+                             e <- doesFileExist fp'
+                             return $ if e then Just fp' else Nothing
+    go acc (c:fp) = go (c:acc) fp
+    go  _  [    ] = return Nothing
+
+maybe_read_two :: MonadCatchIO m
+    => FilePath
+    -> (forall m1 b . MonadCatchIO m1 => Enumeratee S.ByteString [BamRec] m1 b)
+    -> Enumerator [BamRaw] m a
+maybe_read_two fp e1 = (\k -> liftIO (check_r2 fp) >>= maybe (rd1 k) (rd2 k)) $= mapStream encodeBamEntry
+  where
+    rd1 k     = do liftIO (hPutStrLn stderr $ "Reading FastQ from " ++ fp)
+                   enumFile defaultBufSize fp  $= e1 $ k
+    rd2 k fp' = do liftIO (hPutStrLn stderr $ "Reading FastQ from " ++ fp ++ " and " ++ fp')
+                   mergeEnums (enumFile defaultBufSize fp  $= e1)
+                              (enumFile defaultBufSize fp' $= e1)
+                              (convStream unite_pairs) k
+
+unzipFastq :: MonadCatchIO m => Enumeratee S.ByteString [BamRec] m b
+unzipFastq = ZLib.enumInflate ZLib.GZipOrZlib ZLib.defaultDecompressParams ><> parseFastq
+
+unite_pairs :: Monad m => Iteratee [BamRec] (Iteratee [BamRec] m) [BamRec]
+unite_pairs = do a <- lift headStream
+                 b <- headStream
+                 return [ a { b_flag = b_flag a .|. flagFirstMate }
+                        , b { b_flag = b_flag b .|. flagSecondMate } ]
+

@@ -17,6 +17,7 @@ import qualified Data.ByteString        as B
 import qualified Data.ByteString.Char8  as S
 import qualified Data.Iteratee.ListLike as I
 import qualified Data.Map               as M
+import qualified Data.Vector.Unboxed    as V
 
 -- ^ Parser for @FastA/FastQ@, 'Iteratee' style, based on
 -- "Data.Attoparsec", and written such that it is compatible with module
@@ -96,7 +97,7 @@ skipJunk = I.peek >>= check
 
 makeRecord :: Seqid -> (BamRec->BamRec) -> (String, S.ByteString) -> BamRec
 makeRecord name extra (sq,qual) = extra $ removeWarts $ nullBamRec
-        { b_qname = name, b_seq = read sq, b_qual = qual }
+        { b_qname = name, b_seq = V.fromList $ map toNucleotide sq, b_qual = qual }
 
 -- | Remove syntactic warts from old read names.
 removeWarts :: BamRec -> BamRec
