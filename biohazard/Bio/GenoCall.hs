@@ -151,33 +151,31 @@ showCall f vc = shows (vc_refseq vc) . (:) ':' .
 -- where @f@ is a function that grows slower than the identity function.
 -- The cited paper doesn't actually mention any of that, though.
 --
--- Maq has the first implementation of such a model.  The derivation is
--- rather complicated, starts out with a simplification, then proceeds
--- to apply approximations, then ends up being incomprehensible.  By
--- that time, it's no longer clear if that derivation makes any sense.
+-- SOAPsnp is the first(?) implementation of the idea.  Bases are dealt
+-- with in order of increasing quality, the quality score in observation
+-- @k@ is scaled by @\theta^k@.
+--
+-- Maq follows the same idea, but attempts some combinatorial
+-- simplification.  The derivation is rather complicated:  It starts out
+-- with a simplification, then proceeds to apply approximations, then
+-- ends up being incomprehensible.  By that time, it is no longer
+-- obvious that that derivation makes any sense.
 --
 -- Samtools improves upon the maq model, where the claimed reason is
--- that the Maq model is ill-behaved at high coverage and high error
+-- that the maq model is ill-behaved at high coverage and high error
 -- rate.  Unfortunately, the fix in Samtools is only a different
 -- approximation in the last step of an equally convoluted derivation.
--- The chief difference seems to be that Maq computes a strange quantity
--- based on a sort of average error rate, while samtools computes a
--- similar quantity as the product of more strangeness based on many
--- different error rates.
+-- The chief difference seems to be that maq computes a strange quantity
+-- based on a sort of average error rate, while samtools deals with
+-- bases in order of decreasing quality.
 --
 -- The take home message is that we model error dependency by having a
 -- more slowly growing exponent, that errors happening on different
 -- strands are independent from each other (XXX!), and that the
 -- combinatorial constructions in both the Maq and the Samtools model do
--- not seem to be useful.
---
--- We reboot using a simplified version.  Bases from pileup are sorted
--- by quality.  For each base, we compute the likelihood under the
--- current genotype.  This is the likelihood of sampling an imagined
--- base, sampling is influenced by the presence of multiple alleles and
--- by chemical damage, times the likelihood of seeing the actual base,
--- which depends on error probability and maybe an error matrix, summed
--- over the four possible bases.
+-- not seem to be useful.  The order in which we touch the bases is up
+-- for grabs, since there are two cases of prior art.  We'll go with the
+-- simple implementation like SOAPsnp.
 --
 -- To get the dependency into the error probability, we have to count
 -- how often we made the same kind of error, which is a matrix with 16
@@ -186,9 +184,9 @@ showCall f vc = shows (vc_refseq vc) . (:) ':' .
 -- contribution of the four bases to the likelihood above.  The BSNP
 -- paper suggests raising error probabilities to decreasing powers,
 -- which is the same as multiplying the quality score by smaller and
--- smaller numbers.  IOW, to compute the error probability when making
--- the same error for the k-th time, instead of quality score q we use
--- q * \theta ** (k-1)
+-- smaller numbers.  IOW, to compute the error probability when
+-- repeating the same error for the k-th time, instead of quality score
+-- q we use @q * \theta ** k@.
 
 
 maq_snp_call :: Int -> Double -> BasePile -> GL

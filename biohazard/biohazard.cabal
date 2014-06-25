@@ -1,6 +1,6 @@
 -- vim:tw=132
 Name:                biohazard
-Version:             0.5.6
+Version:             0.5.7
 Synopsis:            bioinformatics support library
 Description:         This is a collection of modules I separated from
                      various bioinformatics tools.  The hope is to make
@@ -28,7 +28,7 @@ source-repository head
 source-repository this
   type:     git
   location: git://github.com/udo-stenzel/biohazard.git
-  tag:      0.5.6
+  tag:      0.5.7
 
 
 Library
@@ -48,11 +48,11 @@ Library
                        Bio.GenoCall,
                        Bio.Glf,
                        Bio.Iteratee,
+                       Bio.Iteratee.Bgzf,
                        Bio.Iteratee.ZLib,
                        Bio.PriorityQueue,
                        Bio.TwoBit,
-                       Bio.Util,
-                       Codec.Bgzf
+                       Bio.Util
   
   -- Packages needed in order to build this package.
   Build-depends:       array == 0.4.*,

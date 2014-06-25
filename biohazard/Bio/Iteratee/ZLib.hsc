@@ -5,7 +5,7 @@
 {-# OPTIONS -Wall -fno-warn-unused-do-bind #-}
 
 {- Stolen from iteratee-compress module, which doesn't work due to
-   dependency problems.  May need replacement. -}
+   dependency problems.  Modified for proper early-out behaviour. -}
 module Bio.Iteratee.ZLib
   (
     -- * Enumeratees
@@ -34,6 +34,7 @@ where
 
 import Control.Applicative
 import Control.Exception
+import Control.Monad ( liftM )
 import Control.Monad.IO.Class ( MonadIO, liftIO )
 import Control.Monad.Trans.Class ( lift )
 import Data.ByteString as BS
@@ -87,7 +88,7 @@ data ZlibFlush
     -- to inner Iteratee.
     | FullFlush
     -- ^ Flush all pending output and reset the compression state. It allows to
-    -- restart from this point if compression was damaged but it can seriously 
+    -- restart from this point if compression was damaged but it can seriously
     -- affect the compression rate.
     --
     -- It may be only used during compression.
@@ -128,7 +129,7 @@ instance Show ZLibException where
     show IncorrectState = "zlib: incorrect state"
 
 instance Exception ZLibParamsException
-instance Exception ZLibException 
+instance Exception ZLibException
 
 newtype ZStream = ZStream (ForeignPtr ZStream)
 withZStream :: ZStream -> (Ptr ZStream -> IO a) -> IO a
@@ -154,16 +155,16 @@ data CompressParams = CompressParams {
 
 defaultCompressParams :: CompressParams
 defaultCompressParams
-    = CompressParams DefaultCompression Deflated DefaultWindowBits 
+    = CompressParams DefaultCompression Deflated DefaultWindowBits
                      DefaultMemoryLevel DefaultStrategy (8*1024) Nothing
 
--- | Set of parameters for decompression. For sane defaults see 
+-- | Set of parameters for decompression. For sane defaults see
 -- 'defaultDecompressParams'.
 data DecompressParams = DecompressParams {
       -- | Window size - it have to be at least the size of
       -- 'compressWindowBits' the stream was compressed with.
       --
-      -- Default in 'defaultDecompressParams' is the maximum window size - 
+      -- Default in 'defaultDecompressParams' is the maximum window size -
       -- please do not touch it unless you know what you are doing.
       decompressWindowBits :: !WindowBits,
       -- | The size of output buffer. That is the size of 'Chunk's that will be
@@ -184,7 +185,7 @@ data Format
     -- It is intended primarily for compressing individual files but is also
     -- used for network protocols such as HTTP.
     --
-    -- The format is described in RFC 1952 
+    -- The format is described in RFC 1952
     -- <http://www.ietf.org/rfc/rfc1952.txt>.
     | Zlib
     -- ^ The zlib format uses a minimal header with a checksum but no other
@@ -194,7 +195,7 @@ data Format
     -- <http://www.ietf.org/rfc/rfc1950.txt>
     | Raw
     -- ^ The \'raw\' format is just the DEFLATE compressed data stream without
-    -- and additionl headers. 
+    -- and additionl headers.
     --
     -- Thr format is described in RFC 1951
     -- <http://www.ietf.org/rfc/rfc1951.txt>
@@ -218,13 +219,13 @@ data CompressionLevel
 -- | Specify the compression method.
 data Method
     = Deflated
-    -- ^ \'Deflate\' is so far the only method supported.          
+    -- ^ \'Deflate\' is so far the only method supported.
 
 -- | This specify the size of compression level. Larger values result in better
 -- compression at the expense of highier memory usage.
 --
 -- The compression window size is 2 to the power of the value of the window
--- bits. 
+-- bits.
 --
 -- The total memory used depends on windows bits and 'MemoryLevel'.
 data WindowBits
@@ -256,7 +257,7 @@ data MemoryLevel
     -- memory level 9).
     -- The internal state is 256kib or 32kiB.
     | MemoryLevel Int
-    -- ^ A specific level. It have to be between 1 and 9. 
+    -- ^ A specific level. It have to be between 1 and 9.
 
 -- | Tunes the compress algorithm but does not affact the correctness.
 data CompressionStrategy
@@ -271,7 +272,7 @@ data CompressionStrategy
     -- intermediate between 'DefaultStrategy' and 'HuffmanOnly'.
     | HuffmanOnly
     -- ^ Use the Huffman-only compression strategy to force Huffman encoding
-    -- only (no string match). 
+    -- only (no string match).
 
 fromMethod :: Method -> CInt
 fromMethod Deflated = #{const Z_DEFLATED}
@@ -335,7 +336,7 @@ convParam f (CompressParams c m w l s _ _)
           eit = either Left
           r = Right
       in eit (\c_ -> eit (\b_ -> eit (\l_ -> r (c_, m', b_, l_, s')) l') b') c'
---
+
 -- In following code we go through 7 states. Some of the operations are
 -- 'deterministic' like 'insertOut' and some of them depends on input ('fill')
 -- or library call.
@@ -367,7 +368,7 @@ convParam f (CompressParams c m w l s _ _)
 --    all outs was sent.
 -- Finished: Operation finished
 -- Flushing: Flush requested
--- 
+--
 -- Please note that the decompressing can finish also on flush and finish.
 --
 -- [1] Named for 'historical' reasons
@@ -440,6 +441,12 @@ pullInBuffer zstr _in = withByteString _in $ \ptr _ -> do
     next_in <- withZStream zstr $ \zptr -> #{peek z_stream, next_in} zptr
     return $! BS.drop (next_in `minusPtr` ptr) _in
 
+type EnumerateeS eli elo m a = (Stream eli -> Iteratee eli m a) -> Iteratee elo m (Iteratee eli m a)
+
+eneeErr :: (Monad m, Exception err, Nullable elo)
+        => (Stream eli -> Iteratee eli m a) -> err -> Iteratee elo m ()
+eneeErr iter = liftM (const ()) . lift . run . iter . EOF . Just . toException
+
 insertOut :: MonadIO m
           => Int
           -> (ZStream -> CInt -> IO CInt)
@@ -450,13 +457,13 @@ insertOut size runf (Initial zstr) iter = do
 #ifdef DEBUG
     liftIO $ IO.hPutStrLn stderr $ "Inserted out buffer of size " ++ show size
 #endif
-    fill size runf (EmptyIn zstr _out) iter
+    eneeCheckIfDone (fill size runf (EmptyIn zstr _out)) iter
 
 fill :: MonadIO m
      => Int
      -> (ZStream -> CInt -> IO CInt)
      -> EmptyIn
-     -> Enumeratee ByteString ByteString m a
+     -> EnumerateeS ByteString ByteString m a
 fill size run' (EmptyIn zstr _out) iter
     = let fill' (Chunk _in)
               | not (BS.null _in) = do
@@ -469,8 +476,7 @@ fill size run' (EmptyIn zstr _out) iter
               | otherwise = fillI
           fill' (EOF Nothing) = do
               out <- liftIO $ pullOutBuffer zstr _out
-              iter' <- lift $ enumPure1Chunk out iter
-              finish size run' (Finishing zstr BS.empty) iter'
+              eneeCheckIfDone (finish size run' (Finishing zstr BS.empty)) $ iter (Chunk out)
           fill' (EOF (Just err))
               = case fromException err of
                   Just err' -> flush size run' (Flushing zstr err' _out) iter
@@ -494,13 +500,13 @@ swapOut size run' (FullOut zstr _in) iter = do
 #ifdef DEBUG
     liftIO $ IO.hPutStrLn stderr $ "Swapped out buffer of size " ++ show size
 #endif
-    doRun size run' (Invalid zstr _in _out) iter
+    eneeCheckIfDone (doRun size run' (Invalid zstr _in _out)) iter
 
 doRun :: MonadIO m
       => Int
       -> (ZStream -> CInt -> IO CInt)
       -> Invalid
-      -> Enumeratee ByteString ByteString m a
+      -> EnumerateeS ByteString ByteString m a
 doRun size run' (Invalid zstr _in _out) iter = do
 #ifdef DEBUG
     liftIO $ IO.hPutStrLn stderr $ "About to run"
@@ -512,13 +518,12 @@ doRun size run' (Invalid zstr _in _out) iter = do
 #endif
     case fromErrno status of
         Left err -> do
-            _ <- joinIM $ enumErr err iter
+            eneeErr iter err
             throwErr (toException err)
         Right False -> do -- End of stream
             remaining <- liftIO $ pullInBuffer zstr _in
             out <- liftIO $ pullOutBuffer zstr _out
-            iter' <- lift $ enumPure1Chunk out iter
-            idone iter' (Chunk remaining)
+            idone (iter (Chunk out)) (Chunk remaining)
         Right True -> do -- Continue
             (avail_in, avail_out) <- liftIO $ withZStream zstr $ \zptr -> do
                 avail_in <- liftIO $ #{peek z_stream, avail_in} zptr
@@ -527,31 +532,29 @@ doRun size run' (Invalid zstr _in _out) iter = do
             case avail_out of
                 0 -> do
                     out <- liftIO $ pullOutBuffer zstr _out
-                    iter' <- lift $ enumPure1Chunk out iter
                     case avail_in of
-                        0 -> insertOut size run' (Initial zstr) iter'
-                        _ -> swapOut size run' (FullOut zstr _in) iter'
+                        0 -> insertOut size run' (Initial zstr) $ iter (Chunk out)
+                        _ -> swapOut size run' (FullOut zstr _in) $ iter (Chunk out)
                 _ -> case avail_in of
                     0 -> fill size run' (EmptyIn zstr _out) iter
                     _ -> do
-                        _ <- joinIM $ enumErr IncorrectState iter
+                        eneeErr iter IncorrectState
                         throwErr (toException IncorrectState)
 
 flush :: MonadIO m
       => Int
       -> (ZStream -> CInt -> IO CInt)
       -> Flushing
-      -> Enumeratee ByteString ByteString m a
+      -> EnumerateeS ByteString ByteString m a
 flush size run' (Flushing zstr _flush _out) iter = do
     status <- liftIO $ run' zstr (fromFlush _flush)
     case fromErrno status of
         Left err -> do
-            _ <- joinIM $ enumErr err iter
+            eneeErr iter err
             throwErr (toException err)
         Right False -> do -- Finished
             out <- liftIO $ pullOutBuffer zstr _out
-            iter' <- lift $ enumPure1Chunk out iter
-            idone iter' (Chunk BS.empty)
+            idone (iter (Chunk out)) (Chunk BS.empty)
         Right True -> do
             -- TODO: avail_in is unused, can it be completely removed?
             -- or should it be used?
@@ -562,16 +565,15 @@ flush size run' (Flushing zstr _flush _out) iter = do
             case avail_out of
                 0 -> do
                     out <- liftIO $ pullOutBuffer zstr _out
-                    iter' <- lift $ enumPure1Chunk out iter
                     out' <- liftIO $ putOutBuffer size zstr
-                    flush size run' (Flushing zstr _flush out') iter'
-                _ -> insertOut size run' (Initial zstr) iter
+                    eneeCheckIfDone (flush size run' (Flushing zstr _flush out')) $ iter (Chunk out)
+                _ -> insertOut size run' (Initial zstr) (liftI iter)
 
 finish :: MonadIO m
        => Int
        -> (ZStream -> CInt -> IO CInt)
        -> Finishing
-       -> Enumeratee ByteString ByteString m a
+       -> EnumerateeS ByteString ByteString m a
 finish size run' fin@(Finishing zstr _in) iter = do
 #ifdef DEBUG
     liftIO $ IO.hPutStrLn stderr $
@@ -581,13 +583,12 @@ finish size run' fin@(Finishing zstr _in) iter = do
     status <- liftIO $ run' zstr #{const Z_FINISH}
     case fromErrno status of
         Left err -> do
-            _ <- lift $ enumErr err iter
+            eneeErr iter err
             throwErr (toException err)
         Right False -> do -- Finished
             remaining <- liftIO $ pullInBuffer zstr _in
             out <- liftIO $ pullOutBuffer zstr _out
-            iter' <- lift $ enumPure1Chunk out iter
-            idone iter' (Chunk remaining)
+            idone (iter (Chunk out)) (Chunk remaining)
         Right True -> do
             -- TODO: avail_in is unused, is this an error or can it be removed?
             (_avail_in, avail_out) <- liftIO $ withZStream zstr $ \zptr -> do
@@ -597,10 +598,9 @@ finish size run' fin@(Finishing zstr _in) iter = do
             case avail_out of
                 0 -> do
                     out <- liftIO $ pullOutBuffer zstr _out
-                    iter' <- lift $ enumPure1Chunk out iter
-                    finish size run' fin iter'
+                    eneeCheckIfDone (finish size run' fin) $ iter (Chunk out)
                 _ -> do
-                    _ <-  lift $ enumErr (toException IncorrectState) iter
+                    eneeErr iter IncorrectState
                     throwErr $! toException IncorrectState
 
 foreign import ccall unsafe deflateInit2_ :: Ptr ZStream -> CInt -> CInt
@@ -741,7 +741,7 @@ enumFullFlush = enumErr FullFlush
 
 enumBlockFlush :: Monad m => Enumerator ByteString m a
 -- ^ Enumerate block flush. If the enumerator is compressing it allows to
--- finish current block. If the enumerator is decompressing it forces to stop 
+-- finish current block. If the enumerator is decompressing it forces to stop
 -- on next block boundary.
 enumBlockFlush = enumErr Block
 

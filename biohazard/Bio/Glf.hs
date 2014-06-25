@@ -7,7 +7,7 @@ module Bio.Glf (
     ) where
 
 import Bio.Iteratee
-import Codec.Bgzf
+import Bio.Iteratee.Bgzf
 import Control.Monad
 import Data.Bits
 import System.IO

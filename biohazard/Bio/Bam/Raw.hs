@@ -93,7 +93,7 @@ import Bio.Base
 import Bio.Bam.Header
 import Bio.Iteratee
 import Bio.Iteratee.ZLib hiding ( CompressionLevel )
-import Codec.Bgzf
+import Bio.Iteratee.Bgzf
 
 import Control.Monad
 import Data.Array.IO                ( IOUArray, newArray_, writeArray )
