@@ -18,6 +18,7 @@ import Data.List
 import Data.Ord                         ( comparing )
 
 import qualified Data.ByteString        as B
+import qualified Data.ByteString.Unsafe as B
 import qualified Data.ByteString.Char8  as T
 import qualified Data.Iteratee          as I
 import qualified Data.Map               as M
@@ -408,50 +409,52 @@ do_collapse (Q maxq) [br] | B.all (<= maxq) (b_qual br) = ( Representative br, [
 
 do_collapse maxq  brs = ( Consensus b0 { b_exts  = modify_extensions $ b_exts b0
                                        , b_flag  = failflag .&. complement flagDuplicate
-                                       , b_mapq  = rmsq $ map b_mapq brs'
+                                       , b_mapq  = rmsq $ map b_mapq $ good brs
                                        , b_cigar = Cigar cigar'
-                                       , b_seq   = V.fromList $ cons_seq
-                                       , b_qual  = B.pack $ map unQ cons_qual
+                                       , b_seq   = V.fromList $ map fst cons_seq_qual
+                                       , b_qual  = B.pack $ map (unQ . snd) cons_seq_qual
                                        , b_qname = b_qname b0 `B.snoc` 99
                                        , b_virtual_offset = 0 }, brs )              -- many modifications, must keep everything
   where
-    b0 = minimumBy (comparing b_qname) brs
-    most_fail = 2 * length (filter isFailsQC brs) > length brs
-    failflag | most_fail = b_flag b0 .|. flagFailsQC
-             | otherwise = b_flag b0 .&. complement flagFailsQC
+    !b0 = minimumBy (comparing b_qname) brs
+    !most_fail = 2 * length (filter isFailsQC brs) > length brs
+    !failflag | most_fail = b_flag b0 .|. flagFailsQC
+              | otherwise = b_flag b0 .&. complement flagFailsQC
 
-    rmsq xs = round $ sqrt (x::Double)
-      where
-        x = fromIntegral (sum (map (\y->y*y) xs)) / genericLength xs
+    rmsq xs = case foldl' (\(!n,!d) x -> (n + fromIntegral x * fromIntegral x, d + 1)) (0,0) xs of
+        (!n,!d) -> round $ sqrt $ (n::Double) / fromIntegral (d::Int)
 
-    maj vs = head . maximumBy (comparing length) . group . sort $ vs
+    maj xs = head . maximumBy (comparing length) . group . sort $ xs
     nub' = concatMap head . group . sort
 
     -- majority vote on the cigar lines, then filter
-    cigar' = maj $ map (unCigar . b_cigar) brs
-    brs' = filter ((==) cigar' . unCigar . b_cigar) brs
+    !cigar' = maj $ map (unCigar . b_cigar) brs
+    good = filter ((==) cigar' . unCigar . b_cigar)
 
-    (cons_seq, cons_qual) = unzip $ map (consensus maxq) $ transpose $ map to_pairs brs'
+    cons_seq_qual = [ consensus maxq [ (V.unsafeIndex (b_seq b) i, Q q)
+                                     | b <- good brs, let q = if B.null (b_qual b) then 23 else B.unsafeIndex (b_qual b) i ]
+                    | i <- [0 .. len - 1] ]
+        where !len = V.length . b_seq . head $ good brs
 
-    add_index k1 k2 | null inputs = id
-                    | otherwise = M.insert k1 (Text $ T.pack $ show conss) .
-                                  M.insert k2 (Text $ B.pack $ map ((+) 33 . unQ) consq)
-      where
-        inputs = [ zip (map toNucleotide $ T.unpack sq) qs
-                 | es <- map b_exts brs
-                 , Text sq <- maybe [] (:[]) $ M.lookup k1 es
-                 , let qs = case M.lookup k2 es of
-                                Just (Text t) -> map (Q . subtract 33) $ B.unpack t
-                                _             -> repeat (Q 23) ]
-        (conss,consq) = unzip $ map (consensus (Q 93)) $ transpose $ inputs
+    add_index k1 k2 = case [ T.length sq | b <- brs, Text sq <- maybe [] (:[]) $ M.lookup k1 (b_exts b) ] of
+        [      ] -> id
+        (!len:_) -> M.insert k1 (Text $ T.pack $ show $ map fst conssq) .
+                    M.insert k2 (Text $ B.pack $ map ((+) 33 . unQ . snd) conssq)
+            where
+                inputs = [ (sq, qs) | es <- map b_exts brs
+                                    , Text sq <- maybe [] (:[]) $ M.lookup k1 es
+                                    , let qs = case M.lookup k2 es of
+                                            -- Quality if available, else Q23 (~0.5% error rate)
+                                            Just (Text t) -> t
+                                            _             -> B.replicate len 56 ]
 
+                conssq = [ consensus (Q 93) [ (toNucleotide $ T.index ns i, Q $ B.index qs i - 33)
+                                            | (ns,qs) <- inputs ]
+                         | i <- [0 .. len - 1] ]
 
-    to_pairs b | B.null (b_qual b) = zip (V.toList $ b_seq b) (repeat (Q 23))   -- error rate of ~0.5%
-               | otherwise         = zip (V.toList $ b_seq b) (map Q $ B.unpack $ b_qual b)
-
-    md' = case [ (b_seq b,md,b) | b <- brs', Just md <- [ getMd b ] ] of
+    md' = case [ (b_seq b,md,b) | b <- good brs, Just md <- [ getMd b ] ] of
                 [               ] -> []
-                (seq1, md1,b) : _ -> case mk_new_md cigar' md1 (V.toList seq1) cons_seq of
+                (seq1, md1,b) : _ -> case mk_new_md cigar' md1 (V.toList seq1) (map fst cons_seq_qual) of
                     Right x -> x
                     Left (MdFail cigs ms osq nsq) -> error $ unlines
                                     [ "Broken MD field when trying to construct new MD!"
