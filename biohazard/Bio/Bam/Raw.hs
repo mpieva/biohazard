@@ -12,8 +12,8 @@ module Bio.Bam.Raw (
     isBgzfBam,
 
     decodeBam,
-    decodeBamSequence,
-    decodeBamUnaligned,
+    getBamRaw,
+    -- decodeBamLoop,
     decodeAnyBam,
     decodeAnyBamFile,
 
@@ -72,10 +72,6 @@ module Bio.Bam.Raw (
     br_extAsInt,
     br_extAsString,
 
-    BamIndex,
-    readBamIndex,
-    readBamIndex',
-
     Mutator,
     mutateBamRaw,
     removeExt,
@@ -96,13 +92,10 @@ import Bio.Iteratee.ZLib hiding ( CompressionLevel )
 import Bio.Iteratee.Bgzf
 
 import Control.Monad
-import Data.Array.IO                ( IOUArray, newArray_, writeArray )
-import Data.Array.Unboxed
-import Data.Array.Unsafe            ( unsafeFreeze )
 import Data.Attoparsec.Iteratee
 import Data.Binary.Put
 import Data.Bits                    ( Bits, shiftL, shiftR, (.&.), (.|.), testBit )
-import Data.Int                     ( Int64, Int32, Int16, Int8 )
+import Data.Int                     ( Int32, Int16, Int8 )
 import Data.Monoid
 import Data.Sequence                ( (|>) )
 import Data.Word                    ( Word32, Word16 )
@@ -110,9 +103,7 @@ import Foreign.C.String             ( CString )
 import Foreign.Ptr                  ( plusPtr )
 import Foreign.Marshal.Utils        ( moveBytes )
 import Foreign.Storable             ( pokeElemOff )
-import System.Directory             ( doesFileExist )
 import System.Environment           ( getArgs )
-import System.FilePath              ( dropExtension, takeExtension, (<.>) )
 import System.IO
 import System.IO.Unsafe
 
@@ -181,31 +172,6 @@ decodeAnyBam it = do mk <- isBam ; case mk of Just  k -> k it
 
 decodeAnyBamFile :: MonadCatchIO m => FilePath -> (BamMeta -> Iteratee [BamRaw] m a) -> m (Iteratee [BamRaw] m a)
 decodeAnyBamFile fn k = enumFileRandom defaultBufSize fn (decodeAnyBam k) >>= run
-
--- | Seek to a given sequence in a Bam file, read those records.  This
--- requires an appropriate index (read separately), and the file must
--- have been opened in such a way as to allow seeking.  Enumerates over
--- the @BamRaw@ records of the correct sequence only, doesn't enumerate
--- at all if the sequence isn't found.
-
-decodeBamSequence :: Monad m => BamIndex -> Refseq -> Enumeratee Block [BamRaw] m a
-decodeBamSequence (BamIndex _ idx) refseq iter
-    | bounds idx `inRange` refseq = case idx ! refseq of
-        0       -> return iter
-        virtoff -> do seek $ fromIntegral virtoff
-                      (decodeBamLoop ><> breakE wrong_ref) iter
-    | otherwise = return iter
-  where
-    wrong_ref br = br_rname br /= refseq
-
--- | Seek to the part of a Bam file that contains unaligned reads and
--- decode those.  Sort of the dual to @decodeBamSequence@.
-
-decodeBamUnaligned :: Monad m => BamIndex -> Enumeratee Block [BamRaw] m a
-decodeBamUnaligned (BamIndex voff _) iter = do when (voff /= 0) $ seek $ fromIntegral voff
-                                               (decodeBamLoop ><> filterStream no_ref) iter
-  where
-    no_ref br = br_rname br == invalidRefseq
 
 concatDefaultInputs :: MonadCatchIO m => Enumerator' BamMeta [BamRaw] m a
 concatDefaultInputs it0 = liftIO getArgs >>= \fs -> concatInputs fs it0
@@ -444,7 +410,7 @@ br_aln_length br@(BamRaw _ raw)
 decodeBam :: Monad m => (BamMeta -> Iteratee [BamRaw] m a) -> Iteratee Block m (Iteratee [BamRaw] m a)
 decodeBam inner = do meta <- liftBlock get_bam_header
                      refs <- liftBlock get_ref_array
-                     decodeBamLoop $ inner $! merge meta refs
+                     convStream getBamRaw $ inner $! merge meta refs
   where
     get_bam_header  = do magic <- heads "BAM\SOH"
                          when (magic /= 4) $ do s <- i'getString 10
@@ -472,7 +438,16 @@ decodeBam inner = do meta <- liftBlock get_bam_header
                | otherwise                  = l -- contradiction in header, but we'll just ignore it
 
 
-{-# INLINE decodeBamLoop #-}
+{-# INLINE getBamRaw #-}
+getBamRaw :: Monad m => Iteratee Block m [BamRaw]
+getBamRaw = do off <- getOffset
+               raw <- liftBlock $ do
+                        bsize <- endianRead4 LSB
+                        when (bsize < 32) $ fail "short BAM record"
+                        i'getString (fromIntegral bsize)
+               return [bamRaw off raw]
+
+{- INLINE decodeBamLoop #}
 decodeBamLoop :: Monad m => Enumeratee Block [BamRaw] m a
 decodeBamLoop = eneeCheckIfDone loop
   where
@@ -483,53 +458,7 @@ decodeBamLoop = eneeCheckIfDone loop
                                 bsize <- endianRead4 LSB
                                 when (bsize < 32) $ fail "short BAM record"
                                 i'getString (fromIntegral bsize)
-                       eneeCheckIfDone loop . k $ Chunk [bamRaw off raw]
-
--- | Stop gap solution for a cheap index.  We only get the first offset
--- from the linear index, which allows us to navigate to a target
--- sequence.  Will do the rest when I need it.
-data BamIndex = BamIndex { _bi_unaln :: !Int64
-                         , _bi_refseqs :: !(UArray Refseq Int64) }
-
-readBamIndex :: FilePath -> IO BamIndex
-readBamIndex fp0 | takeExtension fp0 == ".bai" = fileDriver readBamIndex' fp0
-                 | otherwise = do
-    let fp1 = fp0 <.> "bai" ; fp2 = dropExtension fp0 <.> "bai"
-    es <- liftM2 (,) (doesFileExist fp1) (doesFileExist fp2)
-    case es of
-        (True, _) -> fileDriver readBamIndex' fp1
-        (_, True) -> fileDriver readBamIndex' fp2
-        _         -> fileDriver readBamIndex' fp0
-
-readBamIndex' :: MonadIO m => Iteratee S.ByteString m BamIndex
-readBamIndex' = do magic <- heads "BAI\1"
-                   when (magic /= 4) $ fail "BAI signature not found"
-                   nref <- fromIntegral `liftM` endianRead4 LSB
-                   if nref < 1 then return . BamIndex 0 $ array (toEnum 1, toEnum 0) []
-                               else get_array nref
-  where
-    get_array nref = do
-        arr <- liftIO $ ( newArray_ (toEnum 0, toEnum (nref-1)) :: IO (IOUArray Refseq Int64) )
-        mx <- reduceM [toEnum 0 .. toEnum (nref-1)] 0 $ \m0 r -> do
-            nbins <- fromIntegral `liftM` endianRead4 LSB
-            replicateM_ nbins $ do
-                _bin <- endianRead4 LSB -- "distinct bin", whatever that means
-                nchunks <- fromIntegral `liftM` endianRead4 LSB
-                replicateM_ nchunks $ endianRead8 LSB >> endianRead8 LSB
-
-            nintv <- endianRead4 LSB
-            (o,m) <- let loop !acc !bcc  0 = return (acc,bcc)
-                         loop !acc !bcc !n = do oo <- fromIntegral `liftM` endianRead8 LSB
-                                                if oo == 0
-                                                   then loop acc bcc (n-1)
-                                                   else loop (min acc oo) (max bcc oo) (n-1)
-                     in loop maxBound m0 nintv
-            liftIO $ writeArray arr r o
-            return m
-        BamIndex mx `liftM` liftIO (unsafeFreeze arr)
-
-    reduceM xs nil cons = foldM cons nil xs
-
+                       eneeCheckIfDone loop . k $ Chunk [bamRaw off raw] -}
 
 writeRawBamFile :: FilePath -> BamMeta -> Iteratee [BamRaw] IO ()
 writeRawBamFile fp meta =

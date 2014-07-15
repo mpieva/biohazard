@@ -40,6 +40,7 @@ Library
                        Bio.Bam.Fastq,
                        Bio.Bam.Filter,
                        Bio.Bam.Header,
+                       Bio.Bam.Index,
                        Bio.Bam.Pileup, 
                        Bio.Bam.Raw,
                        Bio.Bam.Rec,

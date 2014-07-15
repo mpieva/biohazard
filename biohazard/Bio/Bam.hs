@@ -2,6 +2,7 @@ module Bio.Bam (
         module Bio.Bam.Fastq,
         module Bio.Bam.Filter,
         module Bio.Bam.Header,
+        module Bio.Bam.Index,
         module Bio.Bam.Raw,
         module Bio.Bam.Rec,
         module Bio.Bam.Rmdup,
@@ -12,6 +13,7 @@ module Bio.Bam (
 import Bio.Bam.Fastq
 import Bio.Bam.Filter
 import Bio.Bam.Header
+import Bio.Bam.Index
 import Bio.Bam.Raw
 import Bio.Bam.Rec
 import Bio.Bam.Rmdup

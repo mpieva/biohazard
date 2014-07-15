@@ -322,20 +322,21 @@ mergeInputRanges rng (fp0:fps0) = go fp0 fps0
     go fp (fp1:fps) = mergeEnums' (go fp1 fps) (enum1 fp) combineCoordinates
 
     decodeBamFileRange x y = decodeWithIndex $
-            \idx -> foldr ((>=>) . decodeBamSequence idx) return [x..y]
+            \idx -> foldr ((>=>) . decodeBamRefseq idx) return [x..y]
 
 
 decodeWithIndex :: MonadCatchIO m
-                => (BamIndex -> Enumeratee Block [BamRaw] m a)
+                => (BamIndex -> Enumeratee [BamRaw] [BamRaw] m a)
                 -> FilePath -> (BamMeta -> Iteratee [BamRaw] m a)
                 -> m (Iteratee [BamRaw] m a)
 
 decodeWithIndex enum fp k0 = do
     idx <- liftIO $ readBamIndex fp
-    enumFileRandom defaultBufSize fp >=> run $
-        joinI $ decompressBgzfBlocks $ do
-            hdr <- decodeBam return
-            enum idx $ hdr >>= k0
+    decodeAnyBamFile fp >=> run $ \hdr ->
+    -- enumFileRandom defaultBufSize fp >=> run $
+        -- joinI $ decompressBgzfBlocks $ do
+            -- hdr <- decodeBam return
+            enum idx $ k0 hdr -- >>= k0
 
 
 writeLibBamFiles :: MonadCatchIO m => FilePath -> (BamRaw -> Seqid) -> BamMeta -> Iteratee [BamRaw] m ()

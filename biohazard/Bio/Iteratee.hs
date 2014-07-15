@@ -11,6 +11,7 @@ module Bio.Iteratee (
     headStream,
     peekStream,
     takeStream,
+    dropStream,
     mapStreamM,
     mapStreamM_,
     filterStream,
@@ -150,6 +151,9 @@ headStream = I.head
 
 peekStream :: ListLike s el => Iteratee s m (Maybe el)
 peekStream = I.peek
+
+dropStream :: (Nullable s, ListLike s el) => Int -> Iteratee s m ()
+dropStream = I.drop
 
 -- | Run an Iteratee, collect the input.  When it finishes, return the
 -- result along with *all* input.  Effectively allows lookahead.  Be
