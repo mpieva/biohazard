@@ -6,57 +6,60 @@ module Bio.Bam.Index (
     readBaiIndex,
 
     Region(..),
-    decodeBamRefseq,
-    decodeBamRegions,
-    decodeBamUnaligned
+    eneeBamRefseq,
+    eneeBamRegions,
+    eneeBamUnaligned
 ) where
 
 import Bio.Bam.Header
 import Bio.Bam.Raw
 import Bio.Iteratee
 import Control.Monad
-import Data.Array.IArray
-import Data.Array.IO                ( IOArray, IOUArray, newArray_, writeArray )
-import Data.Array.Unboxed
-import Data.Array.Unsafe            ( unsafeFreeze )
 import Data.Bits                    ( shiftL, shiftR )
 import Data.ByteString              ( ByteString )
+import Data.Int                     ( Int64 )
 import Data.IntMap                  ( IntMap )
-import Data.Word                    ( Word64, Word32 )
+import Data.Function                ( on )
+import Data.List                    ( groupBy, sort )
+import Data.Word                    ( Word32 )
 import System.Directory             ( doesFileExist )
 import System.FilePath              ( dropExtension, takeExtension, (<.>) )
 
 import qualified Data.IntMap                    as IM
+import qualified Data.Vector                    as V
+import qualified Data.Vector.Mutable            as M
+import qualified Data.Vector.Unboxed            as U
+import qualified Data.Vector.Unboxed.Mutable    as N
+import qualified Data.Vector.Algorithms.Intro   as N
+
+import Debug.Trace
 
 -- | Full index, unifying BAI and CSI style.  In both cases, we have the
--- binning scheme, parameters are fixed in BAI, but variable in CSI.  BAI
--- has the additional linear index per target sequence.  CSI has
--- `loffset' per bin, which might serve the same purpose(?).
+-- binning scheme, parameters are fixed in BAI, but variable in CSI.
+-- Checkpoints are created from the linear index in BAI or from the
+-- `loffset' field in CSI.
 
 data BamIndex = BamIndex {
     -- | Minshift parameter from CSI
-    bi_minshift :: Int,
+    minshift :: !Int,
 
     -- | Depth parameter from CSI
-    bi_depth :: Int,
+    depth :: !Int,
 
     -- | Best guess at where the unaligned records start.
-    bi_unaln :: !Word64,
+    unaln_off :: !Int64,
 
     -- | Records for the binning index, where each bin has a list of
-    -- chunks belonging to it.
-    bi_refseq_bins :: !(Array Refseq Bins),
+    -- segments belonging to it.
+    refseq_bins :: !(V.Vector Bins),
 
     -- | Known checkpoints of the form (pos,off) where off is the
     -- virtual offset of the first record crossing pos.
-    bi_refseq_ckpoints :: !(Array Refseq Ckpoints) }
+    refseq_ckpoints :: !(V.Vector Ckpoints) }
 
 -- | Mapping from bin number to vector of clusters.
-type Bins = IntMap Chunks
-type Chunks = UArray (Int,Edge) Word64
-
-data Edge = Beg | End deriving (Eq, Ord, Ix)
-
+type Bins = IntMap Segments
+type Segments = U.Vector (Int64,Int64)
 
 
 -- | Checkpoints.  Each checkpoint is a position with the virtual offset
@@ -66,7 +69,7 @@ data Edge = Beg | End deriving (Eq, Ord, Ix)
 -- chunks whose end file offset is larger than 'ioffset' of the 16kB
 -- window containing 'beg'."  (Sounds like a marginal gain, though.)
 
-type Ckpoints = IntMap Word64
+type Ckpoints = IntMap Int64
 
 
 -- | Decode only those reads that fall into one of several regions.
@@ -74,28 +77,82 @@ type Ckpoints = IntMap Word64
 -- regions that are actually needed.  We filter the decoded stuff so
 -- that it actually overlaps our regions.
 --
--- From the binning index, we get a list of chunks per requested region.
--- Using the checkpoints, we try to eliminate some of the chunks.  The
--- resulting chunks lists are merged, then traversed.  We seek to the
--- beginning of the earliest chunk and start decoding.  Once the virtual
--- file position leaves the chunk, we seek to the next if there is a
--- sufficiently large gap, else we keep going.
+-- From the binning index, we get a list of segments per requested
+-- region.  Using the checkpoints, we prune them:  if we have a
+-- checkpoint to the left of the beginning of the interesting region, we
+-- can move the start of each segment forward to the checkpoint.  If
+-- that makes the segment empty, it can be droppped.
+--
+-- The resulting segment lists are merged, then traversed.  We seek to
+-- the beginning of the earliest segment and start decoding.  Once the
+-- virtual file position leaves the segment or the alignment position
+-- moves past the end of the requested region, we move to the next.
+-- Moving is a seek if it spans a sufficiently large gap or points
+-- backwards, else we just keep going.
 
-data Region = Region Refseq Int Int
+data Region = Region { rgn_refseq :: !Refseq, rgn_start :: !Int, rgn_end :: !Int }
+  deriving (Eq, Ord, Show)
 
-decodeBamRegions :: BamIndex -> [Region] ->  Enumeratee Block [BamRaw] m a
-decodeBamRegions = undefined
-    -- Make a list of chunks from each region, merge and sort them.
-    -- We no longer need a chunk when the start coordinate is beyond the
-    -- end of the region that generated the chunk.
-    -- We have to filter everything for overlapping the region list;
+-- | A 'Segment' has a start and an end offset, and an "end coordinate"
+-- from the originating region.
+data Segment = Segment !Int64 !Int64 !Int deriving Show
+
+mergedSegmentList :: BamIndex -> [Region] -> [Segment]
+mergedSegmentList bi@BamIndex{..} =
+    concatMap (foldr (~~) [] . segmentLists bi) . groupBy ((==) `on` rgn_refseq) . sort
+
+    -- XXX We have to filter everything for overlapping the region list;
     -- we'll get a colorful mix from the file.
 
+segmentLists :: BamIndex -> [Region] -> [[Segment]]
+segmentLists bi@BamIndex{..} rs@(Region (Refseq ref) _ _ : _)
+        | Just bins <- refseq_bins V.!? fromIntegral ref,
+          Just cpts <- refseq_ckpoints V.!? fromIntegral ref
+        = [ rgnToSegments bi beg end bins cpts | Region _ beg end <- rs ]
+segmentLists _ _ = []
 
--- | Read any index we can find for a file.  If the file name doesn't
--- have a .bai or .csi extension, we look for the index by adding such
--- an extension and by replacing the extension with these two.  If
--- nothing looks right, we read the file itself anyway.
+-- from region to list of bins, then to list of segments
+rgnToSegments :: BamIndex -> Int -> Int -> Bins -> Ckpoints -> [Segment]
+rgnToSegments bi@BamIndex{..} beg end bins cpts =
+    [ Segment boff' eoff end
+    | bin <- binList bi beg end
+    , (boff,eoff) <- maybe [] U.toList $ IM.lookup bin bins
+    , let boff' = max boff cpt
+    , boff' < eoff ]
+  where
+    !cpt = maybe 0 snd $ IM.lookupLE beg cpts
+
+-- list of bins for given range of coordinates, from Heng's horrible code
+binList :: BamIndex -> Int -> Int -> [Int]
+binList BamIndex{..} beg end = binlist' 0 (minshift + 3*depth) 0
+  where
+    binlist' l s t = if l > depth then [] else [b..e] ++ loop
+      where
+        b = t + beg `shiftR` s
+        e = t + (end-1) `shiftR` s
+        loop = binlist' (l+1) (s-3) (t + 1 `shiftL` (3*l))
+
+
+-- | Merges two lists of segments.  Lists must be sorted, the merge sort
+-- merges overlapping segments into one.
+infix 4 ~~
+(~~) :: [Segment] -> [Segment] -> [Segment]
+Segment a b e : xs ~~ Segment u v f : ys
+    |          b < u = Segment a b e : (xs ~~ Segment u v f : ys)     -- no overlap
+    | a < u && b < v = Segment a v (max e f) : (xs ~~ ys)             -- some overlap
+    |          b < v = Segment u v (max e f) : (xs ~~ ys)             -- contained
+    | v < a          = Segment u v f : (xs ~~ Segment a b e : ys)     -- no overlap
+    | u < a          = Segment u b (max e f) : (xs ~~ ys)             -- some overlap
+    | otherwise      = Segment a b (max e f) : (xs ~~ ys)             -- contained
+[] ~~ ys = ys
+xs ~~ [] = xs
+
+
+-- | Reads any index we can find for a file.  If the file name has a
+-- .bai or .csi extension, we read it.  Else we look for the index by
+-- adding such an extension and by replacing the extension with these
+-- two, and finally in the file itself.  The first file that exists and
+-- can actually be parsed, is used.
 readBamIndex :: FilePath -> IO BamIndex
 readBamIndex fp | takeExtension fp == ".bai" = fileDriver readBaiIndex fp
                 | takeExtension fp == ".csi" = fileDriver readBaiIndex fp
@@ -132,7 +189,7 @@ readBaiIndex = i'getString 4 >>= switch
     -- Insert one checkpoint.  If we already have an entry (can happen
     -- if it comes from a different bin), we conservatively take the min
     addOneCheckpoint minshift depth bin cp = do
-            loffset <- endianRead8 LSB
+            loffset <- fromIntegral `liftM` endianRead8 LSB
             let key = llim (fromIntegral bin) (3*depth) minshift
             return $! IM.insertWith min key loffset cp
 
@@ -144,66 +201,86 @@ readBaiIndex = i'getString 4 >>= switch
 
 getIndexArrays :: MonadIO m => Int -> Int
                -> (Word32 -> Ckpoints -> Iteratee ByteString m Ckpoints)
-               -> ((Ckpoints, Word64) -> Iteratee ByteString m (Ckpoints, Word64))
+               -> ((Ckpoints, Int64) -> Iteratee ByteString m (Ckpoints, Int64))
                -> Iteratee ByteString m BamIndex
 getIndexArrays minshift depth addOneCheckpoint addManyCheckpoints = do
     nref <- fromIntegral `liftM` endianRead4 LSB
     if nref < 1
-      then return $ BamIndex minshift depth 0
-                             (array (toEnum 1, toEnum 0) [])
-                             (array (toEnum 1, toEnum 0) [])
+      then return $ BamIndex minshift depth 0 V.empty V.empty
       else do
-        rbins  <- liftIO ( newArray_ (toEnum 0, toEnum (nref-1)) :: IO (IOArray Refseq Bins) )
-        rckpts <- liftIO ( newArray_ (toEnum 0, toEnum (nref-1)) :: IO (IOArray Refseq Ckpoints) )
+        rbins  <- liftIO $ M.new nref
+        rckpts <- liftIO $ M.new nref
         mxR <- reduceM 0 nref 0 $ \mx0 r -> do
                 nbins <- endianRead4 LSB
                 (bins,cpts,mx1) <- reduceM 0 nbins (IM.empty,IM.empty,mx0) $ \(!im,!cp,!mx) _ -> do
                         bin <- endianRead4 LSB -- the "distinct bin"
                         cp' <- addOneCheckpoint bin cp
-                        (mx', chunksarr) <- getChunkArray
-                        return (IM.insert (fromIntegral bin) chunksarr im, cp', max mx mx')
+                        segsarr <- getSegmentArray
+                        let !mx' = if U.null segsarr then mx else max mx (snd (U.last segsarr))
+                        return (IM.insert (fromIntegral bin) segsarr im, cp', mx')
                 (cpts',mx2) <- addManyCheckpoints (cpts,mx1)
-                liftIO $ writeArray rbins (toEnum r) bins >> writeArray rckpts (toEnum r) cpts'
+                liftIO $ M.write rbins r bins >> M.write rckpts r cpts'
                 return mx2
-        liftM2 (BamIndex minshift depth mxR) (liftIO $ unsafeFreeze rbins) (liftIO $ unsafeFreeze rckpts)
+        liftM2 (BamIndex minshift depth mxR) (liftIO $ V.unsafeFreeze rbins) (liftIO $ V.unsafeFreeze rckpts)
 
-getChunkArray :: MonadIO m => Iteratee ByteString m (Word64, Chunks)
-getChunkArray = do
-    nchunks <- fromIntegral `liftM` endianRead4 LSB
-    chunksarr <- liftIO $ ( newArray_ ((0,Beg), (nchunks-1,End)) :: IO (IOUArray (Int,Edge) Word64) )
-    !mx <- reduceM 0 nchunks 0 $ \mx i -> do beg <- endianRead8 LSB
-                                             end <- endianRead8 LSB
-                                             liftIO $ do writeArray chunksarr (i,Beg) beg
-                                                         writeArray chunksarr (i,End) end
-                                             return $! max end mx
-    (,) mx `liftM` liftIO (unsafeFreeze chunksarr)
+-- | Reads the list of segments from an index file and makes sure
+-- it is sorted.
+getSegmentArray :: MonadIO m => Iteratee ByteString m Segments
+getSegmentArray = do
+    nsegs <- fromIntegral `liftM` endianRead4 LSB
+    segsarr <- liftIO $ N.new nsegs
+    loopM 0 nsegs $ \i -> do beg <- fromIntegral `liftM` endianRead8 LSB
+                             end <- fromIntegral `liftM` endianRead8 LSB
+                             liftIO $ N.write segsarr i (beg,end)
+    liftIO $ N.sort segsarr >> U.unsafeFreeze segsarr
 
 {-# INLINE reduceM #-}
 reduceM :: (Monad m, Enum ix, Eq ix) => ix -> ix -> a -> (a -> ix -> m a) -> m a
 reduceM beg end acc cons = if beg /= end then cons acc beg >>= \n -> reduceM (succ beg) end n cons else return acc
 
+{-# INLINE loopM #-}
+loopM :: (Monad m, Enum ix, Eq ix) => ix -> ix -> (ix -> m ()) -> m ()
+loopM beg end k = if beg /= end then k beg >> loopM (succ beg) end k else return ()
 
--- | Seek to a given sequence in a Bam file, read those records.  We use
--- the first checkpoint available for the sequence.
--- requires an appropriate index (read separately), and the file must
--- have been opened in such a way as to allow seeking.  Enumerates over
--- the @BamRaw@ records of the correct sequence only, doesn't enumerate
--- at all if the sequence isn't found.
 
-decodeBamRefseq :: Monad m => BamIndex -> Refseq -> Enumeratee [BamRaw] [BamRaw] m a
-decodeBamRefseq BamIndex{..} refseq iter
-    | bounds bi_refseq_ckpoints `inRange` refseq
-    , Just (voff, _) <- IM.minView (bi_refseq_ckpoints ! refseq)
+-- | Seeks to a given sequence in a Bam file and enumerates only those
+-- records aligning to that reference.  We use the first checkpoint
+-- available for the sequence.  This requires an appropriate index, and
+-- the file must have been opened in such a way as to allow seeking.
+-- Enumerates over the @BamRaw@ records of the correct sequence only,
+-- doesn't enumerate at all if the sequence isn't found.
+
+eneeBamRefseq :: Monad m => BamIndex -> Refseq -> Enumeratee [BamRaw] [BamRaw] m a
+eneeBamRefseq BamIndex{..} (Refseq r) iter
+    | Just ckpts <- refseq_ckpoints V.!? fromIntegral r
+    , Just (voff, _) <- IM.minView ckpts
     , voff /= 0 = do seek $ fromIntegral voff
-                     breakE ((/=) refseq . br_rname) iter
+                     breakE ((Refseq r /=) . br_rname) iter
     | otherwise = return iter
 
--- | Seek to the part of a Bam file that contains unaligned reads and
--- decode those.  Sort of the dual to @decodeBamRefseq@.  We use the
+-- | Seeks to the part of a Bam file that contains unaligned reads and
+-- enumerates those.  Sort of the dual to 'eneeBamRefseq'.  We use the
 -- best guess at where the unaligned stuff starts.  If no such guess is
 -- available, we decode everything.
 
-decodeBamUnaligned :: Monad m => BamIndex -> Enumeratee [BamRaw] [BamRaw] m a
-decodeBamUnaligned BamIndex{..} iter = do when (bi_unaln /= 0) $ seek $ fromIntegral bi_unaln
-                                          filterStream (not . isValidRefseq . br_rname) iter
+eneeBamUnaligned :: Monad m => BamIndex -> Enumeratee [BamRaw] [BamRaw] m a
+eneeBamUnaligned BamIndex{..} iter = do when (unaln_off /= 0) $ seek $ fromIntegral unaln_off
+                                        filterStream (not . isValidRefseq . br_rname) iter
+
+-- | Enumerates one 'Segment'.  Seeks to the start offset, unless
+-- reading over the skipped part looks cheaper.  Enumerates until we
+-- either cross the end offset or the max position.
+eneeBamSegment :: Monad m => Segment -> Enumeratee [BamRaw] [BamRaw] m r
+eneeBamSegment (Segment beg end mpos) out = do
+    -- seek if it's a backwards seek or more than 512k forwards
+    peekStream >>= \x -> case x of
+        Just br | beg <= o && beg + 0x8000 > o -> return ()
+            where o = fromIntegral $ virt_offset br
+        _                                      -> seek $ fromIntegral beg
+
+    let in_segment br = virt_offset br <= fromIntegral end && br_pos br <= mpos
+    takeWhileE in_segment out
+
+eneeBamRegions :: Monad m => BamIndex -> [Region] ->  Enumeratee [BamRaw] [BamRaw] m a
+eneeBamRegions bi = foldr ((>=>) . eneeBamSegment) return . mergedSegmentList bi
 

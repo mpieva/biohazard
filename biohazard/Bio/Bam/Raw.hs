@@ -447,8 +447,8 @@ getBamRaw = do off <- getOffset
                         i'getString (fromIntegral bsize)
                return [bamRaw off raw]
 
-{- INLINE decodeBamLoop #}
-decodeBamLoop :: Monad m => Enumeratee Block [BamRaw] m a
+-- INLINE decodeBamLoop
+{- decodeBamLoop :: Monad m => Enumeratee Block [BamRaw] m a
 decodeBamLoop = eneeCheckIfDone loop
   where
     loop k = isFinished >>= loop' k
