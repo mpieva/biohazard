@@ -76,8 +76,8 @@ simple_snp_call ploidy vars = (simple_call ploidy mkpls vars, ())
 simple_call :: Int -> (a -> [Prob]) -> [a] -> GL
 simple_call ploidy pls = foldl1' (V.zipWith (*)) . map step
   where
-    foldl1' _ [     ] = V.singleton 1
-    foldl1' f (!a:as) = foldl' f a as
+    foldl1' _ [    ] = V.singleton 1
+    foldl1' f (a:as) = foldl' f a as
 
     norm = toProb (fromIntegral ploidy) `pow` (-1)
 

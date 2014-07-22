@@ -6,8 +6,8 @@
 module Bio.Iteratee (
     groupStreamBy,
     groupStreamOn,
-    i'getString,
-    i'lookAhead,
+    iGetString,
+    iLookAhead,
     headStream,
     peekStream,
     takeStream,
@@ -49,11 +49,7 @@ module Bio.Iteratee (
     Enumeratee',
     mergeEnums',
 
-    module Data.Iteratee.Binary,
-    module Data.Iteratee.Char,
-    module Data.Iteratee.IO,
-    module Data.Iteratee.Iteratee,
-                    ) where
+    module X ) where
 
 import Bio.Base ( findAuxFile )
 import Control.Concurrent
@@ -61,10 +57,10 @@ import Control.Monad
 import Control.Monad.CatchIO
 import Control.Monad.IO.Class
 import Control.Monad.Trans.Class
-import Data.Iteratee.Binary
-import Data.Iteratee.Char
-import Data.Iteratee.IO hiding ( defaultBufSize )
-import Data.Iteratee.Iteratee
+import Data.Iteratee.Binary as X
+import Data.Iteratee.Char as X
+import Data.Iteratee.IO as X hiding ( defaultBufSize )
+import Data.Iteratee.Iteratee as X
 import Data.Monoid
 import Data.ListLike ( ListLike )
 import System.IO ( stdin, stdout, stderr, hIsTerminalDevice )
@@ -109,7 +105,7 @@ groupStreamOn proj inner = eneeCheckIfDonePass (icont . step)
             in lift (runIter it od oc) >>= \it' -> step' c it' outer (Chunk r)
 
     step' c it outer str =
-        lift (run it) >>= \b -> eneeCheckIfDone (\k -> step k str) . outer $ Chunk [(c,b)]
+        lift (run it) >>= \b -> eneeCheckIfDone (`step` str) . outer $ Chunk [(c,b)]
 
 
 -- | Grouping on 'Iteratee's.  @groupStreamBy cmp inner outer@ executes
@@ -138,7 +134,7 @@ groupStreamBy cmp inner = eneeCheckIfDonePass (icont . step)
             in lift (runIter it od oc) >>= \it' -> step' (LL.head l) it' outer (Chunk r)
 
     step' _ it outer str =
-        lift (run it) >>= \b -> eneeCheckIfDone (\k -> step k str) . outer $ Chunk [b]
+        lift (run it) >>= \b -> eneeCheckIfDone (`step` str) . outer $ Chunk [b]
 
 
 -- | Take a prefix of a stream, the equivalent of 'Data.List.take'.
@@ -159,8 +155,8 @@ dropStream = I.drop
 -- result along with *all* input.  Effectively allows lookahead.  Be
 -- careful, this will eat memory if the @Iteratee@ doesn't return
 -- speedily.
-i'lookAhead :: Monoid s => Iteratee s m a -> Iteratee s m a
-i'lookAhead = go mempty
+iLookAhead :: Monoid s => Iteratee s m a -> Iteratee s m a
+iLookAhead = go mempty
   where
     go acc it = Iteratee $ \od oc -> runIter it (\x _ -> od x (Chunk acc)) (oc . step acc)
 
@@ -170,9 +166,9 @@ i'lookAhead = go mempty
 
 -- | Collects a string of a given length.  Don't use this for long
 -- strings, use 'takeStream' instead.
-i'getString :: Monad m => Int -> Iteratee S.ByteString m S.ByteString
-i'getString 0 = idone S.empty (Chunk S.empty)
-i'getString n = liftI $ step [] 0
+iGetString :: Monad m => Int -> Iteratee S.ByteString m S.ByteString
+iGetString 0 = idone S.empty (Chunk S.empty)
+iGetString n = liftI $ step [] 0
   where
     step acc l c@(EOF _) = icont (step acc l) (Just $ setEOF c)
     step acc l (Chunk c) | l + S.length c >= n = let r = S.concat . reverse $ S.take (n-l) c : acc
@@ -185,7 +181,7 @@ infixl 1 $==
 ($==) :: Monad m => Enumerator' hdr input m (Iteratee output m result)
                  -> Enumeratee      input             output m result
                  -> Enumerator' hdr                   output m result
-($==) enum enee iter = run =<< enum (\hdr -> enee $ iter hdr)
+($==) enum enee iter = run =<< enum (enee . iter)
 
 -- | Merge two 'Enumerator\''s into one.  The header provided by the
 -- inner 'Enumerator\'' is passed to the output iterator, the header
@@ -281,7 +277,7 @@ mergeSortStreams comp = eneeCheckIfDone step
 
         (Just  x, Nothing) -> do       I.drop 1  ; eneeCheckIfDone step . out . Chunk $ LL.singleton x
         (Nothing, Just  y) -> do lift (I.drop 1) ; eneeCheckIfDone step . out . Chunk $ LL.singleton y
-        (Nothing, Nothing) -> do idone (liftI out) $ EOF Nothing
+        (Nothing, Nothing) -> idone (liftI out) $ EOF Nothing
 
 newtype Ch a = Ch (MVar (Maybe (a, Ch a)))
 

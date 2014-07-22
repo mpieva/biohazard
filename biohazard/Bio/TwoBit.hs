@@ -85,7 +85,7 @@ openTwoBit fp = do
 
                 (,) getWord32 `fmap` repM nseqs ( liftM2 (,)
                         ( getWord8 >>= getLazyByteString . fromIntegral )
-                        ( getWord32 >>= return . Untouched ) )
+                        ( liftM Untouched getWord32 ) )
 
     TBF h g <$> loop ix M.empty
   where
@@ -100,15 +100,15 @@ closeTwoBit = hClose . tbf_handle
 withTwoBit :: FilePath -> (TwoBitFile -> IO a) -> IO a
 withTwoBit f = bracket (openTwoBit f) closeTwoBit
 
-read_block_index :: TwoBitFile -> IORef TwoBitSequence -> IO TwoBitSequence
-read_block_index tbf r = do
+readBlockIndex :: TwoBitFile -> IORef TwoBitSequence -> IO TwoBitSequence
+readBlockIndex tbf r = do
     sq <- readIORef r
     case sq of Indexed {} -> return sq
                Untouched ofs -> do c <- pGetContents (tbf_handle tbf) (fromIntegral ofs)
                                    let sq' = flip runGet c $ do
                                                 ds <- getWord32
-                                                nb <- read_block_list
-                                                mb <- read_block_list
+                                                nb <- readBlockList
+                                                mb <- readBlockList
                                                 len <- getWord32 >> bytesRead
 
                                                 return $! Indexed (I.fromList nb) (I.fromList mb)
@@ -117,7 +117,7 @@ read_block_index tbf r = do
                                    return sq'
   where
     getWord32 = tbf_get_word32 tbf
-    read_block_list = getWord32 >>= \n -> liftM2 zip (repM n getWord32) (repM n getWord32)
+    readBlockList = getWord32 >>= \n -> liftM2 zip (repM n getWord32) (repM n getWord32)
 
 -- | Repeat monadic action 'n' times.  Returns result in reverse(!) order.
 repM :: Monad m => Int -> m a -> m [a]
@@ -150,10 +150,10 @@ getFwdSubseqWith raw ofs n_blocks m_blocks nt start len =
     toDNA b = (++) [ 3 .&. (b `shiftR` x) | x <- [6,4,2,0] ]
 
     do_mask            _ _ [] = []
-    do_mask [          ] _ ws = map (flip nt None) ws
+    do_mask [          ] _ ws = map (`nt` None) ws
     do_mask ((s,l,m):is) p ws = let l0 = (p-s) `max` 0 in
-                                map (flip nt None) (take l0 ws) ++
-                                map (flip nt    m) (take l (drop l0 ws)) ++
+                                map (`nt` None) (take l0 ws) ++
+                                map (`nt`    m) (take l (drop l0 ws)) ++
                                 do_mask is (p+l0+l) (drop (l+l0) ws)
 
 -- | Merge blocks of Ns and blocks of Ms into single list of blocks with
@@ -181,7 +181,7 @@ mergeblocks [     ] [     ] = []
 getSubseqWith :: (Nucleotide -> Mask -> a) -> TwoBitFile -> Range -> IO [a]
 getSubseqWith maskf tbf (Range { r_pos = Pos { p_seq = chr, p_start = start }, r_length = len }) = do
     ref <- maybe (fail $ S.unpack chr ++ " doesn't exist") return $ M.lookup chr (tbf_seqs tbf)
-    sq1 <- read_block_index tbf ref
+    sq1 <- readBlockIndex tbf ref
 
     let go = getFwdSubseqWith (pGetContents $ tbf_handle tbf) (tbs_dna_offset sq1)
                               (tbs_n_blocks sq1) (tbs_m_blocks sq1)
@@ -232,7 +232,7 @@ getSeqLength :: TwoBitFile -> Seqid -> IO Int
 getSeqLength tbf chr = do
              ref <- maybe (fail $ shows chr " doesn't exist") return
                     $ M.lookup chr (tbf_seqs tbf)
-             sq1 <- read_block_index tbf ref
+             sq1 <- readBlockIndex tbf ref
              return $ tbs_dna_size sq1
 
 -- | limits a range to a position within the actual sequence

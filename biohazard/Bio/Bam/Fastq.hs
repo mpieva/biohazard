@@ -131,7 +131,7 @@ some_file :: FilePath
 some_file = "/mnt/ngs_data/101203_SOLEXA-GA04_00007_PEDi_MM_QF_SR/Ibis/Final_Sequences/s_5_L3280_sequence_merged.txt"
 
 fastq_test :: FilePath -> IO ()
-fastq_test = fileDriver $ joinI $ parseFastq $ print_names
+fastq_test = fileDriver $ joinI $ parseFastq print_names
 
 print_names :: Iteratee [BamRec] IO ()
 print_names = I.mapM_ $ S.putStrLn . b_qname

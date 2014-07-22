@@ -10,26 +10,25 @@ main :: IO ()
 main = do cnts <- runTestTT $ TestList [ TestLabel "BGZF" test_bgzf ]
           if failures cnts == 0 then exitSuccess else exitFailure
 
-test_bgzf :: Test
-test_bgzf = TestList [ TestCase check_bam_block_list, TestCase check_bam_block_list_seek ]
+testBgzf :: Test
+testBgzf = TestList [ TestCase checkBamBlockList, TestCase checkBamBlockListSeek ]
 
-check_bam_block_list :: Assertion
-check_bam_block_list =
-    -- fileDriver (joinI $ decompress' (virtualSeek 0 >> print_block))
-    fileDriver (joinI $ decompress' $ getBlockList ) some_bgzf_file
-    >>= assertEqual "unexpected block list" known_blocks
+checkBamBlockList :: Assertion
+checkBamBlockList =
+    fileDriver (joinI $ decompress' $ getBlockList) someBgzfFile
+    >>= assertEqual "unexpected block list" knownBlocks
 
-check_bam_block_list_seek :: Assertion
-check_bam_block_list_seek =
-    fileDriverRandom (joinI $ decompress' $ virtualSeek 0 >> getBlockList ) some_bgzf_file
-    >>= assertEqual "unexpected block list" known_blocks
+checkBamBlockListSeek :: Assertion
+checkBamBlockListSeek =
+    fileDriverRandom (joinI $ decompress' $ virtualSeek 0 >> getBlockList) someBgzfFile
+    >>= assertEqual "unexpected block list" knownBlocks
 
 
-some_bgzf_file :: FilePath
-some_bgzf_file = "/mnt/ngs_data/101203_SOLEXA-GA04_00007_PEDi_MM_QF_SR/Ibis/BWA/s_5_L3280_sequence_mq_hg19_nohap.bam"
+someBgzfFile :: FilePath
+someBgzfFile = "/mnt/ngs_data/101203_SOLEXA-GA04_00007_PEDi_MM_QF_SR/Ibis/BWA/s_5_L3280_sequence_mq_hg19_nohap.bam"
 
-known_blocks :: [(COff, Int)]
-known_blocks = [(0,65536), (1627521024,65536), (3209297920,65536), (4116643840,65536), (5036769280,65536), (6071189504,65536),
+knownBlocks :: [(COff, Int)]
+knownBlocks = [(0,65536), (1627521024,65536), (3209297920,65536), (4116643840,65536), (5036769280,65536), (6071189504,65536),
     (7127957504,65536), (8169455616,65536), (9189064704,65536), (10195501056,65536), (11269373952,65536), (12313034752,65536),
     (13372882944,65536), (14407958528,65536), (15697903616,65536), (17157521408,65536), (18614190080,65536), (20095696896,65536),
     (21540044800,65536), (23005495296,65536), (24441257984,65536), (25919488000,65536), (27378712576,65536), (28806414336,65536),

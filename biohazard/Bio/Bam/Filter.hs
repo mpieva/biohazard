@@ -3,7 +3,6 @@
 -- TODO: - "SAGE" filter (enforce 17nt reads)?
 --       - "rim job" (try to detect glass border)?
 
-{-# LANGUAGE BangPatterns #-}
 module Bio.Bam.Filter (
     filterPairs, QualFilter,
     complexSimple, complexEntropy,
@@ -66,7 +65,7 @@ type QualFilter = BamRec -> BamRec
 
 {-# INLINE count #-}
 count :: (V.Vector v a, Eq a) => a -> v a -> Int
-count x v = V.foldl' (\acc y -> if x == y then acc+1 else acc) 0 v
+count x = V.foldl' (\acc y -> if x == y then acc+1 else acc) 0
 
 -- | Simple complexity filter aka "Nancy Filter".  A read is considered
 -- not-sufficiently-complex if the most common base accounts for greater

@@ -137,9 +137,9 @@ isBam = firstOf [ isEmptyBam, isPlainBam, isBgzfBam, isGzipBam ]
 isEmptyBam = (\e -> if e then Just (\k -> return $ k mempty) else Nothing) `liftM` isFinished
 
 isPlainBam = (\n -> if n == 4 then Just (joinI . decompressPlain . decodeBam) else Nothing)
-             `liftM` i'lookAhead (heads "BAM\SOH")
+             `liftM` iLookAhead (heads "BAM\SOH")
 
--- Interesting... i'lookAhead interacts badly with the parallel
+-- Interesting... iLookAhead interacts badly with the parallel
 -- decompression of BGZF.  (The chosen interface doesn't allow the EOF
 -- signal to be passed on.)  One workaround would be to run sequential
 -- BGZF decompression to check if the content is BAM, but since BGZF is
@@ -148,12 +148,12 @@ isPlainBam = (\n -> if n == 4 then Just (joinI . decompressPlain . decodeBam) el
 -- (A clean workaround would be an @Alternative@ instance for
 -- @Iteratee@.)
 isBgzfBam  = do b <- isBgzf
-                k <- if b then i'lookAhead $ joinI $ enumInflate GZip defaultDecompressParams isPlainBam
+                k <- if b then iLookAhead $ joinI $ enumInflate GZip defaultDecompressParams isPlainBam
                           else return Nothing
                 return $ (\_ -> (joinI . decompressBgzfBlocks . decodeBam)) `fmap` k
 
 isGzipBam  = do b <- isGzip
-                k <- if b then i'lookAhead $ joinI $ enumInflate GZip defaultDecompressParams isPlainBam
+                k <- if b then iLookAhead $ joinI $ enumInflate GZip defaultDecompressParams isPlainBam
                           else return Nothing
                 return $ ((joinI . enumInflate GZip defaultDecompressParams) .) `fmap` k
 
@@ -413,14 +413,14 @@ decodeBam inner = do meta <- liftBlock get_bam_header
                      convStream getBamRaw $ inner $! merge meta refs
   where
     get_bam_header  = do magic <- heads "BAM\SOH"
-                         when (magic /= 4) $ do s <- i'getString 10
+                         when (magic /= 4) $ do s <- iGetString 10
                                                 fail $ "BAM signature not found: " ++ show magic ++ " " ++ show s
                          hdr_len <- endianRead4 LSB
                          joinI $ takeStream (fromIntegral hdr_len) $ parserToIteratee parseBamMeta
 
     get_ref_array = do nref <- endianRead4 LSB
                        foldM (\acc _ -> do
-                           nm <- endianRead4 LSB >>= i'getString . fromIntegral
+                           nm <- endianRead4 LSB >>= iGetString . fromIntegral
                            ln <- endianRead4 LSB
                            return $! acc |> BamSQ (S.init nm) (fromIntegral ln) []
                              ) Z.empty $ [1..nref]
@@ -444,21 +444,8 @@ getBamRaw = do off <- getOffset
                raw <- liftBlock $ do
                         bsize <- endianRead4 LSB
                         when (bsize < 32) $ fail "short BAM record"
-                        i'getString (fromIntegral bsize)
+                        iGetString (fromIntegral bsize)
                return [bamRaw off raw]
-
--- INLINE decodeBamLoop
-{- decodeBamLoop :: Monad m => Enumeratee Block [BamRaw] m a
-decodeBamLoop = eneeCheckIfDone loop
-  where
-    loop k = isFinished >>= loop' k
-    loop' k True = return $ liftI k
-    loop' k False = do off <- getOffset
-                       raw <- liftBlock $ do
-                                bsize <- endianRead4 LSB
-                                when (bsize < 32) $ fail "short BAM record"
-                                i'getString (fromIntegral bsize)
-                       eneeCheckIfDone loop . k $ Chunk [bamRaw off raw] -}
 
 writeRawBamFile :: FilePath -> BamMeta -> Iteratee [BamRaw] IO ()
 writeRawBamFile fp meta =

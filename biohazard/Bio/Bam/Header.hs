@@ -350,7 +350,7 @@ cigarToAlnLen (Cigar cig) = sum $ map l cig
 -- an alignment starts at @pos@ and its CIGAR implies a length of @len@
 -- on the reference, then it goes into bin @distinctBin pos len@.
 distinctBin :: Int -> Int -> Int
-distinctBin beg len = mkbin 14 $ mkbin 17 $ mkbin 20 $ mkbin 23 $ mkbin 26 $ 0
+distinctBin beg len = mkbin 14 $ mkbin 17 $ mkbin 20 $ mkbin 23 $ mkbin 26 0
   where end = beg + len - 1
         mkbin n x = if beg `shiftR` n /= end `shiftR` n then x
                     else ((1 `shiftL` (29-n))-1) `div` 7 + (beg `shiftR` n)

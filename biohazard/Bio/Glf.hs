@@ -73,7 +73,7 @@ enee_glf_recs = eneeCheckIfDone step
                 `ap` (fromIntegral `liftM` I.head)
         l1 <- getInt16le
         l2 <- getInt16le
-        liftM2 (f' (l1 >= 0) (l2 >= 0)) (i'getString (abs l1)) (i'getString (abs l2))
+        liftM2 (f' (l1 >= 0) (l2 >= 0)) (iGetString (abs l1)) (iGetString (abs l2))
 
     getInt16le = do i <- endianRead2 LSB
                     return $ if i > 0x7fff then fromIntegral i - 0x10000
@@ -81,7 +81,7 @@ enee_glf_recs = eneeCheckIfDone step
 
 enee_glf_seq :: Monad m => (GlfSeq -> Enumeratee [GlfRec] a m b) -> Enumeratee S.ByteString a m b
 enee_glf_seq per_seq oit = do l <- endianRead4 LSB
-                              s <- liftM2 GlfSeq (S.init `liftM` i'getString (fromIntegral l))
+                              s <- liftM2 GlfSeq (S.init `liftM` iGetString (fromIntegral l))
                                                  (fromIntegral `liftM` endianRead4 LSB)
                               enee_glf_recs ><> per_seq s $ oit
 
@@ -95,7 +95,7 @@ enee_glf_file :: Monad m => (GlfSeq -> Enumeratee [GlfRec] a m b)
 enee_glf_file per_seq per_file oit = do
     matched <- I.heads (S.pack "GLF\003")
     when (matched /= 4) (fail "GLF signature not found")
-    nm <- endianRead4 LSB >>= i'getString . fromIntegral
+    nm <- endianRead4 LSB >>= iGetString . fromIntegral
     lift (per_file nm oit) >>= loop
   where
     -- loop :: Monad m => Iteratee a m b -> Iteratee S.ByteString m (Iteratee a m b)

@@ -151,14 +151,14 @@ get_bgzf_header = do n <- I.heads "\31\139"
 -- | Tests whether a stream is in BGZF format.  Does not consume any
 -- input.
 isBgzf :: Monad m => Iteratee S.ByteString m Bool
-isBgzf = liftM isRight $ checkErr $ i'lookAhead $ get_bgzf_header
+isBgzf = liftM isRight $ checkErr $ iLookAhead $ get_bgzf_header
   where
     isRight = either (const False) (const True)
 
 -- | Tests whether a stream is in GZip format.  Also returns @True@ on a
 -- Bgzf stream, which is technically a special case of GZip.
 isGzip :: Monad m => Iteratee S.ByteString m Bool
-isGzip = liftM (either (const False) id) $ checkErr $ i'lookAhead $ test
+isGzip = liftM (either (const False) id) $ checkErr $ iLookAhead $ test
   where
     test = do n <- I.heads "\31\139"
               I.drop 24

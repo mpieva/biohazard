@@ -160,7 +160,7 @@ readBamIndex fp | takeExtension fp == ".bai" = fileDriver readBaiIndex fp
 
 -- Read in dex in BAI or CSI format, recognized automatically.
 readBaiIndex :: MonadIO m => Iteratee ByteString m BamIndex
-readBaiIndex = i'getString 4 >>= switch
+readBaiIndex = iGetString 4 >>= switch
   where
     switch "BAI\1" = getIndexArrays 14 5 (const return) getIntervals
     switch "CSI\1" = do minshift <- fromIntegral `liftM` endianRead4 LSB

@@ -1,24 +1,14 @@
-module Bio.Bam (
-        module Bio.Bam.Fastq,
-        module Bio.Bam.Filter,
-        module Bio.Bam.Header,
-        module Bio.Bam.Index,
-        module Bio.Bam.Raw,
-        module Bio.Bam.Rec,
-        module Bio.Bam.Rmdup,
-        module Bio.Bam.Trim,
-        module Bio.Iteratee
-    ) where
+module Bio.Bam ( module X ) where
 
-import Bio.Bam.Fastq
-import Bio.Bam.Filter
-import Bio.Bam.Header
-import Bio.Bam.Index
-import Bio.Bam.Raw
-import Bio.Bam.Rec
-import Bio.Bam.Rmdup
-import Bio.Bam.Trim
-import Bio.Iteratee
+import Bio.Bam.Fastq    as X
+import Bio.Bam.Filter   as X
+import Bio.Bam.Header   as X
+import Bio.Bam.Index    as X
+import Bio.Bam.Raw      as X
+import Bio.Bam.Rec      as X
+import Bio.Bam.Rmdup    as X
+import Bio.Bam.Trim     as X
+import Bio.Iteratee     as X
 
 -- ^ Umbrella module for most of what's under 'Bio.Bam'.
 

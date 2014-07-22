@@ -88,7 +88,7 @@ invnormcdf p =
         else if p == 0 then
             -1/0
         else if p < pLow then
-            let q = sqrt(-2*log(p))
+            let q = sqrt(-2 * log p)
             in  (((((c1*q+c2)*q+c3)*q+c4)*q+c5)*q+c6) /
                  ((((d1*q+d2)*q+d3)*q+d4)*q+1)
         else if p < 1 - pLow then
@@ -204,13 +204,13 @@ n `choose` k = product [n-k+1 .. n] `div` product [2..k]
 -- 0 to 63488, initially in steps of 1/8.  Nice to store quality scores
 -- with reasonable precision and range.
 float2mini :: RealFloat a => a -> Word8
-float2mini f | f  <  0 = error "no negative minifloats"
-             | f  <  2 = round (8*f)
-             | e >= 17 = 0xff
-             | s  < 16 = error $ "oops: " ++ show (e,s)
-             | s  < 32 = (e-1) `shiftL` 4 .|. (s .&. 0xf)
-             | s == 32 = (e) `shiftL` 4
-             | True    = error $ "oops: " ++ show (e,s)
+float2mini f | f  <  0   = error "no negative minifloats"
+             | f  <  2   = round (8*f)
+             | e >= 17   = 0xff
+             | s  < 16   = error $ "oops: " ++ show (e,s)
+             | s  < 32   = (e-1) `shiftL` 4 .|. (s .&. 0xf)
+             | s == 32   = e `shiftL` 4
+             | otherwise = error $ "oops: " ++ show (e,s)
   where
     e = fromIntegral $ exponent f
     s = round $ 32 * significand f

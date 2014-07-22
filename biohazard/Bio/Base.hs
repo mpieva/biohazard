@@ -95,7 +95,7 @@ toQual :: (Floating a, RealFrac a) => a -> Qual
 toQual a = Q $ round (-10 * log a / log 10)
 
 fromQual :: Qual -> Double
-fromQual (Q q) = 10 ** (-(fromIntegral q) / 10)
+fromQual (Q q) = 10 ** (- fromIntegral q / 10)
 
 -- | A positive 'Double' value stored in log domain.  We store the
 -- natural logarithm (makes computation easier), but allow conversions
@@ -109,15 +109,12 @@ instance Show Prob where
 
 instance Num Prob where
     fromInteger a = Pr (log (fromInteger a))
-    Pr x + Pr y = if x >= y then Pr (x + log1p (  exp (y-x))) else Pr (y + log1p (exp (x-y)))
-    Pr x - Pr y = if x >= y then Pr (x + log1p (- exp (y-x))) else err_neg
-    Pr a * Pr b = Pr (a + b)
-    negate    _ = err_neg
+    Pr x + Pr y = Pr $ if x >= y then x + log1p (  exp (y-x)) else y + log1p (exp (x-y))
+    Pr x - Pr y = Pr $ if x >= y then x + log1p (- exp (y-x)) else error "no negative error probabilities"
+    Pr a * Pr b = Pr $ a + b
+    negate    _ = Pr $ error "no negative error probabilities"
     abs       x = x
     signum    _ = Pr 0
-
-err_neg :: Prob
-err_neg = error "no negative error probabilities"
 
 instance Fractional Prob where
     fromRational a = Pr (log (fromRational a))
