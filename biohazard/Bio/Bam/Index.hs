@@ -6,33 +6,33 @@ module Bio.Bam.Index (
     readBaiIndex,
 
     Region(..),
+    Subsequence(..),
     eneeBamRefseq,
+    eneeBamSubseq,
     eneeBamRegions,
     eneeBamUnaligned
 ) where
 
 import Bio.Bam.Header
 import Bio.Bam.Raw
+import Bio.Bam.Regions              ( Region(..), Subsequence(..) )
 import Bio.Iteratee
 import Control.Monad
 import Data.Bits                    ( shiftL, shiftR )
 import Data.ByteString              ( ByteString )
 import Data.Int                     ( Int64 )
 import Data.IntMap                  ( IntMap )
-import Data.Function                ( on )
-import Data.List                    ( groupBy, sort )
 import Data.Word                    ( Word32 )
 import System.Directory             ( doesFileExist )
 import System.FilePath              ( dropExtension, takeExtension, (<.>) )
 
+import qualified Bio.Bam.Regions                as R
 import qualified Data.IntMap                    as IM
 import qualified Data.Vector                    as V
 import qualified Data.Vector.Mutable            as M
 import qualified Data.Vector.Unboxed            as U
 import qualified Data.Vector.Unboxed.Mutable    as N
 import qualified Data.Vector.Algorithms.Intro   as N
-
-import Debug.Trace
 
 -- | Full index, unifying BAI and CSI style.  In both cases, we have the
 -- binning scheme, parameters are fixed in BAI, but variable in CSI.
@@ -90,26 +90,16 @@ type Ckpoints = IntMap Int64
 -- Moving is a seek if it spans a sufficiently large gap or points
 -- backwards, else we just keep going.
 
-data Region = Region { rgn_refseq :: !Refseq, rgn_start :: !Int, rgn_end :: !Int }
-  deriving (Eq, Ord, Show)
-
 -- | A 'Segment' has a start and an end offset, and an "end coordinate"
 -- from the originating region.
 data Segment = Segment !Int64 !Int64 !Int deriving Show
 
-mergedSegmentList :: BamIndex -> [Region] -> [Segment]
-mergedSegmentList bi@BamIndex{..} =
-    concatMap (foldr (~~) [] . segmentLists bi) . groupBy ((==) `on` rgn_refseq) . sort
-
-    -- XXX We have to filter everything for overlapping the region list;
-    -- we'll get a colorful mix from the file.
-
-segmentLists :: BamIndex -> [Region] -> [[Segment]]
-segmentLists bi@BamIndex{..} rs@(Region (Refseq ref) _ _ : _)
+segmentLists :: BamIndex -> Refseq -> R.Subsequence -> [[Segment]]
+segmentLists bi@BamIndex{..} (Refseq ref) (R.Subsequence imap)
         | Just bins <- refseq_bins V.!? fromIntegral ref,
           Just cpts <- refseq_ckpoints V.!? fromIntegral ref
-        = [ rgnToSegments bi beg end bins cpts | Region _ beg end <- rs ]
-segmentLists _ _ = []
+        = [ rgnToSegments bi beg end bins cpts | (beg,end) <- IM.toList imap ]
+segmentLists _ _ _ = []
 
 -- from region to list of bins, then to list of segments
 rgnToSegments :: BamIndex -> Int -> Int -> Bins -> Ckpoints -> [Segment]
@@ -281,6 +271,12 @@ eneeBamSegment (Segment beg end mpos) out = do
     let in_segment br = virt_offset br <= fromIntegral end && br_pos br <= mpos
     takeWhileE in_segment out
 
-eneeBamRegions :: Monad m => BamIndex -> [Region] ->  Enumeratee [BamRaw] [BamRaw] m a
-eneeBamRegions bi = foldr ((>=>) . eneeBamSegment) return . mergedSegmentList bi
+eneeBamSubseq :: Monad m => BamIndex -> Refseq -> R.Subsequence -> Enumeratee [BamRaw] [BamRaw] m a
+eneeBamSubseq bi ref subs
+    = let segs = foldr (~~) [] $ segmentLists bi ref subs
+          olap br = br_rname br == ref && R.overlaps (br_pos br) (br_pos br + br_aln_length br) subs
+      in foldr ((>=>) . eneeBamSegment) return segs ><> filterStream olap
+
+eneeBamRegions :: Monad m => BamIndex -> [R.Region] -> Enumeratee [BamRaw] [BamRaw] m a
+eneeBamRegions bi = foldr ((>=>) . uncurry (eneeBamSubseq bi)) return . R.toList . R.fromList
 

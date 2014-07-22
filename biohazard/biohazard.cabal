@@ -1,6 +1,6 @@
 -- vim:tw=132
 Name:                biohazard
-Version:             0.5.7
+Version:             0.5.8
 Synopsis:            bioinformatics support library
 Description:         This is a collection of modules I separated from
                      various bioinformatics tools.  The hope is to make
@@ -43,6 +43,7 @@ Library
                        Bio.Bam.Index,
                        Bio.Bam.Pileup, 
                        Bio.Bam.Raw,
+                       Bio.Bam.Regions,
                        Bio.Bam.Rec,
                        Bio.Bam.Rmdup,
                        Bio.Bam.Trim,
