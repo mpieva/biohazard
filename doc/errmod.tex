@@ -95,18 +95,34 @@ scores from a suitable base caller.
 
 \section{Genotype Calling w/ Dependent Errors}
 
+Both the papers regarding \texttt{maq} and \texttt{BSNP} introduce dependecy between errors by a ``dependency parameter'' $\theta$,
+which could vary between 0 (totally independent) and 1 (totally dependent), and then raising quality scores to a power involving
+$\theta$ and $k_i$, a counter of how many errors have happened so far:
 
+\begin{align*}
+Q_i := 10^{-\frac{q'}{10}} \qquad \mbox{and} \qquad q'_i := \theta^{k_i} q_i
+\end{align*}
 
-XXX To get the dependency into the error probability, we have to count
-how often we made the same kind of error, which is a matrix with 16
-entries (4 of which are not really errors).  For every base, we count
-fractional substitution errors, and the fraction is simply the
-contribution of the four bases to the likelihood above.  The BSNP
-paper suggests raising error probabilities to decreasing powers,
-which is the same as multiplying the quality score by smaller and
-smaller numbers.  IOW, to compute the error probability when
-repeating the same error for the k-th time, instead of quality score
-q we use $q * \theta^k$.
+This is easy if we pretend that there is only one kind of error or that we know which one happened.  In the case of ancient DNA, we
+do not necessarily know which error happened, since we cannot know what was the true base sequened.  We have to generalize to
+multiple kinds of errors, and count them fractionally.  The above equation could be generalized by plugging in matrix exponentials,
+but they are both expensive and unlikely to work in a predictable fashion.  Instead we define a more general base likelihood:
+
+\begin{align*}
+P(X_i|H_i,Q_i) = \left\{ \begin{array}{ccc}
+ w_{X_i,H_i} 10^{-\frac{q_i}{10}\theta^{k_{i,X_i,H_i}}} & \mbox{if} & X_i \neq H_i \\
+ 1 - \sum_{Y \neq X_i} P(Y|H_i,Q_i) & \mbox{if} & X_i = H_i 
+\end{array} \right.
+\end{align*}
+
+The $w_{X,H}$ allow for a substitution matrix or could all be set uniformly to $\frac{1}{4}$.  For the $k_i$, we have to count
+errors fractionally, so we set
+
+\begin{align*}
+k_{1,X_i,H_i} &= 0 \\
+k_{i,X_i,H_i} &= k_{i-1,X_i,H_i} + P(X_i, H_i | Q_i, G) \\
+&= k_{i-1,X_i,H_i} + P(X_i | H_i, Q_i) P(H_i | G)
+\end{align*}
 
 \appendix
 
