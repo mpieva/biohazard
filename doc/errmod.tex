@@ -1,0 +1,110 @@
+\documentclass{article}
+\usepackage{a4}
+\usepackage{ngerman}
+\usepackage{amsmath}
+
+\title{Error Models For Genotype Calling}
+
+\begin{document}
+\maketitle
+
+\section{Overview Of Error Models}
+
+I tried to track down the logic behind the \texttt{samtools} and
+\texttt{maq} error models, which supposedly go back to \texttt{CAP3}.
+Near as I can tell, there is absolutely no reasoning behind any of it.
+\texttt{CAP3} may have originated the idea of setting the probability of
+$k$ errors to $p^f(k)$ where $f$ is a function that grows more slowly
+than the identity function.  The cited paper doesn't actually mention
+any of that, though.
+
+\texttt{SOAPsnp} is the first(?) implementation of the idea.  Bases are
+dealt with in order of increasing(!) quality, the quality score in
+observation $k$ is scaled by $\theta^k$.
+
+\texttt{Maq} follows the same idea, but attempts some combinatorial
+simplification.  The derivation is rather complicated:  It starts out
+with a simplification (counting similar bases), then proceeds to apply
+approximations (equal error rates), then ends up being incomprehensible
+(weird effective error rate derived from quality scores).  By that time,
+it is no longer obvious whether that derivation makes any sense, and in
+some cases it doesn't according to publications about \texttt{samtools}.
+
+\texttt{Samtools} improves upon the \texttt{maq} model, where the
+claimed reason is that the \texttt{maq} model is ill-behaved at high
+coverage and high error rate.  Unfortunately, the fix in
+\texttt{samtools} is only a different approximation in the last step of
+an equally convoluted derivation.  The chief difference seems to be that
+\texttt{maq} computes a strange quantity based on a sort of average
+error rate, while \texttt{samtools} deals with bases in order of
+decreasing(!) quality.  By that time, it's unclear that the
+combinatorial contortions provide any benefit.
+
+The take home message is that we model error dependency by having a more
+slowly growing exponent, that errors happening on different strands are
+independent from each other (XXX!), and that the combinatorial
+contortions in both the \texttt{maq} and the \texttt{samtools} model do
+not seem to be useful.  The order in which we touch the bases is up for
+grabs, since there are two cases of prior art.  We'll go with a simple
+implementation like \texttt{SOAPsnp} or more recently \texttt{BSNP},
+which needs to be generalized for ancient DNA.
+
+\section{Genotype Calling w/ Simple Errors}
+
+The following borrows notation from the \texttt{BSNP} paper.  Consider a
+genomic position $j$.  Let $G_j$ be the true (unknown) genotype.  For
+convenience of notation, we write $G_j=\{1,0,0,0\}$ for \texttt{AA},
+$G_j=\{\frac{1}{2},\frac{1}{2},0,0\}$ for \texttt{AC}, and so on; we'll
+often drop the $j$ subscript.  Let $X=(X_1, X_2, \ldots, X_n) \in
+\{A,C,G,T\}^n$ be the base calls, $q=(q_1, q_2, \ldots, q_n)$ their
+effective\footnote{We roll base quality, base alignment quality, and map
+quality into one, see \ref{app_qualities}} quality scores, $Q=(Q_1, Q_2,
+\ldots, Q_n)$ the corresponding error probabilities, $H=(H_1, H_2,
+\ldots, H_n) \in \{A,C,G,T\}^n$ the (unobserved) haploid bases
+sequenced in each read.  The model is that the $H$ are obtained by
+sampling from the $G$, possibly modified by chemical damage, then the
+$X$ are obtained from the $H$ by application of sequencing error.  In
+general:
+
+\begin{align*}
+L(G) = P(X|G,Q) &= \prod_{i=1}^n P(X_i|G,Q_i,X_1,\ldots,X_{i-1}) \\
+    &= \prod_{i=1}^n \sum_{H_i} P(X_i|Q_i,H_i,X_1,\ldots,X_{i-1}) P(H_i|G) \\
+    &= \prod_{i=1}^n \sum_{H_i} P(X_i|Q_i,H_i,X_1,\ldots,X_{i-1}) (H_i \cdot D_i \cdot G_i)
+\end{align*}
+
+where $D_i$ is the damage matrix (which depends on the read, specifically the position within the read).
+For maximum likelihood fitting of parameters, we set $L_j = \sum_G L_j(G) P(G)$, for Bayesian \emph{maximum a posteriori} calling,
+we set $P(G_j|X_j,Q_j) = \frac{L_j(G_j) P(G_j)}{L_j}$.  The prior can be a complicated model, in which case the ML fit serves to
+derive statistical parameters, but the simplest possible prior models only heterozygosity:
+
+\begin{align*}
+P(G=\{1,0,0,0\}) = P(G=\{0,1,0,0\}) &= 1 - \frac{pi}{4} \\
+P(G=\{\frac{1}{2},\frac{1}{2},0,0\}) = P(G=\{\frac{1}{2},0,\frac{1}{2},0\}) &= \frac{pi}{6}
+\end{align*}
+
+The minimal error model has no dependency on other bases and directly applies the error rate from the quality score as $Q_i =
+10^{-frac{q_i}{10}}$, following \texttt{BSNP}\footnote{We assume a low quality base is random, as opposed to a random error.  Both
+are equivalent up to scaling of the error probability, see \ref{app_errprob}.}, we set:
+
+\begin{align*}
+P(X_i|H_i,Q_i,X_1,\ldots,X_{i-1}) := P(X_i|H_i,Q_i) = (1-Q_i) X_i H_i + \frac{Q_i}{4}
+\end{align*}
+
+
+\section{Genotype Calling w/ Dependent Errors}
+
+
+
+XXX To get the dependency into the error probability, we have to count
+how often we made the same kind of error, which is a matrix with 16
+entries (4 of which are not really errors).  For every base, we count
+fractional substitution errors, and the fraction is simply the
+contribution of the four bases to the likelihood above.  The BSNP
+paper suggests raising error probabilities to decreasing powers,
+which is the same as multiplying the quality score by smaller and
+smaller numbers.  IOW, to compute the error probability when
+repeating the same error for the k-th time, instead of quality score
+q we use $q * \theta^k$.
+
+
+\end{document}
