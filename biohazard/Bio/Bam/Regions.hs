@@ -4,7 +4,7 @@ import Bio.Bam.Header ( Refseq(..) )
 import Data.List ( foldl' )
 import qualified Data.IntMap as IM
 
-data Region = Region { rgn_refseq :: !Refseq, rgn_start :: !Int, rgn_end :: !Int }
+data Region = Region { refseq :: !Refseq, start :: !Int, end :: !Int }
   deriving (Eq, Ord, Show)
 
 -- | A subset of a genome.  The idea is to map the reference sequence
@@ -20,12 +20,12 @@ toList :: Regions -> [(Refseq, Subsequence)]
 toList (Regions m) = [ (Refseq $ fromIntegral k, v) | (k,v) <- IM.toList m ]
 
 fromList :: [Region] -> Regions
-fromList rs = Regions $ foldl' add_int IM.empty
-    [ (fromIntegral r, beg, end) | Region (Refseq r) beg end <- rs ]
-  where
-    add_int m (r,b,e) = IM.alter (maybe single (Just . addInt b e)) r m
-      where
-        single = Just . Subsequence $ IM.singleton b e
+fromList = foldl' (flip add) (Regions IM.empty)
+
+add :: Region -> Regions -> Regions
+add (Region (Refseq r) b e) (Regions m) =
+    let single = Just . Subsequence $ IM.singleton b e
+    in Regions $ IM.alter (maybe single (Just . addInt b e)) (fromIntegral r) m
 
 
 addInt :: Int -> Int -> Subsequence -> Subsequence

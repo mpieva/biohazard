@@ -52,8 +52,8 @@ simple_indel_call ploidy vars = (simple_call ploidy mkpls vars, vars')
 -- call.  Since everything is so straight forward, this works even in
 -- the face of damage.
 
-simple_snp_call :: Int -> BasePile -> (GL,())
-simple_snp_call ploidy vars = (simple_call ploidy mkpls vars, ())
+simple_snp_call :: Int -> BasePile -> GL
+simple_snp_call ploidy vars = simple_call ploidy mkpls vars
   where
     mkpls (q, DB a c g t qq) = [ toProb $ x + pe*(s-x) | x <- [a,c,g,t] ]
       where
@@ -127,7 +127,7 @@ smoke_test =
     show_indel (d, ins) = shows ins $ '-' : show d
 -}
 
-showCall :: (a -> ShowS) -> VarCall (GL,a) -> ShowS
+{- showCall :: (a -> ShowS) -> VarCall (GL,a) -> ShowS
 showCall f vc = shows (vc_refseq vc) . (:) ':' .
                 shows (vc_pos vc) . (:) '\t' .
                 f (snd $ vc_vars vc) . (++) "\tDP=" .
@@ -139,70 +139,16 @@ showCall f vc = shows (vc_refseq vc) . (:) ':' .
     show_pl :: V.Vector Prob -> ShowS
     show_pl = (++) . intercalate "," . map show . V.toList
 
-    mapq = vc_sum_mapq vc `div` vc_depth vc
+    mapq = vc_sum_mapq vc `div` vc_depth vc -}
 
 
--- | The 'samtools' error model.
---
--- I tried to track down the logic behind samtools' and maq's error
--- models, which supposedly go back to CAP3.  Near as I can tell, there
--- is absolutely no reasoning behind any of it.  CAP3 may have
--- originated the idea of setting the probably of @k@ errors to @p^f(k)@
--- where @f@ is a function that grows slower than the identity function.
--- The cited paper doesn't actually mention any of that, though.
---
--- SOAPsnp is the first(?) implementation of the idea.  Bases are dealt
--- with in order of increasing quality, the quality score in observation
--- @k@ is scaled by @\theta^k@.
---
--- Maq follows the same idea, but attempts some combinatorial
--- simplification.  The derivation is rather complicated:  It starts out
--- with a simplification, then proceeds to apply approximations, then
--- ends up being incomprehensible.  By that time, it is no longer
--- obvious that that derivation makes any sense.
---
--- Samtools improves upon the maq model, where the claimed reason is
--- that the maq model is ill-behaved at high coverage and high error
--- rate.  Unfortunately, the fix in Samtools is only a different
--- approximation in the last step of an equally convoluted derivation.
--- The chief difference seems to be that maq computes a strange quantity
--- based on a sort of average error rate, while samtools deals with
--- bases in order of decreasing quality.
---
--- The take home message is that we model error dependency by having a
--- more slowly growing exponent, that errors happening on different
--- strands are independent from each other (XXX!), and that the
--- combinatorial constructions in both the Maq and the Samtools model do
--- not seem to be useful.  The order in which we touch the bases is up
--- for grabs, since there are two cases of prior art.  We'll go with the
--- simple implementation like SOAPsnp.
---
--- To get the dependency into the error probability, we have to count
--- how often we made the same kind of error, which is a matrix with 16
--- entries (4 of which are not really errors).  For every base, we count
--- fractional substitution errors, and the fraction is simply the
--- contribution of the four bases to the likelihood above.  The BSNP
--- paper suggests raising error probabilities to decreasing powers,
--- which is the same as multiplying the quality score by smaller and
--- smaller numbers.  IOW, to compute the error probability when
--- repeating the same error for the k-th time, instead of quality score
--- q we use @q * \theta ** k@.
-
+-- | Error model with dependency parameter.  Since both strands are
+-- supposed to still be independent, we feed in only one pile, and
+-- later combine both calls.
 
 maq_snp_call :: Int -> Double -> BasePile -> GL
 maq_snp_call ploidy theta bases = undefined
   where
     bases' = sortBy (\(DB _ _ _ _ q1) (DB _ _ _ _ q2) -> compare q2 q1)
              [ DB a c g t (min q mq) | (mq, DB a c g t q) <- bases ]
-
--- Regarding general substitution errors:
---
--- We can express a substitution matrix as (exp M) where M itself is a
--- matrix with zeroes on the main diagonal.  That introduces 12
--- parameters, which we should probably estimate.  One is redundant,
--- this is scaling of them.  Since it will actually appear as (exp (M *
--- (\phi + q ** (\theta (k-1)))), we can simply set \phi to zero.
---
--- Hm.  Probably not completely correct.  :(
-
 

@@ -9,6 +9,7 @@ import Bio.Bam.Pileup
 import Bio.GenoCall
 import Bio.Iteratee
 import Control.Applicative
+import Control.Arrow
 import Control.Monad
 import System.Console.GetOpt
 import System.Environment
@@ -190,29 +191,36 @@ main = do
                 out' <- lift $ enumPure1Chunk [S.concat [">", conf_sample, "--", sname]] out
                 pileup dmg_model =$
                     mapStream (calls $! conf_ploidy sname) =$
-                    convStream (headStream >>= either
-                        (format_snp_call conf_prior_het)
-                        (format_indel_call conf_prior_indel)) =$
+                    convStream (do calls <- headStream
+                                   format_snp_call conf_prior_het calls
+                                   format_indel_call conf_prior_indel calls) =$
                     collect_lines out') $
             mapStreamM_ (S.hPut ohdl . (flip S.snoc '\n'))
 
 -- | This is a white lie:  We do haploid or diploid *SNP* calls, but
 -- indel calls are always haploid.  Otherwise there is no good way to
 -- print the result!
-calls :: Int -> Pile -> Either (VarCall (GL,())) (VarCall (GL, IndelVars))
-calls pl = either (Left . fmap (simple_snp_call pl)) (Right . fmap (simple_indel_call 1))
+--
+-- For the time being, we use the naive call.  So forward and reverse
+-- piles get concatenated.
+type Calls = Pile' GL (GL, IndelVars)
 
-type EitherCall = Either (VarCall (GL,())) (VarCall (GL, IndelVars))
+calls :: Int -> Pile -> Calls
+calls pl (Pile rs po bc ic) = Pile rs po
+    (fmap (simple_snp_call pl . uncurry (++)) bc)
+    (fmap (simple_indel_call 1) ic)
+
 
 -- | Formatting a SNP call.  If this was a haplopid call (four GL
 -- values), we pick the most likely base and pass it on.  If it was
 -- diploid, we pick the most likely dinucleotide and pass it on.
 
-format_snp_call :: Monad m => Prob -> VarCall (GL,()) -> Iteratee [EitherCall] m S.ByteString
-format_snp_call p vc | V.length gl ==  4 = return $ S.take 1 $ S.drop (maxQualIndex gl) hapbases
+-- XXX fst
+format_snp_call :: Monad m => Prob -> Calls -> Iteratee [Calls] m S.ByteString
+format_snp_call p cs | V.length gl ==  4 = return $ S.take 1 $ S.drop (maxQualIndex gl) hapbases
                      | V.length gl == 10 = return $ S.take 1 $ S.drop (maxQualIndex $ V.zipWith (*) ps gl) dipbases
                      | otherwise = error "Thou shalt not try to format_snp_call unless thou madeth a haploid or diploid call!"
-    where (gl,()) = vc_vars vc
+    where gl = vc_vars $ p_snp cs
           ps = V.fromListN 10 [p,1,p,1,1,p,1,1,1,p]
           hapbases = "NACGT"
           dipbases = "NAMCRSGWYKT"
@@ -222,18 +230,18 @@ format_snp_call p vc | V.length gl ==  4 = return $ S.take 1 $ S.drop (maxQualIn
 -- deleted according to the chosen variant.  Note that this will blow up
 -- unless the call was done assuming a haploid genome (which is
 -- guaranteeed /in this program/)!
-format_indel_call :: Monad m => Prob -> VarCall (GL, IndelVars) -> Iteratee [EitherCall] m S.ByteString
-format_indel_call p vc | V.length gl == length vars = I.dropWhile skip >> return (S.pack $ show ins)
+
+-- XXX snd
+format_indel_call :: Monad m => Prob -> Calls -> Iteratee [Calls] m S.ByteString
+format_indel_call p cs | V.length gl == length vars = I.dropWhile skip >> return (S.pack $ show ins)
                        | otherwise = error "Thou shalt not have calleth format_indel_call unless thou madeth a haploid call!"
     where
-        (gl,vars) = vc_vars vc
+        (gl,vars) = vc_vars $ p_indel cs
         eff_gl = V.fromList $ zipWith adjust (V.toList gl) vars
         adjust q (0,[]) = q ; adjust q _ = p * q
 
         (del,ins) = ( (0,[]) : vars ) !! maxQualIndex eff_gl
-        skip evc  = let rs  = either vc_refseq vc_refseq evc
-                        pos = either vc_pos    vc_pos    evc
-                    in rs == vc_refseq vc && pos < vc_pos vc + del
+        skip ocs  = p_refseq ocs == p_refseq cs && p_pos ocs < p_pos cs + del
 
 maxQualIndex :: V.Vector Prob -> Int
 maxQualIndex vec = case V.ifoldl' step (0, 0, 0) vec of

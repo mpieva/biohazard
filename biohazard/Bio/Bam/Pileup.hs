@@ -15,6 +15,7 @@ import Control.Applicative
 import Control.Monad hiding ( mapM_ )
 import Control.Monad.Fix ( fix )
 import Data.Foldable hiding ( sum, product )
+import Data.Monoid
 import Data.Ord
 
 import qualified Data.ByteString        as B
@@ -94,6 +95,7 @@ data PrimChunks = Seek !Int !PrimBase                           -- ^ skip to pos
 data PrimBase = Base { _pb_wait   :: !Int                       -- ^ number of bases to wait due to a deletion
                      , _pb_likes  :: !DamagedBase               -- ^ four likelihoods
                      , _pb_mapq   :: !Qual                      -- ^ map quality
+                     , _pb_rev    :: !Bool                      -- ^ reverse strand?
                      , _pb_chunks :: PrimChunks }               -- ^ more chunks
   deriving Show
 
@@ -151,7 +153,8 @@ decompose dm br
     -- we are looking at an M CIGAR operation and all the subindices are
     -- valid.
     nextBase :: Int -> Int -> Int -> Int -> Int -> PrimBase
-    nextBase !wt !pos !is !ic !io = Base wt (get_seq (dm br is) is) mapq $ nextIndel  [] 0 (pos+1) (is+1) ic (io+1)
+    nextBase !wt !pos !is !ic !io = Base wt (get_seq (dm br is) is) mapq (br_isReversed br)
+                                  $ nextIndel  [] 0 (pos+1) (is+1) ic (io+1)
 
 
     -- Look for the next indel after a base.  We collect all indels (I
@@ -192,16 +195,22 @@ decompose dm br
 -- ordering is: AA,AB,BB; for triallelic sites the ordering is:
 -- AA,AB,BB,AC,BC,CC, etc.\"
 
-data VarCall a = VarCall { vc_refseq     :: !Refseq               -- coordinate
-                         , vc_pos        :: !Int                  -- coordinate
-                         , vc_depth      :: !Int                  -- number of contributing reads
-                         , vc_mapq0      :: !Int                  -- number of (non-)contributing reads with MAPQ==0
-                         , vc_sum_mapq   :: !Int                  -- sum of map qualities of contributring reads
-                         , vc_sum_mapq2  :: !Int                  -- sum of squared map qualities of contributing reads
-                         , vc_vars       :: a }                   -- variant calls & GL values in dB
+data VarCall a = VarCall { vc_depth     :: !Int                  -- number of contributing reads
+                         , vc_mapq0     :: !Int                  -- number of (non-)contributing reads with MAPQ==0
+                         , vc_sum_mapq  :: !Int                  -- sum of map qualities of contributring reads
+                         , vc_sum_mapq2 :: !Int                  -- sum of squared map qualities of contributing reads
+                         , vc_vars      :: a }                   -- variant calls & GL values in dB
     deriving Show
 
 instance Functor VarCall where fmap f vc = vc { vc_vars = f (vc_vars vc) }
+
+instance Monoid a => Monoid (VarCall a) where
+    mempty = VarCall { vc_depth = 0, vc_mapq0 = 0, vc_sum_mapq = 0, vc_sum_mapq2 = 0, vc_vars = mempty }
+    mappend x y = VarCall { vc_depth     = vc_depth x + vc_depth y
+                          , vc_mapq0     = vc_mapq0 x + vc_mapq0 y
+                          , vc_sum_mapq  = vc_sum_mapq x + vc_sum_mapq y
+                          , vc_sum_mapq2 = vc_sum_mapq2 x + vc_sum_mapq2 y
+                          , vc_vars      = vc_vars x `mappend` vc_vars y }
 
 type GL = V.Vector Prob
 type IndelVars = [( Int, [Nucleotide] )]    -- indel variant: number of deletions, inserted sequence
@@ -213,10 +222,16 @@ type IndelPile = [( Qual, (Int, [DamagedBase]) )]   -- a list of indel variants
 
 -- | Running pileup results in a series of piles.  A 'Pile' has the
 -- basic statistics of a 'VarCall', but no GL values and a pristine list
--- of variants instead of a proper call.
+-- of variants instead of a proper call.  We emit one pile with two
+-- 'BasePile's (one for each strand) and one 'IndelPile' (the one
+-- immediately following) at a time.
 
-type Pile = Either (VarCall BasePile) (VarCall IndelPile)
+data Pile' a b = Pile { p_refseq :: !Refseq
+                      , p_pos    :: !Int
+                      , p_snp    :: VarCall a
+                      , p_indel  :: VarCall b }
 
+type Pile = Pile' (BasePile, BasePile) IndelPile
 
 -- | The pileup enumeratee takes 'BamRaw's, decomposes them, interleaves
 -- the pieces appropriately, and generates 'Pile's.  The output will
@@ -385,20 +400,20 @@ pileup'' = do
     -- 'PrimChunks':  'Indel's contribute to an 'IndelPile', 'Seek's and
     -- deletions are pushed back to the /waiting/ queue, 'EndOfRead's are
     -- removed, and everything else is added to the fresh /active/ queue.
-    let pile0 = VarCall rs po 0 0 0 0
-    (fin_bp, fin_ip) <- consume_active (pile0 [], pile0 []) $
-        \(!bpile, !ipile) (Base wt qs mq pchunks) ->
+    (fin_bp, fin_ip) <- consume_active (mempty, mempty) $
+        \(!bpile, !ipile) (Base wt qs mq str pchunks) ->
                 let put (Q q) x vc = vc { vc_depth     = vc_depth vc + 1
                                         , vc_mapq0     = vc_mapq0 vc + (if q == 0 then 1 else 0)
                                         , vc_sum_mapq  = vc_sum_mapq  vc + fromIntegral q
                                         , vc_sum_mapq2 = vc_sum_mapq2 vc + fromIntegral q * fromIntegral q
                                         , vc_vars      = (Q q, x) : vc_vars vc }
-                    b' = Base (wt-1) qs mq pchunks
+                    b' = Base (wt-1) qs mq str pchunks
+                    put' = put mq (if str then Left qs else Right qs)
                 in case pchunks of
-                    _ | wt > 0        -> do upd_active  (b'  :)         ; return (           bpile,                  ipile )
-                    Seek p' pb'       -> do upd_waiting (insert p' pb') ; return ( put mq qs bpile,                  ipile )
-                    Indel del ins pb' -> do upd_active  (pb' :)         ; return ( put mq qs bpile, put mq (del,ins) ipile )
-                    EndOfRead         -> do                               return ( put mq qs bpile,                  ipile )
+                    _ | wt > 0        -> do upd_active  (b'  :)         ; return (      bpile,                  ipile )
+                    Seek p' pb'       -> do upd_waiting (insert p' pb') ; return ( put' bpile,                  ipile )
+                    Indel del ins pb' -> do upd_active  (pb' :)         ; return ( put' bpile, put mq (del,ins) ipile )
+                    EndOfRead         -> do                               return ( put' bpile,                  ipile )
 
     -- We just reversed /active/ inplicitly, which is no desaster, but may come
     -- as a surprise downstream.  So reverse it back.
@@ -410,8 +425,9 @@ pileup'' = do
     -- show the variant.  However, if no reads show any variant, and here is the
     -- first place where we notice that, the pile is useless.
     let uninteresting (_,(d,i)) = d == 0 && null i
-    unless (null              (vc_vars fin_bp)) $ yield $ Left  fin_bp
-    unless (all uninteresting (vc_vars fin_ip)) $ yield $ Right fin_ip
+
+    unless (null (vc_vars fin_bp) && all uninteresting (vc_vars fin_ip))
+        $ yield $ Pile rs po (fmap partitionPairEithers fin_bp) fin_ip
 
     -- Bump coordinate and loop.  (Note that the bump to the next
     -- reference /sequence/ is done implicitly, because we will run out of
@@ -419,6 +435,14 @@ pileup'' = do
     upd_pos succ
     pileup'
 
+partitionPairEithers :: [(a, Either b c)] -> ([(a,b)], [(a,c)])
+partitionPairEithers = foldr either' ([],[])
+ where
+  either' (a, Left  b) = left  a b
+  either' (a, Right c) = right a c
+
+  left  a b ~(l, r) = ((a,b):l, r)
+  right a c ~(l, r) = (l, (a,c):r)
 
 -- | We need a simple priority queue.  Here's a skew heap (specialized
 -- to strict 'Int' priorities and 'PrimBase' values).

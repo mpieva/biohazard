@@ -42,7 +42,7 @@ combinatorial contortions provide any benefit.
 
 The take home message is that we model error dependency by having a more
 slowly growing exponent, that errors happening on different strands are
-independent from each other (XXX!), and that the combinatorial
+independent from each other, and that the combinatorial
 contortions in both the \texttt{maq} and the \texttt{samtools} model do
 not seem to be useful.  The order in which we touch the bases is up for
 grabs, since there are two cases of prior art.  We'll go with a simple
@@ -123,6 +123,79 @@ k_{1,X_i,H_i} &= 0 \\
 k_{i,X_i,H_i} &= k_{i-1,X_i,H_i} + P(X_i, H_i | Q_i, G) \\
 &= k_{i-1,X_i,H_i} + P(X_i | H_i, Q_i) P(H_i | G)
 \end{align*}
+
+\section{Testing Method}
+
+\subsection{Handcrafted Data}
+
+Alternatively, selected or simulated data, to test for egregious bugs.
+No good to test any parameter estimation.
+
+\subsection{Simulated Modern Data}
+
+To debug fitting of simple parameters (up to four divergences,
+heterozygous/homozygous transition/transversion), but unsuitable to test
+advanced error models.
+
+\subsection{Simulated Ancient Data}
+
+To debug fitting of deamination model and co-fitting of divergences.
+Again, unsuitable to test improved error models.
+
+\subsection{Clean, high-coverage, modern data, mitochondrion only}
+
+Svante's mitochondrion would work, Svante's X chromosome could also be
+good.  To test the two error models in a setting without heterozygosity.
+This should be used to fit the $\theta$ parameter.
+
+\subsection{Clean, high-coverage, modern data, two mixed mitochondria}
+
+Would have to be from the HGDP sequencing efforts.  This is to test
+accuracy in a setting with known diploid genotypes.
+
+\subsection{Clean, high-coverage, diploid modern data}
+
+Svante's genome would work.  To test the two error models and select the
+better one.  This must be an internal goodness-of-fit test, we cannot
+know the true genotypes.
+
+\subsection{Clean, low-coverage, modern data}
+
+To investigate interaction of parameters at low coverage.
+
+\subsection{Ancient data, one mitochondrion}
+
+To fit parameters to real data, using the best known model (at this
+point, we should have selected an error model), without being confounded
+by heterozygosity.  Data should be clean, so we don't have to deal with
+contamination.
+
+\subsection{Ancient data, two mixed mitochondria}
+
+To investigate interaction of heterozygosity, deamination, error model
+in a setting where true heterozygous genotypes are known.  Data should
+be clean and ideally from the same run (we don't want to deal with
+additional contamination and different error profiles).
+
+\subsection{Real Ancient Data}
+
+Including autosomes, sex chromosomes, mitochondria of
+varying coverage.  To estimate parameters separately, to see possible
+interactions.  To demostrate the process makes sense. 
+
+\subsection{Further Directions}
+
+At this point, we should have a genotype caller that deals well with
+deamination, heterozygosity, and recurrent errors.  Thorough testing on
+a real ancient diploid genome is not possible, because a validated data
+set cannot be obtained.  We also need a second calling step which
+applies a prior and produces genotypes.  After that, further ideas
+include: 
+
+\begin{itemize}
+\item Priors involving covariance matrices.
+\item Likelihoods involving contamination.
+\end{itemize}
 
 \appendix
 
