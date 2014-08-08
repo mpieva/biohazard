@@ -167,11 +167,9 @@ isBamOrSam = maybe decodeSam wrap `liftM` isBam
 decodeAnyBamOrSam :: MonadIO m => BamEnumeratee m a
 decodeAnyBamOrSam it = isBamOrSam >>= \k -> k it
 
-decodeAnyBamOrSamFile :: MonadCatchIO m => FilePath -> (BamMeta -> Iteratee [BamRec] m a) -> m (Iteratee [BamRec] m a)
+decodeAnyBamOrSamFile :: (MonadIO m, MonadMask m)
+                      => FilePath -> (BamMeta -> Iteratee [BamRec] m a) -> m (Iteratee [BamRec] m a)
 decodeAnyBamOrSamFile fn k = enumFileRandom defaultBufSize fn (decodeAnyBamOrSam k) >>= run
-
-
-
 
 
 -- | Decodes a raw block into a @BamRec@.

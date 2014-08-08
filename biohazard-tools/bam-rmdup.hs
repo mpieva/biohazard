@@ -308,8 +308,8 @@ progress put refs = eneeCheckIfDonePass (icont . go 0)
                                   eneeCheckIfDonePass (icont . go n') . k $ Chunk as
 
 
-mergeInputRanges :: MonadCatchIO m
-    => Which -> [FilePath] -> Enumerator' BamMeta [BamRaw] m a
+mergeInputRanges :: (MonadIO m, MonadMask m)
+                 => Which -> [FilePath] -> Enumerator' BamMeta [BamRaw] m a
 mergeInputRanges All      fps   = mergeInputs combineCoordinates fps
 mergeInputRanges  _  [        ] = \k -> return $ k mempty
 mergeInputRanges rng (fp0:fps0) = go fp0 fps0
@@ -325,7 +325,7 @@ mergeInputRanges rng (fp0:fps0) = go fp0 fps0
             \idx -> foldr ((>=>) . eneeBamRefseq idx) return [x..y]
 
 
-decodeWithIndex :: MonadCatchIO m
+decodeWithIndex :: (MonadIO m, MonadMask m)
                 => (BamIndex -> Enumeratee [BamRaw] [BamRaw] m a)
                 -> FilePath -> (BamMeta -> Iteratee [BamRaw] m a)
                 -> m (Iteratee [BamRaw] m a)
@@ -334,7 +334,8 @@ decodeWithIndex enum fp k0 = do
     decodeAnyBamFile fp >=> run $ enum idx . k0
 
 
-writeLibBamFiles :: MonadCatchIO m => FilePath -> (BamRaw -> Seqid) -> BamMeta -> Iteratee [BamRaw] m ()
+writeLibBamFiles :: (MonadIO m, MonadMask m)
+                 => FilePath -> (BamRaw -> Seqid) -> BamMeta -> Iteratee [BamRaw] m ()
 writeLibBamFiles fp lbl hdr = tryHead >>= loop M.empty
   where
     loop m  Nothing  = liftIO . mapM_ run $ M.elems m

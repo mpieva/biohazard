@@ -261,7 +261,7 @@ ref_to_ascii (RS v) = [ base | i <- [0, 5 .. U.length v - 5]
 
 
 
-readFreakingInput :: MonadCatchIO m => FilePath -> Enumerator [BamRaw] m b
+readFreakingInput :: (MonadIO m, MonadMask m) => FilePath -> Enumerator [BamRaw] m b
 readFreakingInput fp k | ".bam" `isSuffixOf` fp = do liftIO (hPutStrLn stderr $ "Reading BAM from " ++ fp)
                                                      decodeAnyBamFile fp $ const k
                        | ".gz"  `isSuffixOf` fp = maybe_read_two fp unzipFastq k
@@ -276,9 +276,9 @@ check_r2 fp = go [] (reverse fp)
     go acc (c:fp) = go (c:acc) fp
     go  _  [    ] = return Nothing
 
-maybe_read_two :: MonadCatchIO m
+maybe_read_two :: (MonadIO m, MonadMask m)
     => FilePath
-    -> (forall m1 b . MonadCatchIO m1 => Enumeratee S.ByteString [BamRec] m1 b)
+    -> (forall m1 b . (MonadIO m1, MonadMask m1) => Enumeratee S.ByteString [BamRec] m1 b)
     -> Enumerator [BamRaw] m a
 maybe_read_two fp e1 = (\k -> liftIO (check_r2 fp) >>= maybe (rd1 k) (rd2 k)) $= mapStream encodeBamEntry
   where
@@ -289,7 +289,7 @@ maybe_read_two fp e1 = (\k -> liftIO (check_r2 fp) >>= maybe (rd1 k) (rd2 k)) $=
                               (enumFile defaultBufSize fp' $= e1)
                               (convStream unite_pairs) k
 
-unzipFastq :: MonadCatchIO m => Enumeratee S.ByteString [BamRec] m b
+unzipFastq :: (MonadIO m, MonadMask m) => Enumeratee S.ByteString [BamRec] m b
 unzipFastq = ZLib.enumInflate ZLib.GZipOrZlib ZLib.defaultDecompressParams ><> parseFastq
 
 unite_pairs :: Monad m => Iteratee [BamRec] (Iteratee [BamRec] m) [BamRec]

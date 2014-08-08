@@ -47,7 +47,7 @@ getExt k (Pair a b) = extAsInt 0 k a + extAsInt 0 k b
 -- records are merged using the supplied "merging Enumeratee".  Results
 -- in something close to an Enumerator (not quite, because the merged
 -- headers need to be passed along).
-enum_bam_files :: MonadCatchIO m
+enum_bam_files :: (MonadIO m, MonadMask m)
                => Enumeratee [BamPair] [[BamPair]] (Iteratee [[BamPair]] m) a
                -> [ FilePath ]
                -> Enumerator' BamMeta [[BamPair]] m a

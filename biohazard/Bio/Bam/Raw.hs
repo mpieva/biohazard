@@ -107,7 +107,7 @@ import System.Environment           ( getArgs )
 import System.IO
 import System.IO.Unsafe
 
-import qualified Control.Monad.CatchIO          as CIO
+import qualified Control.Monad.Catch            as C
 import qualified Data.ByteString                as S
 import qualified Data.ByteString.Char8          as SC
 import qualified Data.ByteString.Lazy.Char8     as L
@@ -170,13 +170,13 @@ decodeAnyBam :: MonadIO m => BamrawEnumeratee m a
 decodeAnyBam it = do mk <- isBam ; case mk of Just  k -> k it
                                               Nothing -> fail "this isn't BAM."
 
-decodeAnyBamFile :: MonadCatchIO m => FilePath -> (BamMeta -> Iteratee [BamRaw] m a) -> m (Iteratee [BamRaw] m a)
+decodeAnyBamFile :: (MonadIO m, MonadMask m) => FilePath -> (BamMeta -> Iteratee [BamRaw] m a) -> m (Iteratee [BamRaw] m a)
 decodeAnyBamFile fn k = enumFileRandom defaultBufSize fn (decodeAnyBam k) >>= run
 
-concatDefaultInputs :: MonadCatchIO m => Enumerator' BamMeta [BamRaw] m a
+concatDefaultInputs :: (MonadIO m, MonadMask m) => Enumerator' BamMeta [BamRaw] m a
 concatDefaultInputs it0 = liftIO getArgs >>= \fs -> concatInputs fs it0
 
-concatInputs :: MonadCatchIO m => [FilePath] -> Enumerator' BamMeta [BamRaw] m a
+concatInputs :: (MonadIO m, MonadMask m) => [FilePath] -> Enumerator' BamMeta [BamRaw] m a
 concatInputs [        ] = \k -> enumHandle defaultBufSize stdin (decodeAnyBam k) >>= run
 concatInputs (fp0:fps0) = \k -> enum1 fp0 k >>= go fps0
   where
@@ -186,12 +186,12 @@ concatInputs (fp0:fps0) = \k -> enum1 fp0 k >>= go fps0
     go [       ] = return
     go (fp1:fps) = enum1 fp1 . const >=> go fps
 
-mergeDefaultInputs :: MonadCatchIO m
+mergeDefaultInputs :: (MonadIO m, MonadMask m)
     => (BamMeta -> Enumeratee [BamRaw] [BamRaw] (Iteratee [BamRaw] m) a)
     -> Enumerator' BamMeta [BamRaw] m a
 mergeDefaultInputs (?) it0 = liftIO getArgs >>= \fs -> mergeInputs (?) fs it0
 
-mergeInputs :: MonadCatchIO m
+mergeInputs :: (MonadIO m, MonadMask m)
     => (BamMeta -> Enumeratee [BamRaw] [BamRaw] (Iteratee [BamRaw] m) a)
     -> [FilePath] -> Enumerator' BamMeta [BamRaw] m a
 mergeInputs  _  [        ] = \k -> enumHandle defaultBufSize stdin (decodeAnyBam k) >>= run
@@ -449,9 +449,9 @@ getBamRaw = do off <- getOffset
 
 writeRawBamFile :: FilePath -> BamMeta -> Iteratee [BamRaw] IO ()
 writeRawBamFile fp meta =
-    CIO.bracket (liftIO $ openBinaryFile fp WriteMode)
-                (liftIO . hClose)
-                (flip writeRawBamHandle meta)
+    C.bracket (liftIO $ openBinaryFile fp WriteMode)
+              (liftIO . hClose)
+              (flip writeRawBamHandle meta)
 
 pipeRawBamOutput :: BamMeta -> Iteratee [BamRaw] IO ()
 pipeRawBamOutput meta = encodeBamUncompressed meta =$ mapChunksM_ (liftIO . S.hPut stdout)

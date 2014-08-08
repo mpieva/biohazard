@@ -1,7 +1,7 @@
 {-# LANGUAGE BangPatterns #-}
 import Control.Applicative ( (<$>) )
 import Control.Monad
-import Control.Monad.CatchIO
+import Control.Monad.Catch
 import Data.Char ( isSpace, toLower, chr )
 import Data.List ( intercalate, sort )
 import Data.Version ( showVersion )

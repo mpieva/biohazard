@@ -32,7 +32,7 @@ module Bio.Iteratee (
 
     ($==),
     ListLike,
-    MonadIO, MonadCatchIO,
+    MonadIO, MonadMask,
     lift, liftIO,
     (>=>), (<=<),
     stdin, stdout, stderr,
@@ -54,7 +54,7 @@ module Bio.Iteratee (
 import Bio.Base ( findAuxFile )
 import Control.Concurrent
 import Control.Monad
-import Control.Monad.CatchIO
+import Control.Monad.Catch
 import Control.Monad.IO.Class
 import Control.Monad.Trans.Class
 import Data.Iteratee.Binary as X
@@ -243,13 +243,13 @@ foldStream f = foldChunksM (\b s -> return $! LL.foldl' f b s)
 type Enumerator' h eo m b = (h -> Iteratee eo m b) -> m (Iteratee eo m b)
 type Enumeratee' h ei eo m b = (h -> Iteratee eo m b) -> Iteratee ei m (Iteratee eo m b)
 
-enumAuxFile :: MonadCatchIO m => FilePath -> Iteratee S.ByteString m a -> m a
+enumAuxFile :: (MonadIO m, MonadMask m) => FilePath -> Iteratee S.ByteString m a -> m a
 enumAuxFile fp it = liftIO (findAuxFile fp) >>= fileDriver it
 
-enumDefaultInputs :: MonadCatchIO m => Enumerator S.ByteString m a
+enumDefaultInputs :: (MonadIO m, MonadMask m) => Enumerator S.ByteString m a
 enumDefaultInputs it0 = liftIO getArgs >>= flip enumInputs it0
 
-enumInputs :: MonadCatchIO m => [FilePath] -> Enumerator S.ByteString m a
+enumInputs :: (MonadIO m, MonadMask m) => [FilePath] -> Enumerator S.ByteString m a
 enumInputs [] = enumHandle defaultBufSize stdin
 enumInputs xs = go xs
   where go ("-":fs) = enumHandle defaultBufSize stdin >=> go fs

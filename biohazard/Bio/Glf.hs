@@ -110,7 +110,7 @@ enee_glf_file per_seq per_file oit = do
 --
 -- This type is positively weird and I'm not entirely sure this is the
 -- right way to go about it.
-enum_glf_file :: MonadCatchIO m
+enum_glf_file :: (MonadIO m, MonadMask m)
               => FilePath
               -> (GlfSeq -> Enumeratee [GlfRec] a m b)
               -> (S.ByteString -> Enumerator a m b)
@@ -120,7 +120,7 @@ enum_glf_file fp per_seq per_file output =
     joinI $ decompressBgzf $
     enee_glf_file per_seq per_file output
 
-enum_glf_handle :: MonadCatchIO m
+enum_glf_handle :: (MonadIO m, MonadMask m)
                 => Handle
                 -> (GlfSeq -> Enumeratee [GlfRec] a m b)
                 -> (S.ByteString -> Enumerator a m b)

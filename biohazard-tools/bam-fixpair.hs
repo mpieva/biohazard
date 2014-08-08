@@ -532,7 +532,7 @@ force_copy br = bamRaw (virt_offset br) $! S.copy (raw_data br)
 data BamPair = Singleton BamRaw | Pair BamRaw BamRaw | LoneMate BamRaw
 
 
-mergeInputs :: MonadCatchIO m => [FilePath] -> Enumerator' BamMeta [BamPair] m a
+mergeInputs :: (MonadIO m, MonadMask m) => [FilePath] -> Enumerator' BamMeta [BamPair] m a
 mergeInputs = go0
   where
     go0 [        ] = enumG $ enumHandle defaultBufSize stdin
