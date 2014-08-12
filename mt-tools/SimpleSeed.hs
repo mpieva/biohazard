@@ -18,7 +18,7 @@ import qualified Data.IntMap as IM
 template :: Int
 template = 0xFCF3CF3F
 
-create_seed_words :: [Nucleotide] -> [(Int, Int)]
+create_seed_words :: [Nucleotides] -> [(Int, Int)]
 create_seed_words = drop 32 . go 0x0 (-16) 0x0 0
   where
     go !accf !i !accr !ir s =
@@ -30,9 +30,9 @@ create_seed_words = drop 32 . go 0x0 (-16) 0x0 0
     -- These codes are chosen so that ambiguity codes result in zeroes.
     -- The seed word 0, which would otherwise be the low-complexity and
     -- useless poly-A, is later ignored.
-    codef, coder :: UArray Nucleotide Int
-    codef = listArray (N 0, N 15) [0,0,1,0,2,0,0,0,3,0,0,0,0,0,0,0]
-    coder = listArray (N 0, N 15) [0,3,2,0,1,0,0,0,0,0,0,0,0,0,0,0]
+    codef, coder :: UArray Nucleotides Int
+    codef = listArray (Ns 0, Ns 15) [0,0,1,0,2,0,0,0,3,0,0,0,0,0,0,0]
+    coder = listArray (Ns 0, Ns 15) [0,3,2,0,1,0,0,0,0,0,0,0,0,0,0,0]
 
 -- Turns a list of seed words into a map.  Only the first entry is used,
 -- duplicates are discarded silenty.
@@ -42,14 +42,14 @@ data I2 = I2 !Int !Int
 newtype SeedMap = SM { unSM :: IM.IntMap Int }
   deriving Show
 
-create_seed_map ::  [Nucleotide] -> SeedMap
+create_seed_map ::  [Nucleotides] -> SeedMap
 create_seed_map = SM . cleanup . foldl' (\m (k,v) -> IM.insertWith' add k v m) IM.empty .
                   map (\(x,y) -> (x,(I2 1 y))) . create_seed_words . pad
   where pad ns = ns ++ take 15 ns
         add (I2 x i) (I2 y _) = I2 (x+y) i
         cleanup = IM.mapMaybe $ \(I2 n j) -> if n < 8 then Just j else Nothing
 
-create_seed_maps :: [[Nucleotide]] -> SeedMap
+create_seed_maps :: [[Nucleotides]] -> SeedMap
 create_seed_maps = SM . IM.unionsWith const . map (unSM . create_seed_map)
 
 -- | Actual seeding.  We take every hit and guesstimate an alignment

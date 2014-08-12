@@ -27,7 +27,7 @@ import qualified Data.Vector.Generic as V
 -- TODO: The MD field is currently removed.  It should be repaired
 -- instead.  Many other fields should be trimmed if present.
 
-trim_3' :: ([Nucleotide] -> [Qual] -> Bool) -> BamRec -> BamRec
+trim_3' :: ([Nucleotides] -> [Qual] -> Bool) -> BamRec -> BamRec
 trim_3' p b | b_flag b `testBit` 4 = trim_rev
             | otherwise            = trim_fwd
   where
@@ -81,8 +81,8 @@ trim_cigar l ((op,ll):cs) | bad_op op = let (o,cs') = trim_cigar l cs in (o + re
 -- | Trim predicate to get rid of low quality sequence.
 -- @trim_low_quality q ns qs@ evaluates to true if all qualities in @qs@
 -- are smaller (i.e. worse) than @q@.
-trim_low_quality :: Qual -> [Nucleotide] -> [Qual] -> Bool
-trim_low_quality q = \_ qs -> all (< q) qs
+trim_low_quality :: Qual -> a -> [Qual] -> Bool
+trim_low_quality q = const $ all (< q)
 
 
 

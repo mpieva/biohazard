@@ -43,7 +43,7 @@ import qualified Data.Vector.Unboxed        as U
 import Debug.Trace
 
 -- Read a FastA file, drop the names, yield the sequences.
-readFasta :: L.ByteString -> [( S.ByteString, [Either Nucleotide Nucleotide] )]
+readFasta :: L.ByteString -> [( S.ByteString, [Either Nucleotides Nucleotides] )]
 readFasta = go . dropWhile (not . isHeader) . L.lines
   where
     isHeader s = not (L.null s) && L.head s == '>'
@@ -54,8 +54,8 @@ readFasta = go . dropWhile (not . isHeader) . L.lines
                                     nm = S.concat . L.toChunks . L.tail . head $ L.words hd
                                 in (nm,ns) : if null rest then [] else go rest
 
-    toNuc x | isUpper x = Right $ toNucleotide x
-            | otherwise = Left  $ toNucleotide (toUpper x)
+    toNuc x | isUpper x = Right $ toNucleotides x
+            | otherwise = Left  $ toNucleotides (toUpper x)
 
 
 -- | A query record.  We construct these after the seeding phase and
@@ -268,7 +268,7 @@ readFreakingInput fp k | ".bam" `isSuffixOf` fp = do liftIO (hPutStrLn stderr $ 
                        | otherwise              = maybe_read_two fp parseFastq k
 
 check_r2 :: FilePath -> IO (Maybe FilePath)
-check_r2 fp = go [] (reverse fp)
+check_r2 = go [] . reverse
   where
     go acc ('1':'r':fp) = do let fp' = reverse fp ++ 'r' : '2' : acc
                              e <- doesFileExist fp'

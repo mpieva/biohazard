@@ -368,10 +368,10 @@ br_isize (BamRaw _ raw) | i >= 0x80000000 = i - 0x100000000
           i = getInt raw 28
 
 {-# INLINE br_seq_at #-}
-br_seq_at :: BamRaw -> Int -> Nucleotide
+br_seq_at :: BamRaw -> Int -> Nucleotides
 br_seq_at br@(BamRaw _ raw) i
-    | even    i = N $ (S.unsafeIndex raw (off0 + i `div` 2) `shiftR` 4) .&. 0xF
-    | otherwise = N $  S.unsafeIndex raw (off0 + i `div` 2)             .&. 0xF
+    | even    i = Ns $ (S.unsafeIndex raw (off0 + i `div` 2) `shiftR` 4) .&. 0xF
+    | otherwise = Ns $  S.unsafeIndex raw (off0 + i `div` 2)             .&. 0xF
   where
     off0 = sum [ 33, br_l_read_name br, 4 * br_n_cigar_op br ]
 

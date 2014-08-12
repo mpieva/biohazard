@@ -10,6 +10,7 @@ import Data.Bits ( testBit )
 import Data.Foldable hiding ( sum, product )
 import Data.List ( tails, intercalate, sortBy )
 import Data.Ord
+import Data.Vector.Unboxed ( Vector, (!) )
 
 import qualified Data.Set               as Set
 import qualified Data.Vector.Unboxed    as V
@@ -33,15 +34,11 @@ import qualified Data.Vector.Unboxed    as V
 simple_indel_call :: Int -> IndelPile -> (GL, IndelVars)
 simple_indel_call ploidy vars = (simple_call ploidy mkpls vars, vars')
   where
-    vars' = Set.toList . Set.fromList $ [ (d, map call i) | (_q,(d,i)) <- vars ]
-    call (DB a c g t _) = snd $ maximumBy (comparing fst) [(a,nucA), (c,nucC), (g,nucG), (t, nucT)]
+    vars' = Set.toList . Set.fromList $ [ (d, map db_call i) | (_q,(d,i)) <- vars ]
 
-    match = zipWith $ \ (DB a c g t q) (N n) -> let p = sum [ if testBit n 0 then a else 0
-                                                            , if testBit n 1 then c else 0
-                                                            , if testBit n 2 then g else 0
-                                                            , if testBit n 3 then t else 0 ]
-                                                    p' = fromQual q
-                                                in toProb $ p + p' - p * p'
+    match = zipWith $ \(DB (N b) q (Matrix m)) (N n) -> let p  = m ! fromIntegral (4*b+n)
+                                                            p' = fromQual q
+                                                        in toProb $ p + p' - p * p'
 
     mkpls (q,(d,i)) = let !q' = qualToProb q
                       in [ if d /= dr || length i /= length ir
@@ -55,12 +52,13 @@ simple_indel_call ploidy vars = (simple_call ploidy mkpls vars, vars')
 simple_snp_call :: Int -> BasePile -> GL
 simple_snp_call ploidy vars = simple_call ploidy mkpls vars
   where
-    mkpls (q, DB a c g t qq) = [ toProb $ x + pe*(s-x) | x <- [a,c,g,t] ]
+    mkpls (q, DB (N b) qq (Matrix m)) =
+        [ toProb $ x + pe*(s-x) | n <- [0..3], let x = m ! fromIntegral (4*b+n) ]
       where
         !p1 = fromQual q
         !p2 = fromQual qq
         !pe = p1 + p2 - p1*p2
-        !s  = (a+c+g+t) / 4
+        !s  = sum [ m ! fromIntegral (4*b+n) | n <- [0..3] ] / 4
 
 -- | Compute @GL@ values for the simple case.  The simple case is where
 -- we sample 'ploidy' alleles with equal probability and assume that
@@ -136,7 +134,7 @@ showCall f vc = shows (vc_refseq vc) . (:) ':' .
                 shows mapq . (:) '\t' .
                 show_pl (fst $ vc_vars vc)
   where
-    show_pl :: V.Vector Prob -> ShowS
+    show_pl :: Vector Prob -> ShowS
     show_pl = (++) . intercalate "," . map show . V.toList
 
     mapq = vc_sum_mapq vc `div` vc_depth vc -}
@@ -149,6 +147,6 @@ showCall f vc = shows (vc_refseq vc) . (:) ':' .
 maq_snp_call :: Int -> Double -> BasePile -> GL
 maq_snp_call ploidy theta bases = undefined
   where
-    bases' = sortBy (\(DB _ _ _ _ q1) (DB _ _ _ _ q2) -> compare q2 q1)
-             [ DB a c g t (min q mq) | (mq, DB a c g t q) <- bases ]
+    bases' = sortBy (comparing db_qual)
+             [ db { db_qual = mq `min` db_qual db } | (mq,db) <- bases ]
 

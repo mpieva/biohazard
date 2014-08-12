@@ -35,10 +35,10 @@ prob_of b i (RS v) = indexV "prob_of" v ( 5*i + fromEnum b )
 -- | Turns a sequence into probabilities.  @Right n@ is an ordinary
 -- 'Nucleotide', @Left n@ is one we think might be absent (e.g. because
 -- it was soft masked in the input).
-prep_reference :: [Either Nucleotide Nucleotide] -> RefSeq
+prep_reference :: [Either Nucleotides Nucleotides] -> RefSeq
 prep_reference = RS . U.concat .  map (either (to probG) (to probB))
   where
-    to ps n = U.slice (5 * fromIntegral (unN n)) 5 ps
+    to ps n = U.slice (5 * fromIntegral (unNs n)) 5 ps
 
     -- XXX we should probably add some noise here, so the placement of
     -- gaps isn't completely random, but merely unpredictable
@@ -70,8 +70,8 @@ newtype QuerySeq = QS { unQS :: U.Vector Word8 } deriving Show
 prep_query_fwd :: BamRaw -> QuerySeq
 prep_query_fwd br = QS $ U.fromListN len
     [ q `shiftL` 2 .|. indexV "prep_query_fwd" code b | i <- [0 .. len-1]
-    , let b = fromIntegral $ unN $ br_seq_at  br i
-    , let q = fromIntegral $ unQ $ br_qual_at br i ]
+    , let b = fromIntegral $ unNs $ br_seq_at  br i
+    , let q = fromIntegral $ unQ  $ br_qual_at br i ]
   where
     len  = br_l_seq br
     code = U.fromListN 16 [0,0,1,0,2,0,0,0,3,0,0,0,0,0,0,0]
@@ -82,7 +82,7 @@ prep_query_rev = revcompl_query . prep_query_fwd
   revcompl_query (QS v) = QS $ U.map (xor 3) $ U.reverse v
 
 qseqToBamSeq :: QuerySeq -> Sequence
-qseqToBamSeq = U.map (\x -> N $ 1 `shiftL` fromIntegral (x .&. 3)) . unQS
+qseqToBamSeq = U.map (\x -> Ns $ 1 `shiftL` fromIntegral (x .&. 3)) . unQS
 
 qseqToBamQual :: QuerySeq -> S.ByteString
 qseqToBamQual = S.pack . U.toList . U.map (`shiftR` 2) . unQS

@@ -74,7 +74,7 @@ L(G) = P(X|G,Q) &= \prod_{i=1}^n P(X_i|G,Q_i,X_1,\ldots,X_{i-1}) \\
 
 where $D_i$ is the damage matrix (which depends on the read, specifically the position within the read).
 For maximum likelihood fitting of parameters, we set $L_j = \sum_G L_j(G) P(G)$, for Bayesian \emph{maximum a posteriori} calling,
-we set $P(G_j|X_j,Q_j) = \frac{L_j(G_j) P(G_j)}{L_j}$.  The prior can be a complicated model, in which case the ML fit serves to
+we set $P(G_j|X_j,Q_j) = L_j(G_j) P(G_j) / L_j$.  The prior can be a complicated model, in which case the ML fit serves to
 derive statistical parameters, but the simplest possible prior models only heterozygosity:
 
 \begin{align*}
@@ -83,7 +83,7 @@ P(G=\{\frac{1}{2},\frac{1}{2},0,0\}) = P(G=\{\frac{1}{2},0,\frac{1}{2},0\}) &= \
 \end{align*}
 
 The minimal error model has no dependency on other bases and directly applies the error rate from the quality score as $Q_i =
-10^{-frac{q_i}{10}}$, following \texttt{BSNP}\footnote{We assume a low quality base is random, as opposed to a random error.  Both
+10^{-q_i/10}$, following \texttt{BSNP}\footnote{We assume a low quality base is random, as opposed to a random error.  Both
 are equivalent up to scaling of the error probability, see \ref{app_errprob}.}, we set:
 
 \begin{align*}

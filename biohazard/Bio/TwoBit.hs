@@ -8,6 +8,7 @@ module Bio.TwoBit (
 
         getSubseq,
         getSubseqAscii,
+        getSubseqMasked,
         getSeqnames,
         hasSequence,
         getSeqLength,
@@ -193,15 +194,19 @@ getSubseqWith maskf tbf (Range { r_pos = Pos { p_seq = chr, p_start = start }, r
     cmp_nt = (!!) [nucA, nucG, nucT, nucC] . fromIntegral
 
 
+-- | Extract a subsequence without masking.
+getSubseq :: TwoBitFile -> Range -> IO [Nucleotide]
+getSubseq = getSubseqWith (\n _ -> n)
+
 -- | Extract a subsequence with typical masking:  soft masking is
 -- ignored, hard masked regions are replaced with Ns.
-getSubseq :: TwoBitFile -> Range -> IO [Nucleotide]
-getSubseq = getSubseqWith mymask
+getSubseqMasked :: TwoBitFile -> Range -> IO [Nucleotides]
+getSubseqMasked = getSubseqWith mymask
   where
-    mymask n None = n
-    mymask n Soft = n
-    mymask _ Hard = nucN
-    mymask _ Both = nucN
+    mymask (N n) None = Ns $ 1 `shiftL` fromIntegral n
+    mymask (N n) Soft = Ns $ 1 `shiftL` fromIntegral n
+    mymask    _  Hard = nucsN
+    mymask    _  Both = nucsN
 
 -- | Extract a subsequence with masking for biologists:  soft masking is
 -- done by lowercasing, hard masking by printing an N.

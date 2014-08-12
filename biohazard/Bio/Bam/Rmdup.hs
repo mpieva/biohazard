@@ -448,7 +448,7 @@ do_collapse maxq  brs = ( Consensus b0 { b_exts  = modify_extensions $ b_exts b0
                                             Just (Text t) -> t
                                             _             -> B.replicate len 56 ]
 
-                conssq = [ consensus (Q 93) [ (toNucleotide $ T.index ns i, Q $ B.index qs i - 33)
+                conssq = [ consensus (Q 93) [ (toNucleotides $ T.index ns i, Q $ B.index qs i - 33)
                                             | (ns,qs) <- inputs ]
                          | i <- [0 .. len - 1] ]
 
@@ -494,12 +494,12 @@ minViewBy cmp (x:xs) = go x [] xs
     go m acc (a:as) = case m `cmp` a of GT -> go a (m:acc) as
                                         _  -> go m (a:acc) as
 
-data MdFail = MdFail [(CigOp, Int)] [MdOp] [Nucleotide] [Nucleotide]
+data MdFail = MdFail [(CigOp, Int)] [MdOp] [Nucleotides] [Nucleotides]
 
-mk_new_md :: [(CigOp, Int)] -> [MdOp] -> [Nucleotide] -> [Nucleotide] -> Either MdFail [MdOp]
+mk_new_md :: [(CigOp, Int)] -> [MdOp] -> [Nucleotides] -> [Nucleotides] -> Either MdFail [MdOp]
 mk_new_md = mk_new_md' []
 
-mk_new_md' :: [MdOp] -> [(CigOp, Int)] -> [MdOp] -> [Nucleotide] -> [Nucleotide] -> Either MdFail [MdOp]
+mk_new_md' :: [MdOp] -> [(CigOp, Int)] -> [MdOp] -> [Nucleotides] -> [Nucleotides] -> Either MdFail [MdOp]
 mk_new_md' acc [] [] [] [] = Right $ normalize [] acc
     where
         normalize          a  (MdNum  0:os) = normalize               a  os
@@ -521,10 +521,10 @@ mk_new_md' acc ((Mat, u):cigs) (MdNum v : mds) (o:osq) (n:nsq)
     | o == n    = mk_new_md' (MdNum 1 : acc) ((Mat, u-1):cigs) (MdNum (v-1) : mds) osq nsq
     | otherwise = mk_new_md' (MdRep o : acc) ((Mat, u-1):cigs) (MdNum (v-1) : mds) osq nsq
 
-mk_new_md' acc ((Del, n):cigs) (MdDel bs : mds) osq nsq | n == length bs = mk_new_md' (MdDel bs : acc)   cigs               mds  osq nsq
-mk_new_md' acc ((Del, n):cigs) (MdDel (b:bs) : mds) osq nsq = mk_new_md' (MdDel    [b] : acc) ((Del,n-1):cigs) (MdDel    bs:mds) osq nsq
-mk_new_md' acc ((Del, n):cigs) (MdRep   b    : mds) osq nsq = mk_new_md' (MdDel    [b] : acc) ((Del,n-1):cigs)              mds  osq nsq
-mk_new_md' acc ((Del, n):cigs) (MdNum   m    : mds) osq nsq = mk_new_md' (MdDel [nucN] : acc) ((Del,n-1):cigs) (MdNum (m-1):mds) osq nsq
+mk_new_md' acc ((Del, n):cigs) (MdDel bs : mds) osq nsq | n == length bs = mk_new_md' (MdDel bs : acc)    cigs               mds  osq nsq
+mk_new_md' acc ((Del, n):cigs) (MdDel (b:bs) : mds) osq nsq = mk_new_md' (MdDel     [b] : acc) ((Del,n-1):cigs) (MdDel    bs:mds) osq nsq
+mk_new_md' acc ((Del, n):cigs) (MdRep   b    : mds) osq nsq = mk_new_md' (MdDel     [b] : acc) ((Del,n-1):cigs)              mds  osq nsq
+mk_new_md' acc ((Del, n):cigs) (MdNum   m    : mds) osq nsq = mk_new_md' (MdDel [nucsN] : acc) ((Del,n-1):cigs) (MdNum (m-1):mds) osq nsq
 
 mk_new_md' acc ((Ins, n):cigs) md osq nsq = mk_new_md' acc cigs md (drop n osq) (drop n nsq)
 mk_new_md' acc ((SMa, n):cigs) md osq nsq = mk_new_md' acc cigs md (drop n osq) (drop n nsq)
@@ -534,10 +534,10 @@ mk_new_md' acc ((Nop, _):cigs) md osq nsq = mk_new_md' acc cigs md         osq  
 
 mk_new_md' _acc cigs ms osq nsq = Left $ MdFail cigs ms osq nsq
 
-consensus :: Qual -> [ (Nucleotide, Qual) ] -> (Nucleotide, Qual)
-consensus (Q maxq) nqs = if qr > 3 then (n0, Q qr) else (nucN, Q 0)
+consensus :: Qual -> [ (Nucleotides, Qual) ] -> (Nucleotides, Qual)
+consensus (Q maxq) nqs = if qr > 3 then (n0, Q qr) else (nucsN, Q 0)
   where
-    accs :: UArray Nucleotide Int
+    accs :: UArray Nucleotides Int
     accs = accumArray (+) 0 (minBound,maxBound) [ (n,fromIntegral q) | (n,Q q) <- nqs ]
 
     (n0,q0) : (_,q1) : _ = sortBy (flip $ comparing snd) $ assocs accs
@@ -652,9 +652,9 @@ mask_all (SMa' n ec) = SMa' n $ mask_all ec
 data ECig = WithMD                      -- terminate, do generate MD field
           | WithoutMD                   -- terminate, don't bother with MD
           | Mat' Int ECig
-          | Rep' Nucleotide ECig
+          | Rep' Nucleotides ECig
           | Ins' Int ECig
-          | Del' Nucleotide ECig
+          | Del' Nucleotides ECig
           | Nop' Int ECig
           | SMa' Int ECig
           | HMa' Int ECig
@@ -670,16 +670,16 @@ toECig (Cigar cig) md = go cig md
     go [        ] [            ] = WithMD               -- all was fine to the very end
     go [        ]              _ = WithoutMD            -- here it wasn't fine
 
-    go ((Mat,n):cs) (MdRep x:mds)      = Rep'   x  $ go  ((Mat,n-1):cs)             mds
+    go ((Mat,n):cs) (MdRep x:mds)      = Rep'   x   $ go  ((Mat,n-1):cs)             mds
     go ((Mat,n):cs) (MdNum m:mds)
-       | n < m                         = Mat'   n  $ go             cs (MdNum (m-n):mds)
-       | n > m                         = Mat'   m  $ go  ((Mat,n-m):cs)             mds
-       | otherwise                     = Mat'   n  $ go             cs              mds
-    go ((Mat,n):cs)            _       = Mat'   n  $ go'            cs
+       | n < m                         = Mat'   n   $ go             cs (MdNum (m-n):mds)
+       | n > m                         = Mat'   m   $ go  ((Mat,n-m):cs)             mds
+       | otherwise                     = Mat'   n   $ go             cs              mds
+    go ((Mat,n):cs)            _       = Mat'   n   $ go'            cs
 
-    go ((Ins,n):cs)               mds  = Ins'   n  $ go             cs              mds
-    go ((Del,n):cs) (MdDel (x:xs):mds) = Del'   x  $ go  ((Del,n-1):cs)   (MdDel xs:mds)
-    go ((Del,n):cs)                 _  = Del' nucN $ go' ((Del,n-1):cs)
+    go ((Ins,n):cs)               mds  = Ins'   n   $ go             cs              mds
+    go ((Del,n):cs) (MdDel (x:xs):mds) = Del'   x   $ go  ((Del,n-1):cs)   (MdDel xs:mds)
+    go ((Del,n):cs)                 _  = Del' nucsN $ go' ((Del,n-1):cs)
 
     go ((Nop,n):cs) mds = Nop' n $ go cs mds
     go ((SMa,n):cs) mds = SMa' n $ go cs mds
@@ -692,14 +692,14 @@ toECig (Cigar cig) md = go cig md
     go' ((_,0):cs)   = go' cs
     go' [        ]   = WithoutMD                        -- we didn't have MD or it was broken
 
-    go' ((Mat,n):cs) = Mat'   n  $ go'            cs
-    go' ((Ins,n):cs) = Ins'   n  $ go'            cs
-    go' ((Del,n):cs) = Del' nucN $ go' ((Del,n-1):cs)
+    go' ((Mat,n):cs) = Mat'   n   $ go'            cs
+    go' ((Ins,n):cs) = Ins'   n   $ go'            cs
+    go' ((Del,n):cs) = Del' nucsN $ go' ((Del,n-1):cs)
 
-    go' ((Nop,n):cs) = Nop'   n  $ go' cs
-    go' ((SMa,n):cs) = SMa'   n  $ go' cs
-    go' ((HMa,n):cs) = HMa'   n  $ go' cs
-    go' ((Pad,n):cs) = Pad'   n  $ go' cs
+    go' ((Nop,n):cs) = Nop'   n   $ go' cs
+    go' ((SMa,n):cs) = SMa'   n   $ go' cs
+    go' ((HMa,n):cs) = HMa'   n   $ go' cs
+    go' ((Pad,n):cs) = Pad'   n   $ go' cs
 
 
 -- We normalize matches, deletions and soft masks, because these are the

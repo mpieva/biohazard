@@ -8,7 +8,7 @@ import System.Environment                   ( getArgs, getProgName )
 import System.Exit                          ( exitFailure, exitSuccess )
 import System.IO                            ( hPutStrLn )
 
-data Conf = Conf { c_trim_pred :: [Nucleotide] -> [Qual] -> Bool
+data Conf = Conf { c_trim_pred :: [Nucleotides] -> [Qual] -> Bool
                  , c_pass_pred :: BamRec -> Bool }
 
 options :: [OptDescr (Conf -> IO Conf)]

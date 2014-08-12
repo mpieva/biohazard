@@ -107,10 +107,10 @@ data PrimBase = Base { _pb_wait   :: !Int                       -- ^ number of b
 -- reference allele, if fact, we don't even know it.  Nicely avaoid any
 -- reference bias by construction.
 
-decompose :: DamageModel -> BamRaw -> PrimChunks
-decompose dm br
+decompose :: BamRaw -> [Matrix] -> PrimChunks
+decompose br matrices
     | br_isUnmapped br || br_rname br == invalidRefseq = EndOfRead
-    | otherwise = firstBase (br_pos br) 0 0
+    | otherwise = firstBase (br_pos br) 0 0 matrices
   where
     !max_cig = br_n_cigar_op br
     !max_seq = br_l_seq br
@@ -122,39 +122,44 @@ decompose dm br
     -- and BAQ.  If QUAL is invalid, we replace it (arbitrarily) with
     -- 23 (assuming a rather conservative error rate of ~0.5%), BAQ is
     -- added to QUAL, and MAPQ is an upper limit for effective quality.
-    get_seq :: (Nucleotide -> Qual -> a) -> Int -> a
-    get_seq f i = f n q''
+    get_seq :: Int -> Matrix -> DamagedBase
+    get_seq i = case br_seq_at br i of                              -- nucleotide
+            b | b == nucsA -> DB nucA qe
+              | b == nucsC -> DB nucC qe
+              | b == nucsG -> DB nucG qe
+              | b == nucsT -> DB nucT qe
+              | otherwise  -> DB nucA (Q 0)
       where
-        !n = br_seq_at br i                                         -- nucleotide
         !q = case br_qual_at br i of Q 0xff -> Q 30 ; x -> x        -- quality; invalid (0xff) becomes 30
         !q' | i >= B.length baq = q                                 -- no BAQ available
             | otherwise = Q (unQ q + (B.index baq i - 64))          -- else correct for BAQ
-        !q'' = min q' mapq                                          -- use MAPQ as upper limit
+        !qe = min q' mapq                                          -- use MAPQ as upper limit
 
     -- Look for first base following the read's start or a gap (CIGAR
     -- code N).  Indels are skipped, since these are either bugs in the
     -- aligner or the aligner getting rid of essentially unalignable
     -- bases.
-    firstBase :: Int -> Int -> Int -> PrimChunks
-    firstBase !pos !is !ic
+    firstBase :: Int -> Int -> Int -> [Matrix] -> PrimChunks
+    firstBase !_   !_  !_  [        ] = EndOfRead
+    firstBase !pos !is !ic mms@(m:ms)
         | is >= max_seq || ic >= max_cig = EndOfRead
         | otherwise = case br_cigar_at br ic of
-            (Ins,cl) ->            firstBase  pos (cl+is) (ic+1)
-            (SMa,cl) ->            firstBase  pos (cl+is) (ic+1)
-            (Del,cl) ->            firstBase (pos+cl) is  (ic+1)
-            (Nop,cl) ->            firstBase (pos+cl) is  (ic+1)
-            (HMa, _) ->            firstBase  pos     is  (ic+1)
-            (Pad, _) ->            firstBase  pos     is  (ic+1)
-            (Mat, 0) ->            firstBase  pos     is  (ic+1)
-            (Mat, _) -> Seek pos $ nextBase 0 pos     is   ic 0
+            (Ins,cl) ->            firstBase  pos (cl+is) (ic+1) mms
+            (SMa,cl) ->            firstBase  pos (cl+is) (ic+1) mms
+            (Del,cl) ->            firstBase (pos+cl) is  (ic+1) mms
+            (Nop,cl) ->            firstBase (pos+cl) is  (ic+1) mms
+            (HMa, _) ->            firstBase  pos     is  (ic+1) mms
+            (Pad, _) ->            firstBase  pos     is  (ic+1) mms
+            (Mat, 0) ->            firstBase  pos     is  (ic+1) mms
+            (Mat, _) -> Seek pos $ nextBase 0 pos     is   ic 0 m ms
 
 
     -- Generate likelihoods for the next base.  When this gets called,
     -- we are looking at an M CIGAR operation and all the subindices are
     -- valid.
-    nextBase :: Int -> Int -> Int -> Int -> Int -> PrimBase
-    nextBase !wt !pos !is !ic !io = Base wt (get_seq (dm br is) is) mapq (br_isReversed br)
-                                  $ nextIndel  [] 0 (pos+1) (is+1) ic (io+1)
+    nextBase :: Int -> Int -> Int -> Int -> Int -> Matrix -> [Matrix] -> PrimBase
+    nextBase !wt !pos !is !ic !io m ms = Base wt (get_seq is m) mapq (br_isReversed br)
+                                       $ nextIndel  [] 0 (pos+1) (is+1) ic (io+1) ms
 
 
     -- Look for the next indel after a base.  We collect all indels (I
@@ -164,21 +169,22 @@ decompose dm br
     -- isn't valid in the middle of a read (H and S), but then what
     -- would we do about it anyway?  Just ignoring it is much easier and
     -- arguably at least as correct.
-    nextIndel :: [[DamagedBase]] -> Int -> Int -> Int -> Int -> Int -> PrimChunks
-    nextIndel ins del !pos !is !ic !io
+    nextIndel :: [[DamagedBase]] -> Int -> Int -> Int -> Int -> Int -> [Matrix] -> PrimChunks
+    nextIndel _   _   !_   !_  !_  !_  [        ] = EndOfRead
+    nextIndel ins del !pos !is !ic !io mms@(m:ms)
         | is >= max_seq || ic >= max_cig = EndOfRead
         | otherwise = case br_cigar_at br ic of
-            (Ins,cl) ->             nextIndel (isq cl) del   pos (cl+is) (ic+1) 0
-            (Del,cl) ->             nextIndel  ins (cl+del) (pos+cl) is  (ic+1) 0
-            (SMa,cl) ->             nextIndel  ins     del   pos (cl+is) (ic+1) 0
-            (Pad, _) ->             nextIndel  ins     del   pos     is  (ic+1) 0
-            (HMa, _) ->             nextIndel  ins     del   pos     is  (ic+1) 0
-            (Mat,cl) | io == cl  -> nextIndel  ins     del   pos     is  (ic+1) 0
-                     | otherwise -> Indel del out $ nextBase del pos is   ic   io   -- ends up generating a 'Base'
-            (Nop,cl) ->             firstBase               (pos+cl) is  (ic+1)     -- ends up generating a 'Seek'
+            (Ins,cl) ->             nextIndel (isq cl) del   pos (cl+is) (ic+1) 0 (drop cl mms)
+            (SMa,cl) ->             nextIndel  ins     del   pos (cl+is) (ic+1) 0 (drop cl mms)
+            (Del,cl) ->             nextIndel  ins (cl+del) (pos+cl) is  (ic+1) 0 mms
+            (Pad, _) ->             nextIndel  ins     del   pos     is  (ic+1) 0 mms
+            (HMa, _) ->             nextIndel  ins     del   pos     is  (ic+1) 0 mms
+            (Mat,cl) | io == cl  -> nextIndel  ins     del   pos     is  (ic+1) 0 mms
+                     | otherwise -> Indel del out $ nextBase del pos is   ic  io m ms  -- ends up generating a 'Base'
+            (Nop,cl) ->             firstBase               (pos+cl) is  (ic+1)   mms  -- ends up generating a 'Seek'
       where
         out    = concat $ reverse ins
-        isq cl = [ get_seq (dm br i) i | i <- [is..is+cl-1] ] : ins
+        isq cl = zipWith ($) [ get_seq i | i <- [is..is+cl-1] ] (take cl mms) : ins
 
 
 -- | A variant call consists of a position, some measure of qualities,
@@ -382,7 +388,7 @@ pileup'' = do
     fix $ \loop -> peek >>= mapM_ (\br ->
             when (br_rname br == rs && br_pos br == po) $ do
                 bump
-                case decompose dm br of
+                case decompose br (dm br) of
                     Seek    p pb -> upd_waiting (insert p pb)
                     Indel _ _ pb -> upd_active (pb:)
                     EndOfRead    -> return ()

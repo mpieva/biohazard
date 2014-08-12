@@ -54,7 +54,7 @@ module Bio.Bam.Rec (
     readMd,
     showMd,
 
-    Sequence, Nucleotide(..),
+    Sequence, Nucleotides(..),
     Extensions, Ext(..),
     extAsInt, extAsString, setQualFlag,
 
@@ -91,7 +91,7 @@ import Data.Bits                    ( Bits, testBit, shiftL, shiftR, (.&.), (.|.
 import Data.Char                    ( ord, isDigit, digitToInt )
 import Data.Int                     ( Int32 )
 import Data.Monoid                  ( mempty )
-import Data.Vector.Generic          ( (!?) )
+import Data.Vector.Unboxed          ( (!?) )
 import Data.Word                    ( Word32 )
 import Foreign.Marshal.Alloc        ( alloca )
 import Foreign.Ptr                  ( castPtr )
@@ -107,7 +107,7 @@ import qualified Data.ByteString.Lazy.Char8     as L
 import qualified Data.Foldable                  as F
 import qualified Data.Iteratee                  as I
 import qualified Data.Map                       as M
-import qualified Data.Vector.Generic            as V
+import qualified Data.Vector.Unboxed            as V
 
 -- ^ Parsers and Printers for BAM and SAM.  We employ an @Iteratee@
 -- interface, and we strive to support everything possible in BAM.  So
@@ -116,6 +116,9 @@ import qualified Data.Vector.Generic            as V
 -- understood.
 
 type ByteString = B.ByteString
+
+-- | comparatively short Sequences, with ambiguity coding
+type Sequence = V.Vector Nucleotides
 
 -- | internal representation of a BAM record
 data BamRec = BamRec {
@@ -194,9 +197,11 @@ decodeBamEntry br = either error fixup_bam_rec . fst . G.runGet go $ raw_data br
             !exts <- getExtensions M.empty
 
             return $ BamRec read_name flag rid start mapq cigar
-                            mate_rid mate_pos ins_size (V.fromListN read_len $ expand qry_seq) qual exts (virt_offset br)
+                            mate_rid mate_pos ins_size
+                            (V.fromListN read_len $ expand qry_seq)
+                            qual exts (virt_offset br)
 
-    expand t = if S.null t then [] else let x = B.head t in N (x `shiftR` 4) : N (x .&. 0xf) : expand (B.tail t)
+    expand t = if S.null t then [] else let x = B.head t in Ns (x `shiftR` 4) : Ns (x .&. 0xf) : expand (B.tail t)
 
     decodeCigar c | cc <= fromEnum (maxBound :: CigOp) = (toEnum cc, cl)
                   | otherwise = error "unknown Cigar operation"
@@ -337,8 +342,8 @@ encodeBamEntry = bamRaw 0 . S.concat . L.toChunks . runPut . putEntry
     putSeq v = case v !? 0 of
                  Nothing -> return ()
                  Just a  -> case v !? 1 of
-                    Nothing -> putWord8 (unN a `shiftL` 4)
-                    Just b  -> do putWord8 (unN a `shiftL` 4 .|. unN b)
+                    Nothing -> putWord8 (unNs a `shiftL` 4)
+                    Just b  -> do putWord8 (unNs a `shiftL` 4 .|. unNs b)
                                   putSeq (V.drop 2 v)
 
 -- | writes BAM encoded stuff to a @Handle@
@@ -413,7 +418,7 @@ putValue v = case v of
                       poke (castPtr buf) float >> peek buf
 
 
-data MdOp = MdNum Int | MdRep Nucleotide | MdDel [Nucleotide] deriving Show
+data MdOp = MdNum Int | MdRep Nucleotides | MdDel [Nucleotides] deriving Show
 
 getMd :: BamRec -> Maybe [MdOp]
 getMd r = case M.lookup "MD" $ b_exts r of
@@ -426,8 +431,8 @@ readMd s | S.null s           = return []
          | isDigit (S.head s) = do (n,t) <- S.readInt s
                                    (MdNum n :) <$> readMd t
          | S.head s == '^'    = let (a,b) = S.break isDigit (S.tail s)
-                                in (MdDel (map toNucleotide $ S.unpack a) :) <$> readMd b
-         | otherwise          = (MdRep (toNucleotide $ S.head s) :) <$> readMd (S.tail s)
+                                in (MdDel (map toNucleotides $ S.unpack a) :) <$> readMd b
+         | otherwise          = (MdRep (toNucleotides $ S.head s) :) <$> readMd (S.tail s)
 
 showMd :: [MdOp] -> ByteString
 showMd = S.pack . flip s1 []
@@ -530,7 +535,7 @@ parseSamRec ref = (\nm fl rn po mq cg rn' -> BamRec nm fl rn po mq cg (rn' rn))
     rnext    = id <$ P.char '=' <* sep <|> const . ref <$> word
     sequ     = {-# SCC "parseSamRec/sequ" #-}
                (V.empty <$ P.char '*' <|>
-               V.fromList . map toNucleotide . S.unpack <$> P.takeWhile (P.inClass "acgtnACGTN")) <* sep
+               V.fromList . map toNucleotides . S.unpack <$> P.takeWhile (P.inClass "acgtnACGTN")) <* sep
 
     quals    = {-# SCC "parseSamRec/quals" #-} B.empty <$ P.char '*' <* sep <|> B.map (subtract 33) <$> word
 

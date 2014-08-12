@@ -3,7 +3,7 @@ module Bio.Adna where
 
 import Bio.Base
 import Bio.Bam ( BamRaw, br_isReversed, br_l_seq )
-import Numeric ( showFFloat )
+import Data.Vector.Unboxed ( Vector, fromListN )
 
 -- ^ Things specific to ancient DNA, e.g. damage models.
 --
@@ -17,38 +17,43 @@ import Numeric ( showFFloat )
 -- the hassle.
 --
 
--- | For likelihoods for bases @A, C, G, T@, one quality score.  Note
--- that we cannot roll the quality score into the probabilities:  the
--- @DB@ only describes changes that happened before sequencing, then
--- quality describes those that happen while sequencing.  The latter
--- behave differently (notably, they repeat semi-systematically).
-data DamagedBase = DB !Double !Double !Double !Double !Qual
+-- | Represents our knowledge about a certain base, which consists of
+-- the base itself (A,C,G,T, encodes as 0..3; no Ns), the quality score
+-- (anything that isn't A,C,G,T becomes A with quality 0), and a
+-- substitution matrix representing post-mortem but pre-sequencing
+-- damage.
+--
+-- Unfortunately, none of this can be rolled into something more simple,
+-- because damage and sequencing error behave so differently.
+--
+-- The matrix is reprsented as unboxed 'Vector' of 'Double's, in
+-- row-major order.
+
+data DamagedBase = DB { db_call :: !Nucleotide
+                      , db_qual :: !Qual
+                      , db_dmg  :: !Matrix }
+
+newtype Matrix = Matrix { unMatrix :: Vector Double }
 
 instance Show DamagedBase where
-    showsPrec _ (DB a c g t q) = unwordS $ [ showFFloat (Just 2) p | p <- [a,c,g,t] ] ++ [ shows q ]
-      where unwordS = foldr1 (\u v -> u . (:) ' ' . v)
+    showsPrec _ (DB n q _) = shows n . (:) '@' . shows q
 
 
--- | A 'DamageModel' is a function that gives likelihoods for all
--- possible four bases, given the sequenced base, the quality, and the
--- position in the read.  That means it can't take the actual alignment
--- into account... but nobody seems too keen on doing that anyway.
-type DamageModel = BamRaw           -- ^ the read itself
-                -> Int              -- ^ position in read
-                -> Nucleotide       -- ^ base
-                -> Qual             -- ^ quality score
-                -> DamagedBase      -- ^ results in four likelihoods
+-- | A 'DamageModel' is a function that gives substitution matrices for
+-- each position in a read.  Its application yields a sequence of
+-- substitution matrices exactly as long a the read itself.  Though
+-- typically not done, the model can take sequence into account.
+
+type DamageModel = BamRaw -> [Matrix]
 
 -- | 'DamageModel' for undamaged DNA.  The likelihoods follow directly
 -- from the quality score.  This needs elaboration to see what to do
 -- with amibiguity codes (even though those haven't actually been
 -- observed in the wild).
 noDamage :: DamageModel
-noDamage _ _ b | b == nucA = DB 1 0 0 0
-               | b == nucC = DB 0 1 0 0
-               | b == nucG = DB 0 0 1 0
-               | b == nucT = DB 0 0 0 1
-               | otherwise = DB f f f f where f = 0.25
+noDamage r = replicate (br_l_seq r) identity
+  where
+    identity = Matrix $ fromListN 16 [ if x == y then 1 else 0 | x <- [0..3], y <- [0..3::Int] ]
 
 
 -- | 'DamageModel' for single stranded library prep.  Only one kind of
@@ -64,31 +69,27 @@ data SsDamageParameters = SSD { ssd_sigma  :: !Double         -- deamination rat
   deriving Show
 
 -- Forward strand first, C->T only; reverse strand next, G->A instead
--- N averages over all others, horizontally(!).  Distance from end
--- depends on strand, too :(
 ssDamage :: SsDamageParameters -> DamageModel
-ssDamage SSD{..} r i b = if br_isReversed r then ssd_rev else ssd_fwd
+ssDamage SSD{..} r = let mat = if br_isReversed r then ssd_rev else ssd_fwd
+                     in map mat [0 .. br_l_seq r-1]
   where
-    dq x y z w = DB (0.25*x) (0.25*y) (0.25*z) (0.25*w)
     prob5 = abs ssd_lambda / (1 + abs ssd_lambda)
     prob3 = abs ssd_kappa  / (1 + abs ssd_kappa)
 
-    ssd_fwd | b == nucA = DB   1   0   0   0
-            | b == nucC = DB   0 (1-p) 0   0
-            | b == nucG = DB   0   0   1   0
-            | b == nucT = DB   0   p   0   1
-            | otherwise = dq   1 (1-p) 1 (1+p)
+    ssd_fwd i = Matrix $ fromListN 16 [ 1,   0,   0,   0
+                                      , 0, (1-p), 0,   0
+                                      , 0,   0,   1,   0
+                                      , 0,   p,   0,   1 ]
       where
         !lam5 = prob5 ^ (1+i)
         !lam3 = prob3 ^ (br_l_seq r - i)
         !lam  = lam3 + lam5 - lam3 * lam5
         !p    = ssd_sigma * lam + ssd_delta * (1-lam)
 
-    ssd_rev | b == nucA = DB   1   0   p   0
-            | b == nucC = DB   0   1   0   0
-            | b == nucG = DB   0   0 (1-p) 0
-            | b == nucT = DB   0   0   0   1
-            | otherwise = dq (1+p) 1 (1-p) 1
+    ssd_rev i = Matrix $ fromListN 16 [ 1,   0,   p,   0
+                                      , 0,   1,   0,   0
+                                      , 0,   0, (1-p), 0
+                                      , 0,   0,   0,   1 ]
       where
         !lam5 = prob5 ^ (br_l_seq r - i)
         !lam3 = prob3 ^ (1+i)
@@ -123,17 +124,16 @@ data DsDamageParameters = DSD { dsd_sigma  :: !Double         -- deamination rat
 -- dsd_lambda as the expected overhang length.
 
 dsDamage :: DsDamageParameters -> DamageModel
-dsDamage DSD{..} r i b | b == nucA = DB    1     0     q     0
-                       | b == nucC = DB    0   (1-p)   0     0
-                       | b == nucG = DB    0     0   (1-q)   0
-                       | b == nucT = DB    0     p     0     1
-                       | otherwise = dbq (1+q) (1-p) (1-q) (1+p)
+dsDamage DSD{..} r = map mat [0 .. br_l_seq r-1]
   where
     prob = abs dsd_lambda / (1 + abs dsd_lambda)
-
-    p    = dsd_sigma * lam5 + dsd_delta * (1-lam5)
-    q    = dsd_sigma * lam3 + dsd_delta * (1-lam3)
-    lam5 = prob ^ (         1 + i)
-    lam3 = prob ^ (br_l_seq r - i)
-    dbq x y z w = DB (0.25*x) (0.25*y) (0.25*z) (0.25*w)
+    mat i = Matrix $ fromListN 16 [ 1,     0,     q,     0
+                                  , 0,   (1-p),   0,     0
+                                  , 0,     0,   (1-q),   0
+                                  , 0,     p,     0,     1 ]
+      where
+        p    = dsd_sigma * lam5 + dsd_delta * (1-lam5)
+        q    = dsd_sigma * lam3 + dsd_delta * (1-lam3)
+        lam5 = prob ^ (         1 + i)
+        lam3 = prob ^ (br_l_seq r - i)
 

@@ -5,21 +5,21 @@
 -- make sense to define over and over.
 
 module Bio.Base(
-    Nucleotide(..),
+    Nucleotide(..), Nucleotides(..),
     Qual(..), toQual, fromQual, probToQual,
     Prob(..), toProb, fromProb, qualToProb, pow,
 
     Word8,
-    Sequence,
-    nucA, nucC, nucG, nucT, nucN, gap,
-    toNucleotide,
-    showNucleotide,
+    nucA, nucC, nucG, nucT,
+    nucsA, nucsC, nucsG, nucsT, nucsN, gap,
+    toNucleotides,
+    showNucleotide, showNucleotides,
     isGap,
     isBase,
     isProperBase,
     properBases,
-    compl,
-    revcompl,
+    compl, compls,
+    revcompl, revcompls,
 
     Seqid,
     unpackSeqid,
@@ -63,22 +63,33 @@ import qualified Data.Vector.Unboxed         as VU
 
 import Data.ByteString.Internal ( c2w, w2c )
 
--- | A nucleotide base in an alignment.
--- Experience says we're dealing with Ns and gaps all the type, so
--- purity be damned, they are included as if they were real bases.
---
--- To allow @Nucleotide@s to be unpacked and incorparated into
--- containers, we choose to represent them the same way as the BAM file
--- format:  as a 4 bit wide field.  Gaps are encoded as 0 where they
--- make sense, N is 15.
+-- | A nucleotide base.  We only represent A,C,G,T, and it is statically
+-- enforced.
 
 newtype Nucleotide = N { unN :: Word8 } deriving
     ( Eq, Ord, Ix, Storable
     , VG.Vector VU.Vector, VM.MVector VU.MVector, VU.Unbox )
 
 instance Bounded Nucleotide where
-    minBound = N  0
-    maxBound = N 15
+    minBound = N 0
+    maxBound = N 3
+
+-- | A nucleotide base in an alignment.
+-- Experience says we're dealing with Ns and gaps all the type, so
+-- purity be damned, they are included as if they were real bases.
+--
+-- To allow @Nucleotides@s to be unpacked and incorparated into
+-- containers, we choose to represent them the same way as the BAM file
+-- format:  as a 4 bit wide field.  Gaps are encoded as 0 where they
+-- make sense, N is 15.
+
+newtype Nucleotides = Ns { unNs :: Word8 } deriving
+    ( Eq, Ord, Ix, Storable
+    , VG.Vector VU.Vector, VM.MVector VU.MVector, VU.Unbox )
+
+instance Bounded Nucleotides where
+    minBound = Ns  0
+    maxBound = Ns 15
 
 -- | Qualities are stored in deciban, also known as the Phred scale.  To
 -- represent a value @p@, we store @-10 * log_10 p@.  Operations work
@@ -138,13 +149,19 @@ qualToProb (Q q) = Pr (- log 10 * fromIntegral q / 10)
 probToQual :: Prob -> Qual
 probToQual (Pr p) = Q (round (- 10 * p / log 10))
 
-gap, nucA, nucC, nucG, nucT, nucN :: Nucleotide
-gap  = N 0
-nucA = N 1
-nucC = N 2
-nucG = N 4
-nucT = N 8
-nucN = N 15
+nucA, nucC, nucG, nucT :: Nucleotide
+nucA = N 0
+nucC = N 1
+nucG = N 2
+nucT = N 3
+
+gap, nucsA, nucsC, nucsG, nucsT, nucsN :: Nucleotides
+gap   = Ns 0
+nucsA = Ns 1
+nucsC = Ns 2
+nucsG = Ns 4
+nucsT = Ns 8
+nucsN = Ns 15
 
 
 -- | Sequence identifiers are ASCII strings
@@ -153,9 +170,6 @@ nucN = N 15
 -- it for storage.  Use @unpackSeqid@ and @packSeqid@ to avoid the
 -- import of @Data.ByteString@.
 type Seqid = S.ByteString
-
--- | comparatively short Sequences
-type Sequence = VU.Vector Nucleotide
 
 -- | Unpacks a @Seqid@ into a @String@
 unpackSeqid :: Seqid -> String
@@ -207,53 +221,59 @@ data Range = Range {
     } deriving (Show, Eq, Ord)
 
 
--- | Converts a character into a 'Nucleotide'.
+-- | Converts a character into a 'Nucleotides'.
 -- The usual codes for A,C,G,T and U are understood, '-' and '.' become
 -- gaps and everything else is an N.
-toNucleotide :: Char -> Nucleotide
-toNucleotide c = if inRange (bounds arr) (ord c) then N (arr ! ord c) else nucN
+toNucleotides :: Char -> Nucleotides
+toNucleotides c = if inRange (bounds arr) (ord c) then Ns (arr ! ord c) else nucsN
   where
     arr :: UArray Int Word8
-    arr = listArray (0,127) (repeat (unN nucN)) //
-          ( [ (ord x, unN n) | (x,n) <- pairs ] ++
-            [ (ord (toUpper x), unN n) | (x,n) <- pairs ] )
+    arr = listArray (0,127) (repeat (unNs nucsN)) //
+          ( [ (ord          x,  n) | (x, Ns n) <- pairs ] ++
+            [ (ord (toUpper x), n) | (x, Ns n) <- pairs ] )
 
-    N a `plus` N b = N (a .|. b)
+    Ns a `plus` Ns b = Ns (a .|. b)
 
-    pairs = [ ('a', nucA), ('c', nucC), ('g', nucG), ('t', nucT),
-              ('u', nucT), ('-', gap),  ('.', gap),
-              ('b', nucC `plus` nucG `plus` nucT),
-              ('d', nucA `plus` nucG `plus` nucT),
-              ('h', nucA `plus` nucC `plus` nucT),
-              ('v', nucA `plus` nucC `plus` nucG),
-              ('k', nucG `plus` nucT),
-              ('m', nucA `plus` nucC),
-              ('s', nucC `plus` nucG),
-              ('w', nucA `plus` nucT),
-              ('r', nucA `plus` nucG),
-              ('y', nucC `plus` nucT) ]
+    pairs = [ ('a', nucsA), ('c', nucsC), ('g', nucsG), ('t', nucsT),
+              ('u', nucsT), ('-', gap),  ('.', gap),
+              ('b', nucsC `plus` nucsG `plus` nucsT),
+              ('d', nucsA `plus` nucsG `plus` nucsT),
+              ('h', nucsA `plus` nucsC `plus` nucsT),
+              ('v', nucsA `plus` nucsC `plus` nucsG),
+              ('k', nucsG `plus` nucsT),
+              ('m', nucsA `plus` nucsC),
+              ('s', nucsC `plus` nucsG),
+              ('w', nucsA `plus` nucsT),
+              ('r', nucsA `plus` nucsG),
+              ('y', nucsC `plus` nucsT) ]
 
--- | Tests if a 'Nucleotide' is a base.
+-- | Tests if a 'Nucleotides' is a base.
 -- Returns 'True' for everything but gaps.
-isBase :: Nucleotide -> Bool
-isBase (N n) = n /= 0
+isBase :: Nucleotides -> Bool
+isBase (Ns n) = n /= 0
 
--- | Tests if a 'Nucleotide' is a proper base.
+-- | Tests if a 'Nucleotides' is a proper base.
 -- Returns 'True' for A,C,G,T only.
-isProperBase :: Nucleotide -> Bool
-isProperBase x = x == nucA || x == nucC || x == nucG || x == nucT
+isProperBase :: Nucleotides -> Bool
+isProperBase x = x == nucsA || x == nucsC || x == nucsG || x == nucsT
 
-properBases :: [Nucleotide]
-properBases = [ nucA, nucC, nucG, nucT ]
+properBases :: [ Nucleotides ]
+properBases = [ nucsA, nucsC, nucsG, nucsT ]
 
--- | Tests if a 'Nucleotide' is a gap.
+-- | Tests if a 'Nucleotides' is a gap.
 -- Returns true only for the gap.
-isGap :: Nucleotide -> Bool
+isGap :: Nucleotides -> Bool
 isGap x = x == gap
+
 
 {-# INLINE showNucleotide #-}
 showNucleotide :: Nucleotide -> Char
-showNucleotide (N x) = S.index str $ fromIntegral $ x .&. 15
+showNucleotide (N x) = S.index str $ fromIntegral $ x .&. 3
+  where str = S.pack "ACGT"
+
+{-# INLINE showNucleotides #-}
+showNucleotides :: Nucleotides -> Char
+showNucleotides (Ns x) = S.index str $ fromIntegral $ x .&. 15
   where str = S.pack "-ACMGRSVTWYHKDBN"
 
 instance Show Nucleotide where
@@ -261,20 +281,54 @@ instance Show Nucleotide where
     showList l = (map showNucleotide l ++)
 
 instance Read Nucleotide where
-    readsPrec _ (c:cs) = [(toNucleotide c, cs)]
+    readsPrec _ ('a':cs) = [(nucA, cs)]
+    readsPrec _ ('A':cs) = [(nucA, cs)]
+    readsPrec _ ('c':cs) = [(nucC, cs)]
+    readsPrec _ ('C':cs) = [(nucC, cs)]
+    readsPrec _ ('g':cs) = [(nucG, cs)]
+    readsPrec _ ('G':cs) = [(nucG, cs)]
+    readsPrec _ ('t':cs) = [(nucT, cs)]
+    readsPrec _ ('T':cs) = [(nucT, cs)]
+    readsPrec _ ('u':cs) = [(nucT, cs)]
+    readsPrec _ ('U':cs) = [(nucT, cs)]
+    readsPrec _     _    = [          ]
+
+    readList ('-':cs) = readList cs
+    readList (c:cs) | isSpace c = readList cs
+                    | otherwise = case readsPrec 0 (c:cs) of
+                            [] -> [ ([],c:cs) ]
+                            xs -> [ (n:ns,r2) | (n,r1) <- xs, (ns,r2) <- readList r1 ]
+    readList [] = [([],[])]
+
+instance Show Nucleotides where
+    show     x = [ showNucleotides x ]
+    showList l = (map showNucleotides l ++)
+
+instance Read Nucleotides where
+    readsPrec _ (c:cs) = [(toNucleotides c, cs)]
     readsPrec _ [    ] = []
     readList s = let (hd,tl) = span (\c -> isAlpha c || isSpace c || '-' == c) s
-                 in [(map toNucleotide $ filter (not . isSpace) hd, tl)]
+                 in [(map toNucleotides $ filter (not . isSpace) hd, tl)]
 
 -- | Reverse-complements a stretch of Nucleotides
 {-# INLINE revcompl #-}
 revcompl :: [Nucleotide] -> [Nucleotide]
 revcompl = reverse . map compl
 
--- | Complements a Nucleotide.
+-- | Reverse-complements a stretch of Nucleotidess
+{-# INLINE revcompls #-}
+revcompls :: [Nucleotides] -> [Nucleotides]
+revcompls = reverse . map compls
+
+-- | Complements a Nucleotides.
 {-# INLINE compl #-}
 compl :: Nucleotide -> Nucleotide
-compl (N x) = N $ arr ! (x .&. 15)
+compl (N n) = N $ n `xor` 4
+
+-- | Complements a Nucleotides.
+{-# INLINE compls #-}
+compls :: Nucleotides -> Nucleotides
+compls (Ns x) = Ns $ arr ! (x .&. 15)
   where
     arr :: UArray Word8 Word8
     !arr = listArray (0,15) [ 0, 8, 4, 12, 2, 10, 6, 14, 1, 9, 5, 13, 3, 11, 7, 15 ]
