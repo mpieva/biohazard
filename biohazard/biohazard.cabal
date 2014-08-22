@@ -28,13 +28,12 @@ source-repository head
 source-repository this
   type:     git
   location: git://github.com/udo-stenzel/biohazard.git
-  tag:      0.5.7
+  tag:      0.5.9
 
 
 Library
   -- Modules exported by the library.
   Exposed-modules:     Bio.Base,
-                       Bio.Adna,
                        Bio.Align,
                        Bio.Bam,
                        Bio.Bam.Fastq,
@@ -47,7 +46,9 @@ Library
                        Bio.Bam.Rec,
                        Bio.Bam.Rmdup,
                        Bio.Bam.Trim,
-                       Bio.GenoCall,
+                       Bio.Genocall,
+                       Bio.Genocall.Adna,
+                       Bio.Genocall.Matrix,
                        Bio.Glf,
                        Bio.Iteratee,
                        Bio.Iteratee.Bgzf,

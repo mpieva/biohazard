@@ -1,9 +1,11 @@
 {-# LANGUAGE BangPatterns, RecordWildCards #-}
-module Bio.Adna where
+module Bio.Genocall.Adna where
 
 import Bio.Base
 import Bio.Bam ( BamRaw, br_isReversed, br_l_seq )
-import Data.Vector.Unboxed ( Vector, fromListN )
+import Bio.Genocall.Matrix
+
+import qualified Data.Vector.Unboxed as V
 
 -- ^ Things specific to ancient DNA, e.g. damage models.
 --
@@ -33,8 +35,6 @@ data DamagedBase = DB { db_call :: !Nucleotide
                       , db_qual :: !Qual
                       , db_dmg  :: !Matrix }
 
-newtype Matrix = Matrix { unMatrix :: Vector Double }
-
 instance Show DamagedBase where
     showsPrec _ (DB n q _) = shows n . (:) '@' . shows q
 
@@ -53,7 +53,7 @@ type DamageModel = BamRaw -> [Matrix]
 noDamage :: DamageModel
 noDamage r = replicate (br_l_seq r) identity
   where
-    identity = Matrix $ fromListN 16 [ if x == y then 1 else 0 | x <- [0..3], y <- [0..3::Int] ]
+    !identity = construct $ \(x :-> y) -> if x == y then 1 else 0
 
 
 -- | 'DamageModel' for single stranded library prep.  Only one kind of
@@ -76,20 +76,20 @@ ssDamage SSD{..} r = let mat = if br_isReversed r then ssd_rev else ssd_fwd
     prob5 = abs ssd_lambda / (1 + abs ssd_lambda)
     prob3 = abs ssd_kappa  / (1 + abs ssd_kappa)
 
-    ssd_fwd i = Matrix $ fromListN 16 [ 1,   0,   0,   0
-                                      , 0, (1-p), 0,   0
-                                      , 0,   0,   1,   0
-                                      , 0,   p,   0,   1 ]
+    ssd_fwd i = fromList [ 1,   0,   0,   0
+                         , 0, (1-p), 0,   0
+                         , 0,   0,   1,   0
+                         , 0,   p,   0,   1 ]
       where
         !lam5 = prob5 ^ (1+i)
         !lam3 = prob3 ^ (br_l_seq r - i)
         !lam  = lam3 + lam5 - lam3 * lam5
         !p    = ssd_sigma * lam + ssd_delta * (1-lam)
 
-    ssd_rev i = Matrix $ fromListN 16 [ 1,   0,   p,   0
-                                      , 0,   1,   0,   0
-                                      , 0,   0, (1-p), 0
-                                      , 0,   0,   0,   1 ]
+    ssd_rev i = fromList [ 1,   0,   p,   0
+                         , 0,   1,   0,   0
+                         , 0,   0, (1-p), 0
+                         , 0,   0,   0,   1 ]
       where
         !lam5 = prob5 ^ (br_l_seq r - i)
         !lam3 = prob3 ^ (1+i)
@@ -127,10 +127,10 @@ dsDamage :: DsDamageParameters -> DamageModel
 dsDamage DSD{..} r = map mat [0 .. br_l_seq r-1]
   where
     prob = abs dsd_lambda / (1 + abs dsd_lambda)
-    mat i = Matrix $ fromListN 16 [ 1,     0,     q,     0
-                                  , 0,   (1-p),   0,     0
-                                  , 0,     0,   (1-q),   0
-                                  , 0,     p,     0,     1 ]
+    mat i = fromList [ 1,     0,     q,     0
+                     , 0,   (1-p),   0,     0
+                     , 0,     0,   (1-q),   0
+                     , 0,     p,     0,     1 ]
       where
         p    = dsd_sigma * lam5 + dsd_delta * (1-lam5)
         q    = dsd_sigma * lam3 + dsd_delta * (1-lam3)

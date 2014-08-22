@@ -6,7 +6,7 @@
 
 module Bio.Base(
     Nucleotide(..), Nucleotides(..),
-    Qual(..), toQual, fromQual, probToQual,
+    Qual(..), toQual, fromQual, fromQualRaised, probToQual,
     Prob(..), toProb, fromProb, qualToProb, pow,
 
     Word8,
@@ -20,6 +20,7 @@ module Bio.Base(
     properBases,
     compl, compls,
     revcompl, revcompls,
+    everything,
 
     Seqid,
     unpackSeqid,
@@ -74,6 +75,9 @@ instance Bounded Nucleotide where
     minBound = N 0
     maxBound = N 3
 
+everything :: (Bounded a, Ix a) => [a]
+everything = range (minBound, maxBound)
+
 -- | A nucleotide base in an alignment.
 -- Experience says we're dealing with Ns and gaps all the type, so
 -- purity be damned, they are included as if they were real bases.
@@ -107,6 +111,9 @@ toQual a = Q $ round (-10 * log a / log 10)
 
 fromQual :: Qual -> Double
 fromQual (Q q) = 10 ** (- fromIntegral q / 10)
+
+fromQualRaised :: Double -> Qual -> Double
+fromQualRaised k (Q q) = 10 ** (- k * fromIntegral q / 10)
 
 -- | A positive 'Double' value stored in log domain.  We store the
 -- natural logarithm (makes computation easier), but allow conversions

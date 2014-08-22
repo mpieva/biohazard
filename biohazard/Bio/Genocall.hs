@@ -1,16 +1,16 @@
 {-# LANGUAGE BangPatterns #-}
-module Bio.GenoCall where
+module Bio.Genocall where
 
-import Bio.Adna
 import Bio.Bam.Pileup
 import Bio.Bam.Rec
 import Bio.Base
+import Bio.Genocall.Adna
+import Bio.Genocall.Matrix
 import Control.Applicative
 import Data.Bits ( testBit )
 import Data.Foldable hiding ( sum, product )
 import Data.List ( tails, intercalate, sortBy )
 import Data.Ord
-import Data.Vector.Unboxed ( Vector, (!) )
 
 import qualified Data.Set               as Set
 import qualified Data.Vector.Unboxed    as V
@@ -36,9 +36,9 @@ simple_indel_call ploidy vars = (simple_call ploidy mkpls vars, vars')
   where
     vars' = Set.toList . Set.fromList $ [ (d, map db_call i) | (_q,(d,i)) <- vars ]
 
-    match = zipWith $ \(DB (N b) q (Matrix m)) (N n) -> let p  = m ! fromIntegral (4*b+n)
-                                                            p' = fromQual q
-                                                        in toProb $ p + p' - p * p'
+    match = zipWith $ \(DB b q m) n -> let p  = m ! n :-> b
+                                           p' = fromQual q
+                                       in toProb $ p + p' - p * p'
 
     mkpls (q,(d,i)) = let !q' = qualToProb q
                       in [ if d /= dr || length i /= length ir
@@ -52,13 +52,12 @@ simple_indel_call ploidy vars = (simple_call ploidy mkpls vars, vars')
 simple_snp_call :: Int -> BasePile -> GL
 simple_snp_call ploidy vars = simple_call ploidy mkpls vars
   where
-    mkpls (q, DB (N b) qq (Matrix m)) =
-        [ toProb $ x + pe*(s-x) | n <- [0..3], let x = m ! fromIntegral (4*b+n) ]
+    mkpls (q, DB b qq m) = [ toProb $ x + pe*(s-x) | n <- [0..3], let x = m ! N n :-> b ]
       where
         !p1 = fromQual q
         !p2 = fromQual qq
         !pe = p1 + p2 - p1*p2
-        !s  = sum [ m ! fromIntegral (4*b+n) | n <- [0..3] ] / 4
+        !s  = sum [ m ! N n :-> b | n <- [0..3] ] / 4
 
 -- | Compute @GL@ values for the simple case.  The simple case is where
 -- we sample 'ploidy' alleles with equal probability and assume that
@@ -79,11 +78,8 @@ simple_call ploidy pls = foldl1' (V.zipWith (*)) . map step
 
     norm = toProb (fromIntegral ploidy) `pow` (-1)
 
-    -- "For biallelic sites the ordering is: AA,AB,BB; for triallelic
-    -- sites the ordering is: AA,AB,BB,AC,BC,CC, etc."
-    --
-    -- To get the order right, we reverse the list, recurse, and reverse
-    -- the result again.
+    -- XXX This could probably be simplified given the mk_pls function
+    -- below.
     step = V.fromList . map (* norm) . reverse . mk_pls ploidy . reverse . pls
 
     -- Meh.  Pointless, but happens to be the unit.
@@ -96,6 +92,61 @@ simple_call ploidy pls = foldl1' (V.zipWith (*)) . map step
     -- We extend the genotype and sample another allele.
     mk_pls n ls = do ls'@(hd:_) <- tails ls
                      (+) hd <$> mk_pls (n-1) ls'
+
+
+-- | Make a list of genotypes, each represented as a vector of allele
+-- probabilities, from ploidy and number of alleles.
+--
+-- "For biallelic sites the ordering is: AA,AB,BB; for triallelic
+-- sites the ordering is: AA,AB,BB,AC,BC,CC, etc."
+--
+-- If this function is called with 'nalleles' == 4 and the order of the
+-- alleles is A,C,G,T, then the resulting genotype vectors can staright
+-- forwardly be mutiplied with a substitution matrix, and the result
+-- makes sense.
+mk_gts :: Int -> Int -> [Vec]
+mk_gts ploidy nalleles = go ploidy nalleles
+  where
+    !norm = recip $ fromIntegral ploidy
+
+    -- go p a: all p-ploid genotypes that can be made from a alleles, in the
+    -- order in which they appear in VCF
+    -- So, that's
+    --   - all (p-1)-ploid genotypes that can be made from 1 allele, plus allele 0        (AA)
+    --   - all (p-1)-ploid genotypes that can be made from 2 alleles, plus allele 1       (AC,CC)
+    --     ...
+    --
+    --   - there's one 0-ploid genotype: the zero vector
+    --   - the genotypes that can be made from 0 alleles is an empty list
+
+    go !p !a | p == 0    = [ Vec $ V.replicate nalleles 0 ]
+             | a == 0    = []
+             | otherwise = [ Vec $ V.unsafeUpd gt [(aa, norm + V.unsafeIndex gt aa)]
+                           | aa <- [0..a-1]
+                           , Vec gt <- go (p-1) (aa+1) ]
+
+maq_snp_call :: Int -> Double -> BasePile -> GL
+maq_snp_call ploidy theta bases = V.fromList $ map l $ mk_gts ploidy 4 -- four bases
+  where
+    -- bases with effective qualitied in order of decreasing(!) quality
+    bases' = sortBy (flip $ comparing db_qual)
+             [ db { db_qual = mq `min` db_qual db } | (mq,db) <- bases ]
+
+    -- L(G)
+    l gt = l' gt 0 zeroMatrix bases'
+
+    l' !gt !acc !k (!x:xs) =
+        let
+            -- P(X|Q,H), a vector of four (x is fixed, h is not)
+            -- this is the simple form where we set all w to 1/4
+            p_x_q_h_ = [ 0.25 * fromQualRaised (theta ** (k ! h :-> db_call x)) (db_qual x) | h <- everything ]
+            p_x_q_h  = zipWith (\p h -> if db_call x == h then 1 + p - sum p_x_q_h_ else p) p_x_q_h_ everything
+
+            probs = zipWith (*) p_x_q_h (V.toList . unVec $ db_dmg x `mult` gt)
+            k' = update k $ zipWith (\h p -> let i = h :-> db_call x in (i, k ! i + p)) everything probs
+            acc' = acc + sum probs
+        in l' gt acc' k' xs
+    l'   _ !acc  _ [     ] = toProb acc
 
 
 {-
@@ -143,10 +194,4 @@ showCall f vc = shows (vc_refseq vc) . (:) ':' .
 -- | Error model with dependency parameter.  Since both strands are
 -- supposed to still be independent, we feed in only one pile, and
 -- later combine both calls.
-
-maq_snp_call :: Int -> Double -> BasePile -> GL
-maq_snp_call ploidy theta bases = undefined
-  where
-    bases' = sortBy (comparing db_qual)
-             [ db { db_qual = mq `min` db_qual db } | (mq,db) <- bases ]
 

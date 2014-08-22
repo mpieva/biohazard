@@ -121,7 +121,8 @@ errors fractionally, so we set
 \begin{align*}
 k_{1,X_i,H_i} &= 0 \\
 k_{i,X_i,H_i} &= k_{i-1,X_i,H_i} + P(X_i, H_i | Q_i, G) \\
-&= k_{i-1,X_i,H_i} + P(X_i | H_i, Q_i) P(H_i | G)
+&= k_{i-1,X_i,H_i} + P(X_i | H_i, Q_i) P(H_i | G) \\
+&= k_{i-1,X_i,H_i} + P(X_i | H_i, Q_i) \left( H_i \cdot D_i \cdot G \right)
 \end{align*}
 
 \section{Testing Method}

@@ -1,12 +1,12 @@
 {-# LANGUAGE RecordWildCards, BangPatterns, OverloadedStrings #-}
 -- Command line driver for simple genotype calling.
 
-import Bio.Adna
 import Bio.Base
 import Bio.Bam.Header
 import Bio.Bam.Raw
 import Bio.Bam.Pileup
-import Bio.GenoCall
+import Bio.Genocall
+import Bio.Genocall.Adna
 import Bio.Iteratee
 import Control.Applicative
 import Control.Arrow
@@ -205,9 +205,16 @@ main = do
 -- piles get concatenated.
 type Calls = Pile' GL (GL, IndelVars)
 
+{-
 calls :: Int -> Pile -> Calls
 calls pl (Pile rs po bc ic) = Pile rs po
     (fmap (simple_snp_call pl . uncurry (++)) bc)
+    (fmap (simple_indel_call 1) ic)
+-}
+
+calls :: Int -> Pile -> Calls
+calls pl (Pile rs po bc ic) = Pile rs po
+    (fmap (maq_snp_call pl 0.85 . uncurry (++)) bc)
     (fmap (simple_indel_call 1) ic)
 
 

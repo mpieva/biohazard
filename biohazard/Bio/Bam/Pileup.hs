@@ -2,13 +2,13 @@
 {-# OPTIONS_GHC -funbox-strict-fields #-}
 module Bio.Bam.Pileup where
 
-import Debug.Trace
-import Text.Printf
+-- import Text.Printf
 
-import Bio.Adna
 import Bio.Base
 import Bio.Bam.Header
 import Bio.Bam.Raw
+import Bio.Genocall.Adna
+import Bio.Genocall.Matrix
 import Bio.Iteratee
 
 import Control.Applicative
