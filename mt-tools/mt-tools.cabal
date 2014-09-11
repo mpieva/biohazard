@@ -1,6 +1,6 @@
 -- vim:tw=132
 Name:                mt-tools
-Version:             0.5.9
+Version:             0.5.10
 Synopsis:            tools that work on mitochondrial sequences
 Category:            Bioinformatics
 Homepage:            http://github.com/udo-stenzel/biohazard
@@ -21,7 +21,7 @@ executable afroengineer
   Other-Modules:       Align, SimpleSeed
   Build-Depends:       base == 4.*,
                        array == 0.4.*,
-                       biohazard == 0.5.9,
+                       biohazard == 0.5.10,
                        bytestring >= 0.9 && < 0.11,
                        containers >= 0.4.1 && < 0.6,
                        directory == 1.*,
@@ -34,14 +34,14 @@ executable mt-anno
   Other-Modules:       Anno, Seqs, Xlate
   Build-Depends:       base == 4.*,
                        bytestring >= 0.9 && < 0.11,
-                       biohazard == 0.5.9,
+                       biohazard == 0.5.10,
                        containers >= 0.4.1 && < 0.6
 
 executable mt-ccheck
   Main-Is:             mt-ccheck.hs
   Build-Depends:       base == 4.*,
                        bytestring >= 0.9 && < 0.11,
-                       biohazard == 0.5.9,
+                       biohazard == 0.5.10,
                        containers >= 0.4.1 && < 0.6,
                        unordered-containers == 0.2.*
 

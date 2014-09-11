@@ -44,6 +44,7 @@ module Bio.Bam.Raw (
     br_n_cigar_op,
     br_aln_length,
     br_flag,
+    br_extflag,
 
     br_isPaired,
     br_isProperlyPaired,
@@ -308,6 +309,12 @@ br_n_cigar_op (BamRaw _ raw) = getInt16 raw 12
 {-# INLINE br_flag #-}
 br_flag :: BamRaw -> Int
 br_flag (BamRaw _ raw) = getInt16 raw 14
+
+{-# INLINE br_extflag #-}
+br_extflag :: BamRaw -> Int
+br_extflag br = shiftL ef 16 .|. ff
+  where !ff = br_flag br
+        !ef = br_extAsInt (br_extAsInt 0 "XF" br) "FF" br
 
 {-# INLINE br_isPaired         #-}
 {-# INLINE br_isProperlyPaired #-}

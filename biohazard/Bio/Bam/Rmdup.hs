@@ -354,8 +354,7 @@ br_mate_pos :: BamRaw -> MPos
 br_mate_pos br = (br_mrnm br, br_mpos br, br_isUnmapped br, br_isMateUnmapped br)
 
 br_isMergeTrimmed :: BamRaw -> Bool
-br_isMergeTrimmed br = let ef = br_extAsInt (br_extAsInt 0 "XF" br) "FF" br
-                       in (ef .&. (flagTrimmed .|. flagMerged)) /= 0
+br_isMergeTrimmed br = br_extflag br .&. (flagTrimmed .|. flagMerged) /= 0
 
 br_totally_aligned :: BamRaw -> Bool
 br_totally_aligned br = not (br_isUnmapped br || br_isMateUnmapped br)
