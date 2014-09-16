@@ -5,7 +5,7 @@ import Control.Monad.Catch
 import Data.Char ( isSpace, toLower, chr )
 import Data.List ( intercalate, sort )
 import Data.Version ( showVersion )
-import Paths_biohazard_tools ( version )
+import Paths_biohazard ( version )
 import System.Console.GetOpt
 import System.IO
 import System.Environment ( getArgs, getProgName )

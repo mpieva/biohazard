@@ -203,26 +203,19 @@ main = do
 --
 -- For the time being, we use the naive call.  So forward and reverse
 -- piles get concatenated.
-type Calls = Pile' GL (GL, IndelVars)
-
-{-
 calls :: Int -> Pile -> Calls
 calls pl (Pile rs po bc ic) = Pile rs po
-    (fmap (simple_snp_call pl . uncurry (++)) bc)
+    (fmap (snp_call . uncurry (++)) bc)
     (fmap (simple_indel_call 1) ic)
--}
-
-calls :: Int -> Pile -> Calls
-calls pl (Pile rs po bc ic) = Pile rs po
-    (fmap (maq_snp_call pl 0.85 . uncurry (++)) bc)
-    (fmap (simple_indel_call 1) ic)
+  where
+    snp_call = maq_snp_call pl 0.85
+    -- snp_call = simple_snp_call pl
 
 
 -- | Formatting a SNP call.  If this was a haplopid call (four GL
 -- values), we pick the most likely base and pass it on.  If it was
 -- diploid, we pick the most likely dinucleotide and pass it on.
 
--- XXX fst
 format_snp_call :: Monad m => Prob -> Calls -> Iteratee [Calls] m S.ByteString
 format_snp_call p cs | V.length gl ==  4 = return $ S.take 1 $ S.drop (maxQualIndex gl) hapbases
                      | V.length gl == 10 = return $ S.take 1 $ S.drop (maxQualIndex $ V.zipWith (*) ps gl) dipbases
@@ -238,7 +231,6 @@ format_snp_call p cs | V.length gl ==  4 = return $ S.take 1 $ S.drop (maxQualIn
 -- unless the call was done assuming a haploid genome (which is
 -- guaranteeed /in this program/)!
 
--- XXX snd
 format_indel_call :: Monad m => Prob -> Calls -> Iteratee [Calls] m S.ByteString
 format_indel_call p cs | V.length gl == length vars = I.dropWhile skip >> return (S.pack $ show ins)
                        | otherwise = error "Thou shalt not have calleth format_indel_call unless thou madeth a haploid call!"

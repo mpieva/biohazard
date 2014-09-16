@@ -28,7 +28,7 @@ import Bio.Base
 import Control.Monad                    ( when )
 import Data.Foldable                    ( toList )
 import Data.Version                     ( showVersion )
-import Paths_biohazard_tools            ( version )
+import Paths_biohazard                  ( version )
 import System.Environment               ( getArgs, getProgName )
 import System.Exit                      ( exitFailure )
 import System.IO                        ( hPutStr )

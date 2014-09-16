@@ -2,7 +2,7 @@ import Bio.Bam
 import Bio.Base
 import Control.Monad                        ( unless, foldM )
 import Data.Version                         ( showVersion )
-import Paths_biohazard_tools                ( version )
+import Paths_biohazard                      ( version )
 import System.Console.GetOpt
 import System.Environment                   ( getArgs, getProgName )
 import System.Exit                          ( exitFailure, exitSuccess )

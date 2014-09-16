@@ -4,7 +4,7 @@ import Bio.Bam.Raw
 import Bio.Base
 import Bio.Iteratee
 import Data.Version ( showVersion )
-import Paths_biohazard_tools ( version )
+import Paths_biohazard ( version )
 import System.Environment
 import System.Exit
 import System.IO ( hPutStr )

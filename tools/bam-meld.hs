@@ -17,7 +17,7 @@ import Control.Monad                            ( unless, foldM )
 import Data.List                                ( sortBy )
 import Data.Monoid
 import Data.Version                             ( showVersion )
-import Paths_biohazard_tools                    ( version )
+import Paths_biohazard                          ( version )
 import System.Console.GetOpt
 import System.Environment                       ( getArgs, getProgName )
 import System.Exit                              ( exitSuccess, exitFailure )

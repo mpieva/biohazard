@@ -14,13 +14,14 @@ I tried to track down the logic behind the \texttt{samtools} and
 \texttt{maq} error models, which supposedly go back to \texttt{CAP3}.
 Near as I can tell, there is absolutely no reasoning behind any of it.
 \texttt{CAP3} may have originated the idea of setting the probability of
-$k$ errors to $p^f(k)$ where $f$ is a function that grows more slowly
-than the identity function.  The cited paper doesn't actually mention
-any of that, though.
+$k$ errors to $p^{f(k)}$ where $f$ is a function that grows more slowly
+than the identity function.  The paper cited by \texttt{samtools}
+doesn't actually mention any of that, though.
 
 \texttt{SOAPsnp} is the first(?) implementation of the idea.  Bases are
-dealt with in order of increasing(!) quality, the quality score in
-observation $k$ is scaled by $\theta^k$.
+dealt with in order of increasing(!) quality, the quality score of
+observation $k$ is scaled by $\theta^k$, where $\theta$ is a constant
+parameter.
 
 \texttt{Maq} follows the same idea, but attempts some combinatorial
 simplification.  The derivation is rather complicated:  It starts out
@@ -28,7 +29,8 @@ with a simplification (counting similar bases), then proceeds to apply
 approximations (equal error rates), then ends up being incomprehensible
 (weird effective error rate derived from quality scores).  By that time,
 it is no longer obvious whether that derivation makes any sense, and in
-some cases it doesn't according to publications about \texttt{samtools}.
+some cases, according to publications about \texttt{samtools}, it
+doesn't and fails catastrophically.
 
 \texttt{Samtools} improves upon the \texttt{maq} model, where the
 claimed reason is that the \texttt{maq} model is ill-behaved at high
@@ -42,11 +44,11 @@ combinatorial contortions provide any benefit.
 
 The take home message is that we model error dependency by having a more
 slowly growing exponent, that errors happening on different strands are
-independent from each other, and that the combinatorial
+independent(?) from each other, and that the combinatorial
 contortions in both the \texttt{maq} and the \texttt{samtools} model do
 not seem to be useful.  The order in which we touch the bases is up for
 grabs, since there are two cases of prior art.  We'll go with a simple
-implementation like \texttt{SOAPsnp} or more recently \texttt{BSNP},
+implementation like \texttt{SOAPsnp} (or more recently \texttt{BSNP}),
 which needs to be generalized for ancient DNA.
 
 \section{Genotype Calling w/ Simple Errors}
@@ -58,7 +60,7 @@ $G_j=\{\frac{1}{2},\frac{1}{2},0,0\}$ for \texttt{AC}, and so on; we'll
 often drop the $j$ subscript.  Let $X=(X_1, X_2, \ldots, X_n) \in
 \{A,C,G,T\}^n$ be the base calls, $q=(q_1, q_2, \ldots, q_n)$ their
 effective\footnote{We roll base quality, base alignment quality, and map
-quality into one, see \ref{app_qualities}} quality scores, $Q=(Q_1, Q_2,
+quality into one, see Appendix \ref{app_qualities}} quality scores, $Q=(Q_1, Q_2,
 \ldots, Q_n)$ the corresponding error probabilities, $H=(H_1, H_2,
 \ldots, H_n) \in \{A,C,G,T\}^n$ the (unobserved) haploid bases
 sequenced in each read.  The model is that the $H$ are obtained by
@@ -67,9 +69,9 @@ $X$ are obtained from the $H$ by application of sequencing error.  In
 general:
 
 \begin{align*}
-L(G) = P(X|G,Q) &= \prod_{i=1}^n P(X_i|G,Q_i,X_1,\ldots,X_{i-1}) \\
-    &= \prod_{i=1}^n \sum_{H_i} P(X_i|Q_i,H_i,X_1,\ldots,X_{i-1}) P(H_i|G) \\
-    &= \prod_{i=1}^n \sum_{H_i} P(X_i|Q_i,H_i,X_1,\ldots,X_{i-1}) (H_i \cdot D_i \cdot G_i)
+L(G) := P(X|G,Q) &= \prod_{i=1}^n P(X_i|G,Q_i,X_1,\ldots,X_{i-1}) \\
+     &= \prod_{i=1}^n \sum_{H_i} P(X_i|Q_i,H_i,X_1,\ldots,X_{i-1}) P(H_i|G) \\
+     &= \prod_{i=1}^n \sum_{H_i} P(X_i|Q_i,H_i,X_1,\ldots,X_{i-1}) (H_i \cdot D_i \cdot G_i)
 \end{align*}
 
 where $D_i$ is the damage matrix (which depends on the read, specifically the position within the read).
@@ -78,8 +80,8 @@ we set $P(G_j|X_j,Q_j) = L_j(G_j) P(G_j) / L_j$.  The prior can be a complicated
 derive statistical parameters, but the simplest possible prior models only heterozygosity:
 
 \begin{align*}
-P(G=\{1,0,0,0\}) = P(G=\{0,1,0,0\}) &= 1 - \frac{pi}{4} \\
-P(G=\{\frac{1}{2},\frac{1}{2},0,0\}) = P(G=\{\frac{1}{2},0,\frac{1}{2},0\}) &= \frac{pi}{6}
+P(G=\{1,0,0,0\}) = P(G=\{0,1,0,0\}) = \cdots &= 1 - \frac{\pi}{4} \\
+P(G=\{\frac{1}{2},\frac{1}{2},0,0\}) = P(G=\{\frac{1}{2},0,\frac{1}{2},0\}) = \cdots &= \frac{\pi}{6}
 \end{align*}
 
 The minimal error model has no dependency on other bases and directly applies the error rate from the quality score as $Q_i =
@@ -95,12 +97,12 @@ scores from a suitable base caller.
 
 \section{Genotype Calling w/ Dependent Errors}
 
-Both the papers regarding \texttt{maq} and \texttt{BSNP} introduce dependecy between errors by a ``dependency parameter'' $\theta$,
+Both the papers regarding \texttt{maq} and \texttt{BSNP} introduce dependency between errors by a ``dependency parameter'' $\theta$,
 which could vary between 0 (totally independent) and 1 (totally dependent), and then raising quality scores to a power involving
 $\theta$ and $k_i$, a counter of how many errors have happened so far:
 
 \begin{align*}
-Q_i := 10^{-\frac{q'}{10}} \qquad \mbox{and} \qquad q'_i := \theta^{k_i} q_i
+Q_i := 10^{-0.1 q'} \qquad \mbox{and} \qquad q'_i := \theta^{k_i} q_i
 \end{align*}
 
 This is easy if we pretend that there is only one kind of error or that we know which one happened.  In the case of ancient DNA, we
@@ -110,12 +112,13 @@ but they are both expensive and unlikely to work in a predictable fashion.  Inst
 
 \begin{align*}
 P(X_i|H_i,Q_i) = \left\{ \begin{array}{ccc}
- w_{X_i,H_i} 10^{-\frac{q_i}{10}\theta^{k_{i,X_i,H_i}}} & \mbox{if} & X_i \neq H_i \\
+ w_{X_i,H_i} 10^{-0.1 q_i \theta^{k_{i,X_i,H_i}}} & \mbox{if} & X_i \neq H_i \\
  1 - \sum_{Y \neq X_i} P(Y|H_i,Q_i) & \mbox{if} & X_i = H_i 
 \end{array} \right.
 \end{align*}
 
-The $w_{X,H}$ allow for a substitution matrix or could all be set uniformly to $\frac{1}{4}$.  For the $k_i$, we have to count
+The $w_{X,H}$ allow for a substitution matrix or could all be set uniformly to $\frac{1}{4}$\footnote{If we ever get four quality
+scores, this might produce negative probabilities and may need to be modified.  Such quality scores are nowhere in sight, though.}.  For the $k_i$, we have to count
 errors fractionally, so we set
 
 \begin{align*}
@@ -169,7 +172,8 @@ To investigate interaction of parameters at low coverage.
 To fit parameters to real data, using the best known model (at this
 point, we should have selected an error model), without being confounded
 by heterozygosity.  Data should be clean, so we don't have to deal with
-contamination.
+contamination.  FFPE samples could serve in place of ancient DNA, it
+might come with less trouble due to bacterial contamination.
 
 \subsection{Ancient data, two mixed mitochondria}
 

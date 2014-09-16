@@ -13,7 +13,7 @@ import Data.Ord ( comparing )
 import Data.Vector.Algorithms.Intro ( sortBy )
 import Data.Version ( showVersion )
 import Numeric ( showFFloat )
-import Paths_biohazard_tools ( version )
+import Paths_biohazard ( version )
 import System.Console.GetOpt
 import System.Environment ( getArgs, getProgName )
 import System.Exit

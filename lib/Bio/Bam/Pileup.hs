@@ -237,7 +237,8 @@ data Pile' a b = Pile { p_refseq :: !Refseq
                       , p_snp    :: VarCall a
                       , p_indel  :: VarCall b }
 
-type Pile = Pile' (BasePile, BasePile) IndelPile
+type Pile  = Pile' (BasePile, BasePile) IndelPile
+type Calls = Pile' GL (GL, IndelVars)
 
 -- | The pileup enumeratee takes 'BamRaw's, decomposes them, interleaves
 -- the pieces appropriately, and generates 'Pile's.  The output will
