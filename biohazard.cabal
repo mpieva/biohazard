@@ -23,6 +23,7 @@ Extra-Source-Files:  man/man7/biohazard.7
                      man/man1/bam-rewrap.1
                      man/man1/bam-rmdup.1
                      man/man1/mt-anno.1
+                     doc/errmod.tex
 
 Cabal-version:       >=1.9.2
 Build-type:          Custom
