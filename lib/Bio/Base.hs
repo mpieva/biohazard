@@ -330,7 +330,7 @@ revcompls = reverse . map compls
 -- | Complements a Nucleotides.
 {-# INLINE compl #-}
 compl :: Nucleotide -> Nucleotide
-compl (N n) = N $ n `xor` 4
+compl (N n) = N $ n `xor` 3
 
 -- | Complements a Nucleotides.
 {-# INLINE compls #-}
