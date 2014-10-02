@@ -1,7 +1,7 @@
 -- | Trimming of reads as found in BAM files.  Implements trimming low
 -- quality sequence from the 3' end.
 
-module Bio.Bam.Trim ( trim_3', trim_low_quality ) where
+module Bio.Bam.Trim ( trim_3', trim_3, trim_low_quality ) where
 
 import Bio.Bam.Header
 import Bio.Bam.Rec
@@ -34,23 +34,30 @@ trim_3' p b | b_flag b `testBit` 4 = trim_rev
     trim_fwd = let l = subtract 1 . fromIntegral . length . takeWhile (uncurry p) $
                             zip (inits . reverse .         V.toList $ b_seq b)
                                 (inits . reverse . map Q . S.unpack $ b_qual b)
-                   (_, cigar') = trim_back_cigar (b_cigar b) l
+               in trim_3 l b
+
+    trim_rev = let l = subtract 1 . fromIntegral . length . takeWhile (uncurry p) $
+                            zip (inits .         V.toList $ b_seq  b)
+                                (inits . map Q . S.unpack $ b_qual b)
+               in trim_3 l b
+
+trim_3 :: Int -> BamRec -> BamRec
+trim_3 l b | b_flag b `testBit` 4 = trim_rev
+           | otherwise            = trim_fwd
+  where
+    trim_fwd = let (_, cigar') = trim_back_cigar (b_cigar b) l
                in b { b_seq   = V.take (V.length (b_seq  b) - l) (b_seq  b)
                     , b_qual  = S.take (S.length (b_qual b) - l) (b_qual b)
                     , b_cigar = cigar'
                     , b_exts  = M.delete "MD" (b_exts b) }
 
-    trim_rev = let l = subtract 1 . fromIntegral . length . takeWhile (uncurry p) $
-                            zip (inits .         V.toList $ b_seq  b)
-                                (inits . map Q . S.unpack $ b_qual b)
-                   (off, cigar') = trim_fwd_cigar (b_cigar b) l
+    trim_rev = let (off, cigar') = trim_fwd_cigar (b_cigar b) l
                in b { b_seq   = V.drop l (b_seq  b)
                     , b_qual  = S.drop l (b_qual b)
                     , b_cigar = cigar'
                     , b_exts  = M.delete "MD" (b_exts b)
                     , b_pos   = b_pos b + off
                     }
-
 
 trim_back_cigar, trim_fwd_cigar :: Cigar -> Int -> ( Int, Cigar )
 trim_back_cigar (Cigar c) l = (o, Cigar $ reverse c') where (o,c') = sanitize_cigar . trim_cigar l $ reverse c
