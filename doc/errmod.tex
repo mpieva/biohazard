@@ -1,8 +1,10 @@
 \documentclass{article}
 \usepackage{a4}
 \usepackage{amsmath}
+\usepackage{todonotes}
 
 \title{Error Models For Genotype Calling}
+\author{Udo Stenzel}
 
 \begin{document}
 \maketitle
@@ -209,7 +211,8 @@ include:
 
 \section{Dealing With Contamination}
 
-A natural direction to go in is to model contamination.  To a first
+A natural direction to go in is to model contamination\todo{Actual
+equations}.  To a first
 approximation, a contaminated sample has four haplotypes, two of which
 are endogenous and occur at the same high frequency, and two are from
 the contaminant and occur at lower frequency\footnote{It's conceivable
@@ -219,12 +222,10 @@ heterozygous sites, and the gains of this simplification are modest
 anyway:  instead of 100 distinct genotypes we'd have 40.  I think the
 full model is worthwhile here.}.
 
-% TODO: actual equations
-
 In a model with independent errors, our genotype likelihoods will now
 depend on the contamination rate, which is a variable.  However, the
-dependency is linear (TODO: confirm), so we can store each genotype
-likelihood as two coefficients.  This makes for 200 coefficient where
+dependency is linear\todo{Confirm}, so we can store each genotype
+likelihood as two coefficients.  This makes for 200 coefficients where
 before we had 10 values.  Bad, but no deal breaker.
 
 If we have dependent errors, things get complicated.  We can recover
@@ -242,15 +243,15 @@ coming from a contaminant to it, which is derived from length
 distribution and deamination model.  Strictly speaking, deamination
 depends on genotype, so genotypes depend on other genotypes, which is
 horrible.  We recover a simple model by assuming everything a read
-crosses matches the reference, except the base under consideration.
-(TODO: calculate and confirm)
+crosses matches the reference, except the base under consideration
+\todo{Calculate and confirm}.
 
 Fitting of a simple model on a single sample could recover deamination
 parameters, length distributions and contamination rate.  We're really
 only interested in the contamination rate, which is to be treated as
 preliminary.  A later stage could try and fit both the sample and the
 contaminant into a phylogeny, thereby learning a more precise
-contamination rate.  (TODO: try and confirm)
+contamination rate\todo{Try and confirm}.
 
 \appendix
 
@@ -300,6 +301,8 @@ error that happens before sequencing should also be modelled.  However,
 PCR error behaves similarly to mapping error, and mapping error is
 always of at least the same magnitude.  Therefore, we simply ignore PCR
 error.
+
+\listoftodos
 
 \begin{thebibliography}{9}
 

@@ -12,7 +12,7 @@ module Bio.Base(
     Word8,
     nucA, nucC, nucG, nucT,
     nucsA, nucsC, nucsG, nucsT, nucsN, gap,
-    toNucleotides,
+    toNucleotide, toNucleotides,
     showNucleotide, showNucleotides,
     isGap,
     isBase,
@@ -226,6 +226,20 @@ data Range = Range {
         r_pos    :: {-# UNPACK #-} !Position,
         r_length :: {-# UNPACK #-} !Int
     } deriving (Show, Eq, Ord)
+
+
+-- | Converts a character into a 'Nucleotides'.
+-- The usual codes for A,C,G,T and U are understood, '-' and '.' become
+-- gaps and everything else is an N.
+toNucleotide :: Char -> Nucleotide
+toNucleotide c = if inRange (bounds arr) (ord c) then N (arr ! ord c) else N 0
+  where
+    arr :: UArray Int Word8
+    arr = listArray (0,127) (repeat 0) //
+          ( [ (ord          x,  n) | (x, N n) <- pairs ] ++
+            [ (ord (toUpper x), n) | (x, N n) <- pairs ] )
+
+    pairs = [ ('a', nucA), ('c', nucC), ('g', nucG), ('t', nucT) ]
 
 
 -- | Converts a character into a 'Nucleotides'.
