@@ -18,10 +18,10 @@ module Bio.Iteratee (
     filterStreamM,
     foldStream,
     foldStreamM,
-    mapChunksMP,
     protectTerm,
     concatMapStream,
     mapMaybeStream,
+    parMapChunksIO,
 
     I.mapStream,
     I.takeWhileE,
@@ -49,10 +49,18 @@ module Bio.Iteratee (
     Enumeratee',
     mergeEnums',
 
+    QQ(..),
+    emptyQ,
+    lengthQ,
+    pushQ,
+    popQ,
+    cancelAll,
+
     module X ) where
 
 import Bio.Base ( findAuxFile )
 import Control.Concurrent
+import Control.Concurrent.Async             ( Async, async, wait, cancel )
 import Control.Monad
 import Control.Monad.Catch
 import Control.Monad.IO.Class
@@ -279,41 +287,33 @@ mergeSortStreams comp = eneeCheckIfDone step
         (Nothing, Just  y) -> do lift (I.drop 1) ; eneeCheckIfDone step . out . Chunk $ LL.singleton y
         (Nothing, Nothing) -> idone (liftI out) $ EOF Nothing
 
-newtype Ch a = Ch (MVar (Maybe (a, Ch a)))
 
--- | Map a function over chunks, running in a separate (light weight)
--- thread for each chunk.  'MonadIO' is needed for the forking.
-mapChunksMP :: (MonadIO m, Nullable a) => (a -> IO b) -> Enumeratee a b m c
-mapChunksMP f it = do chan <- liftIO $ Ch `liftM` newEmptyMVar
-                      eneeCheckIfDonePass (icont . go 0 chan chan) it
+-- | Parallel map of an IO action over the elements of a stream
+--
+-- This 'Enumeratee' applies an 'IO' action to every chunk of the input
+-- stream.  These 'IO' actions are run asynchronously in a limited
+-- parallel way.  Don't forget to `evaluate`
+
+parMapChunksIO :: (MonadIO m, Nullable s) => Int -> (s -> IO t) -> Enumeratee s t m a
+parMapChunksIO np f = eneeCheckIfDonePass (go emptyQ)
   where
-    maxqueue = 32 :: Int -- arbitrary
+    -- check if the queue is full
+    go !qq k (Just e) = cancelAll qq >> icont (go' emptyQ k) (Just e)
+    go !qq k Nothing = case popQ qq of
+        Just (a,qq') | lengthQ qq == np -> liftIO (wait a) >>= eneeCheckIfDonePass (go qq') . k . Chunk
+        _                               -> liftI $ go' qq k
 
-    go !_num !chan (Ch !back) k (EOF mx) = do
-        -- end the channel, then empty it
-        liftIO $ putMVar back Nothing
-        let loop (Ch c) k' = do mr <- liftIO $ takeMVar c
-                                case mr of
-                                    -- end marker
-                                    Nothing -> idone (liftI k') (EOF mx)
-                                    Just (r,c') -> eneeCheckIfDone (loop c') . k' $ Chunk r
-        loop chan k
+    -- we have room for input
+    go' !qq k (EOF  mx) = do a <- liftIO (async (f empty))
+                             goE mx (pushQ a qq) k Nothing
+    go' !qq k (Chunk c) = do a <- liftIO (async (f c))
+                             go (pushQ a qq) k Nothing
 
-    go !num (Ch !chan) (Ch !back) k (Chunk c) = do
-        -- First try to get the next finished chunk.  If the queue is
-        -- full, don't try, but wait.  If we get something, pass it on
-        -- and recurse immediately.
-        mnext <- liftIO $ if num >= maxqueue then Just `liftM` takeMVar chan else tryTakeMVar chan
-        case mnext of
-            Just (Just (r,chan')) -> eneeCheckIfDone (\k' -> go (num-1) chan' (Ch back) k' (Chunk c)) . k $ Chunk r
-
-            -- end marker... shouldn't actually happen
-            Just Nothing -> idone (liftI k) (Chunk c)
-
-            -- if we got nothing, fork and recurse
-            Nothing -> do back' <- Ch `liftM` liftIO newEmptyMVar
-                          _ <- liftIO . forkIO $ do r <- f c ; putMVar back (Just (r, back'))
-                          liftI $ go (num+1) (Ch chan) back' k
+    -- input ended, empty the queue
+    goE  _ !qq k (Just e) = cancelAll qq >> icont (go' emptyQ k) (Just e)
+    goE mx !qq k Nothing = case popQ qq of
+        Nothing      -> idone (liftI k) (EOF mx)
+        Just (a,qq') -> liftIO (wait a) >>= eneeCheckIfDonePass (goE mx qq') . k . Chunk
 
 -- | Protects the terminal from binary junk.  If @i@ is an 'Iteratee'
 -- that might write binary to 'stdout', then @protectTerm i@ is the same
@@ -324,4 +324,28 @@ protectTerm itr = do
     if t then err else itr
   where
     err = error "cowardly refusing to write binary data to terminal"
+
+-- A very simple queue data type.
+-- Invariants: q = QQ l f b --> l == length f + length b
+--                          --> l == 0 || not (null f)
+
+data QQ a = QQ !Int [a] [a]
+
+emptyQ :: QQ a
+emptyQ = QQ 0 [] []
+
+lengthQ :: QQ a -> Int
+lengthQ (QQ l _ _) = l
+
+pushQ :: a -> QQ a -> QQ a
+pushQ a (QQ l [] b) = QQ (l+1) (reverse (a:b)) []
+pushQ a (QQ l  f b) = QQ (l+1) f (a:b)
+
+popQ :: QQ a -> Maybe (a, QQ a)
+popQ (QQ l (a:[]) b) = Just (a, QQ (l-1) (reverse b) [])
+popQ (QQ l (a:fs) b) = Just (a, QQ (l-1) fs b)
+popQ (QQ _ [    ] _) = Nothing
+
+cancelAll :: MonadIO m => QQ (Async a) -> m ()
+cancelAll (QQ _ ff bb) = liftIO $ mapM_ cancel (ff ++ bb)
 

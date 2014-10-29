@@ -10,6 +10,7 @@ module Bio.Iteratee.ZLib
   (
     -- * Enumeratees
     enumInflate,
+    enumInflateAny,
     enumDeflate,
     -- * Exceptions
     ZLibParamsException(..),
@@ -32,14 +33,12 @@ module Bio.Iteratee.ZLib
 where
 #include <zlib.h>
 
+import Bio.Iteratee
 import Control.Applicative
 import Control.Exception
-import Control.Monad ( liftM )
-import Control.Monad.IO.Class ( MonadIO, liftIO )
-import Control.Monad.Trans.Class ( lift )
+import Control.Monad ( liftM, liftM2 )
 import Data.ByteString as BS
 import Data.ByteString.Internal
-import Data.Iteratee
 import Data.Foldable
 import Data.Typeable
 import Foreign
@@ -700,8 +699,8 @@ enumDeflate f cp@(CompressParams _ _ _ _ _ size _) iter = do
             throwErr (toException err)
         Right init' -> insertOut size deflate' init' iter
 
--- | Decompress the input and send to inner iteratee. If there is end of
--- zlib stream it is left unprocessed.
+-- | Decompress the input and send to inner iteratee. If there is data
+-- after the end of zlib stream, it is left unprocessed.
 enumInflate :: MonadIO m
             => Format
             -> DecompressParams
@@ -725,6 +724,14 @@ enumInflate f dp@(DecompressParams _ size _md) iter = do
                           inflate' zstr param
                       _ -> return ret
             in insertOut size inflate'' init' iter
+
+-- | Inflate if Gzip format is recognized, otherwise pass through.
+enumInflateAny :: MonadIO m => Enumeratee ByteString ByteString m a
+enumInflateAny it = do magic <- iLookAhead $ liftM2 (,) tryHead tryHead
+                       case magic of
+                           (Just 0x1f, Just 0x8b) ->
+                               enumInflate GZip defaultDecompressParams it
+                           _ -> mapChunks id it
 
 enumSyncFlush :: Monad m => Enumerator ByteString m a
 -- ^ Enumerate synchronise flush. It cause the all pending output to be flushed

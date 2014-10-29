@@ -264,8 +264,7 @@ ref_to_ascii (RS v) = [ base | i <- [0, 5 .. U.length v - 5]
 readFreakingInput :: (MonadIO m, MonadMask m) => FilePath -> Enumerator [BamRaw] m b
 readFreakingInput fp k | ".bam" `isSuffixOf` fp = do liftIO (hPutStrLn stderr $ "Reading BAM from " ++ fp)
                                                      decodeAnyBamFile fp $ const k
-                       | ".gz"  `isSuffixOf` fp = maybe_read_two fp unzipFastq k
-                       | otherwise              = maybe_read_two fp parseFastq k
+                       | otherwise              = maybe_read_two fp unzipFastq k
 
 check_r2 :: FilePath -> IO (Maybe FilePath)
 check_r2 = go [] . reverse
@@ -290,7 +289,7 @@ maybe_read_two fp e1 = (\k -> liftIO (check_r2 fp) >>= maybe (rd1 k) (rd2 k)) $=
                               (convStream unite_pairs) k
 
 unzipFastq :: (MonadIO m, MonadMask m) => Enumeratee S.ByteString [BamRec] m b
-unzipFastq = ZLib.enumInflate ZLib.GZipOrZlib ZLib.defaultDecompressParams ><> parseFastq
+unzipFastq = ZLib.enumInflateAny ><> parseFastq
 
 unite_pairs :: Monad m => Iteratee [BamRec] (Iteratee [BamRec] m) [BamRec]
 unite_pairs = do a <- lift headStream

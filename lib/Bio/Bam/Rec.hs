@@ -140,7 +140,7 @@ data BamRec = BamRec {
 nullBamRec :: BamRec
 nullBamRec = BamRec {
         b_qname = S.empty,
-        b_flag  = 0,
+        b_flag  = flagUnmapped,
         b_rname = invalidRefseq,
         b_pos   = invalidPos,
         b_mapq  = 0,

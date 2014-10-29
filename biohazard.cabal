@@ -177,6 +177,16 @@ Executable count-coverage
                        biohazard,
                        iteratee >= 0.8.9.6 && < 0.8.10
 
+Executable fastq2bam
+  Main-is:             fastq2bam.hs
+  Hs-Source-Dirs:      tools
+  Build-depends:       base == 4.*,
+                       biohazard,
+                       bytestring >= 0.9 && < 0.11,
+                       containers >= 0.4 && < 0.6,
+                       iteratee >= 0.8.9.6 && < 0.8.10,
+                       vector >= 0.9 && < 0.11
+
 Executable glf-consensus
   Main-is:             glf-consensus.hs
   Hs-Source-Dirs:      tools

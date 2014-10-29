@@ -9,7 +9,7 @@ module Bio.Iteratee.Bgzf (
     Block(..), decompressBgzfBlocks', decompressBgzfBlocks,
     decompressBgzf, decompressPlain,
     maxBlockSize, bgzfEofMarker, liftBlock, getOffset,
-    isBgzf, isGzip, concatMapStreamIO,
+    isBgzf, isGzip, parMapChunksIO,
     compressBgzf, compressBgzfLv, compressBgzf', CompressParams(..)
                      ) where
 
@@ -377,34 +377,7 @@ liftBlock = liftI . step
 -- size.  On EOF, we flush and write the end marker.
 
 compressBgzf' :: MonadIO m => CompressParams -> Enumeratee S.ByteString S.ByteString m a
-compressBgzf' (CompressParams lv np) = bgzfBlocks ><> concatMapStreamIO np (compress1 lv)
-
--- | Parallel map of an IO action over the elements of a stream
---
--- This 'Enumeratee' applies an 'IO' action to every chunk of the input
--- stream.  These 'IO' actions are run asynchronously in a limited
--- parallel way.
-
-concatMapStreamIO :: (MonadIO m, Nullable s, NullPoint s) => Int -> (s -> IO t) -> Enumeratee s t m a
-concatMapStreamIO np f = eneeCheckIfDonePass (go emptyQ)
-  where
-    -- check if the queue is full
-    go !qq k (Just e) = cancelAll qq >> icont (go' emptyQ k) (Just e)
-    go !qq k Nothing = case popQ qq of
-        Just (a,qq') | lengthQ qq == np -> liftIO (wait a) >>= eneeCheckIfDonePass (go qq') . k . Chunk
-        _                               -> liftI $ go' qq k
-
-    -- we have room for input
-    go' !qq k (EOF  mx) = do a <- liftIO (async (f empty))
-                             goE mx (pushQ a qq) k Nothing
-    go' !qq k (Chunk c) = do a <- liftIO (async (f c))
-                             go (pushQ a qq) k Nothing
-
-    -- input ended, empty the queue
-    goE  _ !qq k (Just e) = cancelAll qq >> icont (go' emptyQ k) (Just e)
-    goE mx !qq k Nothing = case popQ qq of
-        Nothing      -> idone (liftI k) (EOF mx)
-        Just (a,qq') -> liftIO (wait a) >>= eneeCheckIfDonePass (goE mx qq') . k . Chunk
+compressBgzf' (CompressParams lv np) = bgzfBlocks ><> parMapChunksIO np (compress1 lv)
 
 -- | Breaks a stream into chunks suitable to be compressed individually.
 -- Each chunk on output is represented as a list of 'S.ByteString's,
@@ -445,28 +418,4 @@ data CompressParams = CompressParams {
         compression_level :: Int,
         queue_depth :: Int }
     deriving Show
-
--- A very simple queue data type.
--- Invariants: q = QQ l f b --> l == length f + length b
---                          --> l == 0 || not (null f)
-
-data QQ a = QQ !Int [a] [a]
-
-emptyQ :: QQ a
-emptyQ = QQ 0 [] []
-
-lengthQ :: QQ a -> Int
-lengthQ (QQ l _ _) = l
-
-pushQ :: a -> QQ a -> QQ a
-pushQ a (QQ l [] b) = QQ (l+1) (reverse (a:b)) []
-pushQ a (QQ l  f b) = QQ (l+1) f (a:b)
-
-popQ :: QQ a -> Maybe (a, QQ a)
-popQ (QQ l (a:[]) b) = Just (a, QQ (l-1) (reverse b) [])
-popQ (QQ l (a:fs) b) = Just (a, QQ (l-1) fs b)
-popQ (QQ _ [    ] _) = Nothing
-
-cancelAll :: MonadIO m => QQ (Async a) -> m ()
-cancelAll (QQ _ ff bb) = liftIO $ mapM_ cancel (ff ++ bb)
 
