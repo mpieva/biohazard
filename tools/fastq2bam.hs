@@ -72,6 +72,7 @@ main = do (opts, [], errors) <- getopts `fmap` getArgs
           pgm <- addPG Nothing
 
           let eff_inputs = if null (inputs conf) then [ Input "-" Nothing Nothing Nothing ] else inputs conf
+          hPrint stderr $ eff_inputs
 
           foldr ((>=>) . enum_input) run (reverse eff_inputs) $
                 joinI $ progress (verbose conf) $
@@ -103,9 +104,10 @@ fromFastq fp = enumAny fp $= enumInflateAny $= parseFastqCassava
     enumAny  fp = enumFile defaultBufSize fp
 
 enum_input :: (MonadIO m, MonadMask m) => Input -> Enumerator [UpToTwo BamRec] m a
-enum_input (Input r1 mr2 mi1 mi2) =
-    withIndex mi1 "XI" "YI" $ withIndex mi2 "XJ" "YJ" $
-    case mr2 of Nothing -> fromFastq r1 $= mapStream one ; Just r2 -> enumDual r1 r2
+enum_input inp@(Input r1 mr2 mi1 mi2) o = do
+    liftIO $ hPrint stderr inp
+    (withIndex mi1 "XI" "YI" $ withIndex mi2 "XJ" "YJ" $
+        case mr2 of Nothing -> fromFastq r1 $= mapStream one ; Just r2 -> enumDual r1 r2) o
 
 -- Given an enumerator and maybe a filename, read index sequences from
 -- the file and merge them with the numerator.
@@ -140,8 +142,14 @@ enumDual f1 f2 = mergeEnums (fromFastq f1 $= mapStream one) (fromFastq f2) (conv
                  when (b_qname firstMate /= b_qname secondMate) . error $
                         "read names do not match: " ++ shows (b_qname firstMate) " & " ++ show (b_qname secondMate)
 
-                 return [ two (firstMate  { b_flag =  flagFirstMate .|. flagPaired .|. b_flag firstMate })
-                              (secondMate { b_flag = flagSecondMate .|. flagPaired .|. b_flag secondMate }) ]
+                 let qc = (b_flag firstMate .|. b_flag secondMate) .&. flagFailsQC
+                     addx k = maybe id (M.insert k) $ maybe (M.lookup k (b_exts secondMate)) Just $ M.lookup k (b_exts firstMate)
+                     add_indexes = addx "XI" . addx "XJ" . addx "YI" . addx "YJ"
+
+                 return [ two (firstMate  { b_flag = qc .|.  flagFirstMate .|. flagPaired .|. b_flag firstMate .&. complement flagSecondMate
+                                          , b_exts = add_indexes $ b_exts firstMate })
+                              (secondMate { b_flag = qc .|. flagSecondMate .|. flagPaired .|. b_flag secondMate .&. complement flagFirstMate
+                                          , b_exts = add_indexes $ b_exts secondMate }) ]
 
 
 progress :: MonadIO m => Bool -> Enumeratee [UpToTwo BamRec] [UpToTwo BamRec] m b
@@ -158,7 +166,7 @@ progress True  = eneeCheckIfDonePass (icont . go 0 0)
             hPutStr stderr $ "\27[K" ++
                 replicate (l' - S.length nm) ' '
                 ++ S.unpack nm ++ ", "
-                ++ shows n' " records processed\r"
+                ++ shows n' " records processed\n"
             hFlush stderr
         eneeCheckIfDonePass (icont . go l' n') . k $ Chunk as
 
