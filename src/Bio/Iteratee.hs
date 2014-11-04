@@ -59,7 +59,6 @@ module Bio.Iteratee (
     module X ) where
 
 import Bio.Base ( findAuxFile )
-import Control.Concurrent
 import Control.Concurrent.Async             ( Async, async, wait, cancel )
 import Control.Monad
 import Control.Monad.Catch

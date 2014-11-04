@@ -15,7 +15,7 @@ module Bio.Iteratee.Bgzf (
 
 import Bio.Iteratee
 import Control.Concurrent                   ( getNumCapabilities )
-import Control.Concurrent.Async             ( Async, async, wait, cancel )
+import Control.Concurrent.Async             ( async, wait )
 import Control.Monad                        ( liftM, forM_, when )
 import Data.Bits                            ( shiftL, shiftR, testBit, (.&.) )
 import Data.Monoid                          ( Monoid(..) )

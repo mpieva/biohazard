@@ -71,7 +71,6 @@ Library
                        attoparsec-iteratee == 0.4.*, 
                        base == 4.*, 
                        binary >= 0.5 && < 0.8,
-                       binary-strict == 0.4.*, 
                        bytestring >= 0.9 && < 0.11, 
                        containers == 0.5.*,
                        directory == 1.2.*,
@@ -87,9 +86,9 @@ Library
                        zlib == 0.5.*
   
   Ghc-options:         -Wall -auto-all
-  Hs-source-dirs:      lib
-  Include-dirs:        lib/cbits
-  C-sources:           lib/cbits/myers_align.c
+  Hs-source-dirs:      src
+  Include-dirs:        src/cbits
+  C-sources:           src/cbits/myers_align.c
 
   -- Modules not exported by this package.
   -- Other-modules:       

@@ -86,6 +86,7 @@ import Control.Applicative
 import Data.Array.IArray
 import Data.Array.Unboxed
 import Data.Attoparsec              ( anyWord8 )
+import Data.Binary.Get
 import Data.Binary.Put
 import Data.Bits                    ( Bits, testBit, shiftL, shiftR, (.&.), (.|.), complement )
 import Data.Char                    ( ord, isDigit, digitToInt )
@@ -100,7 +101,6 @@ import System.IO
 import System.IO.Unsafe             ( unsafePerformIO )
 
 import qualified Data.Attoparsec.Char8          as P
-import qualified Data.Binary.Strict.Get         as G
 import qualified Data.ByteString                as B
 import qualified Data.ByteString.Char8          as S
 import qualified Data.ByteString.Lazy.Char8     as L
@@ -177,23 +177,26 @@ decodeAnyBamOrSamFile fn k = enumFileRandom defaultBufSize fn (decodeAnyBamOrSam
 
 -- | Decodes a raw block into a @BamRec@.
 decodeBamEntry :: BamRaw -> BamRec
-decodeBamEntry br = either error fixup_bam_rec . fst . G.runGet go $ raw_data br
+decodeBamEntry br = case pushEndOfInput $ runGetIncremental go `pushChunk` raw_data br of
+        Fail _ _ m -> error m
+        Partial  _ -> error "incomplete BAM record"
+        Done _ _ r -> fixup_bam_rec r
   where
-    go = do !rid       <- Refseq       <$> G.getWord32le
-            !start     <- fromIntegral <$> G.getWord32le
-            !namelen   <- fromIntegral <$> G.getWord8
-            !mapq      <- fromIntegral <$> G.getWord8
-            !_bin      <-                  G.getWord16le
-            !cigar_len <- fromIntegral <$> G.getWord16le
-            !flag      <- fromIntegral <$> G.getWord16le
-            !read_len  <- fromIntegral <$> G.getWord32le
-            !mate_rid  <- Refseq       <$> G.getWord32le
-            !mate_pos  <- fromIntegral <$> G.getWord32le
-            !ins_size  <- fromIntegral <$> G.getWord32le
-            !read_name <- S.init       <$> G.getByteString namelen
-            !cigar     <- Cigar . map decodeCigar <$> replicateM cigar_len G.getWord32le
-            !qry_seq   <- G.getByteString $ (read_len+1) `div` 2
-            !qual <- (\qs -> if B.all (0xff ==) qs then B.empty else qs) <$> G.getByteString read_len
+    go = do !rid       <- Refseq       <$> getWord32le
+            !start     <- fromIntegral <$> getWord32le
+            !namelen   <- fromIntegral <$> getWord8
+            !mapq      <- fromIntegral <$> getWord8
+            !_bin      <-                  getWord16le
+            !cigar_len <- fromIntegral <$> getWord16le
+            !flag      <- fromIntegral <$> getWord16le
+            !read_len  <- fromIntegral <$> getWord32le
+            !mate_rid  <- Refseq       <$> getWord32le
+            !mate_pos  <- fromIntegral <$> getWord32le
+            !ins_size  <- fromIntegral <$> getWord32le
+            !read_name <- S.init       <$> getByteString namelen
+            !cigar     <- Cigar . map decodeCigar <$> replicateM cigar_len getWord32le
+            !qry_seq   <- getByteString $ (read_len+1) `div` 2
+            !qual <- (\qs -> if B.all (0xff ==) qs then B.empty else qs) <$> getByteString read_len
             !exts <- getExtensions M.empty
 
             return $ BamRec read_name flag rid start mapq cigar
@@ -261,23 +264,23 @@ data Ext = Int Int | Float Float | Text ByteString | Bin ByteString | Char Word8
          | IntArr (UArray Int Int) | FloatArr (UArray Int Float)
     deriving (Show, Eq, Ord)
 
-getExtensions :: Extensions -> G.Get Extensions
-getExtensions m = getExt `G.plus` return m
+getExtensions :: Extensions -> Get Extensions
+getExtensions m = getExt <|> return m
   where
-    getExt :: G.Get Extensions
+    getExt :: Get Extensions
     getExt = do
-            key <- (\a b -> [w2c a, w2c b]) <$> G.getWord8 <*> G.getWord8
-            typ <- G.getWord8
+            key <- (\a b -> [w2c a, w2c b]) <$> getWord8 <*> getWord8
+            typ <- getWord8
             let cont v = getExtensions $! M.insert key v m
             case w2c typ of
                     'Z' -> cont . Text =<< getByteStringNul
                     'H' -> cont . Bin  =<< getByteStringNul
-                    'A' -> cont . Char =<< G.getWord8
-                    'f' -> cont . Float . to_float =<< G.getWord32le
-                    'B' -> do tp <- G.getWord8
-                              n <- fromIntegral <$> G.getWord32le
+                    'A' -> cont . Char =<< getWord8
+                    'f' -> cont . Float . to_float =<< getWord32le
+                    'B' -> do tp <- getWord8
+                              n <- fromIntegral <$> getWord32le
                               case w2c tp of
-                                 'f' -> cont . FloatArr . listArray (0,n) . map to_float =<< replicateM (n+1) G.getWord32le
+                                 'f' -> cont . FloatArr . listArray (0,n) . map to_float =<< replicateM (n+1) getWord32le
                                  x | Just get <- M.lookup x get_some_int -> cont . IntArr . listArray (0,n) =<< replicateM (n+1) get
                                    | otherwise                           -> fail $ "array type code " ++ show x ++ " not recognized"
                     x | Just get <- M.lookup x get_some_int -> cont . Int =<< get
@@ -287,21 +290,21 @@ getExtensions m = getExt `G.plus` return m
     to_float word = unsafePerformIO $ alloca $ \buf ->
                     poke (castPtr buf) word >> peek buf
 
-    get_some_int :: M.Map Char (G.Get Int)
+    get_some_int :: M.Map Char (Get Int)
     get_some_int = M.fromList $ zip "cCsSiI" [
-                        fromIntegral <$> G.getWord8,
-                        fromIntegral <$> G.getWord8,
-                        fromIntegral <$> G.getWord16le,
-                        fromIntegral <$> G.getWord16le,
-                        fromIntegral <$> G.getWord32le,
-                        fromIntegral <$> G.getWord32le ]
+                        fromIntegral <$> getWord8,
+                        fromIntegral <$> getWord8,
+                        fromIntegral <$> getWord16le,
+                        fromIntegral <$> getWord16le,
+                        fromIntegral <$> getWord32le,
+                        fromIntegral <$> getWord32le ]
 
 
 
-getByteStringNul :: G.Get ByteString
-getByteStringNul = S.init <$> (G.lookAhead (get_len 1) >>= G.getByteString)
+getByteStringNul :: Get ByteString
+getByteStringNul = S.init <$> (lookAhead (get_len 1) >>= getByteString)
   where
-    get_len l = G.getWord8 >>= \w -> if w == 0 then return l else get_len $! l+1
+    get_len l = getWord8 >>= \w -> if w == 0 then return l else get_len $! l+1
 
 
 
