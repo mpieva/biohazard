@@ -199,18 +199,26 @@ deriveAvro nm = reify nm >>= case_info
     simple_cons (NormalC _ []) = True
     simple_cons _              = False
 
+    record_cons (RecC _ _) = True
+    record_cons _          = False
+
     case_dec (NewtypeD _cxt _name _tyvarbndrs  _con _) = err $ "don't know what to do for NewtypeD"
     case_dec (DataD    _cxt _name _tyvarbndrs cons _)
         | all simple_cons cons = mk_enum_inst [ nm | NormalC nm [] <- cons ]
-        | otherwise            = err $ "don't know how to make a record instance"
+        | all record_cons cons = mk_record_inst [ (nm, vsts) | RecC nm vsts <- cons ]
+        | otherwise            = err $ "don't know how to make an instance with these constructors"
     case_dec _ = fail $ "is not a data or newtype declaration"
+
+    tolit = litE . StringL . nameBase
+    tolitlist (x:xs) = [| T.pack $(tolit x) : $(tolitlist xs) |]
+    tolitlist [    ] = [| [] |]
 
     -- enum instance from list of names
     mk_enum_inst :: [Name] -> Q [Dec]
     mk_enum_inst nms =
-        [d| instance Avro $(return $ ConT nm) where
-                toSchema _ = return $ object [ T.pack "type" .= "enum"
-                                             , T.pack "name" .= $(tolit nm)
+        [d| instance Avro $(conT nm) where
+                toSchema _ = return $ object [ T.pack "type" .= T.pack "enum"
+                                             , T.pack "name" .= T.pack $(tolit nm)
                                              , T.pack "symbols" .= $(tolitlist nms) ]
                 toBin x = $( 
                     return $ CaseE (VarE 'x) 
@@ -226,7 +234,61 @@ deriveAvro nm = reify nm >>= case_info
                                                      (LitE (StringL (nameBase nm1)))))) []
                         | (i,nm1) <- zip [0..] nms ] )
         |]
-      where
-        tolit = return . LitE . StringL . nameBase
-        tolitlist (x:xs) = [| $(tolit x) : $(tolitlist xs) |]
-        tolitlist [    ] = [| [] |]
+
+    -- record instance from record-like constructors
+    -- XXX maybe allow empty "normal" constructors, too
+    -- XXX if there is only one alternative, the top-level union should not be generated
+    -- each Name becomes one alternative, each VarStrictType becomes a field.
+    mk_record_inst :: [ (Name, [(Name, Strict, Type)]) ] -> Q [Dec]
+    mk_record_inst [(_,fs1)] =
+        [d| instance Avro $(conT nm) where
+                -- toSchema _ = $(mk_product_schema [(nm1,tp1)])
+                toBin     = $(to_bin_product fs1)
+                toAvron   = $(to_avron_product fs1)
+        |]
+
+    {- mk_record_inst arms =
+        [d| instance Avro $(conT nm) where
+                toSchema _ = return . Array $ V.fromList 
+                             $( mk_record_schema object [ T.pack "type" .= "union"
+                                             , T.pack "name" .= $(tolit nm) ]
+                                             -- , T.pack "symbols" .= $(tolitlist nms) ]
+                {- toBin x = $( 
+                    return $ CaseE (VarE 'x) 
+                        [ Match (ConP nm1 [])
+                                (NormalB (AppE (VarE 'zigInt)
+                                               (LitE (IntegerL i)))) []
+                        | (i,nm1) <- zip [0..] nms ] )
+                toAvron x = $(
+                    return $ CaseE (VarE 'x) 
+                        [ Match (ConP nm1 [])
+                                (NormalB (AppE (ConE 'String)
+                                               (AppE (VarE 'T.pack)
+                                                     (LitE (StringL (nameBase nm1)))))) []
+                        | (i,nm1) <- zip [0..] nms ] ) -}
+        |] -}
+
+    -- mk_product_schema :: Name -> Type -> Q [MkSchema Value] ...
+    -- mk_product_schema nm tp = return 
+
+    -- binary encoding of records: field by field.
+    -- amazing, this seems to work...
+    to_bin_product nms = do x <- newName "x"
+                            return $ LamE [VarP x]
+                                (foldr (\(nm,_,_) k ->
+                                    VarE 'mappend `AppE`
+                                    (AppE (VarE 'toBin) (AppE (VarE nm) (VarE x))) `AppE`
+                                    k) (VarE 'mempty) nms)
+
+    to_avron_product nms = do x <- newName "x"
+                              colon <- [| (:) |]
+                              nil <- [| [] |]
+                              return $ LamE [VarP x]
+                                  (AppE (VarE 'object)
+                                        (foldr (\(nm,_,_) k ->
+                                            colon
+                                            `AppE` ((VarE '(.=))
+                                                    `AppE` (AppE (VarE 'T.pack) (LitE (StringL (nameBase nm)))) 
+                                                    `AppE` (AppE (VarE 'toAvron) (AppE (VarE nm) (VarE x))))
+                                            `AppE`  k)
+                                            nil nms))

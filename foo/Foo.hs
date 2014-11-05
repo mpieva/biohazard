@@ -3,9 +3,10 @@ module Foo where
 
 import Avro
 import Language.Haskell.TH
+import qualified Data.Text as T
 
-data Foo = Foo { foo_one :: Int, bar_one :: String }
-         | Bar { foo_two :: Int, bar_two :: String }
+data Foo = Foo { foo_one :: Int, bar_one :: T.Text }
+--         | Bar { foo_two :: Int, bar_two :: String }
 --                                  ^ field name?
 --          ^ record type name?
 --    ^ union type
