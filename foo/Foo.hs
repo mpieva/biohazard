@@ -11,6 +11,8 @@ data Foo = Foo { foo_one :: Int, bar_one :: T.Text }
 --          ^ record type name?
 --    ^ union type
 
+data FooFoo = FooFoo { left :: Foo, right :: Foo }
+
 data Bar = One | Two | Three
 
 $( do reify ''Foo >>= runIO . print . ppr
@@ -18,3 +20,4 @@ $( do reify ''Foo >>= runIO . print . ppr
 
 deriveAvro ''Bar
 deriveAvro ''Foo
+deriveAvro ''FooFoo

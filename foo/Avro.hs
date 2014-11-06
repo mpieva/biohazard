@@ -3,7 +3,7 @@ module Avro where
 
 import Control.Applicative
 import Control.Monad
-import Data.Aeson
+import Data.Aeson hiding ((.=))
 import Data.Bits
 import Data.ByteString.Builder
 import Data.Foldable ( foldMap )
@@ -21,6 +21,11 @@ import qualified Data.Text.Lazy as TL
 import qualified Data.Vector as V
 import qualified Data.Vector.Unboxed as U
 
+(.=) :: ToJSON a => String -> a -> (T.Text, Value)
+k .= v = (T.pack k, toJSON v)
+
+string :: String -> Value
+string = String . T.pack
 
 -- | This is the class of types we can embed into the Avro
 -- infrastructure.  Right now, we can derive a schema, toBin     to
@@ -44,14 +49,24 @@ class Avro a where
     toAvron  :: a -> Value
 
 
-newtype MkSchema a = MkSchema a -- XXX
+newtype MkSchema a = MkSchema 
+    { mkSchema :: (a -> H.HashMap T.Text Value -> Value) -> H.HashMap T.Text Value -> Value }
 
-instance Functor MkSchema where fmap f (MkSchema a) = MkSchema (f a)
-instance Monad MkSchema where return = MkSchema
-                              MkSchema a >>= k = k a
+instance Functor MkSchema where fmap f m = MkSchema (\k -> mkSchema m (k . f))
+instance Monad MkSchema where return a = MkSchema (\k -> k a)
+                              a >>= m = MkSchema (\k -> mkSchema a (\a -> mkSchema (m a) k))
 
-memoObject :: T.Text -> [(T.Text,Value)] -> MkSchema Value
-memoObject nm ps = return . object $ ("name" .= nm) : ps
+memoObject :: String -> [(T.Text,Value)] -> MkSchema Value
+memoObject nm ps = MkSchema $ \k h ->
+    let nm' = T.pack nm
+        obj = object $ ("name" .= nm) : ps
+    in case H.lookup nm' h of
+        Nothing -> k obj $! H.insert nm' obj h
+        Just obj' | obj == obj' -> k (String nm') h
+                  | otherwise -> error $ "same type name, different schema: " ++ nm
+
+runMkSchema :: MkSchema Value -> Value
+runMkSchema a = mkSchema a const H.empty
 
 -- instances for primitive types
 
@@ -222,9 +237,9 @@ deriveAvro nm = reify nm >>= case_info
     mk_enum_inst :: [Name] -> Q [Dec]
     mk_enum_inst nms =
         [d| instance Avro $(conT nm) where
-                toSchema _ = return $ object [ T.pack "type" .= T.pack "enum"
-                                             , T.pack "name" .= T.pack $(tolit nm)
-                                             , T.pack "symbols" .= $(tolitlist nms) ]
+                toSchema _ = return $ object [ "type" .= string "enum"
+                                             , "name" .= string $(tolit nm)
+                                             , "symbols" .= $(tolitlist nms) ]
                 toBin x = $( 
                     return $ CaseE (VarE 'x) 
                         [ Match (ConP nm1 [])
@@ -234,9 +249,8 @@ deriveAvro nm = reify nm >>= case_info
                 toAvron x = $(
                     return $ CaseE (VarE 'x) 
                         [ Match (ConP nm1 [])
-                                (NormalB (AppE (ConE 'String)
-                                               (AppE (VarE 'T.pack)
-                                                     (LitE (StringL (nameBase nm1)))))) []
+                                (NormalB (AppE (VarE 'string)
+                                               (LitE (StringL (nameBase nm1))))) []
                         | (i,nm1) <- zip [0..] nms ] )
         |]
 
@@ -254,10 +268,9 @@ deriveAvro nm = reify nm >>= case_info
 
     mk_record_inst arms =
         [d| instance Avro $(conT nm) where
-                {- toSchema _ = return . Array $ V.fromList 
-                             $( mk_record_schema object [ T.pack "type" .= "union"
-                                             , T.pack "name" .= $(tolit nm) ]
-                                             -- , T.pack "symbols" .= $(tolitlist nms) ] -}
+                toSchema _ = Array . V.fromList <$> sequence
+                             $( foldr (\(nm,fs) k -> [| $(mk_product_schema nm fs) : $k |])
+                                      [| [] |] arms )
                 toBin = 
                     $( do x <- newName "x"
                           LamE [VarP x] . CaseE (VarE x) 
@@ -268,7 +281,7 @@ deriveAvro nm = reify nm >>= case_info
                     $( do x <- newName "x"
                           LamE [VarP x] . CaseE (VarE x) 
                              <$> sequence [ ($ []) . Match (RecP nm []) . NormalB
-                                                <$> [| object [ T.pack $(tolit nm) .= $(to_avron_product fs) $(varE x) ] |]
+                                                <$> [| object [ $(tolit nm) .= $(to_avron_product fs) $(varE x) ] |]
                                           | (nm,fs) <- arms ] )
         |]
 
@@ -276,7 +289,7 @@ deriveAvro nm = reify nm >>= case_info
     mk_product_schema nm tps =
         [| $( fieldlist tps ) >>= \flds ->
            memoObject $( tolit nm )
-               [ "type" .= String "record"
+               [ "type" .= string "record"
                , "fields" .= Array (V.fromList flds) ] |]
 
     fieldlist = foldr go [| return [] |]
@@ -284,7 +297,7 @@ deriveAvro nm = reify nm >>= case_info
             go (nm,_,tp) k = 
                 [| do sch <- toSchema $(sigE (varE 'undefined) (return tp))
                       obs <- $k
-                      return $ object [ "name" .= T.pack $(tolit nm)
+                      return $ object [ "name" .= string $(tolit nm)
                                       , "type" .= sch ]
                              : obs |]
 
@@ -296,5 +309,5 @@ deriveAvro nm = reify nm >>= case_info
     -- json encoding of records: fields in an object
     to_avron_product nms =
         [| \x -> object $( 
-            foldr (\(nm,_,_) k -> [| (T.pack $(tolit nm) .= toAvron ($(varE nm) x)) : $k |] )
+            foldr (\(nm,_,_) k -> [| ($(tolit nm) .= toAvron ($(varE nm) x)) : $k |] )
                   [| [] |] nms ) |]
