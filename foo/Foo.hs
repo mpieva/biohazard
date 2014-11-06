@@ -6,7 +6,7 @@ import Language.Haskell.TH
 import qualified Data.Text as T
 
 data Foo = Foo { foo_one :: Int, bar_one :: T.Text }
---         | Bar { foo_two :: Int, bar_two :: String }
+         | Bar { foo_two :: Int, bar_two :: Double }
 --                                  ^ field name?
 --          ^ record type name?
 --    ^ union type

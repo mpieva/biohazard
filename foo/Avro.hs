@@ -1,6 +1,8 @@
 {-# LANGUAGE OverloadedStrings, FlexibleInstances, TemplateHaskell #-}
 module Avro where
 
+import Control.Applicative
+import Control.Monad
 import Data.Aeson
 import Data.Bits
 import Data.ByteString.Builder
@@ -47,6 +49,9 @@ newtype MkSchema a = MkSchema a -- XXX
 instance Functor MkSchema where fmap f (MkSchema a) = MkSchema (f a)
 instance Monad MkSchema where return = MkSchema
                               MkSchema a >>= k = k a
+
+memoObject :: T.Text -> [(T.Text,Value)] -> MkSchema Value
+memoObject nm ps = return . object $ ("name" .= nm) : ps
 
 -- instances for primitive types
 
@@ -240,55 +245,56 @@ deriveAvro nm = reify nm >>= case_info
     -- XXX if there is only one alternative, the top-level union should not be generated
     -- each Name becomes one alternative, each VarStrictType becomes a field.
     mk_record_inst :: [ (Name, [(Name, Strict, Type)]) ] -> Q [Dec]
-    mk_record_inst [(_,fs1)] =
+    mk_record_inst [(nm1,fs1)] =
         [d| instance Avro $(conT nm) where
-                -- toSchema _ = $(mk_product_schema [(nm1,tp1)])
-                toBin     = $(to_bin_product fs1)
-                toAvron   = $(to_avron_product fs1)
+                toSchema _ = $(mk_product_schema nm1 fs1)
+                toBin      = $(to_bin_product fs1)
+                toAvron    = $(to_avron_product fs1)
         |]
 
-    {- mk_record_inst arms =
+    mk_record_inst arms =
         [d| instance Avro $(conT nm) where
-                toSchema _ = return . Array $ V.fromList 
+                {- toSchema _ = return . Array $ V.fromList 
                              $( mk_record_schema object [ T.pack "type" .= "union"
                                              , T.pack "name" .= $(tolit nm) ]
-                                             -- , T.pack "symbols" .= $(tolitlist nms) ]
-                {- toBin x = $( 
-                    return $ CaseE (VarE 'x) 
-                        [ Match (ConP nm1 [])
-                                (NormalB (AppE (VarE 'zigInt)
-                                               (LitE (IntegerL i)))) []
-                        | (i,nm1) <- zip [0..] nms ] )
-                toAvron x = $(
-                    return $ CaseE (VarE 'x) 
-                        [ Match (ConP nm1 [])
-                                (NormalB (AppE (ConE 'String)
-                                               (AppE (VarE 'T.pack)
-                                                     (LitE (StringL (nameBase nm1)))))) []
-                        | (i,nm1) <- zip [0..] nms ] ) -}
-        |] -}
+                                             -- , T.pack "symbols" .= $(tolitlist nms) ] -}
+                toBin = 
+                    $( do x <- newName "x"
+                          LamE [VarP x] . CaseE (VarE x) 
+                             <$> sequence [ ($ []) . Match (RecP nm []) . NormalB
+                                                <$> [| zigInt $(litE (IntegerL i)) <> $(to_bin_product fs) $(varE x) |]
+                                          | (i,(nm,fs)) <- zip [0..] arms ] )
+                toAvron = 
+                    $( do x <- newName "x"
+                          LamE [VarP x] . CaseE (VarE x) 
+                             <$> sequence [ ($ []) . Match (RecP nm []) . NormalB
+                                                <$> [| object [ T.pack $(tolit nm) .= $(to_avron_product fs) $(varE x) ] |]
+                                          | (nm,fs) <- arms ] )
+        |]
 
-    -- mk_product_schema :: Name -> Type -> Q [MkSchema Value] ...
-    -- mk_product_schema nm tp = return 
+    -- create schema for a product from a name and a list of fields
+    mk_product_schema nm tps =
+        [| $( fieldlist tps ) >>= \flds ->
+           memoObject $( tolit nm )
+               [ "type" .= String "record"
+               , "fields" .= Array (V.fromList flds) ] |]
+
+    fieldlist = foldr go [| return [] |]
+        where
+            go (nm,_,tp) k = 
+                [| do sch <- toSchema $(sigE (varE 'undefined) (return tp))
+                      obs <- $k
+                      return $ object [ "name" .= T.pack $(tolit nm)
+                                      , "type" .= sch ]
+                             : obs |]
 
     -- binary encoding of records: field by field.
-    -- amazing, this seems to work...
-    to_bin_product nms = do x <- newName "x"
-                            return $ LamE [VarP x]
-                                (foldr (\(nm,_,_) k ->
-                                    VarE 'mappend `AppE`
-                                    (AppE (VarE 'toBin) (AppE (VarE nm) (VarE x))) `AppE`
-                                    k) (VarE 'mempty) nms)
+    to_bin_product nms = 
+        [| \x -> $( foldr (\(nm,_,_) k -> [| mappend (toBin ($(varE nm) x)) $k |] )
+                          [| mempty |] nms ) |]
 
-    to_avron_product nms = do x <- newName "x"
-                              colon <- [| (:) |]
-                              nil <- [| [] |]
-                              return $ LamE [VarP x]
-                                  (AppE (VarE 'object)
-                                        (foldr (\(nm,_,_) k ->
-                                            colon
-                                            `AppE` ((VarE '(.=))
-                                                    `AppE` (AppE (VarE 'T.pack) (LitE (StringL (nameBase nm)))) 
-                                                    `AppE` (AppE (VarE 'toAvron) (AppE (VarE nm) (VarE x))))
-                                            `AppE`  k)
-                                            nil nms))
+    -- json encoding of records: fields in an object
+    to_avron_product nms =
+        [| \x -> object $( 
+            foldr (\(nm,_,_) k -> [| (T.pack $(tolit nm) .= toAvron ($(varE nm) x)) : $k |] )
+                  [| [] |] nms ) |]
