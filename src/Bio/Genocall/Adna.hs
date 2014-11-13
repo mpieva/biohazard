@@ -3,7 +3,7 @@ module Bio.Genocall.Adna where
 
 import Bio.Base
 import Bio.Bam ( BamRaw, br_isReversed, br_l_seq )
-import Bio.Genocall.Matrix
+import Data.Vec hiding ( map )
 
 import qualified Data.Vector.Unboxed as V
 
@@ -18,6 +18,9 @@ import qualified Data.Vector.Unboxed as V
 -- account is difficult, somewhat approximate, and therefore not worth
 -- the hassle.
 --
+-- We represent substitution matrices by the type 'Mat44D'.  Internally,
+-- this is a vector of packed vectors.  Conveniently, each of the packed
+-- vectors represents all transition /into/ the given nucleotide.
 
 -- | Represents our knowledge about a certain base, which consists of
 -- the base itself (A,C,G,T, encodes as 0..3; no Ns), the quality score
@@ -33,7 +36,7 @@ import qualified Data.Vector.Unboxed as V
 
 data DamagedBase = DB { db_call :: !Nucleotide
                       , db_qual :: !Qual
-                      , db_dmg  :: !Matrix }
+                      , db_dmg  :: !Mat44D }
 
 instance Show DamagedBase where
     showsPrec _ (DB n q _) = shows n . (:) '@' . shows q
@@ -44,16 +47,24 @@ instance Show DamagedBase where
 -- substitution matrices exactly as long a the read itself.  Though
 -- typically not done, the model can take sequence into account.
 
-type DamageModel = BamRaw -> [Matrix]
+type DamageModel = BamRaw -> [Mat44D]
+
+data To = Nucleotide :-> Nucleotide
+
+infix 9 :->
+infix 8 !
+
+-- | Convenience function to access a substitution matrix that has a
+-- mnemonic reading.
+(!) :: Mat44D -> To -> Double
+(!) m (N x :-> N y) = getElem (fromIntegral x) $ getElem (fromIntegral y) m
 
 -- | 'DamageModel' for undamaged DNA.  The likelihoods follow directly
 -- from the quality score.  This needs elaboration to see what to do
 -- with amibiguity codes (even though those haven't actually been
 -- observed in the wild).
 noDamage :: DamageModel
-noDamage r = replicate (br_l_seq r) identity
-  where
-    !identity = construct $ \(x :-> y) -> if x == y then 1 else 0
+noDamage r = replicate (br_l_seq r) (packMat identity)
 
 
 -- | 'DamageModel' for single stranded library prep.  Only one kind of
@@ -76,20 +87,20 @@ ssDamage SSD{..} r = let mat = if br_isReversed r then ssd_rev else ssd_fwd
     prob5 = abs ssd_lambda / (1 + abs ssd_lambda)
     prob3 = abs ssd_kappa  / (1 + abs ssd_kappa)
 
-    ssd_fwd i = fromList [ 1,   0,   0,   0
-                         , 0, (1-p), 0,   0
-                         , 0,   0,   1,   0
-                         , 0,   p,   0,   1 ]
+    ssd_fwd i = ( Vec4D 1   0   0   0 ) :.
+                ( Vec4D 0 (1-p) 0   0 ) :.
+                ( Vec4D 0   0   1   0 ) :.
+                ( Vec4D 0   p   0   1 ) :. ()
       where
         !lam5 = prob5 ^ (1+i)
         !lam3 = prob3 ^ (br_l_seq r - i)
         !lam  = lam3 + lam5 - lam3 * lam5
         !p    = ssd_sigma * lam + ssd_delta * (1-lam)
 
-    ssd_rev i = fromList [ 1,   0,   p,   0
-                         , 0,   1,   0,   0
-                         , 0,   0, (1-p), 0
-                         , 0,   0,   0,   1 ]
+    ssd_rev i = ( Vec4D 1   0   p   0 ) :.
+                ( Vec4D 0   1   0   0 ) :.
+                ( Vec4D 0   0 (1-p) 0 ) :.
+                ( Vec4D 0   0   0   1 ) :. ()
       where
         !lam5 = prob5 ^ (br_l_seq r - i)
         !lam3 = prob3 ^ (1+i)
@@ -127,10 +138,11 @@ dsDamage :: DsDamageParameters -> DamageModel
 dsDamage DSD{..} r = map mat [0 .. br_l_seq r-1]
   where
     prob = abs dsd_lambda / (1 + abs dsd_lambda)
-    mat i = fromList [ 1,     0,     q,     0
-                     , 0,   (1-p),   0,     0
-                     , 0,     0,   (1-q),   0
-                     , 0,     p,     0,     1 ]
+    mat :: Int -> Mat44D
+    mat i = ( Vec4D 1     0     q     0 ) :.
+            ( Vec4D 0   (1-p)   0     0 ) :.
+            ( Vec4D 0     0   (1-q)   0 ) :.
+            ( Vec4D 0     p     0     1 ) :. ()
       where
         p    = dsd_sigma * lam5 + dsd_delta * (1-lam5)
         q    = dsd_sigma * lam3 + dsd_delta * (1-lam3)

@@ -5,15 +5,18 @@ import Bio.Bam.Pileup
 import Bio.Bam.Rec
 import Bio.Base
 import Bio.Genocall.Adna
-import Bio.Genocall.Matrix
 import Control.Applicative
 import Data.Bits ( testBit )
 import Data.Foldable hiding ( sum, product )
-import Data.List ( tails, intercalate, sortBy )
+import Data.List ( inits, tails, intercalate, sortBy )
 import Data.Ord
+import Data.Vec.Base ( (:.)(..) )
+import Data.Vec.LinAlg
+import Data.Vec.Packed
 
 import qualified Data.Set               as Set
 import qualified Data.Vector.Unboxed    as V
+import qualified Data.Vec               as Vec
 
 -- | Simple indel calling.  We don't bother with it too much, so here's
 -- the gist:  We collect variants (simply different variants, details
@@ -76,11 +79,11 @@ simple_call ploidy pls = foldl1' (V.zipWith (*)) . map step
     foldl1' _ [    ] = V.singleton 1
     foldl1' f (a:as) = foldl' f a as
 
-    norm = toProb (fromIntegral ploidy) `pow` (-1)
+    !mag = toProb (fromIntegral ploidy) `pow` (-1)
 
     -- XXX This could probably be simplified given the mk_pls function
     -- below.
-    step = V.fromList . map (* norm) . reverse . mk_pls ploidy . reverse . pls
+    step = V.fromList . map (* mag) . reverse . mk_pls ploidy . reverse . pls
 
     -- Meh.  Pointless, but happens to be the unit.
     mk_pls 0  _ = return 0
@@ -95,22 +98,26 @@ simple_call ploidy pls = foldl1' (V.zipWith (*)) . map step
 
 
 -- | Make a list of genotypes, each represented as a vector of allele
--- probabilities, from ploidy and number of alleles.
+-- probabilities, from ploidy and four possible alleles.  
+--
+-- This makes the most sense for SNPs.  The implied order of alleles is
+-- A,C,G,T, and the resulting genotype vectors can straight forwardly be
+-- mutiplied with a substitution matrix to give a sensible result.
+-- (Something similar for indels could be imagined, but doesn't seem all
+-- that useful.  We specialize for SNPs to get simpler types and
+-- efficient code.)
 --
 -- "For biallelic sites the ordering is: AA,AB,BB; for triallelic
 -- sites the ordering is: AA,AB,BB,AC,BC,CC, etc."
---
--- If this function is called with 'nalleles' == 4 and the order of the
--- alleles is A,C,G,T, then the resulting genotype vectors can staright
--- forwardly be mutiplied with a substitution matrix, and the result
--- makes sense.
-mk_gts :: Int -> Int -> [Vec]
-mk_gts ploidy nalleles = go ploidy nalleles
-  where
-    !norm = recip $ fromIntegral ploidy
 
-    -- go p a: all p-ploid genotypes that can be made from a alleles, in the
-    -- order in which they appear in VCF
+mk_snp_gts :: Int -> [Vec4D]
+mk_snp_gts ploidy = go ploidy alleles
+  where
+    !mag = recip $ fromIntegral ploidy
+    alleles = [ Vec4D 1 0 0 0, Vec4D 0 1 0 0, Vec4D 0 0 1 0, Vec4D 0 0 0 1 ]
+
+    -- go p as returns all p-ploid genotypes that can be made from the
+    -- alleles as, in the order in which they appear in VCF.
     -- So, that's
     --   - all (p-1)-ploid genotypes that can be made from 1 allele, plus allele 0        (AA)
     --   - all (p-1)-ploid genotypes that can be made from 2 alleles, plus allele 1       (AC,CC)
@@ -119,35 +126,43 @@ mk_gts ploidy nalleles = go ploidy nalleles
     --   - there's one 0-ploid genotype: the zero vector
     --   - the genotypes that can be made from 0 alleles is an empty list
 
-    go !p !a | p == 0    = [ Vec $ V.replicate nalleles 0 ]
-             | a == 0    = []
-             | otherwise = [ Vec $ V.unsafeUpd gt [(aa, norm + V.unsafeIndex gt aa)]
-                           | aa <- [0..a-1]
-                           , Vec gt <- go (p-1) (aa+1) ]
+    go !p as | p == 0    = [ Vec4D 0 0 0 0 ]
+             | otherwise = [ gt + mag * aa | as'@(aa:_) <- inits as, gt <- go (p-1) as' ]
+
+-- | SNP call according to maq/samtools/bsnp model.  The matrix k counts
+-- how many errors we made, approximately.
 
 maq_snp_call :: Int -> Double -> BasePile -> GL
-maq_snp_call ploidy theta bases = V.fromList $ map l $ mk_gts ploidy 4 -- four bases
+maq_snp_call ploidy theta bases = V.fromList $ map l $ mk_snp_gts ploidy
   where
-    -- bases with effective qualitied in order of decreasing(!) quality
+    -- Bases with effective qualities in order of decreasing(!) quality.
+    -- A vector based algorithm may fit here.
     bases' = sortBy (flip $ comparing db_qual)
              [ db { db_qual = mq `min` db_qual db } | (mq,db) <- bases ]
 
+    everynuc :: Vec.Vec4 Nucleotide
+    everynuc = nucA :. nucC :. nucG :. nucT :. ()
+
     -- L(G)
-    l gt = l' gt 0 zeroMatrix bases'
+    l gt = l' gt 0 (0 :: Mat44D) bases'
 
     l' !gt !acc !k (!x:xs) =
         let
             -- P(X|Q,H), a vector of four (x is fixed, h is not)
             -- this is the simple form where we set all w to 1/4
-            p_x_q_h_ = [ 0.25 * fromQualRaised (theta ** (k ! h :-> db_call x)) (db_qual x) | h <- everything ]
-            p_x_q_h  = zipWith (\p h -> if db_call x == h then 1 + p - sum p_x_q_h_ else p) p_x_q_h_ everything
+            -- XXX XXX  this is fugly...
+            p_x_q_h = Vec.map (\h -> 0.25 * fromQualRaised (theta ** (k ! h :-> db_call x)) (db_qual x)) everynuc
+            probs   = vZipWith3 (\p h g -> g * if db_call x == h then 1 + p - Vec.sum p_x_q_h else p)
+                                p_x_q_h everynuc (db_dmg x `multmv` gt)
 
-            probs = zipWith (*) p_x_q_h (V.toList . unVec $ db_dmg x `mult` gt)
-            k' = update k $ zipWith (\h p -> let i = h :-> db_call x in (i, k ! i + p)) everything probs
-            acc' = acc + sum probs
+            kk = Vec.getElem (fromIntegral . unN $ db_call x) k + pack probs
+            k' = Vec.setElem (fromIntegral . unN $ db_call x) kk k
+            
+            acc' = acc + Vec.sum probs
         in l' gt acc' k' xs
     l'   _ !acc  _ [     ] = toProb acc
 
+    vZipWith3 f u v w = Vec.zipWith ($) (Vec.zipWith f u v) w
 
 {-
 smoke_test :: IO ()

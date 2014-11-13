@@ -8,7 +8,6 @@ import Bio.Base
 import Bio.Bam.Header
 import Bio.Bam.Raw
 import Bio.Genocall.Adna
-import Bio.Genocall.Matrix
 import Bio.Iteratee
 
 import Control.Applicative
@@ -17,6 +16,7 @@ import Control.Monad.Fix ( fix )
 import Data.Foldable hiding ( sum, product )
 import Data.Monoid
 import Data.Ord
+import Data.Vec.Packed ( Mat44D )
 
 import qualified Data.ByteString        as B
 import qualified Data.Vector.Unboxed    as V
@@ -104,10 +104,12 @@ data PrimBase = Base { _pb_wait   :: !Int                       -- ^ number of b
 -- pick apart the CIGAR field, and combine it with sequence and quality
 -- as appropriate.  We ignore the @MD@ field, even if it is present.
 -- Clipped bases are removed/skipped as appropriate.  We also ignore the
--- reference allele, if fact, we don't even know it.  Nicely avaoid any
--- reference bias by construction.
+-- reference allele, in fact, we don't even know it, which nicely avoids
+-- any possible reference bias by construction.  But we do apply a
+-- substitution matrix to each base, which must be supplied along with
+-- the read.
 
-decompose :: BamRaw -> [Matrix] -> PrimChunks
+decompose :: BamRaw -> [Mat44D] -> PrimChunks
 decompose br matrices
     | br_isUnmapped br || br_rname br == invalidRefseq = EndOfRead
     | otherwise = firstBase (br_pos br) 0 0 matrices
@@ -122,7 +124,7 @@ decompose br matrices
     -- and BAQ.  If QUAL is invalid, we replace it (arbitrarily) with
     -- 23 (assuming a rather conservative error rate of ~0.5%), BAQ is
     -- added to QUAL, and MAPQ is an upper limit for effective quality.
-    get_seq :: Int -> Matrix -> DamagedBase
+    get_seq :: Int -> Mat44D -> DamagedBase
     get_seq i = case br_seq_at br i of                              -- nucleotide
             b | b == nucsA -> DB nucA qe
               | b == nucsC -> DB nucC qe
@@ -139,7 +141,7 @@ decompose br matrices
     -- code N).  Indels are skipped, since these are either bugs in the
     -- aligner or the aligner getting rid of essentially unalignable
     -- bases.
-    firstBase :: Int -> Int -> Int -> [Matrix] -> PrimChunks
+    firstBase :: Int -> Int -> Int -> [Mat44D] -> PrimChunks
     firstBase !_   !_  !_  [        ] = EndOfRead
     firstBase !pos !is !ic mms@(m:ms)
         | is >= max_seq || ic >= max_cig = EndOfRead
@@ -157,7 +159,7 @@ decompose br matrices
     -- Generate likelihoods for the next base.  When this gets called,
     -- we are looking at an M CIGAR operation and all the subindices are
     -- valid.
-    nextBase :: Int -> Int -> Int -> Int -> Int -> Matrix -> [Matrix] -> PrimBase
+    nextBase :: Int -> Int -> Int -> Int -> Int -> Mat44D -> [Mat44D] -> PrimBase
     nextBase !wt !pos !is !ic !io m ms = Base wt (get_seq is m) mapq (br_isReversed br)
                                        $ nextIndel  [] 0 (pos+1) (is+1) ic (io+1) ms
 
@@ -169,7 +171,7 @@ decompose br matrices
     -- isn't valid in the middle of a read (H and S), but then what
     -- would we do about it anyway?  Just ignoring it is much easier and
     -- arguably at least as correct.
-    nextIndel :: [[DamagedBase]] -> Int -> Int -> Int -> Int -> Int -> [Matrix] -> PrimChunks
+    nextIndel :: [[DamagedBase]] -> Int -> Int -> Int -> Int -> Int -> [Mat44D] -> PrimChunks
     nextIndel _   _   !_   !_  !_  !_  [        ] = EndOfRead
     nextIndel ins del !pos !is !ic !io mms@(m:ms)
         | is >= max_seq || ic >= max_cig = EndOfRead
