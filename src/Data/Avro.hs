@@ -1,23 +1,38 @@
 {-# LANGUAGE OverloadedStrings, FlexibleInstances, TemplateHaskell #-}
-module Avro where
+{-# LANGUAGE RecordWildCards, BangPatterns #-}
+module Data.Avro where
 
+-- ^ Support for Avro.
+-- Current status is that we can generate schemas for certain Haskell
+-- values, serialize to binary and JSON representations, and write
+-- Container files using the null codec.  The C implementation likes
+-- some, but not all of these containers; it's unclear if that's the
+-- fault of the C implementation, though.
+--
+-- Meanwhile, serialization works for nested sums-of-products, as long as the
+-- product uses record syntax and the top level is a plain record.
+-- The obvious primitives are supported.
+
+import Bio.Iteratee
 import Control.Applicative
 import Control.Monad
 import Data.Aeson hiding ((.=))
 import Data.Bits
 import Data.ByteString.Builder
 import Data.Foldable ( foldMap )
+import Data.Int ( Int64 )
+import Data.Maybe
 import Data.Monoid
 import Data.Scientific
 import Data.Text.Encoding
 import Foreign.Storable ( Storable, sizeOf )
 import Language.Haskell.TH
+import System.Random
 
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Lazy as BL
 import qualified Data.HashMap.Strict as H
 import qualified Data.Text as T
-import qualified Data.Text.Lazy as TL
 import qualified Data.Vector as V
 import qualified Data.Vector.Unboxed as U
 
@@ -28,9 +43,8 @@ string :: String -> Value
 string = String . T.pack
 
 -- | This is the class of types we can embed into the Avro
--- infrastructure.  Right now, we can derive a schema, toBin     to
--- the Avro binary format, and toBin     to the Avro JSON encoding.
--- XXX Deserialization is out of scope right now.
+-- infrastructure.  Right now, we can derive a schema, encode to
+-- the Avro binary format, and encode to the Avro JSON encoding.
 class Avro a where
     -- | Produces the schema for this type.  Schemas are represented as
     -- JSON values.  The monad is used to keep a table of already
@@ -54,7 +68,7 @@ newtype MkSchema a = MkSchema
 
 instance Functor MkSchema where fmap f m = MkSchema (\k -> mkSchema m (k . f))
 instance Monad MkSchema where return a = MkSchema (\k -> k a)
-                              a >>= m = MkSchema (\k -> mkSchema a (\a -> mkSchema (m a) k))
+                              a >>= m = MkSchema (\k -> mkSchema a (\a' -> mkSchema (m a') k))
 
 memoObject :: String -> [(T.Text,Value)] -> MkSchema Value
 memoObject nm ps = MkSchema $ \k h ->
@@ -66,7 +80,16 @@ memoObject nm ps = MkSchema $ \k h ->
                   | otherwise -> error $ "same type name, different schema: " ++ nm
 
 runMkSchema :: MkSchema Value -> Value
-runMkSchema a = mkSchema a const H.empty
+runMkSchema x = mkSchema x postproc H.empty
+  where
+    -- Objects are fine as is.
+    postproc (Object  o) _ = Object o
+    -- Top level can't be a string, can it?  Need to wrap into the long form.
+    postproc (String tp) _ = object [ "type" .= String tp ]
+    -- Top level Array should be fine, too.
+    postproc (Array a) _ = Array a
+    -- reject anything else
+    postproc v _ = error $ "Not allowed as toplevel schema: " ++ show v
 
 -- instances for primitive types
 
@@ -82,6 +105,11 @@ instance Avro Bool where
     toAvron    = Bool
 
 instance Avro Int where
+    toSchema _ = return $ String "long"
+    toBin      = encodeIntBase128
+    toAvron    = Number . fromIntegral
+
+instance Avro Int64 where
     toSchema _ = return $ String "long"
     toBin      = encodeIntBase128
     toAvron    = Number . fromIntegral
@@ -166,46 +194,22 @@ instance Avro a => Avro (H.HashMap T.Text a) where
     toAvron      = Object . H.map toAvron
 
 
--- Enums
--- Enumerated symbols.  Sums of empty alternatives would fit.
--- Can we do this generically?  I'm too retarded to do it.
+-- * Some(!) complex types.
+--
+-- Enums:  Enumerated symbols.  This is generated automatically for sums
+-- of empty alternatives.  Constructor names become enum symbols.
 
--- Unions
--- Unions are unions of differently named types.  Note that unions
--- themselves are anonymous.
+-- Records:  This is generated automatically for product types using
+-- Haskell record syntax.
+--
+-- Unions:  For Haskell sum-of-product types using record syntax for
+-- every arm, an Avro instance resolving to a union of record can be
+-- generated automatically.  The constructor names become record type
+-- names, their fields become record fields.
 
--- Fixed
--- Fixed size, uninterpreted things.  Could come in handy for, say,
--- exactly 10 genotype likelihoods.
-
--- Records
--- Can we do this generically?  I'm too retarded to do it.
-
-
--- We could encode a typical sum-of products as a Union of Records.  The
--- constructor names become record type names, their fields become
--- record fields.  Could be done uding TH?
-
--- The degenerate case of a single data constructor can be treated
--- specially, it doesn't need to be a union.
-
--- Sometimes we build sum types containing sum types, Maybe being the
+-- XXX Sometimes we build sum types containing sum types, Maybe being the
 -- most obvious example.  A (Maybe a) where a itself yields a union,
 -- should probably yield a union with one more alternative (the null).
-
--- deriving stuff for stuff...
---
--- The Dec inside must be a DataD or a NewtypeD.  Ignore Cxt, ignore
--- Name, ignore(?) TyVarBndrs, ignore deriving Names.  Recurse into
--- Cons.
---
--- If all Cons are RecC: generate an Avro record type from the Name,
--- with one field per VarStrictType.  Name becomes field name, Type is
--- ignored (we recurse).  We'll need to add an (Avro t) context if t
--- contains a variable.
---
--- If all Cons are NormalC with no arguments, create an Enum from their
--- names.  
 
 
 deriveAvro :: Name -> Q [Dec]
@@ -224,8 +228,8 @@ deriveAvro nm = reify nm >>= case_info
 
     case_dec (NewtypeD _cxt _name _tyvarbndrs  _con _) = err $ "don't know what to do for NewtypeD"
     case_dec (DataD    _cxt _name _tyvarbndrs cons _)
-        | all simple_cons cons = mk_enum_inst [ nm | NormalC nm [] <- cons ]
-        | all record_cons cons = mk_record_inst [ (nm, vsts) | RecC nm vsts <- cons ]
+        | all simple_cons cons = mk_enum_inst [ nm1 | NormalC nm1 [] <- cons ]
+        | all record_cons cons = mk_record_inst [ (nm1, vsts) | RecC nm1 vsts <- cons ]
         | otherwise            = err $ "don't know how to make an instance with these constructors"
     case_dec _ = fail $ "is not a data or newtype declaration"
 
@@ -251,13 +255,11 @@ deriveAvro nm = reify nm >>= case_info
                         [ Match (ConP nm1 [])
                                 (NormalB (AppE (VarE 'string)
                                                (LitE (StringL (nameBase nm1))))) []
-                        | (i,nm1) <- zip [0..] nms ] )
+                        | nm1 <- nms ] )
         |]
 
     -- record instance from record-like constructors
     -- XXX maybe allow empty "normal" constructors, too
-    -- XXX if there is only one alternative, the top-level union should not be generated
-    -- each Name becomes one alternative, each VarStrictType becomes a field.
     mk_record_inst :: [ (Name, [(Name, Strict, Type)]) ] -> Q [Dec]
     mk_record_inst [(nm1,fs1)] =
         [d| instance Avro $(conT nm) where
@@ -269,45 +271,83 @@ deriveAvro nm = reify nm >>= case_info
     mk_record_inst arms =
         [d| instance Avro $(conT nm) where
                 toSchema _ = Array . V.fromList <$> sequence
-                             $( foldr (\(nm,fs) k -> [| $(mk_product_schema nm fs) : $k |])
+                             $( foldr (\(nm1,fs) k -> [| $(mk_product_schema nm1 fs) : $k |])
                                       [| [] |] arms )
                 toBin = 
                     $( do x <- newName "x"
                           LamE [VarP x] . CaseE (VarE x) 
-                             <$> sequence [ ($ []) . Match (RecP nm []) . NormalB
+                             <$> sequence [ ($ []) . Match (RecP nm1 []) . NormalB
                                                 <$> [| zigInt $(litE (IntegerL i)) <> $(to_bin_product fs) $(varE x) |]
-                                          | (i,(nm,fs)) <- zip [0..] arms ] )
+                                          | (i,(nm1,fs)) <- zip [0..] arms ] )
                 toAvron = 
                     $( do x <- newName "x"
                           LamE [VarP x] . CaseE (VarE x) 
-                             <$> sequence [ ($ []) . Match (RecP nm []) . NormalB
-                                                <$> [| object [ $(tolit nm) .= $(to_avron_product fs) $(varE x) ] |]
-                                          | (nm,fs) <- arms ] )
+                             <$> sequence [ ($ []) . Match (RecP nm1 []) . NormalB
+                                                <$> [| object [ $(tolit nm1) .= $(to_avron_product fs) $(varE x) ] |]
+                                          | (nm1,fs) <- arms ] )
         |]
 
     -- create schema for a product from a name and a list of fields
-    mk_product_schema nm tps =
+    mk_product_schema nm1 tps =
         [| $( fieldlist tps ) >>= \flds ->
-           memoObject $( tolit nm )
+           memoObject $( tolit nm1 )
                [ "type" .= string "record"
                , "fields" .= Array (V.fromList flds) ] |]
 
     fieldlist = foldr go [| return [] |]
         where
-            go (nm,_,tp) k = 
+            go (nm1,_,tp) k = 
                 [| do sch <- toSchema $(sigE (varE 'undefined) (return tp))
                       obs <- $k
-                      return $ object [ "name" .= string $(tolit nm)
+                      return $ object [ "name" .= string $(tolit nm1)
                                       , "type" .= sch ]
                              : obs |]
 
     -- binary encoding of records: field by field.
     to_bin_product nms = 
-        [| \x -> $( foldr (\(nm,_,_) k -> [| mappend (toBin ($(varE nm) x)) $k |] )
+        [| \x -> $( foldr (\(nm1,_,_) k -> [| mappend (toBin ($(varE nm1) x)) $k |] )
                           [| mempty |] nms ) |]
 
     -- json encoding of records: fields in an object
     to_avron_product nms =
         [| \x -> object $( 
-            foldr (\(nm,_,_) k -> [| ($(tolit nm) .= toAvron ($(varE nm) x)) : $k |] )
+            foldr (\(nm1,_,_) k -> [| ($(tolit nm1) .= toAvron ($(varE nm1) x)) : $k |] )
                   [| [] |] nms ) |]
+
+
+data ContainerOpts = ContainerOpts { objects_per_block :: Int
+                                   , filetype_label :: B.ByteString }
+
+-- Writing a container file.  This is an 'Enumeratee', we read a list of
+-- suitable types, we write a header containing the generated schema,
+-- and a series of blocks with serialized data.  
+writeAvroContainer :: (MonadIO m, Nullable s, ListLike s a, Avro a)
+                   => ContainerOpts -> Enumeratee s B.ByteString m r
+writeAvroContainer ContainerOpts{..} out = do
+        ma <- peekStream
+        sync_marker <- liftIO $ B.pack <$> replicateM 16 randomIO
+
+        let schema = encode . runMkSchema . toSchema . fromJust $ ma
+
+            meta :: H.HashMap T.Text B.ByteString
+            meta = H.fromList [( "avro.schema", B.concat $ BL.toChunks schema )
+                              ,( "avro.codec", "null" )
+                              ,( "biohazard.filetype", filetype_label )]
+
+            hdr = byteString "Obj\1" <> toBin meta <> byteString sync_marker
+
+        let enc_blocks out' = do
+                e <- isFinished
+                if e then return out'
+                     else do (num,code) <- joinI $ takeStream objects_per_block $ 
+                                           foldStream (\(!n,c) o -> (n+1, c <> toBin o)) (0::Int,mempty)
+
+                             let code1 = toLazyByteString code
+                                 block = toBin num <> toBin (BL.length code1) <>
+                                         lazyByteString code1 <> byteString sync_marker
+                             lift (enumList (BL.toChunks $ toLazyByteString block) out') >>= enc_blocks
+
+        lift (enumList (BL.toChunks $ toLazyByteString hdr) out) >>= enc_blocks
+
+-- possible codecs: null, zlib, snappy, lzma
+

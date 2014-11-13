@@ -5,8 +5,6 @@ import Bio.Base
 import Bio.Bam ( BamRaw, br_isReversed, br_l_seq )
 import Data.Vec hiding ( map )
 
-import qualified Data.Vector.Unboxed as V
-
 -- ^ Things specific to ancient DNA, e.g. damage models.
 --
 -- For aDNA, we need a substitution probability.  We have three options:
