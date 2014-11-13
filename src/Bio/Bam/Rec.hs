@@ -85,7 +85,7 @@ import Control.Monad
 import Control.Applicative
 import Data.Array.IArray
 import Data.Array.Unboxed
-import Data.Attoparsec              ( anyWord8 )
+import Data.Attoparsec.ByteString   ( anyWord8 )
 import Data.Binary.Get
 import Data.Binary.Put
 import Data.Bits                    ( Bits, testBit, shiftL, shiftR, (.&.), (.|.), complement )
@@ -100,14 +100,14 @@ import Foreign.Storable             ( peek, poke )
 import System.IO
 import System.IO.Unsafe             ( unsafePerformIO )
 
-import qualified Data.Attoparsec.Char8          as P
-import qualified Data.ByteString                as B
-import qualified Data.ByteString.Char8          as S
-import qualified Data.ByteString.Lazy.Char8     as L
-import qualified Data.Foldable                  as F
-import qualified Data.Iteratee                  as I
-import qualified Data.Map                       as M
-import qualified Data.Vector.Unboxed            as V
+import qualified Data.Attoparsec.ByteString.Char8   as P
+import qualified Data.ByteString                    as B
+import qualified Data.ByteString.Char8              as S
+import qualified Data.ByteString.Lazy.Char8         as L
+import qualified Data.Foldable                      as F
+import qualified Data.Iteratee                      as I
+import qualified Data.Map                           as M
+import qualified Data.Vector.Unboxed                as V
 
 -- ^ Parsers and Printers for BAM and SAM.  We employ an @Iteratee@
 -- interface, and we strive to support everything possible in BAM.  So

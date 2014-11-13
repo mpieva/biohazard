@@ -13,7 +13,6 @@ module Bio.Bam.Raw (
 
     decodeBam,
     getBamRaw,
-    -- decodeBamLoop,
     decodeAnyBam,
     decodeAnyBamFile,
 
@@ -93,7 +92,6 @@ import Bio.Iteratee.ZLib hiding ( CompressionLevel )
 import Bio.Iteratee.Bgzf
 
 import Control.Monad
-import Data.Attoparsec.Iteratee
 import Data.Binary.Put
 import Data.Bits                    ( Bits, shiftL, shiftR, (.&.), (.|.), testBit )
 import Data.Int                     ( Int32, Int16, Int8 )

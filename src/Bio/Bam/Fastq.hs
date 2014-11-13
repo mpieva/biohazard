@@ -7,17 +7,16 @@ import Bio.Bam.Header
 import Bio.Bam.Rec
 import Bio.Base
 import Bio.Iteratee
-import Control.Applicative       hiding ( many )
-import Data.Attoparsec.Char8
-import Data.Attoparsec.Iteratee
+import Control.Applicative hiding ( many )
+import Data.Attoparsec.ByteString.Char8
 import Data.Bits
 
-import qualified Data.Attoparsec.Char8  as P
-import qualified Data.ByteString        as B
-import qualified Data.ByteString.Char8  as S
-import qualified Data.Iteratee.ListLike as I
-import qualified Data.Map               as M
-import qualified Data.Vector.Unboxed    as V
+import qualified Data.Attoparsec.ByteString.Char8   as P
+import qualified Data.ByteString                    as B
+import qualified Data.ByteString.Char8              as S
+import qualified Data.Iteratee.ListLike             as I
+import qualified Data.Map                           as M
+import qualified Data.Vector.Unboxed                as V
 
 -- ^ Parser for @FastA/FastQ@, 'Iteratee' style, based on
 -- "Data.Attoparsec", and written such that it is compatible with module

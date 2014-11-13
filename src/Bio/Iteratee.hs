@@ -1,4 +1,4 @@
-{-# LANGUAGE PatternGuards, BangPatterns #-}
+{-# LANGUAGE PatternGuards, BangPatterns, DeriveDataTypeable #-}
 
 -- | Basically a reexport of "Data.Iteratee" less the names that clash
 -- with "Prelude" plus a handful of utilities.
@@ -56,6 +56,9 @@ module Bio.Iteratee (
     popQ,
     cancelAll,
 
+    ParseError(..),
+    parserToIteratee,
+
     module X ) where
 
 import Bio.Base ( findAuxFile )
@@ -68,14 +71,16 @@ import Data.Iteratee.Binary as X
 import Data.Iteratee.Char as X
 import Data.Iteratee.IO as X hiding ( defaultBufSize )
 import Data.Iteratee.Iteratee as X
-import Data.Monoid
 import Data.ListLike ( ListLike )
+import Data.Monoid
+import Data.Typeable
 import System.IO ( stdin, stdout, stderr, hIsTerminalDevice )
 import System.Environment ( getArgs )
 
-import qualified Data.ListLike as LL
-import qualified Data.ByteString as S
-import qualified Data.Iteratee as I
+import qualified Data.Attoparsec.ByteString     as A
+import qualified Data.ByteString                as S
+import qualified Data.Iteratee                  as I
+import qualified Data.ListLike                  as LL
 
 -- | Grouping on 'Iteratee's.  @groupStreamOn proj inner outer@ executes
 -- @inner (proj e)@, where @e@ is the first input element, to obtain an
@@ -348,3 +353,26 @@ popQ (QQ _ [    ] _) = Nothing
 cancelAll :: MonadIO m => QQ (Async a) -> m ()
 cancelAll (QQ _ ff bb) = liftIO $ mapM_ cancel (ff ++ bb)
 
+data ParseError = ParseError {errorContexts :: [String], errorMessage :: String}
+    deriving (Show, Typeable)
+
+instance Exception ParseError
+
+-- | A function to convert attoparsec 'Parser's into 'Iteratee's.
+parserToIteratee :: (Monad m) => A.Parser a -> Iteratee S.ByteString m a
+parserToIteratee p = icont (f (A.parse p)) Nothing
+  where
+    f k (EOF Nothing) =
+        case A.feed (k S.empty) S.empty of
+          A.Fail _ err dsc            -> throwErr (toException $ ParseError err dsc)
+          A.Partial _                 -> throwErr (toException EofException)
+          A.Done rest v | S.null rest -> idone v (EOF Nothing)
+                           | otherwise   -> idone v (Chunk rest)
+    f _ (EOF (Just e)) = throwErr e
+    f k (Chunk s)
+        | S.null s = icont (f k) Nothing
+        | otherwise =
+            case k s of
+              A.Fail _ err dsc -> throwErr (toException $ ParseError err dsc)
+              A.Partial k'     -> icont (f k') Nothing
+              A.Done rest v    -> idone v (Chunk rest)
