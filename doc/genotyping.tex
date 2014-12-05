@@ -3,13 +3,16 @@
 \usepackage{amsmath}
 \usepackage{todonotes}
 
+\newcommandx{\beware}[2][1=]{\todo[inline,linecolor=red,backgroundcolor=red!25,bordercolor=red,#1]{#2}}
+\newcommandx{\idea}[2][1=]{\todo[inline,linecolor=blue,backgroundcolor=blue!25,bordercolor=blue,#1]{#2}}
+
 \title{Error Models For Genotype Calling}
 \author{Udo Stenzel}
 
 \begin{document}
 \maketitle
 
-\section{Overview Of Error Models}
+\section{``History'' Of Error Models}
 
 I tried to track down the logic behind the \texttt{samtools} and
 \texttt{maq} error models, which supposedly go back to \texttt{CAP3}.
@@ -54,7 +57,7 @@ implementation like \texttt{SOAPsnp} (or more recently
 \texttt{BSNP}\cite{bsnp}), which needs to be generalized for ancient
 DNA.
 
-\section{Genotype Calling w/ Simple Errors}
+\section{Genotype Calling with Simple Errors}
 
 The following heavily borrows notation from the \texttt{BSNP}\cite{bsnp} paper.  Consider a
 genomic position $j$.  Let $G_j$ be the true (unknown) genotype.  For
@@ -139,63 +142,143 @@ k_{i,X_i,H_i} &= k_{i-1,X_i,H_i} + P(X_i, H_i | Q_i, G) \\
 
 \subsection{Handcrafted Data}
 
-Alternatively, selected or simulated data, to test for egregious bugs.
-No good to test any parameter estimation.
+To test for egregious bugs, we can write a couple of SMA or BAM files by
+hand.  This shouldn't really be called a test; it's ordinary, boring
+debugging.
 
-\subsection{Simulated Modern Data}
+\subsection{Simulated Data}
 
-To debug fitting of simple parameters (up to four divergences,
-heterozygous/homozygous transition/transversion), but unsuitable to test
-advanced error models.
+For all of the simulations, the genome used does not matter at all.  For
+simplicity, the genome should be small (a megabase should be plenty) and
+completely random.  We start with a haploid reference genome, then we
+apply divergence to get a diploid sample genome.  Reads from the sample
+genome are simulated along with their correct alignment, the reads are
+then modified according to damage and error models.
 
-\subsection{Simulated Ancient Data}
+\beware{We are \textbf{not} going to use the \textbf{human genome}
+or some other monstrosity here.  It's needlessly complicated and
+provides no benefit.}
 
-To debug fitting of deamination model and co-fitting of divergences.
-Again, unsuitable to test improved error models.
+\beware{We specifically \textbf{do not} simulate reads, then
+\textbf{align} them back.  Doing so would introduce alignment problems
+into the genotype calling, which makes testing harder while providing no
+insight at all.}
 
-\subsection{Clean, high-coverage, modern data, mitochondrion only}
+\paragraph{Simulated Modern Data}
 
-Svante's mitochondrion would work, Svante's X chromosome could also be
-good.  To test the two error models in a setting without heterozygosity.
-This should be used to fit the $\theta$ parameter.
+Starting from a genome with known divergence and heterozygosity, we
+simulate plain reads with some sequencing error and suitable quality
+scores, then genotype call. 
 
-\subsection{Clean, high-coverage, modern data, two mixed mitochondria}
+Called genotypes can be compared to the correct genome, but more
+importantly, parameters (divergence, heterozygosity) should be fitted
+and compared to their true values, particularly at low (roughly one or
+twofold) coverage.
 
-Would have to be from the HGDP sequencing efforts.  This is to test
-accuracy in a setting with known diploid genotypes.
+\beware{There is no point in simulating fancy sequencing error.
+Here, we assume the simple model is correct and show that maximum
+likelihood estimation of parameters works in this setting.}
 
-\subsection{Clean, high-coverage, diploid modern data}
+\paragraph{Simulated Ancient Data}
 
-Svante's genome would work.  To test the two error models and select the
-better one.  This must be an internal goodness-of-fit test, we cannot
-know the true genotypes.
+This is the same idea, this time including damage with known parameters.
+As before, genotype calls can be compared and parameters fitted.  The
+main goal is to get the estimates for heterozygosity, especially
+heterozygous transitions, and damage, which interact, right.
 
-\subsection{Clean, low-coverage, modern data}
+Damage could be simulated either by chosing a position dependent damage
+rate and damaging bases independently, or by chosing overhang lengths
+according to a distribution, then damaging bases independently at
+different constant rates for overhang vs. stem.  The genotype caller
+uses the former model, but the latter is more correct.  We should test
+both, both are expected to work reasonably well.
 
-To investigate interaction of parameters at low coverage.
+\beware{We will not use an empirical distribution for the damage
+rates.  The empirical distribution is no closer to reality than one
+based on a formula, so there is nothing to be learned from it.  We could
+use an empirical distribution of overhang lengths, if that could be
+obtained.}
 
-\subsection{Ancient data, one mitochondrion}
+\idea{Since damage should not correlate with genotypes, estimating
+damage in a separate first pass might work and would be lot cheaper,
+both conceptually and operationally, than co-estimating damage with
+heterozygosity. This is a good time to try it.}
+
+\subsection{Real Sequencing Data}
+
+\paragraph{Clean, high-coverage, modern, haploid data}
+
+We need actual sequencing data from a haploid region at sensible
+coverage.  The goal is to test the two available error models in a
+setting without confounding factors, especially heterozygosity.  
+This should be used to select the better error model and to fit the
+$\theta$ parameter if the \texttt{Maq} model is selected.
+
+The haploid region of choice might be the mitochondrion, which is
+haploid, but the data will be somewhat contaminated with nuMT sequences.
+Alternatively, a uniquely mappable region of the X or Y chromosomes of a
+male specimen would work, here the difficulty is to find that unique
+region.
+
+\paragraph{Clean, high-coverage, modern data, two mixed haploids}
+
+Just like the previous test, but this time with two haploid samples
+mixed in equal parts.  Here, we simulate a diploid sample, but we know
+from the individual calls which positions are heterozygous.  Again, we
+test which error model is better and assess the correctness of the
+calls.
+
+\paragraph{Clean, high-coverage, diploid modern data}
+
+We test the two error models and select the better one.  This must be an
+internal goodness-of-fit test, since we cannot know the true genotypes.
+In principle, this is the only test strictly necessary to decide on an
+error model.
+
+\beware{In case the tests on haploid samples are inconclusive,
+goodness-of-fit takes over.  We don't mess with the particulars of the
+above tests until we like the results.}
+
+\paragraph{Clean, low-coverage, modern data}
+
+Assuming we fixed the error model, assuming we can reliably estimate
+difficult parameters like heterozygosity, he we investigate the bahviour
+at low coverage.  The sample can be a high coverage sample suitably
+downsampled.  In this case, we have an expectation for the estimated
+parameters.
+
+\paragraph{Ancient data, one mitochondrion}
 
 To fit parameters to real data, using the best known model (at this
 point, we should have selected an error model), without being confounded
 by heterozygosity.  Data should be clean, so we don't have to deal with
-contamination.  FFPE samples could serve in place of ancient DNA, it
-might come with less trouble due to bacterial contamination.
+contamination.
 
-\subsection{Ancient data, two mixed mitochondria}
+\idea{FFPE samples could serve in place of ancient DNA, it
+might come with less trouble due to bacterial contamination.}
+
+\paragraph{Ancient data, two mixed mitochondria}
 
 To investigate interaction of heterozygosity, deamination, error model
 in a setting where true heterozygous genotypes are known.  Data should
 be clean and ideally from the same run (we don't want to deal with
-additional contamination and different error profiles).
+additional contamination and different error profiles).  The assumtion
+is that we can correctly call either sample on its own.
 
-\subsection{Real Ancient Data}
+In principle, if we haven't encountered difficulties so far, this should
+simply work.  We can learn to which extent the parameter estimates are
+confounded with each other in a simple setting.
+
+\paragraph{Real Ancient Data}
 
 Including autosomes, sex chromosomes, mitochondria of
 varying coverage.  To estimate parameters separately, to see possible
 interactions.  To demostrate the process makes sense. 
 
-\subsection{Further Directions}
+\beware{I actually have no idea what to look for here.  Any possible
+result would have to be taken at face value.}
+
+\section{Further Directions}
 
 At this point, we should have a genotype caller that deals well with
 deamination, heterozygosity, and recurrent errors.  Thorough testing on
@@ -205,11 +288,11 @@ applies a prior and produces genotypes.  After that, further ideas
 include: 
 
 \begin{itemize}
-\item Priors involving covariance matrices.
 \item Likelihoods involving contamination.
+\item Priors involving covariance matrices.
 \end{itemize}
 
-\section{Dealing With Contamination}
+\subsection{Dealing With Contamination}
 
 A natural direction to go in is to model contamination\todo{Actual
 equations}.  To a first
@@ -252,6 +335,32 @@ only interested in the contamination rate, which is to be treated as
 preliminary.  A later stage could try and fit both the sample and the
 contaminant into a phylogeny, thereby learning a more precise
 contamination rate\todo{Try and confirm}.
+
+\subsection{Covariance-Matrix as Prior}
+
+When co-calling individuals from multiple populations, the correct prior
+for the genotypes would be based on a covariance matrix.  Estimating
+that matrix allows Treemix, Patterson's~D and Pruefer's Divergence.
+
+Conceptually, it's easy:  the covariance matrix serves as prior for the
+allele frequencies in multiple populations, the allele frequency
+(together with a small term for new mutations) serves as prior for the
+genotypes\todo{Equation!}.  Maximizing the covariance matrix is
+straight-forward, but it would require integrating over the space of
+possible combinations of allele frequencies, which sounds impractical,
+and becomes more impractical the more samples are considered.
+
+Instead, we can estimate the joint probability (genotype(s), allele
+frequency) and maximize that, which is much easier\footnote{Effectively,
+we estimate the allele frequency at every position for every sample.
+Which is impossible, but the aggregate makes sense for populations.}.
+Only summation over the possible genotypes is necesssary, which is just
+10 per individual, and individuals are independent; allele frequencies
+and covariance matrix are co-estimated using something resembling the EM
+algorithm.  (One idea would be to not store the aforementioned 600GB of
+likelihoods, but only 6GB or thereabout of allele frequency data.  The
+likelihoods can be generated from the smaller BAM files on the fly.)
+
 
 \appendix
 

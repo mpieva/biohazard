@@ -1,4 +1,5 @@
 {-# LANGUAGE RecordWildCards, BangPatterns, OverloadedStrings #-}
+{-# LANGUAGE TemplateHaskell #-}
 -- Command line driver for simple genotype calling.
 
 import Bio.Base
@@ -11,13 +12,17 @@ import Bio.Iteratee
 import Control.Applicative
 import Control.Arrow
 import Control.Monad
+import Data.Avro
+import Data.Function
 import System.Console.GetOpt
 import System.Environment
 import System.Exit
 import System.IO
 
+import qualified Data.ByteString                as B
 import qualified Data.ByteString.Char8          as S
 import qualified Data.Iteratee                  as I
+import qualified Data.Text                      as T
 import qualified Data.Vector.Unboxed            as V
 
 -- Ultimately, we might produce a VCF file looking somewhat like this:
@@ -110,23 +115,27 @@ import qualified Data.Vector.Unboxed            as V
 --  TSV2:  chr pos score
 
 data Conf = Conf {
-    conf_output      :: (Handle -> IO ()) -> IO (),
+    conf_output      :: Maybe Output,
     conf_sample      :: S.ByteString,
     conf_ploidy      :: S.ByteString -> Int,
     conf_loverhang   :: Maybe Double,
     conf_roverhang   :: Maybe Double,
     conf_ds_deam     :: Double,
     conf_ss_deam     :: Double,
+    conf_theta       :: Maybe Double,
+    conf_report      :: String -> IO (),
     conf_prior_het   :: Prob,
     conf_prior_indel :: Prob }
 
 defaultConf :: Conf
-defaultConf = Conf ($ stdout) "John_Doe" (const 2) Nothing Nothing
-                   0.02 0.45 (qualToProb $ Q 30) (qualToProb $ Q 45)
+defaultConf = Conf Nothing "John_Doe" (const 2) Nothing Nothing
+                   0.02 0.45 Nothing (\_ -> return ())
+                   (qualToProb $ Q 30) (qualToProb $ Q 45)
 
 options :: [OptDescr (Conf -> IO Conf)]
 options = [
-    Option "o" ["output"]                   (ReqArg set_output "FILE")      "Write output to FILE",
+    Option "o" ["output", "avro-output"]    (ReqArg set_avro_out "FILE")    "Write AVRO output to FILE",
+    Option [ ] ["fasta-output"]             (ReqArg set_fa_output "FILE")   "Write FA output to FILE",
     Option "N" ["name","sample-name"]       (ReqArg set_sample "NAME")      "Set sample name to NAME",
     Option "1" ["haploid-chromosomes"]      (ReqArg set_haploid "PRF")      "Targets starting with PRF are haploid",
     Option "2" ["diploid-chromosomes"]      (ReqArg set_diploid "PRF")      "Targets starting with PRF are diploid",
@@ -137,11 +146,16 @@ options = [
                                             (ReqArg set_ds_deam "FRAC")     "Deamination rate in double stranded section is FRAC",
     Option "s" ["ss-deamination-rate","single-strand-deamination-rate"]
                                             (ReqArg set_ss_deam "FRAC")     "Deamination rate in single stranded section is FRAC",
+    Option "t" ["theta","dependency-coefficient"] 
+                                            (ReqArg set_theta   "FRAC")     "Set dependency coefficient to FRAC (\"N\" to turn off)",
     Option "H" ["prior-heterozygous", "heterozygosity"]
                                             (ReqArg set_phet "PROB")        "Set prior for a heterozygous variant to PROB",
+    -- Removed this, because it needs access to a reference.
+    -- But maybe we can derive this from a suitable BAM file?
     -- Option "S" ["prior-snp","snp-rate","divergence"]
                                             -- (ReqArg set_pdiv "PROB")        "Set prior for an indel variant to PROB",
     Option "I" ["prior-indel","indel-rate"] (ReqArg set_pindel "PROB")      "Set prior for an indel variant to PROB",
+    Option "v" ["verbose"]                  (NoArg be_verbose)              "Print more diagnostics",
     Option "h?" ["help","usage"]            (NoArg disp_usage)              "Display this message" ]
   where
     disp_usage _ = do pn <- getProgName
@@ -149,14 +163,22 @@ options = [
                       putStrLn $ usageInfo blah options
                       exitFailure
 
-    set_output "-" c = return $ c { conf_output = ($ stdout) }
-    set_output  fn c = return $ c { conf_output = withFile fn WriteMode }
+    be_verbose c = return $ c { conf_report = hPutStrLn stderr }
+
+    set_fa_output fn = add_output $ output_fasta fn
+    set_avro_out  fn = add_output $ output_avro  fn
+
+    add_output ofn c = 
+        return $ c { conf_output = Just $ \k ->
+            ofn $ \oit1 -> maybe (k oit1) ($ \oit2 -> k (\c -> () <$ I.zip (oit1 c) (oit2 c))) (conf_output c) }
 
     set_sample   nm c = return $ c { conf_sample = S.pack nm }
 
     set_haploid arg c = return $ c { conf_ploidy = \chr -> if S.pack arg `S.isPrefixOf` chr then 1 else conf_ploidy c chr }
     set_diploid arg c = return $ c { conf_ploidy = \chr -> if S.pack arg `S.isPrefixOf` chr then 2 else conf_ploidy c chr }
 
+    set_theta "N" c = return $ c { conf_theta       =  Nothing }
+    set_theta     a c = (\t -> c { conf_theta       = Just   t }) <$> readIO a
     set_loverhang a c = (\l -> c { conf_loverhang   = Just   l }) <$> readIO a
     set_roverhang a c = (\l -> c { conf_roverhang   = Just   l }) <$> readIO a
     set_ss_deam   a c = (\r -> c { conf_ss_deam     =        r }) <$> readIO a
@@ -168,11 +190,11 @@ main :: IO ()
 main = do
     (opts, files, errs) <- getOpt Permute options <$> getArgs
     unless (null errs) $ mapM_ (hPutStrLn stderr) errs >> exitFailure
-    Conf{..} <- foldl (>>=) (return defaultConf) opts
+    conf@Conf{..} <- foldl (>>=) (return defaultConf) opts
 
-    let no_damage = hPutStrLn stderr "using no damage model" >> return noDamage
-        ss_damage p = hPutStrLn stderr ("using single strand damage model with " ++ show p) >> return (ssDamage p)
-        ds_damage p = hPutStrLn stderr ("using double strand damage model with " ++ show p) >> return (dsDamage p)
+    let no_damage   = conf_report "using no damage model" >> return noDamage
+        ss_damage p = conf_report ("using single strand damage model with " ++ show p) >> return (ssDamage p)
+        ds_damage p = conf_report ("using double strand damage model with " ++ show p) >> return (dsDamage p)
 
     dmg_model <- case (conf_loverhang, conf_roverhang) of
             (Nothing, Nothing) -> no_damage
@@ -180,50 +202,74 @@ main = do
             (Nothing, Just lr) -> ss_damage $ SSD conf_ss_deam conf_ds_deam (recip lr) (recip lr)
             (Just ll, Just lr) -> ss_damage $ SSD conf_ss_deam conf_ds_deam (recip ll) (recip lr)
 
-    conf_output $ \ohdl ->
+    maybe (output_fasta "-") id conf_output $ \oiter ->
         mergeInputs combineCoordinates files >=> run $ \hdr ->
-            joinI $ filterStream (not . br_isUnmapped) $
-            joinI $ filterStream (isValidRefseq . br_rname) $
-            joinI $ by_groups same_ref (\br out -> do
-                let sname = sq_name $ getRef (meta_refs hdr) $ br_rname br
-                liftIO $ hPutStrLn stderr $ S.unpack sname ++ case conf_ploidy sname of
-                            1 -> ": haploid call" ; 2 -> ": diploid call"
-                out' <- lift $ enumPure1Chunk [S.concat [">", conf_sample, "--", sname]] out
-                pileup dmg_model =$
-                    mapStream (calls $! conf_ploidy sname) =$
-                    convStream (do calls <- headStream
-                                   format_snp_call conf_prior_het calls
-                                   format_indel_call conf_prior_indel calls) =$
-                    collect_lines out') $
-            mapStreamM_ (S.hPut ohdl . (flip S.snoc '\n'))
+            filterStream (not . br_isUnmapped) =$
+            filterStream (isValidRefseq . br_rname) =$
+            by_groups ((==) `on` br_rname)
+                (\br out -> do
+                    let sname = sq_name $ getRef (meta_refs hdr) $ br_rname br
+                    liftIO $ conf_report $ S.unpack sname ++ case conf_ploidy sname of
+                                1 -> ": haploid call" ; 2 -> ": diploid call"
+                    out' <- lift $ enumPure1Chunk [Left $ S.concat [">", conf_sample, "--", sname]] out
+                    joinI $ pileup dmg_model $
+                        mapStream (Right . calls conf_theta (conf_ploidy sname)) out' 
+                ) =$
+            oiter conf
+                        {- =$
+                        convStream (do calls <- headStream
+                                       format_snp_call conf_prior_het calls
+                                       format_indel_call conf_prior_indel calls) =$
+                        collect_lines out' -}
+                -- ) =$
+            -- mapStreamM_ (S.hPut ohdl . (flip S.snoc '\n'))
 
--- | This is a white lie:  We do haploid or diploid *SNP* calls, but
--- indel calls are always haploid.  Otherwise there is no good way to
--- print the result!
---
--- For the time being, we use the naive call.  So forward and reverse
--- piles get concatenated.
-calls :: Int -> Pile -> Calls
-calls pl (Pile rs po bc ic) = Pile rs po
-    (fmap (snp_call . uncurry (++)) bc)
-    (fmap (simple_indel_call 1) ic)
+type OIter = Conf -> Iteratee [Either S.ByteString Calls] IO ()
+type Output = (OIter -> IO ()) -> IO ()
+
+-- Bah, this is completely f'ed up.
+output_fasta :: FilePath -> (OIter -> IO r) -> IO r
+output_fasta fn k = undefined {- if fn == "-" then k (fa_out stdout)
+                                 else withFile fn WriteMode $ k . fa_out
   where
-    snp_call = maq_snp_call pl 0.85
-    -- snp_call = simple_snp_call pl
+    -- Header is missing  XXX
+    fa_out :: Handle -> Conf -> Iteratee [Either S.ByteString Calls] IO ()
+    fa_out hdl Conf{..} = convStream (do calls' <- headStream
+                                         case (calls' :: Either S.ByteString Calls) of
+                                             Right calls -> let s1 = format_snp_call conf_prior_het calls
+                                                            in (:) s1 <$> format_indel_call conf_prior_indel calls)
+                          =$ collect_lines
+                          =$ mapStreamM_ (S.hPut hdl . (flip S.snoc '\n')) -}
+
+
+-- | We do calls of any ploidy; the FastA output code will fail if the
+-- ploidy isn't 1 or 2.
+--
+-- XXX  Forward and reverse piles get concatenated.  Why am I doing this
+-- again?  I shouldn't, or should I?
+
+calls :: Maybe Double -> Int -> Pile -> Calls
+calls mtheta pl (Pile rs po bc ic) =
+    Pile rs po (fmap (snp_call . uncurry (++)) bc)
+               (fmap (simple_indel_call pl) ic)
+  where
+    snp_call = maybe (simple_snp_call pl) (maq_snp_call pl) mtheta
 
 
 -- | Formatting a SNP call.  If this was a haplopid call (four GL
 -- values), we pick the most likely base and pass it on.  If it was
 -- diploid, we pick the most likely dinucleotide and pass it on.
 
-format_snp_call :: Monad m => Prob -> Calls -> Iteratee [Calls] m S.ByteString
-format_snp_call p cs | V.length gl ==  4 = return $ S.take 1 $ S.drop (maxQualIndex gl) hapbases
-                     | V.length gl == 10 = return $ S.take 1 $ S.drop (maxQualIndex $ V.zipWith (*) ps gl) dipbases
-                     | otherwise = error "Thou shalt not try to format_snp_call unless thou madeth a haploid or diploid call!"
-    where gl = vc_vars $ p_snp cs
-          ps = V.fromListN 10 [p,1,p,1,1,p,1,1,1,p]
-          hapbases = "NACGT"
-          dipbases = "NAMCRSGWYKT"
+format_snp_call :: Prob -> Calls -> S.ByteString
+format_snp_call p cs
+    | V.length gl ==  4 = S.take 1 $ S.drop (maxQualIndex gl) hapbases
+    | V.length gl == 10 = S.take 1 $ S.drop (maxQualIndex $ V.zipWith (*) ps gl) dipbases
+    | otherwise = error "Thou shalt not try to format_snp_call unless thou madeth a haploid or diploid call!"
+  where
+    gl = vc_vars $ p_snp cs
+    ps = V.fromListN 10 [p,1,p,1,1,p,1,1,1,p]
+    dipbases = "NAMCRSGWYKT"
+    hapbases = "NACGT"
 
 -- | Formatting an Indel call.  We pick the most likely variant and
 -- pass its sequence on.  Then we drop incoming calls that should be
@@ -232,10 +278,17 @@ format_snp_call p cs | V.length gl ==  4 = return $ S.take 1 $ S.drop (maxQualIn
 -- guaranteeed /in this program/)!
 
 format_indel_call :: Monad m => Prob -> Calls -> Iteratee [Calls] m S.ByteString
-format_indel_call p cs | V.length gl == length vars = I.dropWhile skip >> return (S.pack $ show ins)
-                       | otherwise = error "Thou shalt not have calleth format_indel_call unless thou madeth a haploid call!"
-    where
-        (gl,vars) = vc_vars $ p_indel cs
+format_indel_call p cs
+    | V.length gl0 == nv                  = go gl0
+    | V.length gl0 == nv * (nv+1) `div` 2 = go homs
+    | otherwise = error "Thou shalt not try to format_indel_call unless thou madeth a haploid or diploid call!"
+  where
+    (gl0,vars) = vc_vars $ p_indel cs
+    !nv   = length vars
+    !homs = V.fromListN nv [ gl0 V.! (i*(i+1) `div` 2 -1) | i <- [1..nv] ]
+
+    go gl = I.dropWhile skip >> return (S.pack $ show ins)
+      where
         eff_gl = V.fromList $ zipWith adjust (V.toList gl) vars
         adjust q (0,[]) = q ; adjust q _ = p * q
 
@@ -256,9 +309,6 @@ collect_lines = eneeCheckIfDone (liftI . go S.empty)
                             (left, right) | S.null right -> liftI $ go left k
                                           | otherwise    -> eneeCheckIfDone (liftI . go right) . k $ Chunk [left]
 
-same_ref :: BamRaw -> BamRaw -> Bool
-same_ref a b = br_rname a == br_rname b
-
 by_groups :: ( Monad m, ListLike s a, Nullable s )
           => (a -> a -> Bool) -> (a -> Enumeratee s b m r) -> Enumeratee s b m r
 by_groups pr k out = do
@@ -268,3 +318,36 @@ by_groups pr k out = do
         Just hd -> do out' <- joinI $ takeWhileE (pr hd) $ k hd out
                       by_groups pr k out'
 
+-- | To output a container file, we need to convert calls into a stream of
+-- sensible objects.  To cut down on redundancy, the object will have a
+-- header that names the reference sequence and the start, followed by
+-- calls.  The calls themselves have contiguous coordinates, we start a
+-- new block if we have to skip; we also start a new block when we feel
+-- the current one is getting too large.
+
+data GT_Block = GT_Block 
+    { reference_name :: T.Text
+    , start_position :: Int
+    , called_sites :: [ GT_Site ] }
+
+data GT_Site = GT_Site 
+    { snp_stats :: GT_Stats
+    , snp_likelihoods :: B.ByteString
+    , indel_stats :: GT_Stats
+    , indel_likelihoods :: B.ByteString }
+
+data GT_Stats = GT_Stats
+    { read_depth       :: Int
+    , reads_mapq0      :: Int
+    , sum_mapq         :: Int
+    , sum_mapq_squared :: Int }
+
+
+output_avro :: FilePath -> (OIter -> IO r) -> IO r
+output_avro fn k = if fn == "-" then k (av_out stdout)
+                                else withFile fn WriteMode $ k . av_out
+  where
+    av_out :: Handle -> Conf -> Iteratee [Either S.ByteString Calls] IO ()
+    av_out hdl = undefined
+
+-- $( deriveAvros [ ''GT_Block, ''GT_Site, ''GT_Stats ] )

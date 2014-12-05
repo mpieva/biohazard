@@ -205,7 +205,7 @@ decompose br matrices
 
 data VarCall a = VarCall { vc_depth     :: !Int                  -- number of contributing reads
                          , vc_mapq0     :: !Int                  -- number of (non-)contributing reads with MAPQ==0
-                         , vc_sum_mapq  :: !Int                  -- sum of map qualities of contributring reads
+                         , vc_sum_mapq  :: !Int                  -- sum of map qualities of contributing reads
                          , vc_sum_mapq2 :: !Int                  -- sum of squared map qualities of contributing reads
                          , vc_vars      :: a }                   -- variant calls & GL values in dB
     deriving Show

@@ -16,7 +16,11 @@ module Data.Avro where
 import Bio.Iteratee
 import Control.Applicative
 import Control.Monad
+import Control.Monad.ST ( runST )
 import Data.Aeson hiding ((.=))
+import Data.Array.MArray
+import Data.Array.Unsafe ( castSTUArray )
+import Data.Binary.Get
 import Data.Bits
 import Data.ByteString.Builder
 import Data.Foldable ( foldMap )
@@ -25,6 +29,7 @@ import Data.Maybe
 import Data.Monoid
 import Data.Scientific
 import Data.Text.Encoding
+import Data.Word ( Word32, Word64 )
 import Foreign.Storable ( Storable, sizeOf )
 import Language.Haskell.TH
 import System.Random
@@ -32,6 +37,7 @@ import System.Random
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Lazy as BL
 import qualified Data.HashMap.Strict as H
+import qualified Data.ListLike as LL
 import qualified Data.Text as T
 import qualified Data.Vector as V
 import qualified Data.Vector.Unboxed as U
@@ -55,12 +61,17 @@ class Avro a where
 
     -- | Serializes a value to the binary representation.  The schema is
     -- implied, serialization to related schemas is not supported.
-    toBin     :: a -> Builder
+    toBin :: a -> Builder
+
+    -- | Deserializzes a value from binary representation.  Right now,
+    -- no attempt at schema matching is done, the schema must match the
+    -- expected one exactly.
+    fromBin :: Get a
 
     -- | Serializes a value to the JSON representation.  Note that even
     -- the JSON format needs a schema for successful deserialization,
     -- and here we support only the one implied schema.
-    toAvron  :: a -> Value
+    toAvron :: a -> Value
 
 
 newtype MkSchema a = MkSchema 
@@ -97,45 +108,61 @@ runMkSchema x = mkSchema x postproc H.empty
 instance Avro () where
     toSchema _ = return $ String "null"
     toBin   () = mempty
+    fromBin    = return ()
     toAvron () = Null
 
 instance Avro Bool where
     toSchema _ = return $ String "boolean"
     toBin      = word8 . fromIntegral . fromEnum
+    fromBin    = toEnum . fromIntegral <$> getWord8
     toAvron    = Bool
 
 instance Avro Int where
     toSchema _ = return $ String "long"
     toBin      = encodeIntBase128
+    fromBin    = decodeIntBase128
     toAvron    = Number . fromIntegral
 
 instance Avro Int64 where
     toSchema _ = return $ String "long"
     toBin      = encodeIntBase128
+    fromBin    = decodeIntBase128
     toAvron    = Number . fromIntegral
 
 instance Avro Float where
     toSchema _ = return $ String "float"
     toBin      = floatLE
+    fromBin    = wordToFloat <$> getWord32le
     toAvron    = Number . fromFloatDigits
 
 instance Avro Double where
     toSchema _ = return $ String "double"
     toBin      = doubleLE
+    fromBin    = wordToDouble <$> getWord64le
     toAvron    = Number . fromFloatDigits
 
 instance Avro B.ByteString where
     toSchema _ = return $ String "bytes"
     toBin    s = encodeIntBase128 (B.length s) <> byteString s
+    fromBin    = decodeIntBase128 >>= getByteString
     toAvron    = String . decodeLatin1
 
 instance Avro T.Text where
     toSchema _ = return $ String "string"
     toBin      = toBin . encodeUtf8
+    fromBin    = decodeUtf8 <$> fromBin
     toAvron    = String
 
 
+-- Integer<->Float conversions, stolen from cereal.
 
+{-# INLINE wordToFloat #-}
+wordToFloat :: Word32 -> Float
+wordToFloat x = runST (newArray (0 :: Int, 0) x >>= castSTUArray >>= flip readArray 0)
+
+{-# INLINE wordToDouble #-}
+wordToDouble :: Word64 -> Double
+wordToDouble x = runST (newArray (0 :: Int, 0) x >>= castSTUArray >>= flip readArray 0)
 
 -- | Implements Zig-Zag-Coding like in Protocol Buffers and Avro.
 zig :: (Storable a, Bits a) => a -> a
@@ -153,13 +180,30 @@ encodeWordBase128 x | x' == 0   = word8 (fromIntegral (x .&. 0x7f))
                                   <> encodeWordBase128 x'
   where x' = x `shiftR` 7
 
+decodeWordBase128 :: (Integral a, Bits a) => Get a
+decodeWordBase128 = go 0 0
+  where
+    go acc sc = do x <- getWord8
+                   let !acc' = acc .|. fromIntegral x `shiftL` sc
+                   if x .&. 0x80 == 0
+                        then return acc'
+                        else go acc' (sc+7)
+
 -- | Encodes an int of any size by combining the zig-zag coding with the
 -- base 128 encoding.
 encodeIntBase128 :: (Integral a, Bits a, Storable a) => a -> Builder
 encodeIntBase128 = encodeWordBase128 . zig
 
+-- | Decodes an int of any size by combining the zig-zag decoding with
+-- the base 128 decoding.
+decodeIntBase128 :: (Integral a, Bits a, Storable a) => Get a
+decodeIntBase128 = zag <$> decodeWordBase128
+
 zigInt :: Int -> Builder
 zigInt = encodeIntBase128
+
+zagInt :: Get Int
+zagInt = decodeWordBase128
 
 -- Complex Types
 
@@ -172,12 +216,30 @@ instance Avro a => Avro [a] where
     toBin    as = toBin (length as) <> foldMap toBin as <> word8 0
     toAvron     = Array . V.fromList . map toAvron
 
+    -- This is not suitable for incremental processing.
+    fromBin     = get_blocks []
+      where
+        get_blocks acc = zagInt >>= \l -> if l == 0 then return $ reverse acc
+                                                    else get_block acc l >>= get_blocks
+        get_block acc l = if l == 0 then return acc
+                                    else fromBin >>= \a -> get_block (a:acc) (l-1)
+
+
 -- | A generic vector becomes an Avro array
 instance Avro a => Avro (V.Vector a) where
     toSchema as = do sa <- toSchema (V.head as)
                      return $ object [ "type" .= String "array", "items" .= sa ]
     toBin    as = toBin (V.length as) <> foldMap toBin as <> word8 0
     toAvron     = Array . V.map toAvron
+
+    -- This is not suitable for incremental processing.
+    fromBin     = get_blocks []
+      where
+        get_blocks acc = zagInt >>= \l -> if l == 0 then return $ V.concat $ reverse acc
+                                                    else get_block [] l >>= 
+                                                         get_blocks . (: acc) . V.fromListN l . reverse
+        get_block acc l = if l == 0 then return acc
+                                    else fromBin >>= \a -> get_block (a:acc) (l-1)
 
 -- | An unboxed vector becomes an Avro array
 instance (Avro a, U.Unbox a) => Avro (U.Vector a) where
@@ -186,12 +248,31 @@ instance (Avro a, U.Unbox a) => Avro (U.Vector a) where
     toBin    as = toBin (U.length as) <> U.foldr ((<>) . toBin) mempty as <> word8 0
     toAvron     = Array . V.map toAvron . U.convert
 
+    -- This is not suitable for incremental processing.
+    fromBin     = get_blocks []
+      where
+        get_blocks acc = zagInt >>= \l -> if l == 0 then return $ U.concat $ reverse acc
+                                                    else get_block [] l >>= 
+                                                         get_blocks . (: acc) . U.fromListN l . reverse
+        get_block acc l = if l == 0 then return acc
+                                    else fromBin >>= \a -> get_block (a:acc) (l-1)
+
+
 -- | A map from Text becomes an Avro map.
 instance Avro a => Avro (H.HashMap T.Text a) where
     toSchema   m = do sa <- toSchema (m H.! T.empty)
                       return $ object [ "type" .= String "map", "values" .= sa ]
     toBin     as = toBin (H.size as) <> H.foldrWithKey (\k v b -> toBin k <> toBin v <> b) (word8 0) as
     toAvron      = Object . H.map toAvron
+
+    -- This is not suitable for incremental processing.
+    fromBin     = get_blocks H.empty
+      where
+        get_blocks !acc = zagInt >>= \l -> if l == 0 then return acc
+                                                     else get_block acc l >>= get_blocks
+        get_block !acc l = if l == 0 then return acc
+                                     else fromBin >>= \k -> fromBin >>= \v -> get_block (H.insert k v acc) (l-1)
+
 
 
 -- * Some(!) complex types.
@@ -211,6 +292,9 @@ instance Avro a => Avro (H.HashMap T.Text a) where
 -- most obvious example.  A (Maybe a) where a itself yields a union,
 -- should probably yield a union with one more alternative (the null).
 
+
+deriveAvros :: [Name] -> Q [Dec]
+deriveAvros = liftM concat . mapM deriveAvro
 
 deriveAvro :: Name -> Q [Dec]
 deriveAvro nm = reify nm >>= case_info
@@ -250,6 +334,14 @@ deriveAvro nm = reify nm >>= case_info
                                 (NormalB (AppE (VarE 'zigInt)
                                                (LitE (IntegerL i)))) []
                         | (i,nm1) <- zip [0..] nms ] )
+
+                fromBin = zagInt >>= \x -> $(
+                    return $ CaseE (VarE 'x) 
+                        [ Match (LitP (IntegerL i))
+                                (NormalB (AppE (VarE 'return)
+                                               (ConE nm1))) []
+                        | (i,nm1) <- zip [0..] nms ] )
+
                 toAvron x = $(
                     return $ CaseE (VarE 'x) 
                         [ Match (ConP nm1 [])
@@ -265,6 +357,7 @@ deriveAvro nm = reify nm >>= case_info
         [d| instance Avro $(conT nm) where
                 toSchema _ = $(mk_product_schema nm1 fs1)
                 toBin      = $(to_bin_product fs1)
+                fromBin    = $(from_bin_product (varE nm) fs1)
                 toAvron    = $(to_avron_product fs1)
         |]
 
@@ -279,6 +372,14 @@ deriveAvro nm = reify nm >>= case_info
                              <$> sequence [ ($ []) . Match (RecP nm1 []) . NormalB
                                                 <$> [| zigInt $(litE (IntegerL i)) <> $(to_bin_product fs) $(varE x) |]
                                           | (i,(nm1,fs)) <- zip [0..] arms ] )
+
+                fromBin = zagInt >>=
+                    $( do x <- newName "x"
+                          LamE [VarP x] . CaseE (VarE x)
+                            <$> sequence [ ($ []) . Match (LitP (IntegerL i)) . NormalB
+                                                <$> from_bin_product (varE nm1) fs
+                                         | (i,(nm1,fs)) <- zip [0..] arms ] )
+
                 toAvron = 
                     $( do x <- newName "x"
                           LamE [VarP x] . CaseE (VarE x) 
@@ -308,6 +409,9 @@ deriveAvro nm = reify nm >>= case_info
         [| \x -> $( foldr (\(nm1,_,_) k -> [| mappend (toBin ($(varE nm1) x)) $k |] )
                           [| mempty |] nms ) |]
 
+    from_bin_product =
+        foldl (\expr (_,_,_) -> [| $expr <*> fromBin |]) 
+
     -- json encoding of records: fields in an object
     to_avron_product nms =
         [| \x -> object $( 
@@ -320,7 +424,7 @@ data ContainerOpts = ContainerOpts { objects_per_block :: Int
 
 -- Writing a container file.  This is an 'Enumeratee', we read a list of
 -- suitable types, we write a header containing the generated schema,
--- and a series of blocks with serialized data.  
+-- and a series of blocks with serialized data.
 writeAvroContainer :: (MonadIO m, Nullable s, ListLike s a, Avro a)
                    => ContainerOpts -> Enumeratee s B.ByteString m r
 writeAvroContainer ContainerOpts{..} out = do
@@ -336,18 +440,50 @@ writeAvroContainer ContainerOpts{..} out = do
 
             hdr = byteString "Obj\1" <> toBin meta <> byteString sync_marker
 
-        let enc_blocks out' = do
-                e <- isFinished
-                if e then return out'
-                     else do (num,code) <- joinI $ takeStream objects_per_block $ 
-                                           foldStream (\(!n,c) o -> (n+1, c <> toBin o)) (0::Int,mempty)
+        let enc_blocks = iterLoop $ \out' -> do (num,code) <- joinI $ takeStream objects_per_block $ 
+                                                                foldStream (\(!n,c) o -> (n+1, c <> toBin o)) (0::Int,mempty)
 
-                             let code1 = toLazyByteString code
-                                 block = toBin num <> toBin (BL.length code1) <>
-                                         lazyByteString code1 <> byteString sync_marker
-                             lift (enumList (BL.toChunks $ toLazyByteString block) out') >>= enc_blocks
+                                                let code1 = toLazyByteString code
+                                                    block = toBin num <> toBin (BL.length code1) <>
+                                                            lazyByteString code1 <> byteString sync_marker
+                                                lift (enumList (BL.toChunks $ toLazyByteString block) out')
 
         lift (enumList (BL.toChunks $ toLazyByteString hdr) out) >>= enc_blocks
 
--- possible codecs: null, zlib, snappy, lzma
+-- XXX Possible codecs: null, zlib, snappy, lzma; all missing
+-- XXX Should check schema on reading.
+
+readAvroContainer :: (Monad m, ListLike s a, Avro a) => Enumeratee B.ByteString s m r
+readAvroContainer out = do
+        4 <- heads "Obj\1"  -- enough magic?
+        meta <- iterGet (fromBin :: Get (H.HashMap T.Text B.ByteString))
+        sync_marker <- iGetString 16
+
+        flip iterLoop out $ \o -> do num <- iterGet zagInt
+                                     sz <- iterGet fromBin
+                                     o' <- joinI $ takeStream sz $ -- codec goes here
+                                              convStream (LL.singleton `liftM` iterGet fromBin) o
+                                     16 <- heads sync_marker
+                                     return o'
+
+-- | Repeatedly apply an 'Iteratee' to a value until end of stream.
+-- Returns the final value.
+iterLoop :: (Nullable s, Monad m) => (a -> Iteratee s m a) -> a -> Iteratee s m a
+iterLoop it a = do e <- isFinished
+                   if e then return a
+                        else it a >>= iterLoop it
+
+
+iterGet :: Monad m => Get a -> Iteratee B.ByteString m a
+iterGet = go . runGetIncremental
+  where
+    go (Fail  _ _ err) = throwErr (iterStrExc err)
+    go (Done rest _ a) = idone a (Chunk rest)
+    go (Partial   dec) = liftI $ \ck -> case ck of
+        Chunk s -> go (dec $ Just s)
+        EOF  mx -> case dec Nothing of
+            Fail  _ _ err -> throwErr (iterStrExc err)
+            Partial     _ -> throwErr (iterStrExc "<partial>")
+            Done rest _ a | B.null rest -> idone a (EOF mx)
+                          | otherwise   -> idone a (Chunk rest)
 
