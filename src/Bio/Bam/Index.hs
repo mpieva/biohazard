@@ -110,7 +110,7 @@ rgnToSegments bi@BamIndex{..} beg end bins cpts =
     , let boff' = max boff cpt
     , boff' < eoff ]
   where
-    !cpt = maybe 0 snd $ IM.lookupLE beg cpts
+    !cpt = maybe 0 snd $ lookupLE beg cpts
 
 -- list of bins for given range of coordinates, from Heng's horrible code
 binList :: BamIndex -> Int -> Int -> [Int]
@@ -280,3 +280,10 @@ eneeBamSubseq bi ref subs
 eneeBamRegions :: Monad m => BamIndex -> [R.Region] -> Enumeratee [BamRaw] [BamRaw] m a
 eneeBamRegions bi = foldr ((>=>) . uncurry (eneeBamSubseq bi)) return . R.toList . R.fromList
 
+
+lookupLE :: IM.Key -> IM.IntMap a -> Maybe (IM.Key, a)
+lookupLE k m = case ma of
+	Just a               -> Just (k,a)
+	Nothing | IM.null m1 -> Nothing
+                | otherwise  -> Just $ IM.findMax m1
+  where (m1,ma,_) = IM.splitLookup k m
