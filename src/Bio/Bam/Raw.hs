@@ -276,7 +276,7 @@ bamRaw o s = if good then r else error $ "broken BAM record " ++ show (S.length 
 
 -- | Accessor for raw bam.
 {-# INLINE br_qname #-}
-br_qname :: BamRaw -> S.ByteString
+br_qname :: BamRaw -> Seqid
 br_qname r@(BamRaw _ raw) = S.unsafeTake (br_l_read_name r) $ S.unsafeDrop 32 raw
 
 {-# INLINE br_l_read_name #-}

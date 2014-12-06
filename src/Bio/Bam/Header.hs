@@ -181,6 +181,7 @@ parseBamMetaLine = P.char '@' >> P.choice [hdLine, sqLine, coLine, otherLine]
     pall :: P.Parser S.ByteString
     pall = P.takeWhile (\c -> c/='\t' && c/='\n')
 
+-- XXX should be a Builder
 showBamMeta :: BamMeta -> L.ByteString -> L.ByteString
 showBamMeta (BamMeta h ss os cs) =
     show_bam_meta_hdr h .

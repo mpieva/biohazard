@@ -25,7 +25,6 @@ module Bio.Base(
     Seqid,
     unpackSeqid,
     packSeqid,
-    shelve,
 
     Position(..),
     shiftPosition,
@@ -56,8 +55,6 @@ import System.FilePath      ( (</>), isAbsolute, splitSearchPath )
 import System.Environment   ( getEnvironment )
 
 import qualified Data.ByteString.Char8 as S
-import qualified Data.ByteString.Lazy as L
-
 import qualified Data.Vector.Generic         as VG
 import qualified Data.Vector.Generic.Mutable as VM
 import qualified Data.Vector.Unboxed         as VU
@@ -185,16 +182,6 @@ unpackSeqid = S.unpack
 -- | Packs a @String@ into a @Seqid@.  Only works for ASCII subset.
 packSeqid :: String -> Seqid
 packSeqid = S.pack
-
--- | Copies a lazy @L.ByteString@ into a strict @S.ByteString@.
--- A copy is forced, even if the lazy bytestring is a single chunk.
--- This makes sure bytestrings in long term storage don't hold onto
--- larger strings.
-shelve :: L.ByteString -> S.ByteString
-shelve s = case L.toChunks s of
-    [ ] -> S.empty
-    [c] -> S.copy c
-    cs  -> S.concat cs
 
 -- | Coordinates in a genome.
 -- The position is zero-based, no questions about it.  Think of the

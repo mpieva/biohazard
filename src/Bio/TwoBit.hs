@@ -1,10 +1,9 @@
+{-# LANGUAGE BangPatterns #-}
 module Bio.TwoBit (
         module Bio.Base,
 
         TwoBitFile,
         openTwoBit,
-        closeTwoBit,
-        withTwoBit,
 
         getSubseq,
         getSubseqWith,
@@ -19,101 +18,79 @@ module Bio.TwoBit (
         Mask(..)
     ) where
 
-{-
+{- ^
 Would you believe it?  The 2bit format stores blocks of Ns in a table at
 the beginning of a sequence, then packs four bases into a byte.  So it
 is neither possible nor necessary to store Ns in the main sequence, and
 you would think they aren't stored there, right?  And they aren't.
 Instead Ts are stored which the reader has to replace with Ns.
 
-How stupid is that?
-
 The sensible way to treat these is probably to just say there are two
 kinds of implied annotation (repeats and large gaps for a typical
-genome), which can be interpreted in whatever way fits.
+genome), which can be interpreted in whatever way fits.  And that's why
+we have 'Mask' and 'getSubseqWith'.
 
-TODO:  use Judy for the Int->Int mappings?  Or sorted arrays with binary search?
-TODO:  use vector-mmap instead of piecemeal I/O?
+TODO:  use binary search for the Int->Int mappings?
 -}
 
 import           Bio.Base
 import           Control.Applicative
-import           Control.Exception
 import           Control.Monad
 import           Data.Bits
 import           Data.Binary.Get
 import qualified Data.ByteString as B
+import qualified Data.ByteString.Lazy as L
 import           Data.Char (toLower)
 import qualified Data.IntMap as I
-import           Data.IORef
 import qualified Data.Map as M
 import           Data.Maybe
 import           Numeric
-import           System.IO
+import           System.IO.Posix.MMap
 import           System.Random
 
 data TwoBitFile = TBF {
-    tbf_handle :: !Handle,
-    tbf_get_word32 :: !(Get Int),
-    tbf_seqs :: !(M.Map Seqid (IORef TwoBitSequence))
+    tbf_raw :: B.ByteString,
+    tbf_seqs :: !(M.Map Seqid TwoBitSequence)
 }
 
-data TwoBitSequence = Untouched { _tbs_offset    :: {-# UNPACK #-} !Int }
-                    | Indexed   { tbs_n_blocks   :: !(I.IntMap Int)
-                                , tbs_m_blocks   :: !(I.IntMap Int)
-                                , tbs_dna_offset :: {-# UNPACK #-} !Int
-                                , tbs_dna_size   :: {-# UNPACK #-} !Int }
+data TwoBitSequence = Indexed { tbs_n_blocks   :: !(I.IntMap Int)
+                              , tbs_m_blocks   :: !(I.IntMap Int)
+                              , tbs_dna_offset :: {-# UNPACK #-} !Int
+                              , tbs_dna_size   :: {-# UNPACK #-} !Int }
 
+-- | Brings a 2bit file into memory.  The file is mmap'ed, so it will
+-- not work on streams that are not actual files.  It's also unsafe if
+-- the file is modified in any way.
 openTwoBit :: FilePath -> IO TwoBitFile
-openTwoBit fp = do
-    h <- openFile fp ReadMode
-    (g,ix) <- getFromHandle h 0 $ do
-                sig <- getWord32be
-                getWord32 <- case sig of
-                        0x1A412743 -> return $ fromIntegral `fmap` getWord32be
-                        0x4327411A -> return $ fromIntegral `fmap` getWord32le
-                        _          -> fail $ "invalid .2bit signature " ++ showHex sig []
+openTwoBit fp = do raw <- unsafeMMapFile fp
+                   return $ flip runGet (L.fromStrict raw) $ do
+                            sig <- getWord32be
+                            getWord32 <- case sig of
+                                    0x1A412743 -> return $ fromIntegral `fmap` getWord32be
+                                    0x4327411A -> return $ fromIntegral `fmap` getWord32le
+                                    _          -> fail $ "invalid .2bit signature " ++ showHex sig []
+
+                            version <- getWord32
+                            unless (version == 0) $ fail $ "wrong .2bit version " ++ show version
+
+                            nseqs <- getWord32
+                            _reserved <- getWord32
+
+                            TBF raw <$> foldM (\ix _ -> do !key <- getWord8 >>= getByteString . fromIntegral
+                                                           !off <- getWord32
+                                                           return $! M.insert key (mkBlockIndex raw getWord32 off) ix
+                                              ) M.empty [1..nseqs]
 
 
-                version <- getWord32
-                unless (version == 0) $ fail $ "wrong .2bit version " ++ show version
-
-                nseqs <- getWord32
-                _reserved <- getWord32
-
-                (,) getWord32 `fmap` repM nseqs ( liftM2 (,)
-                        ( getWord8 >>= getLazyByteString . fromIntegral )
-                        ( liftM Untouched getWord32 ) )
-
-    TBF h g <$> loop ix M.empty
+mkBlockIndex :: B.ByteString -> Get Int -> Int -> TwoBitSequence
+mkBlockIndex raw getWord32 ofs = runGet getBlock $ L.fromStrict $ B.drop ofs raw
   where
-    loop [        ] m = return m
-    loop ((k,v):xs) m = do r <- newIORef $! v ; loop xs $! M.insert (shelve k) r m
+    getBlock = do ds <- getWord32
+                  nb <- readBlockList
+                  mb <- readBlockList
+                  len <- getWord32 >> bytesRead
+                  return $! Indexed (I.fromList nb) (I.fromList mb) (ofs + fromIntegral len) ds
 
-
-
-closeTwoBit :: TwoBitFile -> IO ()
-closeTwoBit = hClose . tbf_handle
-
-withTwoBit :: FilePath -> (TwoBitFile -> IO a) -> IO a
-withTwoBit f = bracket (openTwoBit f) closeTwoBit
-
-readBlockIndex :: TwoBitFile -> IORef TwoBitSequence -> IO TwoBitSequence
-readBlockIndex tbf r = do
-    sq <- readIORef r
-    case sq of Indexed {} -> return sq
-               Untouched ofs -> do sq' <- getFromHandle (tbf_handle tbf) (fromIntegral ofs) $ do
-                                                ds <- getWord32
-                                                nb <- readBlockList
-                                                mb <- readBlockList
-                                                len <- getWord32 >> bytesRead
-
-                                                return $! Indexed (I.fromList nb) (I.fromList mb)
-                                                                  (ofs + fromIntegral len) ds
-                                   writeIORef r $! sq'
-                                   return sq'
-  where
-    getWord32 = tbf_get_word32 tbf
     readBlockList = getWord32 >>= \n -> liftM2 zip (repM n getWord32) (repM n getWord32)
 
 -- | Repeat monadic action 'n' times.  Returns result in reverse(!) order.
@@ -134,15 +111,16 @@ takeOverlap k m = dropWhile far_left $
 
 data Mask = None | Soft | Hard | Both deriving (Eq, Ord, Enum, Show)
 
-getFwdSubseqWith :: (Integer -> Int -> IO B.ByteString) -> Int  -- reader fn, dna offset
+getFwdSubseqWith :: B.ByteString -> Int                         -- raw data, dna offset
                  -> I.IntMap Int -> I.IntMap Int                -- N blocks, M blocks
                  -> (Word8 -> Mask -> a)                        -- mask function
-                 -> Int -> Int                                  -- start, len
-                 -> IO [a]                                      -- result
+                 -> Int -> Int -> [a]                           -- start, len, result
 getFwdSubseqWith raw ofs n_blocks m_blocks nt start len =
     do_mask (takeOverlap start n_blocks `mergeblocks` takeOverlap start m_blocks) start .
-    take len . drop (start .&. 3) . B.foldr toDNA [] <$>
-    raw (fromIntegral $ ofs + (start `shiftR` 2)) (len `div` 4 +1)
+    take len . drop (start .&. 3) .
+    B.foldr toDNA [] .
+    B.take (len `div` 4 +1) .
+    B.drop (fromIntegral $ ofs + (start `shiftR` 2)) $ raw
   where
     toDNA b = (++) [ 3 .&. (b `shiftR` x) | x <- [6,4,2,0] ]
 
@@ -175,28 +153,25 @@ mergeblocks [     ] [     ] = []
 -- realized by replacing everything by Ns and soft masking is done by
 -- lowercasing.  Here, we take a user supplied function to apply
 -- masking.
-getSubseqWith :: (Nucleotide -> Mask -> a) -> TwoBitFile -> Range -> IO [a]
+getSubseqWith :: (Nucleotide -> Mask -> a) -> TwoBitFile -> Range -> [a]
 getSubseqWith maskf tbf (Range { r_pos = Pos { p_seq = chr, p_start = start }, r_length = len }) = do
-    ref <- maybe (fail $ unpackSeqid chr ++ " doesn't exist") return $ M.lookup chr (tbf_seqs tbf)
-    sq1 <- readBlockIndex tbf ref
-
-    let go = getFwdSubseqWith (pGetContents $ tbf_handle tbf) (tbs_dna_offset sq1)
-                              (tbs_n_blocks sq1) (tbs_m_blocks sq1)
-
-    if start < 0 then reverse <$> go (maskf . cmp_nt) (-start-len) len
-                 else             go (maskf . fwd_nt)  start      len
+    let sq1 = maybe (error $ unpackSeqid chr ++ " doesn't exist") id $ M.lookup chr (tbf_seqs tbf)
+    let go = getFwdSubseqWith (tbf_raw tbf) (tbs_dna_offset sq1) (tbs_n_blocks sq1) (tbs_m_blocks sq1)
+    if start < 0
+        then reverse $ go (maskf . cmp_nt) (-start-len) len
+        else           go (maskf . fwd_nt)   start      len
   where
     fwd_nt = (!!) [nucT, nucC, nucA, nucG] . fromIntegral
     cmp_nt = (!!) [nucA, nucG, nucT, nucC] . fromIntegral
 
 
 -- | Extract a subsequence without masking.
-getSubseq :: TwoBitFile -> Range -> IO [Nucleotide]
+getSubseq :: TwoBitFile -> Range -> [Nucleotide]
 getSubseq = getSubseqWith (\n _ -> n)
 
 -- | Extract a subsequence with typical masking:  soft masking is
 -- ignored, hard masked regions are replaced with Ns.
-getSubseqMasked :: TwoBitFile -> Range -> IO [Nucleotides]
+getSubseqMasked :: TwoBitFile -> Range -> [Nucleotides]
 getSubseqMasked = getSubseqWith mymask
   where
     mymask (N n) None = Ns $ 1 `shiftL` fromIntegral n
@@ -206,7 +181,7 @@ getSubseqMasked = getSubseqWith mymask
 
 -- | Extract a subsequence with masking for biologists:  soft masking is
 -- done by lowercasing, hard masking by printing an N.
-getSubseqAscii :: TwoBitFile -> Range -> IO String
+getSubseqAscii :: TwoBitFile -> Range -> String
 getSubseqAscii = getSubseqWith mymask
   where
     mymask n None = showNucleotide n
@@ -215,59 +190,48 @@ getSubseqAscii = getSubseqWith mymask
     mymask _ Both = 'N'
 
 
-getFromHandle :: Handle -> Integer -> Get a -> IO a
-getFromHandle hdl ofs g = do
-    hSeek hdl AbsoluteSeek ofs
-    keepFeeding (runGetIncremental g)
-  where
-    chunk_size = 32000
-
-    keepFeeding (Fail _ _ err) = fail err
-    keepFeeding (Done _ _ res) = return res
-    keepFeeding (Partial  dec) = do s <- B.hGet hdl chunk_size
-                                    keepFeeding $ if B.null s then dec Nothing else dec (Just s)
-
-
-pGetContents :: Handle -> Integer -> Int -> IO B.ByteString
-pGetContents hdl ofs len = hSeek hdl AbsoluteSeek ofs >> B.hGet hdl len
-
 getSeqnames :: TwoBitFile -> [Seqid]
 getSeqnames = M.keys . tbf_seqs
 
 hasSequence :: TwoBitFile -> Seqid -> Bool
 hasSequence tbf sq = isJust . M.lookup sq . tbf_seqs $ tbf
 
-getSeqLength :: TwoBitFile -> Seqid -> IO Int
-getSeqLength tbf chr = do
-             ref <- maybe (fail $ shows chr " doesn't exist") return
-                    $ M.lookup chr (tbf_seqs tbf)
-             sq1 <- readBlockIndex tbf ref
-             return $ tbs_dna_size sq1
+getSeqLength :: TwoBitFile -> Seqid -> Int
+getSeqLength tbf chr =
+    maybe (error $ shows chr " doesn't exist") tbs_dna_size $
+    M.lookup chr (tbf_seqs tbf)
 
 -- | limits a range to a position within the actual sequence
-clampPosition :: TwoBitFile -> Range -> IO Range
-clampPosition g (Range (Pos n start) len) = do
-    size <- getSeqLength g n
+clampPosition :: TwoBitFile -> Range -> Range
+clampPosition tbf (Range (Pos n start) len) = Range (Pos n start') (end' - start')
+  where
+    size   = getSeqLength tbf n
+    start' = if start < 0 then max start (-size) else start
+    end'   = min (start + len) $ if start < 0 then 0 else size
 
-    let start' = if start < 0 then max start (-size) else start
-        end'   = min (start + len) $ if start < 0 then 0 else size
-    return $ Range (Pos n start') (end' - start')
 
+-- | Sample a piece of random sequence uniformly from the genome.
+-- On a 32bit platform, this will fail for genomes larger than 1G bases.
+-- However, if you're running this code on a 32bit platform, you have
+-- bigger problem to worry about.
+getRandomSeq :: RandomGen g => TwoBitFile                   -- ^ 2bit file
+                            -> ([Nucleotide] -> Bool)       -- ^ validation function
+                            -> Int                          -- ^ desired length
+                            -> g                            -- ^ RNG
+                            -> ((Range, [Nucleotide]), g)   -- ^ position, sequence, new RNG
+getRandomSeq tbf = draw
+  where
+    names = getSeqnames tbf
+    lengths = map (getSeqLength tbf) names
+    total = sum lengths
+    frags = I.fromList $ zip (scanl (+) 0 lengths) names
 
-getRandomSeq :: TwoBitFile -> IO (([Nucleotide] -> Bool) -> Int -> IO (Range, [Nucleotide]))
-getRandomSeq tbf = do
-    let names = getSeqnames tbf
-    lengths <- mapM (getSeqLength tbf) names
-    let total = sum lengths
-    let frags = I.fromList $ zip (scanl (+) 0 lengths) names
-
-    let draw good l = do p <- randomRIO (1,total)
-                         d <- randomRIO (False,True)
-                         let Just ((o,s),_) = I.maxViewWithKey $ fst $ I.split p frags
-                         r' <- clampPosition tbf $ Range (Pos s (p-o)) l
-                         sq <- getSubseq tbf $ if d then r' else reverseRange r'
-                         if r_length r' == l && good sq
-                           then return (r', sq)
-                           else draw good l
-    return draw
+    draw good len g0 | r_length r' == len && good sq = ((r', sq), gn)
+                     | otherwise                     = draw good len gn
+      where
+        (p0, gn) = randomR (0, 2*total-1) g0
+        p = p0 `shiftR` 1
+        Just ((o,s),_) = I.maxViewWithKey $ fst $ I.split (p+1) frags
+        r' = clampPosition tbf $ Range (Pos s (p-o)) len
+        sq = getSubseq tbf $ if odd p0 then r' else reverseRange r'
 
