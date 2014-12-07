@@ -63,7 +63,7 @@ data TwoBitSequence = Indexed { tbs_n_blocks   :: !(I.IntMap Int)
 -- the file is modified in any way.
 openTwoBit :: FilePath -> IO TwoBitFile
 openTwoBit fp = do raw <- unsafeMMapFile fp
-                   return $ flip runGet (L.fromStrict raw) $ do
+                   return $ flip runGet (L.fromChunks [raw]) $ do
                             sig <- getWord32be
                             getWord32 <- case sig of
                                     0x1A412743 -> return $ fromIntegral `fmap` getWord32be
@@ -83,7 +83,7 @@ openTwoBit fp = do raw <- unsafeMMapFile fp
 
 
 mkBlockIndex :: B.ByteString -> Get Int -> Int -> TwoBitSequence
-mkBlockIndex raw getWord32 ofs = runGet getBlock $ L.fromStrict $ B.drop ofs raw
+mkBlockIndex raw getWord32 ofs = runGet getBlock $ L.fromChunks [B.drop ofs raw]
   where
     getBlock = do ds <- getWord32
                   nb <- readBlockList

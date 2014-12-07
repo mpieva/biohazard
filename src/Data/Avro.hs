@@ -1,5 +1,5 @@
 {-# LANGUAGE OverloadedStrings, FlexibleInstances, TemplateHaskell #-}
-{-# LANGUAGE RecordWildCards, BangPatterns #-}
+{-# LANGUAGE RecordWildCards, BangPatterns, FlexibleContexts #-}
 module Data.Avro where
 
 -- ^ Support for Avro.
@@ -16,13 +16,14 @@ module Data.Avro where
 import Bio.Iteratee
 import Control.Applicative
 import Control.Monad
-import Control.Monad.ST ( runST )
+import Control.Monad.ST ( runST, ST )
 import Data.Aeson hiding ((.=))
 import Data.Array.MArray
+import Data.Array.ST ( STUArray )
 import Data.Array.Unsafe ( castSTUArray )
 import Data.Binary.Get
 import Data.Bits
-import Data.ByteString.Builder
+import Data.Binary.Builder
 import Data.Foldable ( foldMap )
 import Data.Int ( Int64 )
 import Data.Maybe
@@ -113,7 +114,7 @@ instance Avro () where
 
 instance Avro Bool where
     toSchema _ = return $ String "boolean"
-    toBin      = word8 . fromIntegral . fromEnum
+    toBin      = singleton . fromIntegral . fromEnum
     fromBin    = toEnum . fromIntegral <$> getWord8
     toAvron    = Bool
 
@@ -131,19 +132,19 @@ instance Avro Int64 where
 
 instance Avro Float where
     toSchema _ = return $ String "float"
-    toBin      = floatLE
+    toBin      = putWord32le . floatToWord
     fromBin    = wordToFloat <$> getWord32le
     toAvron    = Number . fromFloatDigits
 
 instance Avro Double where
     toSchema _ = return $ String "double"
-    toBin      = doubleLE
+    toBin      = putWord64le . doubleToWord
     fromBin    = wordToDouble <$> getWord64le
     toAvron    = Number . fromFloatDigits
 
 instance Avro B.ByteString where
     toSchema _ = return $ String "bytes"
-    toBin    s = encodeIntBase128 (B.length s) <> byteString s
+    toBin    s = encodeIntBase128 (B.length s) <> fromByteString s
     fromBin    = decodeIntBase128 >>= getByteString
     toAvron    = String . decodeLatin1
 
@@ -158,11 +159,23 @@ instance Avro T.Text where
 
 {-# INLINE wordToFloat #-}
 wordToFloat :: Word32 -> Float
-wordToFloat x = runST (newArray (0 :: Int, 0) x >>= castSTUArray >>= flip readArray 0)
+wordToFloat x = runST (cast x)
 
 {-# INLINE wordToDouble #-}
 wordToDouble :: Word64 -> Double
-wordToDouble x = runST (newArray (0 :: Int, 0) x >>= castSTUArray >>= flip readArray 0)
+wordToDouble x = runST (cast x)
+
+{-# INLINE floatToWord #-}
+floatToWord :: Float -> Word32
+floatToWord x = runST (cast x)
+
+{-# INLINE doubleToWord #-}
+doubleToWord :: Double -> Word64
+doubleToWord x = runST (cast x)
+
+{-# INLINE cast #-}
+cast :: ( MArray (STUArray s) b (ST s), MArray (STUArray s) a (ST s) ) => a -> ST s b
+cast x = (newArray (0 :: Int, 0) x >>= castSTUArray >>= flip readArray 0)
 
 -- | Implements Zig-Zag-Coding like in Protocol Buffers and Avro.
 zig :: (Storable a, Bits a) => a -> a
@@ -175,8 +188,8 @@ zag x = negate (x .&. 1) `xor` ((x .&. complement 1) `rotateR` 1)
 -- | Encodes a word of any size using a variable length "base 128"
 -- encoding.
 encodeWordBase128 :: (Integral a, Bits a) => a -> Builder
-encodeWordBase128 x | x' == 0   = word8 (fromIntegral (x .&. 0x7f))
-                    | otherwise = word8 (fromIntegral (x .&. 0x7f .|. 0x80))
+encodeWordBase128 x | x' == 0   = singleton (fromIntegral (x .&. 0x7f))
+                    | otherwise = singleton (fromIntegral (x .&. 0x7f .|. 0x80))
                                   <> encodeWordBase128 x'
   where x' = x `shiftR` 7
 
@@ -213,7 +226,7 @@ zagInt = decodeWordBase128
 instance Avro a => Avro [a] where
     toSchema as = do sa <- toSchema (head as)
                      return $ object [ "type" .= String "array", "items" .= sa ]
-    toBin    as = toBin (length as) <> foldMap toBin as <> word8 0
+    toBin    as = toBin (length as) <> foldMap toBin as <> singleton 0
     toAvron     = Array . V.fromList . map toAvron
 
     -- This is not suitable for incremental processing.
@@ -229,7 +242,7 @@ instance Avro a => Avro [a] where
 instance Avro a => Avro (V.Vector a) where
     toSchema as = do sa <- toSchema (V.head as)
                      return $ object [ "type" .= String "array", "items" .= sa ]
-    toBin    as = toBin (V.length as) <> foldMap toBin as <> word8 0
+    toBin    as = toBin (V.length as) <> foldMap toBin as <> singleton 0
     toAvron     = Array . V.map toAvron
 
     -- This is not suitable for incremental processing.
@@ -245,7 +258,7 @@ instance Avro a => Avro (V.Vector a) where
 instance (Avro a, U.Unbox a) => Avro (U.Vector a) where
     toSchema as = do sa <- toSchema (U.head as)
                      return $ object [ "type" .= String "array", "items" .= sa ]
-    toBin    as = toBin (U.length as) <> U.foldr ((<>) . toBin) mempty as <> word8 0
+    toBin    as = toBin (U.length as) <> U.foldr ((<>) . toBin) mempty as <> singleton 0
     toAvron     = Array . V.map toAvron . U.convert
 
     -- This is not suitable for incremental processing.
@@ -262,7 +275,7 @@ instance (Avro a, U.Unbox a) => Avro (U.Vector a) where
 instance Avro a => Avro (H.HashMap T.Text a) where
     toSchema   m = do sa <- toSchema (m H.! T.empty)
                       return $ object [ "type" .= String "map", "values" .= sa ]
-    toBin     as = toBin (H.size as) <> H.foldrWithKey (\k v b -> toBin k <> toBin v <> b) (word8 0) as
+    toBin     as = toBin (H.size as) <> H.foldrWithKey (\k v b -> toBin k <> toBin v <> b) (singleton 0) as
     toAvron      = Object . H.map toAvron
 
     -- This is not suitable for incremental processing.
@@ -438,14 +451,14 @@ writeAvroContainer ContainerOpts{..} out = do
                               ,( "avro.codec", "null" )
                               ,( "biohazard.filetype", filetype_label )]
 
-            hdr = byteString "Obj\1" <> toBin meta <> byteString sync_marker
+            hdr = fromByteString "Obj\1" <> toBin meta <> fromByteString sync_marker
 
         let enc_blocks = iterLoop $ \out' -> do (num,code) <- joinI $ takeStream objects_per_block $ 
                                                                 foldStream (\(!n,c) o -> (n+1, c <> toBin o)) (0::Int,mempty)
 
                                                 let code1 = toLazyByteString code
                                                     block = toBin num <> toBin (BL.length code1) <>
-                                                            lazyByteString code1 <> byteString sync_marker
+                                                            fromLazyByteString code1 <> fromByteString sync_marker
                                                 lift (enumList (BL.toChunks $ toLazyByteString block) out')
 
         lift (enumList (BL.toChunks $ toLazyByteString hdr) out) >>= enc_blocks
