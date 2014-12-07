@@ -48,6 +48,7 @@ module Bio.Bam.Header (
 import Bio.Base
 import Control.Applicative
 import Data.Bits                    ( shiftL, shiftR )
+import Data.Binary.Builder
 import Data.Ix
 import Data.List                    ( (\\), foldl' )
 import Data.Monoid
@@ -181,38 +182,43 @@ parseBamMetaLine = P.char '@' >> P.choice [hdLine, sqLine, coLine, otherLine]
     pall :: P.Parser S.ByteString
     pall = P.takeWhile (\c -> c/='\t' && c/='\n')
 
--- XXX should be a Builder
-showBamMeta :: BamMeta -> L.ByteString -> L.ByteString
+showBamMeta :: BamMeta -> Builder
 showBamMeta (BamMeta h ss os cs) =
-    show_bam_meta_hdr h .
-    F.foldr ((.) . show_bam_meta_seq) id ss .
-    foldr ((.) . show_bam_meta_other) id os .
-    foldr ((.) . show_bam_meta_comment) id cs
+    show_bam_meta_hdr h <>
+    F.foldMap show_bam_meta_seq ss <>
+    F.foldMap show_bam_meta_other os <>
+    F.foldMap show_bam_meta_comment cs
   where
     show_bam_meta_hdr (BamHeader (major,minor) so os') =
-        L.append "@HD\tVN:" . L.append (L.pack (show major ++ '.' : show minor)) .
-        L.append (case so of Unsorted -> L.empty
-                             Grouped  -> "\tSO:grouped"
-                             Queryname  -> "\tSO:queryname"
-                             Coordinate  -> "\tSO:coordinate"
-                             GroupSorted  -> "\tSO:groupsort") .
+        fromByteString "@HD\tVN:" <>
+        fromShow major <> char7 '.' <> fromShow minor <>
+        fromByteString (case so of Unsorted -> B.empty
+                                   Grouped  -> "\tSO:grouped"
+                                   Queryname  -> "\tSO:queryname"
+                                   Coordinate  -> "\tSO:coordinate"
+                                   GroupSorted  -> "\tSO:groupsort") <>
         show_bam_others os'
 
-    show_bam_meta_seq (BamSQ  _  _ []) = id
+    show_bam_meta_seq (BamSQ  _  _ []) = mempty
     show_bam_meta_seq (BamSQ nm ln ts) =
-        L.append "@SQ\tSN:" . L.append (L.fromChunks [nm]) . L.append "\tLN:" .
-        L.append (L.pack (show ln)) . show_bam_others ts
+        fromByteString "@SQ\tSN:" <> fromByteString nm <>
+        fromByteString "\tLN:" <> fromShow ln <> show_bam_others ts
 
-    show_bam_meta_comment cm = L.append "@CO\t" . L.append (L.fromChunks [cm]) . L.cons '\n'
+    show_bam_meta_comment cm = fromByteString "@CO\t" <> fromByteString cm <> char7 '\n'
 
     show_bam_meta_other (a,b,ts) =
-        L.cons '@' . L.cons a . L.cons b . show_bam_others ts
+        char7 '@' <> char7 a <> char7 b <> show_bam_others ts
 
     show_bam_others ts =
-        foldr ((.) . show_bam_other) id ts . L.cons '\n'
+        F.foldMap show_bam_other ts <> char7 '\n'
 
     show_bam_other (a,b,v) =
-        L.cons '\t' . L.cons a . L.cons b . L.cons ':' . L.append (L.fromChunks [v])
+        char7 '\t' <> char7 a <> char7 b <> char7 ':' <> fromByteString v
+
+
+    char7 = singleton . c2w
+    fromShow = F.foldMap char7 . show
+
 
 -- | Reference sequence in Bam
 -- Bam enumerates the reference sequences and then sorts by index.  We

@@ -86,6 +86,7 @@ import Control.Applicative
 import Data.Array.IArray
 import Data.Array.Unboxed
 import Data.Attoparsec.ByteString   ( anyWord8 )
+import Data.Binary.Builder          ( toLazyByteString )
 import Data.Binary.Get
 import Data.Binary.Put
 import Data.Bits                    ( Bits, testBit, shiftL, shiftR, (.&.), (.|.), complement )
@@ -377,7 +378,7 @@ pipeBamOutput meta = I.mapStream encodeBamEntry =$ pipeRawBamOutput meta
 -- debugging.  No convenience function to send SAM to a file exists,
 -- because that's a stupid idea.
 pipeSamOutput :: MonadIO m => BamMeta -> Iteratee [BamRec] m ()
-pipeSamOutput meta = do liftIO . L.putStr $ showBamMeta meta L.empty
+pipeSamOutput meta = do liftIO . L.putStr . toLazyByteString $ showBamMeta meta
                         mapStreamM_ $ \b -> liftIO . putStr $ encodeSamEntry (meta_refs meta) b "\n"
 
 pipeRawSamOutput :: MonadIO m => BamMeta -> Iteratee [BamRaw] m ()

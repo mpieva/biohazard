@@ -92,6 +92,7 @@ import Bio.Iteratee.ZLib hiding ( CompressionLevel )
 import Bio.Iteratee.Bgzf
 
 import Control.Monad
+import Data.Binary.Builder          ( toLazyByteString )
 import Data.Binary.Put
 import Data.Bits                    ( Bits, shiftL, shiftR, (.&.), (.|.), testBit )
 import Data.Int                     ( Int32, Int16, Int8 )
@@ -248,7 +249,7 @@ encodeBamWith lv meta = eneeBam ><> compressBgzfLv lv
     header = S.concat . L.toChunks $ runPut putHeader
 
     putHeader = do putByteString "BAM\1"
-                   let hdr = showBamMeta meta L.empty
+                   let hdr = toLazyByteString $ showBamMeta meta
                    putWord32le $ fromIntegral $ L.length hdr
                    putLazyByteString hdr
                    putWord32le . fromIntegral . Z.length $ meta_refs meta
