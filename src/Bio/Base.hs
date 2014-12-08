@@ -43,24 +43,21 @@ module Bio.Base(
     findAuxFile
 ) where
 
-import Bio.Util             ( log1p )
+import Bio.Util                     ( log1p )
 import Data.Array.Unboxed
 import Data.Bits
-import Data.Char            ( isAlpha, isSpace, ord, toUpper )
-import Data.Word            ( Word8 )
+import Data.ByteString.Internal     ( c2w, w2c )
+import Data.Char                    ( isAlpha, isSpace, ord, toUpper )
+import Data.Word                    ( Word8 )
 import Data.Vector.Unboxed.Deriving
-import Foreign.Storable     ( Storable(..) )
-import Numeric              ( showFFloat )
-import System.Directory     ( doesFileExist )
-import System.FilePath      ( (</>), isAbsolute, splitSearchPath )
-import System.Environment   ( getEnvironment )
+import Foreign.Storable             ( Storable(..) )
+import Numeric                      ( showFFloat )
+import System.Directory             ( doesFileExist )
+import System.FilePath              ( (</>), isAbsolute, splitSearchPath )
+import System.Environment           ( getEnvironment )
 
 import qualified Data.ByteString.Char8 as S
-import qualified Data.Vector.Generic         as VG
-import qualified Data.Vector.Generic.Mutable as VM
-import qualified Data.Vector.Unboxed         as VU
 
-import Data.ByteString.Internal ( c2w, w2c )
 
 -- | A nucleotide base.  We only represent A,C,G,T.
 

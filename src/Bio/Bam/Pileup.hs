@@ -294,6 +294,10 @@ type PileF m r = Refseq -> Int ->                               -- current posit
 instance Functor (PileM m) where
     fmap f (PileM m) = PileM $ \k -> m (k . f)
 
+instance Applicative (PileM m) where
+    pure a = PileM $ \k -> k a
+    u <*> v = PileM $ \k -> runPileM u (\a -> runPileM v (k . a))
+
 instance Monad (PileM m) where
     return a = PileM $ \k -> k a
     m >>=  k = PileM $ \k' -> runPileM m (\a -> runPileM (k a) k')

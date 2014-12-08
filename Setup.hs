@@ -2,8 +2,8 @@ import Distribution.PackageDescription      ( PackageDescription(..) )
 import Distribution.Simple
 import Distribution.Simple.InstallDirs      ( docdir, mandir, CopyDest (NoCopyDest) )
 import Distribution.Simple.LocalBuildInfo   ( LocalBuildInfo(..), absoluteInstallDirs )
-import Distribution.Simple.Program          ( runProgram )
 import Distribution.Simple.Program.Db       ( ProgramDb, lookupProgram )
+import Distribution.Simple.Program.Run      ( runProgramInvocation, programInvocation, progInvokeCwd )
 import Distribution.Simple.Program.Types    ( ConfiguredProgram, simpleProgram )
 import Distribution.Simple.Setup            ( copyDest, copyVerbosity, fromFlag, installVerbosity, buildVerbosity )
 import Distribution.Simple.Utils            ( installOrdinaryFiles  )
@@ -21,8 +21,8 @@ main = do
     , postInst = \ _ flags pkg lbi ->
          installManpages pkg lbi (fromFlag $ installVerbosity flags) NoCopyDest
 
-    -- , postBuild = \ _ flags pkg lbi ->
-         -- runPdflatex pkg lbi (fromFlag $ buildVerbosity flags)
+    , postBuild = \ _ flags pkg lbi ->
+         runPdflatex pkg lbi (fromFlag $ buildVerbosity flags)
 
     , hookedPrograms = [ simpleProgram "pdflatex" ]
     }
@@ -46,9 +46,9 @@ runPdflatex pkg lbi verb =
     withLatex lbi $ \cmd -> do
         cwd <- getCurrentDirectory
         createDirectoryIfMissing True (buildDir lbi </> "latex")
-        setCurrentDirectory (buildDir lbi </> "latex")
-        sequence_ [ runProgram (moreVerbose verb) cmd [ "-interaction=batchmode", cwd </> joinPath ("doc":f) ]
+        sequence_ [ runProgramInvocation (moreVerbose verb) $
+                        (programInvocation cmd [ "-interaction=nonstopmode", cwd </> joinPath ("doc":f) ])
+                        { progInvokeCwd = Just (buildDir lbi </> "latex") }
                   | ("doc":f@(_:_)) <- map splitDirectories $ extraSrcFiles pkg
                   , takeExtension (last f) == ".tex" ]
-        setCurrentDirectory cwd
 

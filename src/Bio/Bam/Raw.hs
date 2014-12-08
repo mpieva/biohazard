@@ -91,6 +91,7 @@ import Bio.Iteratee
 import Bio.Iteratee.ZLib hiding ( CompressionLevel )
 import Bio.Iteratee.Bgzf
 
+import Control.Applicative
 import Control.Monad
 import Data.Binary.Builder          ( toLazyByteString )
 import Data.Binary.Put
@@ -475,6 +476,18 @@ mutateBamRaw (BamRaw vo br) mut = unsafePerformIO $ do
                        else error "broken Mutator: length must never increase"
 
 newtype Mutator a = Mut { runMutator :: CString -> Int -> [S.ByteString] -> IO (Int,[S.ByteString], a) }
+
+instance Functor Mutator where
+    {-# INLINE fmap #-}
+    fmap f m = Mut $ \p l fs -> runMutator m p l fs >>= \(l',fs',a) -> return (l',fs',f a)
+
+instance Applicative Mutator where
+    {-# INLINE pure #-}
+    pure a = Mut $ \_ l fs -> return (l,fs,a)
+    {-# INLINE (<*>) #-}
+    u <*> v = Mut $ \p l fs -> runMutator u p l  fs  >>= \(l',fs',a) ->
+                               runMutator v p l' fs' >>= \(l'',fs'',b) ->
+                               return (l'',fs'',a b)
 
 instance Monad Mutator where
     {-# INLINE return #-}

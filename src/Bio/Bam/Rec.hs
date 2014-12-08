@@ -89,7 +89,7 @@ import Data.Attoparsec.ByteString   ( anyWord8 )
 import Data.Binary.Builder          ( toLazyByteString )
 import Data.Binary.Get
 import Data.Binary.Put
-import Data.Bits                    ( Bits, testBit, shiftL, shiftR, (.&.), (.|.), complement )
+import Data.Bits                    ( testBit, shiftL, shiftR, (.&.), (.|.), complement )
 import Data.Char                    ( ord, isDigit, digitToInt )
 import Data.Int                     ( Int32 )
 import Data.Monoid                  ( mempty )

@@ -2,13 +2,11 @@
 module Bio.Genocall where
 
 import Bio.Bam.Pileup
-import Bio.Bam.Rec
 import Bio.Base
 import Bio.Genocall.Adna
 import Control.Applicative
-import Data.Bits ( testBit )
 import Data.Foldable hiding ( sum, product )
-import Data.List ( inits, tails, intercalate, sortBy )
+import Data.List ( inits, tails, sortBy )
 import Data.Ord
 import Data.Vec.Base ( (:.)(..) )
 import Data.Vec.LinAlg

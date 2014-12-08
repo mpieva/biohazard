@@ -79,6 +79,8 @@ newtype MkSchema a = MkSchema
     { mkSchema :: (a -> H.HashMap T.Text Value -> Value) -> H.HashMap T.Text Value -> Value }
 
 instance Functor MkSchema where fmap f m = MkSchema (\k -> mkSchema m (k . f))
+instance Applicative MkSchema where pure a = MkSchema (\k -> k a)
+                                    u <*> v = MkSchema (\k -> mkSchema u (\a -> mkSchema v (k . a)))
 instance Monad MkSchema where return a = MkSchema (\k -> k a)
                               a >>= m = MkSchema (\k -> mkSchema a (\a' -> mkSchema (m a') k))
 

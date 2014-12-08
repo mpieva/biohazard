@@ -34,6 +34,7 @@ import Bio.Bam.Raw hiding ( mergeInputs, combineCoordinates )
 import Bio.Iteratee
 import Bio.PriorityQueue
 import Bio.Util                                 ( showNum )
+import Control.Applicative
 import Control.Monad
 import Control.Monad.Trans.Class
 import Data.Binary
@@ -337,12 +338,16 @@ newtype Mating r m a = Mating { runMating ::
     (a -> MatingStats -> Sink r m -> Queues -> Config -> Refs -> Iteratee [BamPair] m (Iteratee [BamRaw] m r))
        -> MatingStats -> Sink r m -> Queues -> Config -> Refs -> Iteratee [BamPair] m (Iteratee [BamRaw] m r) }
 
-instance Monad m => Monad (Mating r m) where
-    return a = Mating $ \k -> k a
-    m >>=  k = Mating $ \k2 -> runMating m (\a -> runMating (k a) k2)
-
 instance Functor (Mating r m) where
     fmap f m = Mating $ \k -> runMating m (k . f)
+
+instance Applicative (Mating r m) where
+    pure a = Mating $ \k -> k a
+    u <*> v = Mating $ \k -> runMating u (\a -> runMating v (k . a))
+
+instance Monad (Mating r m) where
+    return a = Mating $ \k -> k a
+    m >>=  k = Mating $ \k2 -> runMating m (\a -> runMating (k a) k2)
 
 instance MonadIO m => MonadIO (Mating r m) where
     liftIO f = Mating $ \k s o q c r -> liftIO f >>= \a -> k a s o q c r
