@@ -1,5 +1,5 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving, TypeFamilies, FlexibleInstances #-}
-{-# LANGUAGE MultiParamTypeClasses, BangPatterns #-}
+{-# LANGUAGE MultiParamTypeClasses, BangPatterns, TemplateHaskell #-}
 -- | Common data types used everywhere.  This module is a collection of
 -- very basic "bioinformatics" data types that are simple, but don't
 -- make sense to define over and over.
@@ -48,6 +48,7 @@ import Data.Array.Unboxed
 import Data.Bits
 import Data.Char            ( isAlpha, isSpace, ord, toUpper )
 import Data.Word            ( Word8 )
+import Data.Vector.Unboxed.Deriving
 import Foreign.Storable     ( Storable(..) )
 import Numeric              ( showFFloat )
 import System.Directory     ( doesFileExist )
@@ -61,12 +62,11 @@ import qualified Data.Vector.Unboxed         as VU
 
 import Data.ByteString.Internal ( c2w, w2c )
 
--- | A nucleotide base.  We only represent A,C,G,T, and it is statically
--- enforced.
+-- | A nucleotide base.  We only represent A,C,G,T.
 
-newtype Nucleotide = N { unN :: Word8 } deriving
-    ( Eq, Ord, Ix, Storable
-    , VG.Vector VU.Vector, VM.MVector VU.MVector, VU.Unbox )
+newtype Nucleotide = N { unN :: Word8 } deriving ( Eq, Ord, Ix, Storable )
+
+derivingUnbox "Nucleotide" [t| Nucleotide -> Word8 |] [| unN |] [| N |]
 
 instance Bounded Nucleotide where
     minBound = N 0
@@ -84,9 +84,9 @@ everything = range (minBound, maxBound)
 -- format:  as a 4 bit wide field.  Gaps are encoded as 0 where they
 -- make sense, N is 15.
 
-newtype Nucleotides = Ns { unNs :: Word8 } deriving
-    ( Eq, Ord, Ix, Storable
-    , VG.Vector VU.Vector, VM.MVector VU.MVector, VU.Unbox )
+newtype Nucleotides = Ns { unNs :: Word8 } deriving ( Eq, Ord, Ix, Storable )
+
+derivingUnbox "Nucleotides" [t| Nucleotides -> Word8 |] [| unNs |] [| Ns |]
 
 instance Bounded Nucleotides where
     minBound = Ns  0
@@ -97,8 +97,9 @@ instance Bounded Nucleotides where
 -- directly on the \"Phred\" value, as the name suggests.  The same goes
 -- for the 'Ord' instance:  greater quality means higher \"Phred\"
 -- score, meand lower error probability.
-newtype Qual = Q { unQ :: Word8 } deriving
-    ( Eq, Ord, Storable, Bounded, VG.Vector VU.Vector, VM.MVector VU.MVector, VU.Unbox )
+newtype Qual = Q { unQ :: Word8 } deriving ( Eq, Ord, Storable, Bounded )
+
+derivingUnbox "Qual" [t| Qual -> Word8 |] [| unQ |] [| Q |]
 
 instance Show Qual where
     showsPrec p (Q q) = (:) 'q' . showsPrec p q
@@ -115,8 +116,9 @@ fromQualRaised k (Q q) = 10 ** (- k * fromIntegral q / 10)
 -- | A positive 'Double' value stored in log domain.  We store the
 -- natural logarithm (makes computation easier), but allow conversions
 -- to the familiar \"Phred\" scale used for 'Qual' values.
-newtype Prob = Pr { unPr :: Double } deriving
-    ( Eq, Ord, Storable, VG.Vector VU.Vector, VM.MVector VU.MVector, VU.Unbox )
+newtype Prob = Pr { unPr :: Double } deriving ( Eq, Ord, Storable )
+
+derivingUnbox "Prob" [t| Prob -> Double |] [| unPr |] [| Pr |]
 
 instance Show Prob where
     showsPrec _ (Pr p) = (:) 'q' . showFFloat (Just 1) q
