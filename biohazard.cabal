@@ -55,6 +55,7 @@ Library
                        Bio.Bam.Trim,
                        Bio.Genocall,
                        Bio.Genocall.Adna,
+                       Bio.Genocall.AvroFile,
                        Bio.Glf,
                        Bio.Iteratee,
                        Bio.Iteratee.Bgzf,
@@ -96,6 +97,7 @@ Library
   Hs-source-dirs:      src
   Include-dirs:        src/cbits
   C-sources:           src/cbits/myers_align.c
+  CC-options:          -fPIC
 
   -- Modules not exported by this package.
   -- Other-modules:       

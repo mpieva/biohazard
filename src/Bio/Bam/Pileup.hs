@@ -189,13 +189,33 @@ decompose br matrices
         isq cl = zipWith ($) [ get_seq i | i <- [is..is+cl-1] ] (take cl mms) : ins
 
 
--- | A variant call consists of a position, some measure of qualities,
--- genotype likelihood values, and a representation of variants.  A note
--- about the GL values:  @VCF@ would normalize them so that the
--- smallest one becomes zero.  We do not do that here, since we might
--- want to compare raw values for a model test.  We also store them in a
--- 'Double' to make arithmetics easier.  Normalization is appropriate
--- when converting to @VCF@.
+-- | Statistics about a genotype call.  Probably only useful for
+-- fitlering (so not very useful), but we keep them because it's easy to
+-- track them.
+
+data CallStats = CallStats { read_depth       :: !Int       -- number of contributing reads
+                           , reads_mapq0      :: !Int       -- number of (non-)contributing reads with MAPQ==0
+                           , sum_mapq         :: !Int       -- sum of map qualities of contributing reads
+                           , sum_mapq_squared :: !Int }     -- sum of squared map qualities of contributing reads
+  deriving Show
+
+instance Monoid CallStats where
+    mempty      = CallStats { read_depth       = 0
+                            , reads_mapq0      = 0
+                            , sum_mapq         = 0
+                            , sum_mapq_squared = 0 }
+    mappend x y = CallStats { read_depth       = read_depth x + read_depth y
+                            , reads_mapq0      = reads_mapq0 x + reads_mapq0 y
+                            , sum_mapq         = sum_mapq x + sum_mapq y
+                            , sum_mapq_squared = sum_mapq_squared x + sum_mapq_squared y }
+
+-- | Genotype likelihood values.  A variant call consists of a position,
+-- some measure of qualities, genotype likelihood values, and a
+-- representation of variants.  A note about the GL values:  @VCF@ would
+-- normalize them so that the smallest one becomes zero.  We do not do
+-- that here, since we might want to compare raw values for a model
+-- test.  We also store them in a 'Double' to make arithmetics easier.
+-- Normalization is appropriate when converting to @VCF@.
 --
 -- If GL is given, we follow the same order used in VCF:
 -- \"the ordering of genotypes for the likelihoods is given by:
@@ -203,25 +223,12 @@ decompose br matrices
 -- ordering is: AA,AB,BB; for triallelic sites the ordering is:
 -- AA,AB,BB,AC,BC,CC, etc.\"
 
-data VarCall a = VarCall { vc_depth     :: !Int                  -- number of contributing reads
-                         , vc_mapq0     :: !Int                  -- number of (non-)contributing reads with MAPQ==0
-                         , vc_sum_mapq  :: !Int                  -- sum of map qualities of contributing reads
-                         , vc_sum_mapq2 :: !Int                  -- sum of squared map qualities of contributing reads
-                         , vc_vars      :: a }                   -- variant calls & GL values in dB
-    deriving Show
-
-instance Functor VarCall where fmap f vc = vc { vc_vars = f (vc_vars vc) }
-
-instance Monoid a => Monoid (VarCall a) where
-    mempty = VarCall { vc_depth = 0, vc_mapq0 = 0, vc_sum_mapq = 0, vc_sum_mapq2 = 0, vc_vars = mempty }
-    mappend x y = VarCall { vc_depth     = vc_depth x + vc_depth y
-                          , vc_mapq0     = vc_mapq0 x + vc_mapq0 y
-                          , vc_sum_mapq  = vc_sum_mapq x + vc_sum_mapq y
-                          , vc_sum_mapq2 = vc_sum_mapq2 x + vc_sum_mapq2 y
-                          , vc_vars      = vc_vars x `mappend` vc_vars y }
-
 type GL = V.Vector Prob
-type IndelVars = [( Int, [Nucleotide] )]    -- indel variant: number of deletions, inserted sequence
+
+newtype V_Nuc = V_Nuc (V.Vector Nucleotide) deriving (Eq, Ord, Show)
+data IndelVariant = IndelVariant { deleted_bases  :: !Int
+                                 , inserted_bases :: !V_Nuc }
+  deriving (Eq, Ord, Show)
 
 -- Both types of piles carry along the map quality.  We'll only need it
 -- in the case of Indels.
@@ -234,13 +241,16 @@ type IndelPile = [( Qual, (Int, [DamagedBase]) )]   -- a list of indel variants
 -- 'BasePile's (one for each strand) and one 'IndelPile' (the one
 -- immediately following) at a time.
 
-data Pile' a b = Pile { p_refseq :: !Refseq
-                      , p_pos    :: !Int
-                      , p_snp    :: VarCall a
-                      , p_indel  :: VarCall b }
+data Pile' a b = Pile { p_refseq     :: !Refseq
+                      , p_pos        :: !Int
+                      , p_snp_stat   :: CallStats
+                      , p_snp_pile   :: a
+                      , p_indel_stat :: CallStats
+                      , p_indel_pile :: b }
+  deriving Show
 
 type Pile  = Pile' (BasePile, BasePile) IndelPile
-type Calls = Pile' GL (GL, IndelVars)
+type Calls = Pile' GL (GL, [IndelVariant])
 
 -- | The pileup enumeratee takes 'BamRaw's, decomposes them, interleaves
 -- the pieces appropriately, and generates 'Pile's.  The output will
@@ -413,13 +423,13 @@ pileup'' = do
     -- 'PrimChunks':  'Indel's contribute to an 'IndelPile', 'Seek's and
     -- deletions are pushed back to the /waiting/ queue, 'EndOfRead's are
     -- removed, and everything else is added to the fresh /active/ queue.
-    (fin_bp, fin_ip) <- consume_active (mempty, mempty) $
+    ((fin_bs, fin_bp), (fin_is, fin_ip)) <- consume_active (mempty, mempty) $
         \(!bpile, !ipile) (Base wt qs mq str pchunks) ->
-                let put (Q q) x vc = vc { vc_depth     = vc_depth vc + 1
-                                        , vc_mapq0     = vc_mapq0 vc + (if q == 0 then 1 else 0)
-                                        , vc_sum_mapq  = vc_sum_mapq  vc + fromIntegral q
-                                        , vc_sum_mapq2 = vc_sum_mapq2 vc + fromIntegral q * fromIntegral q
-                                        , vc_vars      = (Q q, x) : vc_vars vc }
+                let put (Q q) x (!st,!vs) = ( st { read_depth       = read_depth st + 1
+                                                 , reads_mapq0      = reads_mapq0 st + (if q == 0 then 1 else 0)
+                                                 , sum_mapq         = sum_mapq st + fromIntegral q
+                                                 , sum_mapq_squared = sum_mapq_squared st + fromIntegral q * fromIntegral q }
+                                            , (Q q, x) : vs )
                     b' = Base (wt-1) qs mq str pchunks
                     put' = put mq (if str then Left qs else Right qs)
                 in case pchunks of
@@ -439,8 +449,8 @@ pileup'' = do
     -- first place where we notice that, the pile is useless.
     let uninteresting (_,(d,i)) = d == 0 && null i
 
-    unless (null (vc_vars fin_bp) && all uninteresting (vc_vars fin_ip))
-        $ yield $ Pile rs po (fmap partitionPairEithers fin_bp) fin_ip
+    unless (null fin_bp && all uninteresting fin_ip)
+        $ yield $ Pile rs po fin_bs (partitionPairEithers fin_bp) fin_is fin_ip
 
     -- Bump coordinate and loop.  (Note that the bump to the next
     -- reference /sequence/ is done implicitly, because we will run out of

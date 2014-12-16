@@ -12,14 +12,13 @@ module Bio.Base(
     Word8,
     nucA, nucC, nucG, nucT,
     nucsA, nucsC, nucsG, nucsT, nucsN, gap,
-    toNucleotide, toNucleotides,
+    toNucleotide, toNucleotides, nucToNucs,
     showNucleotide, showNucleotides,
     isGap,
     isBase,
     isProperBase,
     properBases,
     compl, compls,
-    revcompl, revcompls,
     everything,
 
     Seqid,
@@ -88,6 +87,9 @@ derivingUnbox "Nucleotides" [t| Nucleotides -> Word8 |] [| unNs |] [| Ns |]
 instance Bounded Nucleotides where
     minBound = Ns  0
     maxBound = Ns 15
+
+nucToNucs :: Nucleotide -> Nucleotides
+nucToNucs (N x) = Ns $ 1 `shiftL` fromIntegral (x .&. 3)
 
 -- | Qualities are stored in deciban, also known as the Phred scale.  To
 -- represent a value @p@, we store @-10 * log_10 p@.  Operations work
@@ -316,16 +318,6 @@ instance Read Nucleotides where
     readsPrec _ [    ] = []
     readList s = let (hd,tl) = span (\c -> isAlpha c || isSpace c || '-' == c) s
                  in [(map toNucleotides $ filter (not . isSpace) hd, tl)]
-
--- | Reverse-complements a stretch of Nucleotides
-{-# INLINE revcompl #-}
-revcompl :: [Nucleotide] -> [Nucleotide]
-revcompl = reverse . map compl
-
--- | Reverse-complements a stretch of Nucleotidess
-{-# INLINE revcompls #-}
-revcompls :: [Nucleotides] -> [Nucleotides]
-revcompls = reverse . map compls
 
 -- | Complements a Nucleotides.
 {-# INLINE compl #-}

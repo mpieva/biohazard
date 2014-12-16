@@ -4,8 +4,9 @@
 \usepackage{todonotes}
 \usepackage{xargs}
 
-\newcommandx{\beware}[2][1=]{\todo[inline,linecolor=red,backgroundcolor=red!25,bordercolor=red,#1]{#2}}
-\newcommandx{\idea}[2][1=]{\todo[inline,linecolor=blue,backgroundcolor=blue!25,bordercolor=blue,#1]{#2}}
+\newcommandx{\beware}[2][1=]{\todo[nolist,noline,inline,linecolor=red,backgroundcolor=red!25,bordercolor=red,#1]{#2}}
+\newcommandx{\idea}[2][1=]{\todo[nolist,noline,inline,linecolor=blue,backgroundcolor=blue!25,bordercolor=blue,#1]{#2}}
+\newcommandx{\oops}[2][1=]{\todo[nolist,noline,inline,linecolor=yellow,backgroundcolor=yellow!25,bordercolor=yellow,#1]{#2}}
 
 \title{Error Models For Genotype Calling}
 \author{Udo Stenzel}
@@ -128,16 +129,23 @@ P(X_i|H_i,Q_i) = \left\{ \begin{array}{ccc}
 \end{array} \right.
 \end{align*}
 
-The $w_{X,H}$ allow for a substitution matrix or could all be set uniformly to $\frac{1}{4}$\footnote{If we ever get four quality
-scores, this might produce negative probabilities and may need to be modified.  Such quality scores are nowhere in sight, though.}.  For the $k_i$, we have to count
-errors fractionally, so we set
+The $w_{X,H}$ allow for a substitution matrix or could all be set uniformly to
+one quarter.\footnote{If we ever get four quality scores, this might produce
+negative probabilities and may need to be modified.  Such quality scores are
+nowhere in sight, though.}  For the $k_i$, we have to count errors
+fractionally, so we set
 
 \begin{align*}
 k_{1,X_i,H_i} &= 0 \\
-k_{i,X_i,H_i} &= k_{i-1,X_i,H_i} + P(X_i, H_i | Q_i, G) \\
-&= k_{i-1,X_i,H_i} + P(X_i | H_i, Q_i) P(H_i | G) \\
-&= k_{i-1,X_i,H_i} + P(X_i | H_i, Q_i) \left( H_i \cdot D_i \cdot G \right)
+k_{i,X_i,H_i} &= k_{i-1,X_i,H_i} + P(H_i | X_i, Q_i, G) \\
+&= k_{i-1,X_i,H_i} + \frac{P(X_i | Q_i, H_i) P(H_i | G)}{P(X_i|Q_i, G_i)} \\
+&= k_{i-1,X_i,H_i} + \frac{P(X_i | Q_i, H_i) \left( H_i \cdot D_i \cdot G \right) }
+    {\sum_{H'} P(X_i| Q_i, H') \left( H' \cdot D_i \cdot G \right)}
 \end{align*}
+
+\oops{In an earlier version, this said $P(X_i,H_i|Q_i,G)$, which is
+nonsense, since $X_i$ already happened.  So we must condition on it and
+write $P(H_i|X_i,Q_i,G)$.}
 
 \section{Testing Method}
 

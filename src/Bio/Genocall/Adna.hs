@@ -21,16 +21,13 @@ import Data.Vec hiding ( map )
 -- vectors represents all transition /into/ the given nucleotide.
 
 -- | Represents our knowledge about a certain base, which consists of
--- the base itself (A,C,G,T, encodes as 0..3; no Ns), the quality score
+-- the base itself (A,C,G,T, encoded as 0..3; no Ns), the quality score
 -- (anything that isn't A,C,G,T becomes A with quality 0), and a
 -- substitution matrix representing post-mortem but pre-sequencing
--- damage.
+-- substitutions.
 --
 -- Unfortunately, none of this can be rolled into something more simple,
 -- because damage and sequencing error behave so differently.
---
--- The matrix is reprsented as unboxed 'Vector' of 'Double's, in
--- row-major order.
 
 data DamagedBase = DB { db_call :: !Nucleotide
                       , db_qual :: !Qual
@@ -43,7 +40,9 @@ instance Show DamagedBase where
 -- | A 'DamageModel' is a function that gives substitution matrices for
 -- each position in a read.  Its application yields a sequence of
 -- substitution matrices exactly as long a the read itself.  Though
--- typically not done, the model can take sequence into account.
+-- typically not done, the model can take the sequence into account.
+-- It will usually be dependendent on the position within the read,
+-- though.
 
 type DamageModel = BamRaw -> [Mat44D]
 
@@ -69,7 +68,7 @@ noDamage r = replicate (br_l_seq r) (packMat identity)
 -- damage occurs (C to T), it occurs at low frequency ('delta_ds')
 -- everywhere, at high frequency ('delta_ss') in single stranded parts,
 -- and the overhang length is distributed exponentially with parameter
--- 'lambda'.
+-- 'lambda' at the 5' end and 'kappa' at the 3' end.
 
 data SsDamageParameters = SSD { ssd_sigma  :: !Double         -- deamination rate in ss DNA
                               , ssd_delta  :: !Double         -- deamination rate in ds DNA
@@ -118,8 +117,8 @@ data DsDamageParameters = DSD { dsd_sigma  :: !Double         -- deamination rat
 -- Parameterization is stolen from @mapDamage 2.0@, for the most part.
 -- We have a deamination rate each for ss and ds dna and average
 -- overhang length parameters for both ends.  (Without UDG treatment,
--- those will be equal.  With UDG, those are much smaller and unequal,
--- and in fact don't literally represent overhangs.)
+-- those will be equal.  With UDG, those are much smaller and in fact
+-- don't literally represent overhangs.)
 --
 -- L({A,C,G,T}|A) = {1,0,0,0}
 -- L({A,C,G,T}|C) = {0,1-p,0,p}

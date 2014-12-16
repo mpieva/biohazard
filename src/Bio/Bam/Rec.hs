@@ -1,26 +1,15 @@
 {-# LANGUAGE OverloadedStrings, PatternGuards, BangPatterns, NoMonomorphismRestriction #-}
 
 -- TODO:
--- - Index writer
--- - Seeking, partially.  So far, we can only seek to the beginning of
---   the range of some RNAME.  Most of the functionality available from
---   the index is not yet supported.
--- - Writing of GZip'ed and plain BAM.  Probably more interesting as a
---   configurable wrapper.
 -- - Automatic creation of some kind of index.  If possible, this should
---   be the standard index for sorted BAM.  Optionally a block index for
---   slicing of large files.  Maybe an index by name and an index for
---   group-sorted files.  All sensible indices should be generated
---   whenever a file is written.
+--   be the standard index for sorted BAM and/or the newer CSI format.
+--   Optionally, a block index for slicing of large files, even unsorted
+--   ones.  Maybe an index by name and an index for group-sorted files.
+--   Sensible indices should be generated whenever a file is written.
 -- - Same for statistics.  Something like "flagstats" could always be
 --   written.  Actually, having @writeBamHandle@ return enhanced
 --   flagstats as a result might be even better.
 --
--- NICE_TO_HAVE:
--- - Decoding of BAM needlessly needs a MonadIO context, because of the
---   weird Zlib bindings.
--- - BZip compression isn't supported.
-
 -- TONOTDO:
 -- - Reader for gzipped/bzipped/bgzf'ed SAM.  Storing SAM is a bad idea,
 --   so why would anyone ever want to compress, much less index it?
@@ -54,7 +43,7 @@ module Bio.Bam.Rec (
     readMd,
     showMd,
 
-    Sequence, Nucleotides(..),
+    Nucleotides(..),
     Extensions, Ext(..),
     extAsInt, extAsString, setQualFlag,
 
@@ -90,6 +79,7 @@ import Data.Binary.Builder          ( toLazyByteString )
 import Data.Binary.Get
 import Data.Binary.Put
 import Data.Bits                    ( testBit, shiftL, shiftR, (.&.), (.|.), complement )
+import Data.ByteString              ( ByteString )
 import Data.Char                    ( ord, isDigit, digitToInt )
 import Data.Int                     ( Int32 )
 import Data.Monoid                  ( mempty )
@@ -116,11 +106,6 @@ import qualified Data.Vector.Unboxed                as V
 -- do not have support for ambiguity codes, and the "=" symbol is not
 -- understood.
 
-type ByteString = B.ByteString
-
--- | comparatively short Sequences, with ambiguity coding
-type Sequence = V.Vector Nucleotides
-
 -- | internal representation of a BAM record
 data BamRec = BamRec {
         b_qname :: !Seqid,
@@ -132,7 +117,7 @@ data BamRec = BamRec {
         b_mrnm  :: !Refseq,
         b_mpos  :: !Int,
         b_isize :: !Int,
-        b_seq   :: !Sequence,
+        b_seq   :: !(V.Vector Nucleotides),
         b_qual  :: !ByteString,         -- ^ quality, may be empty
         b_exts  :: Extensions,
         b_virtual_offset :: !FileOffset -- ^ virtual offset for indexing purposes
@@ -342,7 +327,7 @@ encodeBamEntry = bamRaw 0 . S.concat . L.toChunks . runPut . putEntry
     encodeCigar :: (CigOp,Int) -> Int
     encodeCigar (op,l) = fromEnum op .|. l `shiftL` 4
 
-    putSeq :: Sequence -> Put
+    putSeq :: V.Vector Nucleotides -> Put
     putSeq v = case v !? 0 of
                  Nothing -> return ()
                  Just a  -> case v !? 1 of

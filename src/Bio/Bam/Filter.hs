@@ -1,14 +1,11 @@
--- | Quality filters adapted from old pipeline.
---
--- TODO: - "SAGE" filter (enforce 17nt reads)?
---       - "rim job" (try to detect glass border)?
-
 module Bio.Bam.Filter (
     filterPairs, QualFilter,
     complexSimple, complexEntropy,
     qualityAverage, qualityMinimum,
     qualityFromOldIllumina, qualityFromNewIllumina
                            ) where
+
+-- ^ Quality filters adapted from old pipeline.
 
 import Bio.Bam.Header
 import Bio.Bam.Rec

@@ -8,7 +8,9 @@ import Bio.Bam.Raw
 import Bio.Bam.Pileup
 import Bio.Genocall
 import Bio.Genocall.Adna
+import Bio.Genocall.AvroFile
 import Bio.Iteratee
+import Bio.Util                                 ( float2mini )
 import Control.Applicative
 import Control.Arrow
 import Control.Monad
@@ -23,7 +25,10 @@ import qualified Data.ByteString                as B
 import qualified Data.ByteString.Char8          as S
 import qualified Data.Iteratee                  as I
 import qualified Data.Text                      as T
+import qualified Data.Text.Encoding             as T
 import qualified Data.Vector.Unboxed            as V
+
+import Debug.Trace
 
 -- Ultimately, we might produce a VCF file looking somewhat like this:
 --
@@ -170,7 +175,7 @@ options = [
 
     add_output ofn c = 
         return $ c { conf_output = Just $ \k ->
-            ofn $ \oit1 -> maybe (k oit1) ($ \oit2 -> k (\c -> () <$ I.zip (oit1 c) (oit2 c))) (conf_output c) }
+            ofn $ \oit1 -> maybe (k oit1) ($ \oit2 -> k (\c r -> () <$ I.zip (oit1 c r) (oit2 c r))) (conf_output c) }
 
     set_sample   nm c = return $ c { conf_sample = S.pack nm }
 
@@ -206,54 +211,51 @@ main = do
         mergeInputs combineCoordinates files >=> run $ \hdr ->
             filterStream (not . br_isUnmapped) =$
             filterStream (isValidRefseq . br_rname) =$
-            by_groups ((==) `on` br_rname)
-                (\br out -> do
-                    let sname = sq_name $ getRef (meta_refs hdr) $ br_rname br
-                    liftIO $ conf_report $ S.unpack sname ++ case conf_ploidy sname of
-                                1 -> ": haploid call" ; 2 -> ": diploid call"
-                    out' <- lift $ enumPure1Chunk [Left $ S.concat [">", conf_sample, "--", sname]] out
-                    joinI $ pileup dmg_model $
-                        mapStream (Right . calls conf_theta (conf_ploidy sname)) out' 
-                ) =$
-            oiter conf
-                        {- =$
-                        convStream (do calls <- headStream
-                                       format_snp_call conf_prior_het calls
-                                       format_indel_call conf_prior_indel calls) =$
-                        collect_lines out' -}
-                -- ) =$
-            -- mapStreamM_ (S.hPut ohdl . (flip S.snoc '\n'))
+            by_groups ((==) `on` br_rname) (\br out -> do
+                let sname = sq_name $ getRef (meta_refs hdr) $ br_rname br
+                    pl = conf_ploidy sname
+                liftIO $ conf_report $ S.unpack sname ++ ["",": haploid call",": diploid call"] !! pl
+                pileup dmg_model =$ mapStream (calls conf_theta pl) out) =$
+            oiter conf (meta_refs hdr)
 
-type OIter = Conf -> Iteratee [Either S.ByteString Calls] IO ()
+
+type OIter = Conf -> Refs -> Iteratee [Calls] IO ()
 type Output = (OIter -> IO ()) -> IO ()
 
--- Bah, this is completely f'ed up.
 output_fasta :: FilePath -> (OIter -> IO r) -> IO r
-output_fasta fn k = undefined {- if fn == "-" then k (fa_out stdout)
+output_fasta fn k = if fn == "-" then k (fa_out stdout)
                                  else withFile fn WriteMode $ k . fa_out
   where
-    -- Header is missing  XXX
-    fa_out :: Handle -> Conf -> Iteratee [Either S.ByteString Calls] IO ()
-    fa_out hdl Conf{..} = convStream (do calls' <- headStream
-                                         case (calls' :: Either S.ByteString Calls) of
-                                             Right calls -> let s1 = format_snp_call conf_prior_het calls
-                                                            in (:) s1 <$> format_indel_call conf_prior_indel calls)
-                          =$ collect_lines
-                          =$ mapStreamM_ (S.hPut hdl . (flip S.snoc '\n')) -}
+    fa_out :: Handle -> Conf -> Refs -> Iteratee [Calls] IO ()
+    fa_out hdl Conf{..} refs =
+            by_groups ((==) `on` p_refseq) (\cs out -> do
+                    let sname = sq_name $ getRef refs $ p_refseq cs 
+                    out' <- lift $ enumPure1Chunk [S.concat [">", conf_sample, "--", sname]] out
+                    convStream (do calls <- headStream
+                                   let s1 = format_snp_call conf_prior_het calls
+                                   S.append s1 <$> format_indel_call conf_prior_indel calls)
+                          =$ collect_lines out') =$
+            mapStreamM_ (S.hPut hdl . (flip S.snoc '\n'))
 
 
--- | We do calls of any ploidy; the FastA output code will fail if the
--- ploidy isn't 1 or 2.
+-- | We do calls of any ploidy, but the FastA output code will fail if
+-- the ploidy isn't 1 or 2.  For indel calls, the FastA output will also
+-- cheat and pretend it was a haploid call.
 --
--- XXX  Forward and reverse piles get concatenated.  Why am I doing this
--- again?  I shouldn't, or should I?
+-- XXX  For the time being, forward and reverse piles get concatenated.
+-- For the naive call, this doesn't matter.  For the MAQ call, it feels
+-- more correct to treat the separately and multiply the results.
 
 calls :: Maybe Double -> Int -> Pile -> Calls
-calls mtheta pl (Pile rs po bc ic) =
-    Pile rs po (fmap (snp_call . uncurry (++)) bc)
-               (fmap (simple_indel_call pl) ic)
-  where
-    snp_call = maybe (simple_snp_call pl) (maq_snp_call pl) mtheta
+calls _ _ pile | trace (show (p_refseq pile, p_pos pile)) False = undefined
+
+calls Nothing pl pile =
+    pile { p_snp_pile   = simple_snp_call pl $ uncurry (++) $ p_snp_pile pile
+         , p_indel_pile = simple_indel_call pl $ p_indel_pile pile }
+
+calls (Just theta) pl pile =
+    pile { p_snp_pile   = maq_snp_call pl theta $ uncurry (++) $ p_snp_pile pile -- XXX
+         , p_indel_pile = simple_indel_call pl $ p_indel_pile pile }
 
 
 -- | Formatting a SNP call.  If this was a haplopid call (four GL
@@ -266,7 +268,7 @@ format_snp_call p cs
     | V.length gl == 10 = S.take 1 $ S.drop (maxQualIndex $ V.zipWith (*) ps gl) dipbases
     | otherwise = error "Thou shalt not try to format_snp_call unless thou madeth a haploid or diploid call!"
   where
-    gl = vc_vars $ p_snp cs
+    gl = p_snp_pile cs
     ps = V.fromListN 10 [p,1,p,1,1,p,1,1,1,p]
     dipbases = "NAMCRSGWYKT"
     hapbases = "NACGT"
@@ -283,16 +285,16 @@ format_indel_call p cs
     | V.length gl0 == nv * (nv+1) `div` 2 = go homs
     | otherwise = error "Thou shalt not try to format_indel_call unless thou madeth a haploid or diploid call!"
   where
-    (gl0,vars) = vc_vars $ p_indel cs
+    (gl0,vars) = p_indel_pile cs
     !nv   = length vars
     !homs = V.fromListN nv [ gl0 V.! (i*(i+1) `div` 2 -1) | i <- [1..nv] ]
 
-    go gl = I.dropWhile skip >> return (S.pack $ show ins)
+    go gl = I.dropWhile skip >> return (S.pack $ show $ V.toList ins)
       where
         eff_gl = V.fromList $ zipWith adjust (V.toList gl) vars
-        adjust q (0,[]) = q ; adjust q _ = p * q
+        adjust q (IndelVariant ds (V_Nuc is)) = if ds == 0 && V.null is then q else p * q
 
-        (del,ins) = ( (0,[]) : vars ) !! maxQualIndex eff_gl
+        IndelVariant del (V_Nuc ins) = ( IndelVariant 0 (V_Nuc V.empty) : vars ) !! maxQualIndex eff_gl
         skip ocs  = p_refseq ocs == p_refseq cs && p_pos ocs < p_pos cs + del
 
 maxQualIndex :: V.Vector Prob -> Int
@@ -315,39 +317,54 @@ by_groups pr k out = do
     mhd <- peekStream
     case mhd of
         Nothing -> return out
-        Just hd -> do out' <- joinI $ takeWhileE (pr hd) $ k hd out
-                      by_groups pr k out'
-
--- | To output a container file, we need to convert calls into a stream of
--- sensible objects.  To cut down on redundancy, the object will have a
--- header that names the reference sequence and the start, followed by
--- calls.  The calls themselves have contiguous coordinates, we start a
--- new block if we have to skip; we also start a new block when we feel
--- the current one is getting too large.
-
-data GT_Block = GT_Block 
-    { reference_name :: T.Text
-    , start_position :: Int
-    , called_sites :: [ GT_Site ] }
-
-data GT_Site = GT_Site 
-    { snp_stats :: GT_Stats
-    , snp_likelihoods :: B.ByteString
-    , indel_stats :: GT_Stats
-    , indel_likelihoods :: B.ByteString }
-
-data GT_Stats = GT_Stats
-    { read_depth       :: Int
-    , reads_mapq0      :: Int
-    , sum_mapq         :: Int
-    , sum_mapq_squared :: Int }
+        Just hd -> takeWhileE (pr hd) =$ k hd out >>= by_groups pr k
 
 
 output_avro :: FilePath -> (OIter -> IO r) -> IO r
 output_avro fn k = if fn == "-" then k (av_out stdout)
                                 else withFile fn WriteMode $ k . av_out
   where
-    av_out :: Handle -> Conf -> Iteratee [Either S.ByteString Calls] IO ()
-    av_out hdl = undefined
+    av_out :: Handle -> Conf -> Refs -> Iteratee [Calls] IO ()
+    av_out hdl _cfg refs = compileBlocks refs =$ 
+                           writeAvroContainer ContainerOpts{..} =$
+                           mapChunksM_ (S.hPut hdl)
 
--- $( deriveAvros [ ''GT_Block, ''GT_Site, ''GT_Stats ] )
+    objects_per_block = 16
+    filetype_label = "Genotype Likelihoods V0.1"
+
+
+-- Serialize the results from genotype calling in a sensible way.  We
+-- write an Avro file, but we add another blocking layer on top so we
+-- don't need to endlessly repeat coordinates.
+
+compileBlocks :: Monad m => Refs -> Enumeratee [Calls] [GenoCallBlock] m a
+compileBlocks refs = convStream $ do
+        c1 <- headStream
+        tailBlock (p_refseq c1) (p_pos c1) (p_pos c1) (16*1024) [pack c1]
+  where
+    tailBlock !rs !p0 !po !n acc = do
+        mc <- peekStream
+        case mc of
+            Just c1 | rs == p_refseq c1 && po+1 == p_pos c1 && n > 0 -> do
+                    headStream
+                    tailBlock rs p0 (po+1) (n-1) $ pack c1 : acc
+
+            _ -> return [ GenoCallBlock
+                    { reference_name = T.decodeLatin1 $ sq_name $ getRef refs rs
+                    , start_position = p0
+                    , called_sites   = reverse acc } ]
+
+    pack c1 = GenoCallSite{..}
+      where
+        snp_stats         = p_snp_stat c1
+        indel_stats       = p_indel_stat c1
+        snp_likelihoods   = compact_likelihoods $ p_snp_pile c1
+        indel_likelihoods = compact_likelihoods $ fst $ p_indel_pile c1
+        indel_variants    = snd $ p_indel_pile c1
+
+-- | Storing likelihoods:  we take the natural logarithm (GL values are
+-- already in a log scale) and convert to minifloat 0.4.4
+-- representation.  Range and precision should be plenty.
+compact_likelihoods :: V.Vector Prob -> [Int] -- B.ByteString
+compact_likelihoods = map fromIntegral {- B.pack -} . V.toList . V.map (float2mini . negate . unPr)
+

@@ -1,6 +1,4 @@
 {-# LANGUAGE TemplateHaskell, OverloadedStrings #-}
--- module Foo where
-
 import Bio.Iteratee
 import Data.Avro
 import Language.Haskell.TH
@@ -14,7 +12,7 @@ data Foo = Foo { foo_one :: Int, bar_one :: T.Text }
 --          ^ record type name?
 --    ^ union type
 
-data FooFoo = FooFoo { left :: Foo } -- , right :: Foo }
+data FooFoo = FooFoo { left :: Foo, right :: Foo }
 
 data Bar = One | Two | Three
 
@@ -23,10 +21,8 @@ deriveAvro ''Foo
 deriveAvro ''FooFoo
 
 test_data = [
-    FooFoo $ Foo 23 "foo",
-    FooFoo $ Bar 42 3.14,
-    FooFoo $ Foo 17 "und vier",
-    FooFoo $ Foo 3  "bar" ]
+    FooFoo (Foo 23 "foo") (Bar 42 3.14),
+    FooFoo (Foo 17 "und vier") (Foo 3  "bar") ]
 
 main = withFile "foo.av" WriteMode $ \h ->
        enumPure1Chunk test_data >=> run $

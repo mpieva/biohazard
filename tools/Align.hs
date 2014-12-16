@@ -81,7 +81,7 @@ prep_query_rev = revcompl_query . prep_query_fwd
   where
   revcompl_query (QS v) = QS $ U.map (xor 3) $ U.reverse v
 
-qseqToBamSeq :: QuerySeq -> Sequence
+qseqToBamSeq :: QuerySeq -> U.Vector Nucleotides
 qseqToBamSeq = U.map (\x -> Ns $ 1 `shiftL` fromIntegral (x .&. 3)) . unQS
 
 qseqToBamQual :: QuerySeq -> S.ByteString

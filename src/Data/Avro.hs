@@ -228,6 +228,7 @@ zagInt = decodeWordBase128
 instance Avro a => Avro [a] where
     toSchema as = do sa <- toSchema (head as)
                      return $ object [ "type" .= String "array", "items" .= sa ]
+    toBin    [] = singleton 0
     toBin    as = toBin (length as) <> foldMap toBin as <> singleton 0
     toAvron     = Array . V.fromList . map toAvron
 
@@ -244,7 +245,8 @@ instance Avro a => Avro [a] where
 instance Avro a => Avro (V.Vector a) where
     toSchema as = do sa <- toSchema (V.head as)
                      return $ object [ "type" .= String "array", "items" .= sa ]
-    toBin    as = toBin (V.length as) <> foldMap toBin as <> singleton 0
+    toBin    as | V.null as = singleton 0
+                | otherwise = toBin (V.length as) <> foldMap toBin as <> singleton 0
     toAvron     = Array . V.map toAvron
 
     -- This is not suitable for incremental processing.
@@ -260,7 +262,8 @@ instance Avro a => Avro (V.Vector a) where
 instance (Avro a, U.Unbox a) => Avro (U.Vector a) where
     toSchema as = do sa <- toSchema (U.head as)
                      return $ object [ "type" .= String "array", "items" .= sa ]
-    toBin    as = toBin (U.length as) <> U.foldr ((<>) . toBin) mempty as <> singleton 0
+    toBin    as | U.null as = singleton 0
+                | otherwise = toBin (U.length as) <> U.foldr ((<>) . toBin) mempty as <> singleton 0
     toAvron     = Array . V.map toAvron . U.convert
 
     -- This is not suitable for incremental processing.
@@ -277,7 +280,8 @@ instance (Avro a, U.Unbox a) => Avro (U.Vector a) where
 instance Avro a => Avro (H.HashMap T.Text a) where
     toSchema   m = do sa <- toSchema (m H.! T.empty)
                       return $ object [ "type" .= String "map", "values" .= sa ]
-    toBin     as = toBin (H.size as) <> H.foldrWithKey (\k v b -> toBin k <> toBin v <> b) (singleton 0) as
+    toBin     as | H.null as = singleton 0
+                 | otherwise = toBin (H.size as) <> H.foldrWithKey (\k v b -> toBin k <> toBin v <> b) (singleton 0) as
     toAvron      = Object . H.map toAvron
 
     -- This is not suitable for incremental processing.
@@ -372,7 +376,7 @@ deriveAvro nm = reify nm >>= case_info
         [d| instance Avro $(conT nm) where
                 toSchema _ = $(mk_product_schema nm1 fs1)
                 toBin      = $(to_bin_product fs1)
-                fromBin    = $(from_bin_product (varE nm) fs1)
+                fromBin    = $(from_bin_product [| return $(conE nm1) |] fs1)
                 toAvron    = $(to_avron_product fs1)
         |]
 
@@ -392,7 +396,7 @@ deriveAvro nm = reify nm >>= case_info
                     $( do x <- newName "x"
                           LamE [VarP x] . CaseE (VarE x)
                             <$> sequence [ ($ []) . Match (LitP (IntegerL i)) . NormalB
-                                                <$> from_bin_product (varE nm1) fs
+                                                <$> from_bin_product [| return $(conE nm1) |] fs
                                          | (i,(nm1,fs)) <- zip [0..] arms ] )
 
                 toAvron = 

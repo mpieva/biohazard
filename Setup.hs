@@ -33,10 +33,10 @@ installManpages pkg lbi verbosity copy = do
     installOrdinaryFiles verbosity (mandir (absoluteInstallDirs pkg lbi copy))
         [ ("man", joinPath mp) | ("man":mp) <- map splitDirectories $ extraSrcFiles pkg ]
 
-    -- installOrdinaryFiles verbosity (docdir (absoluteInstallDirs pkg lbi copy))
-            -- [ (buildDir lbi </> "latex", replaceExtension (last p) "pdf")
-            -- | ("doc":p@(_:_)) <- map splitDirectories $ extraSrcFiles pkg
-            -- , takeExtension (last p) == ".tex" ]
+    installOrdinaryFiles verbosity (docdir (absoluteInstallDirs pkg lbi copy))
+            [ (buildDir lbi </> "latex", replaceExtension (last p) "pdf")
+            | ("doc":p@(_:_)) <- map splitDirectories $ extraSrcFiles pkg
+            , takeExtension (last p) == ".tex" ]
 
 withLatex :: LocalBuildInfo -> (ConfiguredProgram -> IO ()) -> IO ()
 withLatex lbi k = maybe (return ()) k $ lookupProgram (simpleProgram "pdflatex") $ withPrograms lbi
