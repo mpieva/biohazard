@@ -1,9 +1,10 @@
 {-# LANGUAGE BangPatterns, OverloadedStrings, RecordWildCards, PatternGuards #-}
 {-# OPTIONS_GHC -funbox-strict-fields #-}
 module Bio.Bam.Index (
-    BamIndex,
+    BamIndex(..),
     readBamIndex,
     readBaiIndex,
+    readTabix,
 
     Region(..),
     Subsequence(..),
@@ -18,8 +19,9 @@ import Bio.Bam.Raw
 import Bio.Bam.Regions              ( Region(..), Subsequence(..) )
 import Bio.Iteratee
 import Control.Monad
-import Data.Bits                    ( shiftL, shiftR )
+import Data.Bits                    ( shiftL, shiftR, testBit )
 import Data.ByteString              ( ByteString )
+import Data.Char                    ( chr )
 import Data.Int                     ( Int64 )
 import Data.IntMap                  ( IntMap )
 import Data.Word                    ( Word32 )
@@ -28,6 +30,7 @@ import System.FilePath              ( dropExtension, takeExtension, (<.>) )
 
 import qualified Bio.Bam.Regions                as R
 import qualified Data.IntMap                    as IM
+import qualified Data.ByteString                as B
 import qualified Data.Vector                    as V
 import qualified Data.Vector.Mutable            as M
 import qualified Data.Vector.Unboxed            as U
@@ -39,15 +42,18 @@ import qualified Data.Vector.Algorithms.Intro   as N
 -- Checkpoints are created from the linear index in BAI or from the
 -- `loffset' field in CSI.
 
-data BamIndex = BamIndex {
+data BamIndex a = BamIndex {
     -- | Minshift parameter from CSI
     minshift :: !Int,
 
     -- | Depth parameter from CSI
     depth :: !Int,
 
-    -- | Best guess at where the unaligned records start.
+    -- | Best guess at where the unaligned records start
     unaln_off :: !Int64,
+
+    -- | Room for stuff (needed for tabix)
+    extensions :: a,
 
     -- | Records for the binning index, where each bin has a list of
     -- segments belonging to it.
@@ -56,6 +62,8 @@ data BamIndex = BamIndex {
     -- | Known checkpoints of the form (pos,off) where off is the
     -- virtual offset of the first record crossing pos.
     refseq_ckpoints :: !(V.Vector Ckpoints) }
+
+  deriving Show
 
 -- | Mapping from bin number to vector of clusters.
 type Bins = IntMap Segments
@@ -94,7 +102,7 @@ type Ckpoints = IntMap Int64
 -- from the originating region.
 data Segment = Segment !Int64 !Int64 !Int deriving Show
 
-segmentLists :: BamIndex -> Refseq -> R.Subsequence -> [[Segment]]
+segmentLists :: BamIndex a -> Refseq -> R.Subsequence -> [[Segment]]
 segmentLists bi@BamIndex{..} (Refseq ref) (R.Subsequence imap)
         | Just bins <- refseq_bins V.!? fromIntegral ref,
           Just cpts <- refseq_ckpoints V.!? fromIntegral ref
@@ -102,7 +110,7 @@ segmentLists bi@BamIndex{..} (Refseq ref) (R.Subsequence imap)
 segmentLists _ _ _ = []
 
 -- from region to list of bins, then to list of segments
-rgnToSegments :: BamIndex -> Int -> Int -> Bins -> Ckpoints -> [Segment]
+rgnToSegments :: BamIndex a -> Int -> Int -> Bins -> Ckpoints -> [Segment]
 rgnToSegments bi@BamIndex{..} beg end bins cpts =
     [ Segment boff' eoff end
     | bin <- binList bi beg end
@@ -113,7 +121,7 @@ rgnToSegments bi@BamIndex{..} beg end bins cpts =
     !cpt = maybe 0 snd $ lookupLE beg cpts
 
 -- list of bins for given range of coordinates, from Heng's horrible code
-binList :: BamIndex -> Int -> Int -> [Int]
+binList :: BamIndex a -> Int -> Int -> [Int]
 binList BamIndex{..} beg end = binlist' 0 (minshift + 3*depth) 0
   where
     binlist' l s t = if l > depth then [] else [b..e] ++ loop
@@ -143,7 +151,7 @@ xs ~~ [] = xs
 -- adding such an extension and by replacing the extension with these
 -- two, and finally in the file itself.  The first file that exists and
 -- can actually be parsed, is used.
-readBamIndex :: FilePath -> IO BamIndex
+readBamIndex :: FilePath -> IO (BamIndex ())
 readBamIndex fp | takeExtension fp == ".bai" = fileDriver readBaiIndex fp
                 | takeExtension fp == ".csi" = fileDriver readBaiIndex fp
                 | otherwise = try               (fp <.> "bai") $
@@ -158,23 +166,24 @@ readBamIndex fp | takeExtension fp == ".bai" = fileDriver readBaiIndex fp
                                         Left (IterStringException _) -> k
                       else k
 
--- Read in dex in BAI or CSI format, recognized automatically.
-readBaiIndex :: MonadIO m => Iteratee ByteString m BamIndex
+-- | Read an index in BAI or CSI format, recognized automatically.
+-- Note that TBI is supposed to be compressed using bgzip; it must be
+-- decompressed before being passed to 'readBaiIndex'.
+
+readBaiIndex :: MonadIO m => Iteratee ByteString m (BamIndex ())
 readBaiIndex = iGetString 4 >>= switch
   where
-    switch "BAI\1" = getIndexArrays 14 5 (const return) getIntervals
+    switch "BAI\1" = do nref <- fromIntegral `liftM` endianRead4 LSB
+                        getIndexArrays nref 14 5 (const return) getIntervals
+
     switch "CSI\1" = do minshift <- fromIntegral `liftM` endianRead4 LSB
                         depth <- fromIntegral `liftM` endianRead4 LSB
                         endianRead4 LSB >>= dropStream . fromIntegral -- aux data
-                        getIndexArrays minshift depth (addOneCheckpoint minshift depth) return
+                        nref <- fromIntegral `liftM` endianRead4 LSB
+                        getIndexArrays nref minshift depth (addOneCheckpoint minshift depth) return
+
     switch magic   = throwErr . iterStrExc $ "index signature " ++ show magic ++ " not recognized"
 
-    -- Read the intervals.  Each one becomes a checkpoint.
-    getIntervals (cp,mx0) = do
-        nintv <- fromIntegral `liftM` endianRead4 LSB
-        reduceM 0 nintv (cp,mx0) $ \(!im,!mx) int -> do
-            oo <- fromIntegral `liftM` endianRead8 LSB
-            return (if oo == 0 then im else IM.insert (int * 0x4000) oo im, max mx oo)
 
     -- Insert one checkpoint.  If we already have an entry (can happen
     -- if it comes from a different bin), we conservatively take the min
@@ -189,15 +198,61 @@ readBaiIndex = iGetString 4 >>= switch
                    | otherwise = llim bin (dp-3) (sf+3)
             where ix = (1 `shiftL` dp - 1) `div` 7
 
-getIndexArrays :: MonadIO m => Int -> Int
+type TabIndex = BamIndex TabMeta
+
+data TabMeta = TabMeta { format :: TabFormat
+                       , col_seq :: Int                           -- Column for the sequence name
+                       , col_beg :: Int                           -- Column for the start of a region
+                       , col_end :: Int                           -- Column for the end of a region
+                       , comment_char :: Char
+                       , skip_lines :: Int
+                       , names :: V.Vector ByteString }
+  deriving Show
+
+data TabFormat = Generic | SamFormat | VcfFormat | ZeroBased   deriving Show
+
+-- | Reads a Tabix index.  Note that tabix indices are compressed, this
+-- is taken care of.
+readTabix :: MonadIO m => Iteratee ByteString m TabIndex
+readTabix = joinI $ decompressBgzf $ iGetString 4 >>= switch
+  where
+    switch "TBI\1" = do nref <- fromIntegral `liftM` endianRead4 LSB
+                        format       <- liftM toFormat     (endianRead4 LSB)
+                        col_seq      <- liftM fromIntegral (endianRead4 LSB)
+                        col_beg      <- liftM fromIntegral (endianRead4 LSB)
+                        col_end      <- liftM fromIntegral (endianRead4 LSB)
+                        comment_char <- liftM (chr . fromIntegral) (endianRead4 LSB)
+                        skip_lines   <- liftM fromIntegral (endianRead4 LSB)
+                        names        <- liftM (V.fromList . B.split 0) . iGetString . fromIntegral =<< endianRead4 LSB
+
+                        ix <- getIndexArrays nref 14 5 (const return) getIntervals
+                        fin <- isFinished
+                        if fin then return $! ix { extensions = TabMeta{..} }
+                               else do unaln <- fromIntegral `liftM` endianRead8 LSB
+                                       return $! ix { unaln_off = unaln, extensions = TabMeta{..} }
+
+    switch magic   = throwErr . iterStrExc $ "index signature " ++ show magic ++ " not recognized"
+
+    toFormat 1 = SamFormat
+    toFormat 2 = VcfFormat
+    toFormat x = if testBit x 16 then ZeroBased else Generic
+
+-- Read the intervals.  Each one becomes a checkpoint.
+getIntervals :: Monad m => (IntMap Int64, Int64) -> Iteratee ByteString m (IntMap Int64, Int64)
+getIntervals (cp,mx0) = do
+    nintv <- fromIntegral `liftM` endianRead4 LSB
+    reduceM 0 nintv (cp,mx0) $ \(!im,!mx) int -> do
+        oo <- fromIntegral `liftM` endianRead8 LSB
+        return (if oo == 0 then im else IM.insert (int * 0x4000) oo im, max mx oo)
+
+
+getIndexArrays :: MonadIO m => Int -> Int -> Int
                -> (Word32 -> Ckpoints -> Iteratee ByteString m Ckpoints)
                -> ((Ckpoints, Int64) -> Iteratee ByteString m (Ckpoints, Int64))
-               -> Iteratee ByteString m BamIndex
-getIndexArrays minshift depth addOneCheckpoint addManyCheckpoints = do
-    nref <- fromIntegral `liftM` endianRead4 LSB
-    if nref < 1
-      then return $ BamIndex minshift depth 0 V.empty V.empty
-      else do
+               -> Iteratee ByteString m (BamIndex ())
+getIndexArrays nref minshift depth addOneCheckpoint addManyCheckpoints
+    | nref  < 1 = return $ BamIndex minshift depth 0 () V.empty V.empty
+    | otherwise = do
         rbins  <- liftIO $ M.new nref
         rckpts <- liftIO $ M.new nref
         mxR <- reduceM 0 nref 0 $ \mx0 r -> do
@@ -211,7 +266,7 @@ getIndexArrays minshift depth addOneCheckpoint addManyCheckpoints = do
                 (cpts',mx2) <- addManyCheckpoints (cpts,mx1)
                 liftIO $ M.write rbins r bins >> M.write rckpts r cpts'
                 return mx2
-        liftM2 (BamIndex minshift depth mxR) (liftIO $ V.unsafeFreeze rbins) (liftIO $ V.unsafeFreeze rckpts)
+        liftM2 (BamIndex minshift depth mxR ()) (liftIO $ V.unsafeFreeze rbins) (liftIO $ V.unsafeFreeze rckpts)
 
 -- | Reads the list of segments from an index file and makes sure
 -- it is sorted.
@@ -240,7 +295,7 @@ loopM beg end k = if beg /= end then k beg >> loopM (succ beg) end k else return
 -- Enumerates over the @BamRaw@ records of the correct sequence only,
 -- doesn't enumerate at all if the sequence isn't found.
 
-eneeBamRefseq :: Monad m => BamIndex -> Refseq -> Enumeratee [BamRaw] [BamRaw] m a
+eneeBamRefseq :: Monad m => BamIndex b -> Refseq -> Enumeratee [BamRaw] [BamRaw] m a
 eneeBamRefseq BamIndex{..} (Refseq r) iter
     | Just ckpts <- refseq_ckpoints V.!? fromIntegral r
     , Just (voff, _) <- IM.minView ckpts
@@ -253,7 +308,7 @@ eneeBamRefseq BamIndex{..} (Refseq r) iter
 -- best guess at where the unaligned stuff starts.  If no such guess is
 -- available, we decode everything.
 
-eneeBamUnaligned :: Monad m => BamIndex -> Enumeratee [BamRaw] [BamRaw] m a
+eneeBamUnaligned :: Monad m => BamIndex b -> Enumeratee [BamRaw] [BamRaw] m a
 eneeBamUnaligned BamIndex{..} iter = do when (unaln_off /= 0) $ seek $ fromIntegral unaln_off
                                         filterStream (not . isValidRefseq . br_rname) iter
 
@@ -271,19 +326,19 @@ eneeBamSegment (Segment beg end mpos) out = do
     let in_segment br = virt_offset br <= fromIntegral end && br_pos br <= mpos
     takeWhileE in_segment out
 
-eneeBamSubseq :: Monad m => BamIndex -> Refseq -> R.Subsequence -> Enumeratee [BamRaw] [BamRaw] m a
+eneeBamSubseq :: Monad m => BamIndex b -> Refseq -> R.Subsequence -> Enumeratee [BamRaw] [BamRaw] m a
 eneeBamSubseq bi ref subs
     = let segs = foldr (~~) [] $ segmentLists bi ref subs
           olap br = br_rname br == ref && R.overlaps (br_pos br) (br_pos br + br_aln_length br) subs
       in foldr ((>=>) . eneeBamSegment) return segs ><> filterStream olap
 
-eneeBamRegions :: Monad m => BamIndex -> [R.Region] -> Enumeratee [BamRaw] [BamRaw] m a
+eneeBamRegions :: Monad m => BamIndex b -> [R.Region] -> Enumeratee [BamRaw] [BamRaw] m a
 eneeBamRegions bi = foldr ((>=>) . uncurry (eneeBamSubseq bi)) return . R.toList . R.fromList
 
 
 lookupLE :: IM.Key -> IM.IntMap a -> Maybe (IM.Key, a)
 lookupLE k m = case ma of
-	Just a               -> Just (k,a)
-	Nothing | IM.null m1 -> Nothing
+    Just a               -> Just (k,a)
+    Nothing | IM.null m1 -> Nothing
                 | otherwise  -> Just $ IM.findMax m1
   where (m1,ma,_) = IM.splitLookup k m

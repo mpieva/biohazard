@@ -326,7 +326,7 @@ mergeInputRanges rng (fp0:fps0) = go fp0 fps0
 
 
 decodeWithIndex :: (MonadIO m, MonadMask m)
-                => (BamIndex -> Enumeratee [BamRaw] [BamRaw] m a)
+                => (BamIndex () -> Enumeratee [BamRaw] [BamRaw] m a)
                 -> FilePath -> (BamMeta -> Iteratee [BamRaw] m a)
                 -> m (Iteratee [BamRaw] m a)
 decodeWithIndex enum fp k0 = do
