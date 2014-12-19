@@ -20,22 +20,6 @@ import Data.Vec hiding ( map )
 -- this is a vector of packed vectors.  Conveniently, each of the packed
 -- vectors represents all transition /into/ the given nucleotide.
 
--- | Represents our knowledge about a certain base, which consists of
--- the base itself (A,C,G,T, encoded as 0..3; no Ns), the quality score
--- (anything that isn't A,C,G,T becomes A with quality 0), and a
--- substitution matrix representing post-mortem but pre-sequencing
--- substitutions.
---
--- Unfortunately, none of this can be rolled into something more simple,
--- because damage and sequencing error behave so differently.
-
-data DamagedBase = DB { db_call :: !Nucleotide
-                      , db_qual :: !Qual
-                      , db_dmg  :: !Mat44D }
-
-instance Show DamagedBase where
-    showsPrec _ (DB n q _) = shows n . (:) '@' . shows q
-
 
 -- | A 'DamageModel' is a function that gives substitution matrices for
 -- each position in a read.  Its application yields a sequence of
@@ -44,7 +28,7 @@ instance Show DamagedBase where
 -- It will usually be dependendent on the position within the read,
 -- though.
 
-type DamageModel = BamRaw -> [Mat44D]
+type DamageModel a = BamRaw -> [Mat44 a]
 
 data To = Nucleotide :-> Nucleotide
 
@@ -60,8 +44,10 @@ infix 8 !
 -- from the quality score.  This needs elaboration to see what to do
 -- with amibiguity codes (even though those haven't actually been
 -- observed in the wild).
-noDamage :: DamageModel
-noDamage r = replicate (br_l_seq r) (packMat identity)
+
+{-# SPECIALIZE noDamage :: DamageModel Double #-}
+noDamage :: Num a => DamageModel a
+noDamage r = replicate (br_l_seq r) identity
 
 
 -- | 'DamageModel' for single stranded library prep.  Only one kind of
@@ -70,34 +56,36 @@ noDamage r = replicate (br_l_seq r) (packMat identity)
 -- and the overhang length is distributed exponentially with parameter
 -- 'lambda' at the 5' end and 'kappa' at the 3' end.
 
-data SsDamageParameters = SSD { ssd_sigma  :: !Double         -- deamination rate in ss DNA
-                              , ssd_delta  :: !Double         -- deamination rate in ds DNA
-                              , ssd_lambda :: !Double         -- expected overhang length at 5' end
-                              , ssd_kappa  :: !Double }       -- expected overhang length at 3' end
+data SsDamageParameters float = SSD { ssd_sigma  :: !float         -- deamination rate in ss DNA
+                                    , ssd_delta  :: !float         -- deamination rate in ds DNA
+                                    , ssd_lambda :: !float         -- expected overhang length at 5' end
+                                    , ssd_kappa  :: !float }       -- expected overhang length at 3' end
   deriving Show
 
 -- Forward strand first, C->T only; reverse strand next, G->A instead
-ssDamage :: SsDamageParameters -> DamageModel
+
+{-# SPECIALIZE ssDamage :: SsDamageParameters Double -> DamageModel Double #-}
+ssDamage :: Fractional a => SsDamageParameters a -> DamageModel a
 ssDamage SSD{..} r = let mat = if br_isReversed r then ssd_rev else ssd_fwd
                      in map mat [0 .. br_l_seq r-1]
   where
     prob5 = abs ssd_lambda / (1 + abs ssd_lambda)
     prob3 = abs ssd_kappa  / (1 + abs ssd_kappa)
 
-    ssd_fwd i = ( Vec4D 1   0   0   0 ) :.
-                ( Vec4D 0 (1-p) 0   0 ) :.
-                ( Vec4D 0   0   1   0 ) :.
-                ( Vec4D 0   p   0   1 ) :. ()
+    ssd_fwd i = vec4 ( vec4  1   0   0   0 )
+                     ( vec4  0 (1-p) 0   0 )
+                     ( vec4  0   0   1   0 )
+                     ( vec4  0   p   0   1 )
       where
         !lam5 = prob5 ^ (1+i)
         !lam3 = prob3 ^ (br_l_seq r - i)
         !lam  = lam3 + lam5 - lam3 * lam5
         !p    = ssd_sigma * lam + ssd_delta * (1-lam)
 
-    ssd_rev i = ( Vec4D 1   0   p   0 ) :.
-                ( Vec4D 0   1   0   0 ) :.
-                ( Vec4D 0   0 (1-p) 0 ) :.
-                ( Vec4D 0   0   0   1 ) :. ()
+    ssd_rev i = vec4 ( vec4  1   0   p   0 )
+                     ( vec4  0   1   0   0 )
+                     ( vec4  0   0 (1-p) 0 )
+                     ( vec4  0   0   0   1 )
       where
         !lam5 = prob5 ^ (br_l_seq r - i)
         !lam3 = prob3 ^ (1+i)
@@ -105,9 +93,9 @@ ssDamage SSD{..} r = let mat = if br_isReversed r then ssd_rev else ssd_fwd
         !p    = ssd_sigma * lam + ssd_delta * (1-lam)
 
 
-data DsDamageParameters = DSD { dsd_sigma  :: !Double         -- deamination rate in ss DNA
-                              , dsd_delta  :: !Double         -- deamination rate in ds DNA
-                              , dsd_lambda :: !Double }       -- expected overhang length
+data DsDamageParameters float = DSD { dsd_sigma  :: !float         -- deamination rate in ss DNA
+                                    , dsd_delta  :: !float         -- deamination rate in ds DNA
+                                    , dsd_lambda :: !float }       -- expected overhang length
   deriving Show
 
 -- | 'DamageModel' for double stranded library.  We get C->T damage at
@@ -131,18 +119,22 @@ data DsDamageParameters = DSD { dsd_sigma  :: !Double         -- deamination rat
 -- overhang length of (prob / (1-prob)).  We invert this and define
 -- dsd_lambda as the expected overhang length.
 
-dsDamage :: DsDamageParameters -> DamageModel
+{-# SPECIALIZE dsDamage :: DsDamageParameters Double -> DamageModel Double #-}
+dsDamage :: Fractional a => DsDamageParameters a -> DamageModel a
 dsDamage DSD{..} r = map mat [0 .. br_l_seq r-1]
   where
     prob = abs dsd_lambda / (1 + abs dsd_lambda)
-    mat :: Int -> Mat44D
-    mat i = ( Vec4D 1     0     q     0 ) :.
-            ( Vec4D 0   (1-p)   0     0 ) :.
-            ( Vec4D 0     0   (1-q)   0 ) :.
-            ( Vec4D 0     p     0     1 ) :. ()
+
+    mat i = vec4 ( vec4  1     0     q     0 )
+                 ( vec4  0   (1-p)   0     0 )
+                 ( vec4  0     0   (1-q)   0 )
+                 ( vec4  0     p     0     1 )
       where
         p    = dsd_sigma * lam5 + dsd_delta * (1-lam5)
         q    = dsd_sigma * lam3 + dsd_delta * (1-lam3)
         lam5 = prob ^ (         1 + i)
         lam3 = prob ^ (br_l_seq r - i)
 
+{-# INLINE vec4 #-}
+vec4 :: a -> a -> a -> a -> Vec4 a
+vec4 a b c d = a :. b :. c :. d :. ()

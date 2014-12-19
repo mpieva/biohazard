@@ -16,7 +16,7 @@ import Control.Monad.Fix ( fix )
 import Data.Foldable hiding ( sum, product )
 import Data.Monoid
 import Data.Ord
-import Data.Vec.Packed ( Mat44D )
+import Data.Vec.Packed ( Mat44D, packMat )
 
 import qualified Data.ByteString        as B
 import qualified Data.Vector.Unboxed    as V
@@ -98,6 +98,23 @@ data PrimBase = Base { _pb_wait   :: !Int                       -- ^ number of b
                      , _pb_rev    :: !Bool                      -- ^ reverse strand?
                      , _pb_chunks :: PrimChunks }               -- ^ more chunks
   deriving Show
+
+
+-- | Represents our knowledge about a certain base, which consists of
+-- the base itself (A,C,G,T, encoded as 0..3; no Ns), the quality score
+-- (anything that isn't A,C,G,T becomes A with quality 0), and a
+-- substitution matrix representing post-mortem but pre-sequencing
+-- substitutions.
+--
+-- Unfortunately, none of this can be rolled into something more simple,
+-- because damage and sequencing error behave so differently.
+
+data DamagedBase = DB { db_call :: !Nucleotide
+                      , db_qual :: !Qual
+                      , db_dmg  :: !Mat44D }
+
+instance Show DamagedBase where
+    showsPrec _ (DB n q _) = shows n . (:) '@' . shows q
 
 
 -- | Decomposes a BAM record into chunks suitable for piling up.  We
@@ -262,7 +279,7 @@ type Calls = Pile' GL (GL, [IndelVariant])
 -- Processing stops when the first read with invalid 'br_rname' is
 -- encountered or a t end of file.
 
-pileup :: MonadIO m => DamageModel -> Enumeratee [BamRaw] [Pile] m a
+pileup :: Monad m => DamageModel Double -> Enumeratee [BamRaw] [Pile] m a
 pileup dm = takeWhileE (isValidRefseq . br_rname) ><> filterStream useable ><>
             eneeCheckIfDonePass (icont . runPileM pileup' finish (Refseq 0) 0 [] Empty dm)
   where
@@ -296,7 +313,7 @@ newtype PileM m a = PileM { runPileM :: forall r . (a -> PileF m r) -> PileF m r
 type PileF m r = Refseq -> Int ->                               -- current position
                  [PrimBase] ->                                  -- active queue
                  Heap ->                                        -- waiting queue
-                 DamageModel ->
+                 DamageModel Double ->
                  (Stream [Pile] -> Iteratee [Pile] m r) ->      -- output function
                  Stream [BamRaw] ->                             -- pending input
                  Iteratee [BamRaw] m (Iteratee [Pile] m r)
@@ -339,7 +356,7 @@ get_waiting = PileM $ \k r p a w -> k w r p a w
 upd_waiting :: (Heap -> Heap) -> PileM m ()
 upd_waiting f = PileM $ \k r p a w -> k () r p a $! f w
 
-get_damage_model :: PileM m DamageModel
+get_damage_model :: PileM m (DamageModel Double)
 get_damage_model = PileM $ \k r p a w d -> k d r p a w d
 
 yield :: Monad m => Pile -> PileM m ()
@@ -371,7 +388,7 @@ consume_active nil cons = do ac <- get_active
                              foldM cons nil ac
 
 -- | The actual pileup algorithm.
-pileup' :: MonadIO m => PileM m ()
+pileup' :: Monad m => PileM m ()
 pileup' = do
     refseq       <- get_refseq
     active       <- get_active
@@ -389,7 +406,7 @@ pileup' = do
         ( [   ], Just nw, Just ni ) -> set_pos (min nw ni) >> pileup''
         ( [   ], Nothing, Nothing ) -> return ()
 
-pileup'' :: MonadIO m => PileM m ()
+pileup'' :: Monad m => PileM m ()
 pileup'' = do
     -- Input is still 'BamRaw', since these can be relied on to be
     -- sorted.  First see if there is any input at the current location,
@@ -405,7 +422,7 @@ pileup'' = do
     fix $ \loop -> peek >>= mapM_ (\br ->
             when (br_rname br == rs && br_pos br == po) $ do
                 bump
-                case decompose br (dm br) of
+                case decompose br (map packMat $ dm br) of
                     Seek    p pb -> upd_waiting (insert p pb)
                     Indel _ _ pb -> upd_active (pb:)
                     EndOfRead    -> return ()
