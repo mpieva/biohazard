@@ -2,17 +2,6 @@
 {-# LANGUAGE RecordWildCards, BangPatterns, FlexibleContexts #-}
 module Data.Avro where
 
--- ^ Support for Avro.
--- Current status is that we can generate schemas for certain Haskell
--- values, serialize to binary and JSON representations, and write
--- Container files using the null codec.  The C implementation likes
--- some, but not all of these containers; it's unclear if that's the
--- fault of the C implementation, though.
---
--- Meanwhile, serialization works for nested sums-of-products, as long as the
--- product uses record syntax and the top level is a plain record.
--- The obvious primitives are supported.
-
 import Bio.Iteratee
 import Control.Applicative
 import Control.Monad
@@ -42,6 +31,17 @@ import qualified Data.ListLike as LL
 import qualified Data.Text as T
 import qualified Data.Vector as V
 import qualified Data.Vector.Unboxed as U
+
+-- ^ Support for Avro.
+-- Current status is that we can generate schemas for certain Haskell
+-- values, serialize to binary and JSON representations, and write
+-- Container files using the null codec.  The C implementation likes
+-- some, but not all of these containers; it's unclear if that's the
+-- fault of the C implementation, though.
+--
+-- Meanwhile, serialization works for nested sums-of-products, as long as the
+-- product uses record syntax and the top level is a plain record.
+-- The obvious primitives are supported.
 
 (.=) :: ToJSON a => String -> a -> (T.Text, Value)
 k .= v = (T.pack k, toJSON v)

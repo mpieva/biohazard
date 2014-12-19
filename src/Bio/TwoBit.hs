@@ -18,21 +18,6 @@ module Bio.TwoBit (
         Mask(..)
     ) where
 
-{- ^
-Would you believe it?  The 2bit format stores blocks of Ns in a table at
-the beginning of a sequence, then packs four bases into a byte.  So it
-is neither possible nor necessary to store Ns in the main sequence, and
-you would think they aren't stored there, right?  And they aren't.
-Instead Ts are stored which the reader has to replace with Ns.
-
-The sensible way to treat these is probably to just say there are two
-kinds of implied annotation (repeats and large gaps for a typical
-genome), which can be interpreted in whatever way fits.  And that's why
-we have 'Mask' and 'getSubseqWith'.
-
-TODO:  use binary search for the Int->Int mappings?
--}
-
 import           Bio.Base
 import           Control.Applicative
 import           Control.Monad
@@ -47,6 +32,19 @@ import           Data.Maybe
 import           Numeric
 import           System.IO.Posix.MMap
 import           System.Random
+
+-- ^ Would you believe it?  The 2bit format stores blocks of Ns in a table at
+-- the beginning of a sequence, then packs four bases into a byte.  So it
+-- is neither possible nor necessary to store Ns in the main sequence, and
+-- you would think they aren't stored there, right?  And they aren't.
+-- Instead Ts are stored which the reader has to replace with Ns.
+--
+-- The sensible way to treat these is probably to just say there are two
+-- kinds of implied annotation (repeats and large gaps for a typical
+-- genome), which can be interpreted in whatever way fits.  And that's why
+-- we have 'Mask' and 'getSubseqWith'.
+-- 
+-- TODO:  use binary search for the Int->Int mappings?
 
 data TwoBitFile = TBF {
     tbf_raw :: B.ByteString,
