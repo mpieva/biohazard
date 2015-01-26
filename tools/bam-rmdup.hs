@@ -13,7 +13,7 @@ import Data.Ord ( comparing )
 import Data.Vector.Algorithms.Intro ( sortBy )
 import Data.Version ( showVersion )
 import Numeric ( showFFloat )
-import Paths_biohazard ( version )
+-- import Paths_biohazard ( version )
 import System.Console.GetOpt
 import System.Environment ( getArgs, getProgName )
 import System.Exit
@@ -36,6 +36,7 @@ data Conf = Conf {
     keep_improper :: Bool,
     transform :: BamRaw -> Maybe BamRaw,
     min_len :: Int,
+    min_qual :: Qual,
     get_label :: M.HashMap Seqid Seqid -> BamRaw -> Seqid,
     putResult :: String -> IO (),
     debug :: String -> IO (),
@@ -55,6 +56,7 @@ defaults = Conf { output = Nothing
                 , keep_improper = False
                 , transform = Just
                 , min_len = 0
+                , min_qual = Q 0
                 , get_label = get_library
                 , putResult = putStr
                 , debug = \_ -> return ()
@@ -76,6 +78,7 @@ options = [
     Option  "k" ["keep","mark-only"](NoArg set_keep)          "Mark duplicates, but include them in output",
     Option  "Q" ["max-qual"]       (ReqArg set_qual "QUAL")   "Set maximum quality after consensus call to QUAL",
     Option  "l" ["min-length"]     (ReqArg set_len "LEN")     "Discard reads shorter than LEN",
+    Option  "q" ["min-mapq"]       (ReqArg set_mapq "QUAL")   "Discard reads with map quality lower than QUAL",
     Option  "s" ["no-strand"]      (NoArg  set_no_strand)     "Strand of alignments is uninformative",
     Option  "r" ["ignore-rg"]      (NoArg  set_no_rg)         "Ignore read groups when looking for duplicates",
     Option  "v" ["verbose"]        (NoArg  set_verbose)       "Print more diagnostics",
@@ -96,6 +99,7 @@ options = [
     set_keep       c =                    return $ c { keep_all = True }
     set_unaligned  c =                    return $ c { keep_unaligned = True }
     set_len      n c = readIO n >>= \l -> return $ c { min_len = l }
+    set_mapq     n c = readIO n >>= \q -> return $ c { min_qual = Q q }
     set_no_rg      c =                    return $ c { get_label = get_no_library }
     set_multi      c =                    return $ c { clean_multimap = clean_multi_flags }
 
@@ -127,7 +131,7 @@ options = [
 
 vrsn :: IO a
 vrsn = do pn <- getProgName
-          hPutStrLn stderr $ pn ++ ", version " ++ showVersion version
+          hPutStrLn stderr $ pn ++ ", version " -- ++ showVersion version
           exitSuccess
 
 usage :: IO a
@@ -188,7 +192,7 @@ main = do
     unless (null errors) $ mapM_ (hPutStrLn stderr) errors >> exitFailure
     Conf{..} <- foldr (>=>) return opts defaults
 
-    add_pg <- addPG $ Just version
+    add_pg <- addPG Nothing -- $ Just version
     (counts, ()) <- mergeInputRanges which files >=> run $ \hdr -> do
        (circtable, refs') <- liftIO $ circulars (meta_refs hdr)
        let tbl = mk_rg_tbl hdr
@@ -209,10 +213,11 @@ main = do
 
        ou' <- takeWhileE is_halfway_aligned ><> filters ><>
               normalizeSortWith circtable ><>
+              filterStream (\br -> br_mapq br >= min_qual) ><>
               rmdup (get_label tbl) strand_preserved (co keep_all) $
               count_all (get_label tbl) `I.zip` ou
 
-       liftIO $ debug "rmdup done; copying junk\n"
+       liftIO $ debug "\27[Krmdup done; copying junk\n"
 
        case which of
             Unaln              -> joinI $ filters ou'

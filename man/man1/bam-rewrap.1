@@ -17,14 +17,14 @@ The idea is that a circular reference sequence has been extended
 artificially to facilitate alignment.  Now the declared length in the
 header is wrong, and some alignments overhang the end. 
 .B bam-rewrap
-now splits
+splits
 those alignments into two, one for the beginning, one for the end of
 the sequence, then soft-masks out the inappropriate parts.  Alignments
 falling completely behind the actual end of the target sequence are
 wrapped to natural coordinates.
 
 .B bam-rewrap
-tries to fix the map quality for the affected reads as follows:  if
+tries to fix the map quality (MAPQ) for the affected reads as follows:  if
 a read has zero map quality, meaning multiple equally good hits, 
 .B bam-rewrap
 checks the 
@@ -38,7 +38,7 @@ is removed and
 set to 37, indicating a unique hit.  This logic is not standardized and
 is only known to work if alignments were produced by
 .BR bwa .
-It may or may not work for other aligners.
+It may or may not make sense for other aligners.
  
 .SH OPTIONS
 .IP "chrom:length"

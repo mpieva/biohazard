@@ -66,20 +66,19 @@ therefore
 .IR "--refseq U" " implies " --unaligned .
 
 .IP "-z, --circular CHR:LEN"
-Specify that the reference sequence
+Specify that the reference sequence starting with the string
 .I CHR
 is circular and has length 
 .IR LEN .
-A unique prefix of the sequence name is sufficient.
 
 The effect is that reads that align to one or more position that is
 duplicated in the reference are normalized to a small start coordinate
-and have their mapping quality fixed where possible.  After removal of
+and have their mapping quality (MAPQ) fixed where possible.  After removal of
 duplicates, reads that overhang the end of the reference sequence are
 duplicated to the beginning and invalid parts of the alignment are
 masked.  The correct length is also entered in the BAM header.
 
-Assuming that reads where mapped to a reference that has a part from the
+Assuming that reads were mapped to a reference that has a part from the
 beginning pasted to its end, a subsequent genotype caller should now see
 even coverage over the whole length of the reference.  At the same time,
 duplicate removal and complexity estimation should still work fine.
@@ -95,17 +94,18 @@ Retain unaligned reads and completely unaligned pairs.  This amounts to
 a simple copy operation at the end and may only be sensible in
 conjunction with 
 .I --keep 
-if the output file is intended to replace the input file.
+if the output file is intended to replace the input file without loss of
+any data.
 
 .IP "-1, --single-read"
 Treat all reads as single.  This might be a workaround for a very bad
-second read, but is generally considered a bad idea.  Reads will not be
-marked as "paired" any more after running with this setting.
+second read, but is generally considered a bad idea.  Reads will no
+longer be marked as "paired" after running with this setting.
 
 .IP "-c, --cheap"
 Run in cheap mode.  Cheap mode does not compute a consensus sequence for
 a cluster of duplicates, but selects one of the reads as representative.
-It's advantage is that it runs faster.  Cheap mode is the default if no
+Its advantage is that it runs faster.  Cheap mode is the default if no
 output file is specified, else a consensus is computed by default.
 
 .IP "-k, --keep, --mark-only"
@@ -127,7 +127,7 @@ it may not make sense to combine it with
 Set the maximum quality score after consensus calling to
 .I qual.
 Consensus calling can result in unrealistically high quality scores due
-to effect outside this program's scope (presumably errors in PCR).
+to effects outside this program's scope (presumably errors in PCR).
 Quality score are therefore limited to an upper value, even if we didn't
 actually remove any duplicates.  The default is 60, corresponding to a
 very high fidelity polymerase.
@@ -137,6 +137,15 @@ Discard reads shorter than
 .IR len .
 This option may conserve time if the plan is to discard short reads
 later anyway.
+
+.IP "-q, --min-mapq qual"
+Discard reads with a map quality (MAPQ) lower than 
+.IR qual .
+If the
+.IR --circular 
+option is in use, the filter is applied after reads have been wrapped
+and their map quality has been corrected.  This option may conserve time
+if the plan is to discard short reads later anyway.  
 
 .IP "-s, --no-strand"
 Treat the strand information as uninformative.  Normally, PCR duplicates
