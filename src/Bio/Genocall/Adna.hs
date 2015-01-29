@@ -2,8 +2,8 @@
 module Bio.Genocall.Adna where
 
 import Bio.Base
-import Bio.Bam ( BamRaw, br_isReversed, br_l_seq )
-import Data.Vec hiding ( map )
+import Data.Vec
+import qualified Data.Vector as V
 
 -- ^ Things specific to ancient DNA, e.g. damage models.
 --
@@ -22,13 +22,11 @@ import Data.Vec hiding ( map )
 
 
 -- | A 'DamageModel' is a function that gives substitution matrices for
--- each position in a read.  Its application yields a sequence of
--- substitution matrices exactly as long a the read itself.  Though
--- typically not done, the model can take the sequence into account.
--- It will usually be dependendent on the position within the read,
--- though.
+-- each position in a read.  The 'DamageModel' can depend on the length
+-- of the read and whether its alignment is reversed.  In practice, we
+-- should probably memoize precomputed damage models somehow.
 
-type DamageModel a = BamRaw -> [Mat44 a]
+type DamageModel a = Bool -> Int -> V.Vector (Mat44 a)
 
 data To = Nucleotide :-> Nucleotide
 
@@ -37,6 +35,7 @@ infix 8 !
 
 -- | Convenience function to access a substitution matrix that has a
 -- mnemonic reading.
+{-# INLINE (!) #-}
 (!) :: Mat44D -> To -> Double
 (!) m (N x :-> N y) = getElem (fromIntegral x) $ getElem (fromIntegral y) m
 
@@ -47,7 +46,7 @@ infix 8 !
 
 {-# SPECIALIZE noDamage :: DamageModel Double #-}
 noDamage :: Num a => DamageModel a
-noDamage r = replicate (br_l_seq r) identity
+noDamage _ l = V.replicate l identity
 
 
 -- | 'DamageModel' for single stranded library prep.  Only one kind of
@@ -66,8 +65,7 @@ data SsDamageParameters float = SSD { ssd_sigma  :: !float         -- deaminatio
 
 {-# SPECIALIZE ssDamage :: SsDamageParameters Double -> DamageModel Double #-}
 ssDamage :: Fractional a => SsDamageParameters a -> DamageModel a
-ssDamage SSD{..} r = let mat = if br_isReversed r then ssd_rev else ssd_fwd
-                     in map mat [0 .. br_l_seq r-1]
+ssDamage SSD{..} r l = V.generate l $ if r then ssd_rev else ssd_fwd
   where
     prob5 = abs ssd_lambda / (1 + abs ssd_lambda)
     prob3 = abs ssd_kappa  / (1 + abs ssd_kappa)
@@ -78,7 +76,7 @@ ssDamage SSD{..} r = let mat = if br_isReversed r then ssd_rev else ssd_fwd
                      ( vec4  0   p   0   1 )
       where
         !lam5 = prob5 ^ (1+i)
-        !lam3 = prob3 ^ (br_l_seq r - i)
+        !lam3 = prob3 ^ (l-i)
         !lam  = lam3 + lam5 - lam3 * lam5
         !p    = ssd_sigma * lam + ssd_delta * (1-lam)
 
@@ -87,7 +85,7 @@ ssDamage SSD{..} r = let mat = if br_isReversed r then ssd_rev else ssd_fwd
                      ( vec4  0   0 (1-p) 0 )
                      ( vec4  0   0   0   1 )
       where
-        !lam5 = prob5 ^ (br_l_seq r - i)
+        !lam5 = prob5 ^ (l-i)
         !lam3 = prob3 ^ (1+i)
         !lam  = lam3 + lam5 - lam3 * lam5
         !p    = ssd_sigma * lam + ssd_delta * (1-lam)
@@ -121,7 +119,7 @@ data DsDamageParameters float = DSD { dsd_sigma  :: !float         -- deaminatio
 
 {-# SPECIALIZE dsDamage :: DsDamageParameters Double -> DamageModel Double #-}
 dsDamage :: Fractional a => DsDamageParameters a -> DamageModel a
-dsDamage DSD{..} r = map mat [0 .. br_l_seq r-1]
+dsDamage DSD{..} _ l = V.generate l mat
   where
     prob = abs dsd_lambda / (1 + abs dsd_lambda)
 
@@ -132,9 +130,18 @@ dsDamage DSD{..} r = map mat [0 .. br_l_seq r-1]
       where
         p    = dsd_sigma * lam5 + dsd_delta * (1-lam5)
         q    = dsd_sigma * lam3 + dsd_delta * (1-lam3)
-        lam5 = prob ^ (         1 + i)
-        lam3 = prob ^ (br_l_seq r - i)
+        lam5 = prob ^ (1+i)
+        lam3 = prob ^ (l-i)
 
 {-# INLINE vec4 #-}
 vec4 :: a -> a -> a -> a -> Vec4 a
 vec4 a b c d = a :. b :. c :. d :. ()
+
+memoDamageModel :: DamageModel a -> DamageModel a
+memoDamageModel f = \r l -> if l > 512 || l < 0 then f r l
+                            else if r then V.unsafeIndex rev l
+                            else           V.unsafeIndex fwd l
+  where
+    rev = V.generate 512 $ f True
+    fwd = V.generate 512 $ f False
+

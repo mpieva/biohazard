@@ -186,6 +186,18 @@ Executable count-coverage
                        biohazard,
                        iteratee >= 0.8.9.6 && < 0.8.10
 
+Executable dmg-est
+  Main-is:             dmg-est.hs
+  Hs-Source-Dirs:      tools
+  Build-depends:       base == 4.*,
+                       ad == 4.*,
+                       biohazard,
+                       Vec,
+                       vector >= 0.9 && < 0.11,
+                       vector-th-unbox,
+                       nonlinear-optimization, 
+                       time
+
 Executable fastq2bam
   Main-is:             fastq2bam.hs
   Hs-Source-Dirs:      tools

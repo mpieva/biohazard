@@ -422,7 +422,7 @@ pileup'' = do
     fix $ \loop -> peek >>= mapM_ (\br ->
             when (br_rname br == rs && br_pos br == po) $ do
                 bump
-                case decompose br (map packMat $ dm br) of
+                case decompose br $ map packMat $ toList $ dm (br_isReversed br) (br_l_seq br) of
                     Seek    p pb -> upd_waiting (insert p pb)
                     Indel _ _ pb -> upd_active (pb:)
                     EndOfRead    -> return ()

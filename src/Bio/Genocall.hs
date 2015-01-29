@@ -37,7 +37,7 @@ import qualified Data.Vec               as Vec
 simple_indel_call :: Int -> IndelPile -> (GL, [IndelVariant])
 simple_indel_call ploidy vars = (simple_call ploidy mkpls vars, vars')
   where
-    vars' = Set.toList $ Set.fromList 
+    vars' = Set.toList $ Set.fromList
             [ IndelVariant d (V_Nuc $ V.fromList $ map db_call i) | (_q,(d,i)) <- vars ]
 
     match = zipWith $ \(DB b q m) n -> let p  = m ! n :-> b
@@ -101,7 +101,7 @@ simple_call ploidy pls = foldl1' (V.zipWith (*)) . map step
 
 
 -- | Make a list of genotypes, each represented as a vector of allele
--- probabilities, from ploidy and four possible alleles.  
+-- probabilities, from ploidy and four possible alleles.
 --
 -- This makes the most sense for SNPs.  The implied order of alleles is
 -- A,C,G,T, and the resulting genotype vectors can straight forwardly be
@@ -165,9 +165,9 @@ maq_snp_call ploidy theta bases = let gls = V.fromList $ map l $ mk_snp_gts ploi
 
             kk = Vec.getElem (fromIntegral . unN $ db_call x) k + pack p_h__x
             k' = Vec.setElem (fromIntegral . unN $ db_call x) kk k
-            
+
             acc' = acc * toProb p_x__q
-            meh = Vec.map (\h -> k ! h :-> db_call x) everynuc
+            meh = Vec.map (\h -> k ! h :-> db_call x) everynuc -- XXX
         in {- trace (unlines ["gt " ++ show gt
                           ,"p(x|q,h) " ++ show p_x__q_h
                           ,"dg " ++ show dg ++ ", call = " ++ show (db_call x)
