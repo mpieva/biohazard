@@ -408,7 +408,7 @@ do_collapse (Q maxq) [br] | B.all (<= maxq) (b_qual br) = ( Representative br, [
 
 do_collapse maxq  brs = ( Consensus b0 { b_exts  = modify_extensions $ b_exts b0
                                        , b_flag  = failflag .&. complement flagDuplicate
-                                       , b_mapq  = rmsq $ map b_mapq $ good brs
+                                       , b_mapq  = Q $ rmsq $ map (unQ . b_mapq) $ good brs
                                        , b_cigar = Cigar cigar'
                                        , b_seq   = V.fromList $ map fst cons_seq_qual
                                        , b_qual  = B.pack $ map (unQ . snd) cons_seq_qual

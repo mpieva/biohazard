@@ -5,7 +5,7 @@ import Distribution.Simple.LocalBuildInfo   ( LocalBuildInfo(..), absoluteInstal
 import Distribution.Simple.Program.Db       ( ProgramDb, lookupProgram )
 import Distribution.Simple.Program.Run      ( runProgramInvocation, programInvocation, progInvokeCwd )
 import Distribution.Simple.Program.Types    ( ConfiguredProgram, simpleProgram )
-import Distribution.Simple.Setup            ( copyDest, copyVerbosity, fromFlag, installVerbosity, buildVerbosity )
+import Distribution.Simple.Setup            ( copyDest, copyVerbosity, fromFlag, installVerbosity, haddockVerbosity )
 import Distribution.Simple.Utils            ( installOrdinaryFiles  )
 import Distribution.Verbosity               ( Verbosity, moreVerbose )
 import System.Exit                          ( exitSuccess )
@@ -21,8 +21,8 @@ main = do
     , postInst = \ _ flags pkg lbi ->
          installManpages pkg lbi (fromFlag $ installVerbosity flags) NoCopyDest
 
-    , postBuild = \ _ flags pkg lbi ->
-         runPdflatex pkg lbi (fromFlag $ buildVerbosity flags)
+    , postHaddock = \ _ flags pkg lbi ->
+         runPdflatex pkg lbi (fromFlag $ haddockVerbosity flags)
 
     , hookedPrograms = [ simpleProgram "pdflatex" ]
     }

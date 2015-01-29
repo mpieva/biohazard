@@ -88,7 +88,7 @@ p_qname :: BamPair -> Seqid
 p_qname (Single a) = b_qname a
 p_qname (Pair a _) = b_qname a
 
-p_mapq :: BamPair -> Int
+p_mapq :: BamPair -> Qual
 p_mapq (Single a) = b_mapq a
 p_mapq (Pair a _) = b_mapq a
 
@@ -96,7 +96,7 @@ p_is_unmapped :: BamPair -> Bool
 p_is_unmapped (Single a) = isUnmapped a
 p_is_unmapped (Pair a b) = isUnmapped a && isUnmapped b
 
-set_mapq :: BamPair -> Int -> BamPair
+set_mapq :: BamPair -> Qual -> BamPair
 set_mapq (Single a) q = Single (a { b_mapq = q })
 set_mapq (Pair a b) q = Pair (a { b_mapq = q }) (b { b_mapq = q })
 
@@ -111,7 +111,8 @@ meld hdr score rs | all p_is_unmapped rs = head rs
 
     ( best : rs' ) = sortBy (\a b -> score a `compare` score b) $ filter (not . p_is_unmapped) rs
     mapq = case rs' of [    ] -> p_mapq best
-                       (r2:_) -> p_mapq best `min` (score r2 - score best)
+                       (r2:_) -> Q . fromIntegral $ fromIntegral (unQ (p_mapq best))
+                                              `min` (score r2 - score best)
 
 
     split_xa br = let s = extAsString "XA" br in if S.null s then id else (++) (S.split ';' s)

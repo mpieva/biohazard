@@ -37,11 +37,7 @@ module Bio.Bam.Rec (
 
     BamRec(..),
     nullBamRec,
-
-    MdOp(..),
     getMd,
-    readMd,
-    showMd,
 
     Nucleotides(..),
     Extensions, Ext(..),
@@ -80,7 +76,7 @@ import Data.Binary.Get
 import Data.Binary.Put
 import Data.Bits                    ( testBit, shiftL, shiftR, (.&.), (.|.), complement )
 import Data.ByteString              ( ByteString )
-import Data.Char                    ( ord, isDigit, digitToInt )
+import Data.Char                    ( ord, digitToInt )
 import Data.Int                     ( Int32 )
 import Data.Monoid                  ( mempty )
 import Data.Vector.Unboxed          ( (!?) )
@@ -108,19 +104,19 @@ import qualified Data.Vector.Unboxed                as V
 
 -- | internal representation of a BAM record
 data BamRec = BamRec {
-        b_qname :: !Seqid,
-        b_flag  :: !Int,
-        b_rname :: !Refseq,
-        b_pos   :: !Int,
-        b_mapq  :: !Int,
-        b_cigar :: !Cigar,
-        b_mrnm  :: !Refseq,
-        b_mpos  :: !Int,
-        b_isize :: !Int,
+        b_qname :: {-# UNPACK #-} !Seqid,
+        b_flag  :: {-# UNPACK #-} !Int,
+        b_rname :: {-# UNPACK #-} !Refseq,
+        b_pos   :: {-# UNPACK #-} !Int,
+        b_mapq  :: {-# UNPACK #-} !Qual,
+        b_cigar :: Cigar,
+        b_mrnm  :: {-# UNPACK #-} !Refseq,
+        b_mpos  :: {-# UNPACK #-} !Int,
+        b_isize :: {-# UNPACK #-} !Int,
         b_seq   :: !(V.Vector Nucleotides),
         b_qual  :: !ByteString,         -- ^ quality, may be empty
         b_exts  :: Extensions,
-        b_virtual_offset :: !FileOffset -- ^ virtual offset for indexing purposes
+        b_virtual_offset :: {-# UNPACK #-} !FileOffset -- ^ virtual offset for indexing purposes
     } deriving Show
 
 nullBamRec :: BamRec
@@ -129,7 +125,7 @@ nullBamRec = BamRec {
         b_flag  = flagUnmapped,
         b_rname = invalidRefseq,
         b_pos   = invalidPos,
-        b_mapq  = 0,
+        b_mapq  = Q 0,
         b_cigar = Cigar [],
         b_mrnm  = invalidRefseq,
         b_mpos  = invalidPos,
@@ -139,6 +135,12 @@ nullBamRec = BamRec {
         b_exts  = M.empty,
         b_virtual_offset = 0
     }
+
+getMd :: BamRec -> Maybe [MdOp]
+getMd r = case M.lookup "MD" $ b_exts r of
+    Just (Text mdfield) -> readMd mdfield
+    Just (Char mdfield) -> readMd $ B.singleton mdfield
+    _                   -> Nothing
 
 type BamEnumeratee m b = Enumeratee' BamMeta ByteString [BamRec] m b
 
@@ -171,7 +173,7 @@ decodeBamEntry br = case pushEndOfInput $ runGetIncremental go `pushChunk` raw_d
     go = do !rid       <- Refseq       <$> getWord32le
             !start     <- fromIntegral <$> getWord32le
             !namelen   <- fromIntegral <$> getWord8
-            !mapq      <- fromIntegral <$> getWord8
+            !mapq      <-            Q <$> getWord8
             !_bin      <-                  getWord16le
             !cigar_len <- fromIntegral <$> getWord16le
             !flag      <- fromIntegral <$> getWord16le
@@ -301,7 +303,7 @@ encodeBamEntry = bamRaw 0 . S.concat . L.toChunks . runPut . putEntry
     putEntry  b = do putWord32le   $ unRefseq $ b_rname b
                      put_int_32    $ b_pos b
                      put_int_8     $ S.length (b_qname b) + 1
-                     put_int_8     $ b_mapq b
+                     put_int_8     $ unQ (b_mapq b)
                      put_int_16    $ distinctBin (b_pos b) (cigarToAlnLen (b_cigar b))
                      put_int_16    $ length $ unCigar $ b_cigar b
                      put_int_16    $ b_flag b
@@ -407,38 +409,6 @@ putValue v = case v of
                       poke (castPtr buf) float >> peek buf
 
 
-data MdOp = MdNum Int | MdRep Nucleotides | MdDel [Nucleotides] deriving Show
-
-getMd :: BamRec -> Maybe [MdOp]
-getMd r = case M.lookup "MD" $ b_exts r of
-    Just (Text mdfield) -> readMd mdfield
-    Just (Char mdfield) -> readMd $ B.singleton mdfield
-    _                   -> Nothing
-
-readMd :: ByteString -> Maybe [MdOp]
-readMd s | S.null s           = return []
-         | isDigit (S.head s) = do (n,t) <- S.readInt s
-                                   (MdNum n :) <$> readMd t
-         | S.head s == '^'    = let (a,b) = S.break isDigit (S.tail s)
-                                in (MdDel (map toNucleotides $ S.unpack a) :) <$> readMd b
-         | otherwise          = (MdRep (toNucleotides $ S.head s) :) <$> readMd (S.tail s)
-
-showMd :: [MdOp] -> ByteString
-showMd = S.pack . flip s1 []
-  where
-    s1 (MdNum  i : MdNum  j : ms) = s1 (MdNum (i+j) : ms)
-    s1 (MdNum  0            : ms) = s1 ms
-    s1 (MdNum  i            : ms) = shows i . s1 ms
-
-    s1 (MdRep  r            : ms) = shows r . s1 ms
-
-    s1 (MdDel d1 : MdDel d2 : ms) = s1 (MdDel (d1++d2) : ms)
-    s1 (MdDel []            : ms) = s1 ms
-    s1 (MdDel ns : MdRep  r : ms) = (:) '^' . shows ns . (:) '0' . shows r . s1 ms
-    s1 (MdDel ns            : ms) = (:) '^' . shows ns . s1 ms
-    s1 [                        ] = id
-
-
 isPaired, isProperlyPaired, isUnmapped, isMateUnmapped, isReversed,
     isMateReversed, isFirstMate, isSecondMate, isAuxillary, isFailsQC,
     isDuplicate, isTrimmed, isMerged :: BamRec -> Bool
@@ -513,7 +483,7 @@ decodeSam' refs inner = joinI $ enumLinesBS $ decodeSamLoop refs inner
 parseSamRec :: (ByteString -> Refseq) -> P.Parser BamRec
 parseSamRec ref = (\nm fl rn po mq cg rn' -> BamRec nm fl rn po mq cg (rn' rn))
                   <$> word <*> num <*> (ref <$> word) <*> (subtract 1 <$> num)
-                  <*> num <*> (Cigar <$> cigar) <*> rnext <*> (subtract 1 <$> num)
+                  <*> (Q <$> num) <*> (Cigar <$> cigar) <*> rnext <*> (subtract 1 <$> num)
                   <*> snum <*> sequ <*> quals <*> exts <*> pure 0
   where
     sep      = P.endOfInput <|> () <$ P.char '\t'

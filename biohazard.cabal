@@ -1,6 +1,6 @@
 -- vim:tw=132
 Name:                biohazard
-Version:             0.5.13
+Version:             0.5.14
 Synopsis:            bioinformatics support library
 Description:         This is a collection of modules I separated from
                      various bioinformatics tools.  The hope is to make
@@ -35,7 +35,7 @@ source-repository head
 source-repository this
   type:     git
   location: git://github.com/udo-stenzel/biohazard.git
-  tag:      0.5.13
+  tag:      0.5.14
 
 
 Library
@@ -80,6 +80,7 @@ Library
                        filepath == 1.3.*,
                        iteratee >= 0.8.9.6 && < 0.8.10,
                        ListLike >= 3 && <5,
+                       primitive == 0.5.*,
                        random == 1.0.*,
                        scientific == 0.3.*,
                        stm == 2.4.*,
@@ -116,9 +117,9 @@ Executable afroengineer
   Hs-source-dirs:      tools
   Other-Modules:       Align, SimpleSeed
   Build-Depends:       base == 4.*,
-                       array >= 0.4 && < 0.6,
+                       array,
                        biohazard,
-                       bytestring >= 0.9 && < 0.11,
+                       bytestring,
                        containers >= 0.4.1 && < 0.6,
                        directory == 1.*,
                        iteratee >= 0.8.9.6 && < 0.8.10,
@@ -131,7 +132,7 @@ Executable bam-fixpair
   Build-depends:       base == 4.*,
                        binary >= 0.5 && < 0.8,
                        biohazard,
-                       bytestring >= 0.9 && < 0.11,
+                       bytestring,
                        hashable >= 1.0 && < 1.3,
                        transformers >= 0.3 && < 0.5
 
@@ -140,7 +141,7 @@ Executable bam-meld
   Hs-Source-Dirs:      tools
   Build-depends:       base == 4.*,
                        biohazard,
-                       bytestring >= 0.9 && < 0.11,
+                       bytestring,
                        containers >= 0.4 && < 0.6
   
 Executable bam-resample
@@ -148,7 +149,7 @@ Executable bam-resample
   Hs-Source-Dirs:      tools
   Build-depends:       base == 4.*,
                        biohazard,
-                       bytestring >= 0.9 && < 0.11,
+                       bytestring,
                        random == 1.0.*
 
 Executable bam-rewrap
@@ -156,7 +157,7 @@ Executable bam-rewrap
   Hs-Source-Dirs:      tools
   Build-depends:       base == 4.*,
                        biohazard,
-                       bytestring >= 0.9 && < 0.11,
+                       bytestring,
                        containers >= 0.4 && < 0.6
 
 Executable bam-rmdup
@@ -164,7 +165,7 @@ Executable bam-rmdup
   Hs-Source-Dirs:      tools
   Build-depends:       base == 4.*,
                        biohazard,
-                       bytestring >= 0.9 && < 0.11,
+                       bytestring,
                        containers >= 0.4 && < 0.6,
                        iteratee >= 0.8.9.6 && < 0.8.10,
                        unordered-containers >= 0.2.3 && < 0.3,
@@ -176,7 +177,7 @@ Executable bam-trim
   Hs-Source-Dirs:      tools
   Build-depends:       base == 4.*,
                        biohazard,
-                       bytestring >= 0.9 && < 0.11
+                       bytestring
   
 Executable count-coverage
   Main-is:             count-coverage.hs
@@ -190,7 +191,7 @@ Executable fastq2bam
   Hs-Source-Dirs:      tools
   Build-depends:       base == 4.*,
                        biohazard,
-                       bytestring >= 0.9 && < 0.11,
+                       bytestring,
                        containers >= 0.4 && < 0.6,
                        iteratee >= 0.8.9.6 && < 0.8.10,
                        vector >= 0.9 && < 0.11
@@ -200,7 +201,7 @@ Executable glf-consensus
   Hs-Source-Dirs:      tools
   Build-depends:       base == 4.*,
                        biohazard,
-                       bytestring >= 0.9 && < 0.11,
+                       bytestring,
                        containers >= 0.4 && < 0.6,
                        exceptions == 0.6.*,
                        iteratee >= 0.8.9.6 && < 0.8.10
@@ -210,7 +211,7 @@ Executable gt-call
   Hs-Source-Dirs:      tools
   Build-depends:       base == 4.*,
                        biohazard,
-                       bytestring >= 0.9 && < 0.11,
+                       bytestring,
                        -- containers >= 0.4 && < 0.6,
                        iteratee >= 0.8.9.6 && < 0.8.10,
                        text == 1.*,
@@ -221,7 +222,7 @@ Executable mt-anno
   Hs-Source-Dirs:      tools
   Other-Modules:       Anno, Seqs, Xlate
   Build-Depends:       base == 4.*,
-                       bytestring >= 0.9 && < 0.11,
+                       bytestring,
                        biohazard,
                        containers >= 0.4.1 && < 0.6
 
@@ -229,7 +230,7 @@ Executable mt-ccheck
   Main-Is:             mt-ccheck.hs
   Hs-Source-Dirs:      tools
   Build-Depends:       base == 4.*,
-                       bytestring >= 0.9 && < 0.11,
+                       bytestring,
                        biohazard,
                        containers >= 0.4.1 && < 0.6,
                        unordered-containers == 0.2.*

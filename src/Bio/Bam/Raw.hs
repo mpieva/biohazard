@@ -44,6 +44,7 @@ module Bio.Bam.Raw (
     br_aln_length,
     br_flag,
     br_extflag,
+    br_get_md,
 
     br_isPaired,
     br_isProperlyPaired,
@@ -408,6 +409,11 @@ br_aln_length br@(BamRaw _ raw)
   where
     !ncig    = br_n_cigar_op br
     !cig_off = 33 + br_l_read_name br
+
+-- | Get the MD field from a BAM record.  If MD is absent or a parse
+-- error occurs, the result is empty.
+br_get_md :: BamRaw -> [MdOp]
+br_get_md r = maybe [] id . readMd $ br_extAsString "MD" r
 
 -- | Decode a BAM stream into raw entries.  Note that the entries can be
 -- unpacked using @decodeBamEntry@.  Also note that this is an

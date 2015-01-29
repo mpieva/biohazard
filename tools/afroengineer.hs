@@ -221,7 +221,7 @@ write_iter_bam fp hdr = mapStream conv =$ writeBamFile fp hdr
             , b_flag            = if reversed qr_band then flagReversed else 0
             , b_rname           = Refseq 0
             , b_pos             = viterbi_position
-            , b_mapq            = 255
+            , b_mapq            = Q 255
             , b_cigar           = viterbi_backtrace
             , b_mrnm            = invalidRefseq
             , b_mpos            = 0

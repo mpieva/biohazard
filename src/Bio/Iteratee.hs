@@ -58,29 +58,34 @@ module Bio.Iteratee (
 
     ParseError(..),
     parserToIteratee,
+    stream2vector,
+    stream2vectorN,
 
     module X ) where
 
-import Bio.Base ( findAuxFile )
+import Bio.Base                             ( findAuxFile )
 import Control.Concurrent.Async             ( Async, async, wait, cancel )
 import Control.Monad
 import Control.Monad.Catch
 import Control.Monad.IO.Class
+import Control.Monad.Primitive              ( PrimMonad )
 import Control.Monad.Trans.Class
-import Data.Iteratee.Binary as X
-import Data.Iteratee.Char as X
-import Data.Iteratee.IO as X hiding ( defaultBufSize )
-import Data.Iteratee.Iteratee as X
-import Data.ListLike ( ListLike )
+import Data.Iteratee.Binary     as X
+import Data.Iteratee.Char       as X
+import Data.Iteratee.IO         as X hiding ( defaultBufSize )
+import Data.Iteratee.Iteratee   as X
+import Data.ListLike                        ( ListLike )
 import Data.Monoid
 import Data.Typeable
-import System.IO ( stdin, stdout, stderr, hIsTerminalDevice )
-import System.Environment ( getArgs )
+import System.IO                            ( stdin, stdout, stderr, hIsTerminalDevice )
+import System.Environment                   ( getArgs )
 
 import qualified Data.Attoparsec.ByteString     as A
 import qualified Data.ByteString                as S
 import qualified Data.Iteratee                  as I
 import qualified Data.ListLike                  as LL
+import qualified Data.Vector.Generic            as VG
+import qualified Data.Vector.Generic.Mutable    as VM
 
 -- | Grouping on 'Iteratee's.  @groupStreamOn proj inner outer@ executes
 -- @inner (proj e)@, where @e@ is the first input element, to obtain an
@@ -376,3 +381,31 @@ parserToIteratee p = icont (f (A.parse p)) Nothing
               A.Fail _ err dsc -> throwErr (toException $ ParseError err dsc)
               A.Partial k'     -> icont (f k') Nothing
               A.Done rest v    -> idone v (Chunk rest)
+
+
+-- | Equivalent to @joinI $ takeStream n $ stream2vector@, but more
+-- efficient.
+stream2vectorN :: (PrimMonad m, ListLike s a, Nullable s, VG.Vector v a) => Int -> Iteratee s m (v a)
+stream2vectorN n = do
+    mv <- lift $ VM.new n
+    l <- go mv 0
+    lift $ VG.unsafeFreeze $ VM.take l mv
+  where
+    go mv i
+        | i == n    = return n
+        | otherwise = 
+            I.tryHead >>= \x -> case x of
+                Nothing -> return i
+                Just  a -> lift (VM.write mv i a) >> go mv (i+1)
+
+-- | Reads the whole stream into a 'VG.Vector'.
+stream2vector :: (PrimMonad m, ListLike s a, Nullable s, VG.Vector v a) => Iteratee s m (v a)
+stream2vector = do
+    mv <- lift $ VM.new 0
+    l <- go mv 0
+    lift $ VG.unsafeFreeze $ VM.take l mv
+  where
+    go mv i = I.tryHead >>= \x -> case x of
+                Nothing -> return i
+                Just  a -> lift (VM.grow mv 1 >> VM.write mv i a) >> go mv (i+1)
+

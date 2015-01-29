@@ -42,12 +42,17 @@ module Bio.Bam.Header (
         Cigar(..),
         CigOp(..),
         cigarToAlnLen,
-        distinctBin
+        distinctBin,
+
+        MdOp(..),
+        readMd,
+        showMd
     ) where
 
 import Bio.Base
 import Control.Applicative
 import Data.Bits                    ( shiftL, shiftR )
+import Data.Char                    ( isDigit )
 import Data.Binary.Builder
 import Data.Ix
 import Data.List                    ( (\\), foldl' )
@@ -351,6 +356,33 @@ instance Show Cigar where
 cigarToAlnLen :: Cigar -> Int
 cigarToAlnLen (Cigar cig) = sum $ map l cig
   where l (op,n) = if op == Mat || op == Del || op == Nop then n else 0
+
+
+data MdOp = MdNum Int | MdRep Nucleotides | MdDel [Nucleotides] deriving Show
+
+readMd :: S.ByteString -> Maybe [MdOp]
+readMd s | S.null s           = return []
+         | isDigit (S.head s) = do (n,t) <- S.readInt s
+                                   (MdNum n :) <$> readMd t
+         | S.head s == '^'    = let (a,b) = S.break isDigit (S.tail s)
+                                in (MdDel (map toNucleotides $ S.unpack a) :) <$> readMd b
+         | otherwise          = (MdRep (toNucleotides $ S.head s) :) <$> readMd (S.tail s)
+
+showMd :: [MdOp] -> S.ByteString
+showMd = S.pack . flip s1 []
+  where
+    s1 (MdNum  i : MdNum  j : ms) = s1 (MdNum (i+j) : ms)
+    s1 (MdNum  0            : ms) = s1 ms
+    s1 (MdNum  i            : ms) = shows i . s1 ms
+
+    s1 (MdRep  r            : ms) = shows r . s1 ms
+
+    s1 (MdDel d1 : MdDel d2 : ms) = s1 (MdDel (d1++d2) : ms)
+    s1 (MdDel []            : ms) = s1 ms
+    s1 (MdDel ns : MdRep  r : ms) = (:) '^' . shows ns . (:) '0' . shows r . s1 ms
+    s1 (MdDel ns            : ms) = (:) '^' . shows ns . s1 ms
+    s1 [                        ] = id
+
 
 -- | Computes the "distinct bin" according to the BAM binning scheme.  If
 -- an alignment starts at @pos@ and its CIGAR implies a length of @len@

@@ -13,7 +13,7 @@ import Data.Ord ( comparing )
 import Data.Vector.Algorithms.Intro ( sortBy )
 import Data.Version ( showVersion )
 import Numeric ( showFFloat )
--- import Paths_biohazard ( version )
+import Paths_biohazard ( version )
 import System.Console.GetOpt
 import System.Environment ( getArgs, getProgName )
 import System.Exit
@@ -131,7 +131,7 @@ options = [
 
 vrsn :: IO a
 vrsn = do pn <- getProgName
-          hPutStrLn stderr $ pn ++ ", version " -- ++ showVersion version
+          hPutStrLn stderr $ pn ++ ", version " ++ showVersion version
           exitSuccess
 
 usage :: IO a
@@ -192,7 +192,7 @@ main = do
     unless (null errors) $ mapM_ (hPutStrLn stderr) errors >> exitFailure
     Conf{..} <- foldr (>=>) return opts defaults
 
-    add_pg <- addPG Nothing -- $ Just version
+    add_pg <- addPG $ Just version
     (counts, ()) <- mergeInputRanges which files >=> run $ \hdr -> do
        (circtable, refs') <- liftIO $ circulars (meta_refs hdr)
        let tbl = mk_rg_tbl hdr
