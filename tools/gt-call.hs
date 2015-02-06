@@ -144,14 +144,14 @@ options = [
     Option "N" ["name","sample-name"]       (ReqArg set_sample "NAME")      "Set sample name to NAME",
     Option "1" ["haploid-chromosomes"]      (ReqArg set_haploid "PRF")      "Targets starting with PRF are haploid",
     Option "2" ["diploid-chromosomes"]      (ReqArg set_diploid "PRF")      "Targets starting with PRF are diploid",
-    Option "l" ["overhang-length","left-overhang-length"]
-                                            (ReqArg set_loverhang "LEN")    "Expected 5' overhang length is LEN",
-    Option "r" ["right-overhang-length"]    (ReqArg set_roverhang "LEN")    "Expected 3' overhang length is LEN, assume single-strand prep",
+    Option "l" ["overhang-param","left-overhang-param"]
+                                            (ReqArg set_loverhang "PROB")   "Parameter for 5' overhang length is PROB",
+    Option "r" ["right-overhang-param"]     (ReqArg set_roverhang "PROB")   "Parameter for 3' overhang length is PROB, assume single-strand prep",
     Option "d" ["deamination-rate","ds-deamination-rate","double-strand-deamination-rate"]
                                             (ReqArg set_ds_deam "FRAC")     "Deamination rate in double stranded section is FRAC",
     Option "s" ["ss-deamination-rate","single-strand-deamination-rate"]
                                             (ReqArg set_ss_deam "FRAC")     "Deamination rate in single stranded section is FRAC",
-    Option "t" ["theta","dependency-coefficient"] 
+    Option "t" ["theta","dependency-coefficient"]
                                             (ReqArg set_theta   "FRAC")     "Set dependency coefficient to FRAC (\"N\" to turn off)",
     Option "H" ["prior-heterozygous", "heterozygosity"]
                                             (ReqArg set_phet "PROB")        "Set prior for a heterozygous variant to PROB",
@@ -173,7 +173,7 @@ options = [
     set_fa_output fn = add_output $ output_fasta fn
     set_avro_out  fn = add_output $ output_avro  fn
 
-    add_output ofn c = 
+    add_output ofn c =
         return $ c { conf_output = Just $ \k ->
             ofn $ \oit1 -> maybe (k oit1) ($ \oit2 -> k (\c r -> () <$ I.zip (oit1 c r) (oit2 c r))) (conf_output c) }
 
@@ -203,9 +203,9 @@ main = do
 
     dmg_model <- case (conf_loverhang, conf_roverhang) of
             (Nothing, Nothing) -> no_damage
-            (Just ll, Nothing) -> ds_damage $ DSD conf_ss_deam conf_ds_deam (recip ll)
-            (Nothing, Just lr) -> ss_damage $ SSD conf_ss_deam conf_ds_deam (recip lr) (recip lr)
-            (Just ll, Just lr) -> ss_damage $ SSD conf_ss_deam conf_ds_deam (recip ll) (recip lr)
+            (Just pl, Nothing) -> ds_damage $ DSD conf_ss_deam conf_ds_deam pl
+            (Nothing, Just pr) -> ss_damage $ SSD conf_ss_deam conf_ds_deam pr pr
+            (Just pl, Just pr) -> ss_damage $ SSD conf_ss_deam conf_ds_deam pl pr
 
     maybe (output_fasta "-") id conf_output $ \oiter ->
         mergeInputs combineCoordinates files >=> run $ \hdr ->
@@ -229,7 +229,7 @@ output_fasta fn k = if fn == "-" then k (fa_out stdout)
     fa_out :: Handle -> Conf -> Refs -> Iteratee [Calls] IO ()
     fa_out hdl Conf{..} refs =
             by_groups ((==) `on` p_refseq) (\cs out -> do
-                    let sname = sq_name $ getRef refs $ p_refseq cs 
+                    let sname = sq_name $ getRef refs $ p_refseq cs
                     out' <- lift $ enumPure1Chunk [S.concat [">", conf_sample, "--", sname]] out
                     convStream (do calls <- headStream
                                    let s1 = format_snp_call conf_prior_het calls
@@ -325,7 +325,7 @@ output_avro fn k = if fn == "-" then k (av_out stdout)
                                 else withFile fn WriteMode $ k . av_out
   where
     av_out :: Handle -> Conf -> Refs -> Iteratee [Calls] IO ()
-    av_out hdl _cfg refs = compileBlocks refs =$ 
+    av_out hdl _cfg refs = compileBlocks refs =$
                            writeAvroContainer ContainerOpts{..} =$
                            mapChunksM_ (S.hPut hdl)
 

@@ -1,4 +1,4 @@
-{-# LANGUAGE RecordWildCards, NamedFieldPuns, ScopedTypeVariables, BangPatterns, TemplateHaskell, MultiParamTypeClasses, TypeFamilies  #-}
+{-# LANGUAGE RecordWildCards, NamedFieldPuns, BangPatterns, MultiParamTypeClasses, TypeFamilies  #-}
 -- Estimates aDNA damage.  Crude first version.
 --
 -- - Read a BAM file, make compact representation of the reads.
@@ -19,12 +19,33 @@
 -- hope gets unboxed.  Unboxed Vectors don't work, because they aren't
 -- polymorphic enough.  The optimizer is something external.
 -- Implementing AD ourselves (only the gradient, forward mode) could
--- work.  On top of that, everything seems totally broken.
+-- work.
+--
+-- If I include parameters, whose true value is zero, the transformation
+-- to the log-odds-ratio doesn't work, because then the maximum doesn't
+-- exist anymore.  A different transformation ('sigmoid2'/'isigmoid2'
+-- below) allows for an actual zero (but not one), while avoiding ugly
+-- boundary conditions.  That works.
+--
+-- The current hack assumes all molecules have an overhang at both ends,
+-- then each base gets deaminated with a position dependent probability.
+-- If we try to model a fraction of undeaminated molecules in addition,
+-- this fails.  To rescue the idea, I guess we must really decide if the
+-- molecule has an overhang at all (probability 1/2) at each end, then
+-- deaminate it.
 
-import Bio.Base
+-- TODO:
+-- Before this can be packaged and used, the following needs to be done:
+-- - Subsample large BAM files (don't always take the beginning),
+-- - Start with a crude estimate of parameters,
+-- - Fix the model(s), so a contaminant fraction can be estimated.
+-- - Implement both SSD and DSD.
+
+
 import Bio.Bam.Header
 import Bio.Bam.Raw
 import Bio.Bam.Rec
+import Bio.Base
 import Bio.Genocall.Adna
 import Bio.Iteratee
 import Control.Applicative
@@ -33,83 +54,49 @@ import Data.Foldable
 import Data.Monoid
 import Data.Traversable
 import Data.Vec ( vec, Mat44, dot, getElem )
-import Numeric.AD
-import Numeric.AD.Internal.Forward.Double
 import Numeric.Optimization.Algorithms.HagerZhang05
-import Data.Time.Clock
 
-import qualified Data.Vec as Vec
-import qualified Data.Vector as V
-import qualified Data.Vector.Generic as G
-import qualified Data.Vector.Unboxed as U
-import qualified Data.Vector.Fusion.Stream as Stream
-import qualified Numeric.AD.Mode.Forward.Double as Fwd
+import qualified Data.Vector                as V
+import qualified Data.Vector.Fusion.Stream  as S
+import qualified Data.Vector.Generic        as G
+import qualified Data.Vector.Unboxed        as U
 
+import AD
 import Prelude hiding ( mapM_ )
-import Data.Vector.Unboxed.Deriving
 
--- Log-likelihood of a bunch of data.  First argument is the bunch, second
--- is the set of parameters.
---
--- Let's see how this works out with the parameters.  Might want to
--- replace probabilities with log-likelihood-ratios or similar.
+sigmoid, sigmoid2, isigmoid, isigmoid2 :: (Num a, Fractional a, Floating a) => a -> a
+sigmoid l = 1 / ( 1 + exp l )
+isigmoid p = log $ ( 1 - p ) / p
 
-data Parms a = Parms !a !a !a !a !a !a
-
-fromVec :: U.Vector Double -> Parms Double
-fromVec vec = Parms (vec `U.unsafeIndex` 0) (vec `U.unsafeIndex` 1) (vec `U.unsafeIndex` 2)
-                    (vec `U.unsafeIndex` 3) (vec `U.unsafeIndex` 4) (vec `U.unsafeIndex` 5)
-
-toVec :: Parms Double -> U.Vector Double
-toVec (Parms u v w x y z) = U.fromListN 6 [u,v,w,x,y,z]
-
-{-# INLINE plus #-}
-plus :: Num a => Parms a -> Parms a -> Parms a
-Parms a b c d e f `plus` Parms u v w x y z = Parms (a+u) (b+v) (c+w) (d+x) (e+y) (f+z)
-
-instance Functor Parms where
-    fmap f (Parms u v w x y z) = Parms (f u) (f v) (f w) (f x) (f y) (f z)
-
-instance Foldable Parms where
-    foldr f n (Parms u v w x y z) = f u $! f v $! f w $! f x $! f y $! f z n
-    foldl' f a (Parms u v w x y z) = (f $! (f $! (f $! (f $! (f $! f a u) v) w) x) y) z
-
-instance Traversable Parms where
-    traverse f (Parms u v w x y z) = Parms <$> f u <*> f v <*> f w <*> f x <*> f y <*> f z
-
-sigmoid, isigmoid :: (Num a, Fractional a, Floating a) => a -> a
-sigmoid x = 0.5 + 0.5 * x / sqrt (1+x*x)
-isigmoid z = y / sqrt (1-y*y) where y = 2*z-1
+sigmoid2 x = y*y where y = (exp x - 1) / (exp x + 1)
+isigmoid2 y = log $ (1 + sqrt y) / (1 - sqrt y)
 
 {-# INLINE lk_fun1 #-}
-lk_fun1 :: forall a . (Num a, Fractional a, Floating a) => U.Vector Word8 -> Parms a -> a
+lk_fun1 :: (Num a, Fractional a, Floating a) => U.Vector Word8 -> [a] -> a
 lk_fun1 bb parms = negate $ log $ lk bb
   where
-    p_self :: a
+    l_subst:l_sigma:l_delta:l_lam:l_kap:_ = parms
+
+    -- Good initial guesses may be necessary, too.
+    -- f_exo = sigmoid l_endo
+    p_self = 1 - sigmoid2 l_subst
     p_subst = (1 - p_self) * 0.333
 
-    Parms l_endo l_subst l_sigma l_delta l_lam l_kap = parms
-
-    f_endo = sigmoid l_endo
-    p_self = sigmoid l_subst
-    ssd_sigma = sigmoid l_sigma
-    ssd_delta = sigmoid l_delta
-    ssd_lambda = exp l_lam
-    ssd_kappa = exp l_kap
+    ssd_sigma  = sigmoid l_sigma
+    ssd_delta  = sigmoid l_delta
+    ssd_lambda = sigmoid l_lam
+    ssd_kappa  = sigmoid l_kap
 
     -- Technically, its transpose.  But it's symmetric anyway.
-    subst_mat :: Mat44 a
     subst_mat = vec4 (vec4 p_self p_subst p_subst p_subst)
                      (vec4 p_subst p_self p_subst p_subst)
                      (vec4 p_subst p_subst p_self p_subst)
                      (vec4 p_subst p_subst p_subst p_self)
 
-    lk :: U.Vector Word8 -> a
-    lk br = {-f_endo *-} Stream.foldl' (*) 1 (Stream.zipWith lk1 (G.stream br) $
+    lk br = {-(1-f_exo) *-} S.foldl' (*) 1 (S.zipWith lk1 (G.stream br) $
                                           G.stream (ssDamage SSD{..} False (U.length br)))
-            -- + (1-f_endo) * G.foldl' (\acc pr -> acc * lk1 pr Vec.identity) 1 br
+            -- + f_exo * G.foldl' (\acc pr -> acc * lk1 pr W.identity) 1 br
 
-    lk1 :: Word8 -> Mat44 a -> a
     lk1 pr m | pr > 15   = 1
              | otherwise = getElem b m `dot` getElem a subst_mat
       where
@@ -118,21 +105,18 @@ lk_fun1 bb parms = negate $ log $ lk bb
 
 
 lkfun :: V.Vector (U.Vector Word8) -> U.Vector Double -> Double
-lkfun brs parms = let !p' = fromVec parms
-                  in V.foldl' (\a b -> a + lk_fun1 b p') 0 brs
-
-gradfn :: V.Vector (U.Vector Word8) ->  U.Vector Double -> U.Vector Double
-gradfn brs parms = let !p' = fromVec parms
-                   in toVec $ V.foldl' (\a b -> a `plus` grad (lk_fun1 b) p')
-                                       (Parms 0 0 0 0 0 0) brs
+lkfun brs parms = V.foldl' (\a b -> a + lk_fun1 b ps) 0 brs
+  where
+    !ps = U.toList parms
 
 combofn :: V.Vector (U.Vector Word8) -> U.Vector Double -> (Double, U.Vector Double)
-combofn brs parms = let !p' = fromVec parms
-                        (!z,!zg) = V.foldl' (\(!a,!ag) bb -> let (!b,!bg) = grad' (lk_fun1 bb) p'
-                                                             in (a + b, ag `plus` bg))
-                                            (0, Parms 0 0 0 0 0 0) brs
-                    in (z, toVec zg)
+combofn brs parms = (x,g)
+  where
+    !ps     = paramVector $ U.toList parms
+    (D x g) = V.foldl' (\a b -> a + lk_fun1 b ps) 0 brs
 
+
+main :: IO ()
 main = do
     brs <- concatDefaultInputs >=> run $ \_ ->
            joinI $ filterStream (not . br_isUnmapped) $
@@ -140,24 +124,21 @@ main = do
            joinI $ filterStream (U.all (<16)) $
            stream2vectorN 1000
 
+    mapM_ print brs
 
-    let v0 = U.fromList [3,(-5),2,(-4),0,0]
+    let v0 = U.fromList $ {-isigmoid2 0.05 :-} isigmoid2 0.001 : map isigmoid [0.02, 0.5, 0.3, 0.3]
 
     print $ V.length brs
     print' v0
-    print =<< getCurrentTime
     print $ lkfun brs v0
-    print =<< getCurrentTime
-    print $ gradfn brs v0
-    print =<< getCurrentTime
+    print $ snd $ combofn brs v0
     print $ combofn brs v0
-    print =<< getCurrentTime
 
     let params = defaultParameters { verbose = VeryVerbose }
 
-    (xs, r, st) <- optimize params 0.0001 v0
+    (xs, r, st) <- optimize params 0.0000000001 v0
                             (VFunction $ lkfun brs)
-                            (VGradient $ gradfn brs)
+                            (VGradient $ snd . combofn brs)
                             (Just . VCombined $ combofn brs)
 
     print' xs
@@ -165,9 +146,9 @@ main = do
     print st
 
 
-print' vec =
-    print $ map sigmoid (G.toList $ G.take 4 vec)
-         ++ map exp (G.toList $ G.drop 4 vec)
+print' vec = print $
+    map sigmoid2 (G.toList $ G.take 1 vec) ++
+    map sigmoid (G.toList $ G.drop 1 vec)
 
 
 -- We'll require the MD field to be present.  Then we cook each read
@@ -192,16 +173,16 @@ pack_record br = if br_isReversed br then revcom u1 else u1
 
     mk_pair :: Nucleotides -> Nucleotides -> Word8
     mk_pair (Ns a) = case a of 1 -> mk_pair' 0
-                               2 -> mk_pair' 4
-                               4 -> mk_pair' 8
-                               8 -> mk_pair' 12
+                               2 -> mk_pair' 1
+                               4 -> mk_pair' 2
+                               8 -> mk_pair' 3
                                _ -> const esc
 
     mk_pair' :: Word8 -> Nucleotides -> Word8
     mk_pair' a (Ns b) = case b of 1 -> a .|. 0
-                                  2 -> a .|. 1
-                                  4 -> a .|. 2
-                                  8 -> a .|. 3
+                                  2 -> a .|. 4
+                                  4 -> a .|. 8
+                                  8 -> a .|. 12
                                   _ -> esc
 
     go :: [(CigOp,Int)] -> [Nucleotides] -> [MdOp] -> [Word8]

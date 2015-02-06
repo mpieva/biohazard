@@ -57,8 +57,8 @@ noDamage _ l = V.replicate l identity
 
 data SsDamageParameters float = SSD { ssd_sigma  :: !float         -- deamination rate in ss DNA
                                     , ssd_delta  :: !float         -- deamination rate in ds DNA
-                                    , ssd_lambda :: !float         -- expected overhang length at 5' end
-                                    , ssd_kappa  :: !float }       -- expected overhang length at 3' end
+                                    , ssd_lambda :: !float         -- param for geom. distribution, 5' end
+                                    , ssd_kappa  :: !float }       -- param for geom. distribution, 3' end
   deriving Show
 
 -- Forward strand first, C->T only; reverse strand next, G->A instead
@@ -67,16 +67,13 @@ data SsDamageParameters float = SSD { ssd_sigma  :: !float         -- deaminatio
 ssDamage :: Fractional a => SsDamageParameters a -> DamageModel a
 ssDamage SSD{..} r l = V.generate l $ if r then ssd_rev else ssd_fwd
   where
-    prob5 = abs ssd_lambda / (1 + abs ssd_lambda)
-    prob3 = abs ssd_kappa  / (1 + abs ssd_kappa)
-
     ssd_fwd i = vec4 ( vec4  1   0   0   0 )
                      ( vec4  0 (1-p) 0   0 )
                      ( vec4  0   0   1   0 )
                      ( vec4  0   p   0   1 )
       where
-        !lam5 = prob5 ^ (1+i)
-        !lam3 = prob3 ^ (l-i)
+        !lam5 = ssd_lambda ^ (1+i)
+        !lam3 = ssd_kappa ^ (l-i)
         !lam  = lam3 + lam5 - lam3 * lam5
         !p    = ssd_sigma * lam + ssd_delta * (1-lam)
 
@@ -85,15 +82,15 @@ ssDamage SSD{..} r l = V.generate l $ if r then ssd_rev else ssd_fwd
                      ( vec4  0   0 (1-p) 0 )
                      ( vec4  0   0   0   1 )
       where
-        !lam5 = prob5 ^ (l-i)
-        !lam3 = prob3 ^ (1+i)
+        !lam5 = ssd_lambda ^ (l-i)
+        !lam3 = ssd_kappa ^ (1+i)
         !lam  = lam3 + lam5 - lam3 * lam5
         !p    = ssd_sigma * lam + ssd_delta * (1-lam)
 
 
 data DsDamageParameters float = DSD { dsd_sigma  :: !float         -- deamination rate in ss DNA
                                     , dsd_delta  :: !float         -- deamination rate in ds DNA
-                                    , dsd_lambda :: !float }       -- expected overhang length
+                                    , dsd_lambda :: !float }       -- param for geom. distribution
   deriving Show
 
 -- | 'DamageModel' for double stranded library.  We get C->T damage at
@@ -113,16 +110,13 @@ data DsDamageParameters float = DSD { dsd_sigma  :: !float         -- deaminatio
 --
 -- Here, p is the probability of deamination, which is dsd_delta if
 -- double strande, dsd_sigma if single stranded.  The probability of
--- begin single stranded is prob ^ (i+1).  This gives an average
--- overhang length of (prob / (1-prob)).  We invert this and define
--- dsd_lambda as the expected overhang length.
+-- begin single stranded is \lambda ^ (i+1).  This gives an average
+-- overhang length of (\lambda / (1-\lambda)).
 
 {-# SPECIALIZE dsDamage :: DsDamageParameters Double -> DamageModel Double #-}
 dsDamage :: Fractional a => DsDamageParameters a -> DamageModel a
 dsDamage DSD{..} _ l = V.generate l mat
   where
-    prob = abs dsd_lambda / (1 + abs dsd_lambda)
-
     mat i = vec4 ( vec4  1     0     q     0 )
                  ( vec4  0   (1-p)   0     0 )
                  ( vec4  0     0   (1-q)   0 )
@@ -130,8 +124,8 @@ dsDamage DSD{..} _ l = V.generate l mat
       where
         p    = dsd_sigma * lam5 + dsd_delta * (1-lam5)
         q    = dsd_sigma * lam3 + dsd_delta * (1-lam3)
-        lam5 = prob ^ (1+i)
-        lam3 = prob ^ (l-i)
+        lam5 = dsd_lambda ^ (1+i)
+        lam3 = dsd_lambda ^ (l-i)
 
 {-# INLINE vec4 #-}
 vec4 :: a -> a -> a -> a -> Vec4 a
