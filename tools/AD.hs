@@ -1,6 +1,11 @@
+{-# LANGUAGE BangPatterns #-}
 module AD where
 
+import Control.Monad.ST
+
+import qualified Data.Vector as V
 import qualified Data.Vector.Unboxed as U
+import qualified Data.Vector.Unboxed.Mutable as M
 
 -- Simple forward-mode AD to get a scalar valued function and a
 -- gradient.
@@ -95,5 +100,4 @@ instance Floating AD where
 paramVector :: [Double] -> [AD]
 paramVector xs = [ D x (U.generate l (\j -> if i == j then 1 else 0)) | (i,x) <- zip [0..] xs ]
   where l = length xs
-
 

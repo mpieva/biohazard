@@ -41,6 +41,8 @@
 -- - Fix the model(s), so a contaminant fraction can be estimated.
 -- - Implement both SSD and DSD.
 
+-- [7.703719777548947e-32,0.4066567558053985,2.0604463422287063e-2,0.7203477637036517,0.2617989748241163]
+
 
 import Bio.Bam.Header
 import Bio.Bam.Raw
@@ -113,6 +115,7 @@ combofn :: V.Vector (U.Vector Word8) -> U.Vector Double -> (Double, U.Vector Dou
 combofn brs parms = (x,g)
   where
     !ps     = paramVector $ U.toList parms
+    !n      = U.length parms
     (D x g) = V.foldl' (\a b -> a + lk_fun1 b ps) 0 brs
 
 
@@ -122,7 +125,7 @@ main = do
            joinI $ filterStream (not . br_isUnmapped) $
            joinI $ mapStream pack_record $
            joinI $ filterStream (U.all (<16)) $
-           stream2vectorN 1000
+           stream2vectorN 10000
 
     mapM_ print brs
 
@@ -136,7 +139,7 @@ main = do
 
     let params = defaultParameters { verbose = VeryVerbose }
 
-    (xs, r, st) <- optimize params 0.0000000001 v0
+    (xs, r, st) <- optimize params 0.00001 v0
                             (VFunction $ lkfun brs)
                             (VGradient $ snd . combofn brs)
                             (Just . VCombined $ combofn brs)
