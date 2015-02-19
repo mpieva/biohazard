@@ -81,7 +81,7 @@ Library
                        iteratee >= 0.8.9.6 && < 0.8.10,
                        ListLike >= 3 && <5,
                        primitive == 0.5.*,
-                       random == 1.0.*,
+                       random >= 1.0 && < 1.2,
                        scientific == 0.3.*,
                        stm == 2.4.*,
                        template-haskell == 2.*,
@@ -178,7 +178,7 @@ Executable bam-trim
   Build-depends:       base,
                        biohazard,
                        bytestring
-  
+
 Executable count-coverage
   Main-is:             count-coverage.hs
   Hs-Source-Dirs:      tools
@@ -192,9 +192,9 @@ Executable dmg-est
   Other-Modules:       AD
   Build-depends:       base,
                        biohazard,
+                       nonlinear-optimization == 0.3.*,
                        Vec,
-                       vector,
-                       nonlinear-optimization == 0.3.*
+                       vector
 
 Executable fastq2bam
   Main-is:             fastq2bam.hs

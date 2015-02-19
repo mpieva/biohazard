@@ -4,7 +4,6 @@
 -- - Read a BAM file, make compact representation of the reads.
 -- - Compute likelihood of read under simple model of
 --   damage, error/divergence, contamination.
--- - Iterate using Data.AD.Newton or similar.
 --
 -- For the less crude version:  follow the iobio subsampling strategy
 -- using an index.
@@ -15,11 +14,10 @@
 -- For the fitting, we simplify radically: ignore sequencing error,
 -- assume damage and simple, symmetric substitutions.
 
--- So far, the fastest version uses a custom data type (Parms), which we
--- hope gets unboxed.  Unboxed Vectors don't work, because they aren't
--- polymorphic enough.  The optimizer is something external.
--- Implementing AD ourselves (only the gradient, forward mode) could
--- work.
+-- The fastest version so far uses the cheap implementation of automatic
+-- differentiation in AD.hs together with the Hager-Zhang method from
+-- nonlinear-optimization.  BFGS from hmatrix-gsl takes longer to
+-- converge.  hope gets unboxed.  Unboxed Vectors don't work, because
 --
 -- If I include parameters, whose true value is zero, the transformation
 -- to the log-odds-ratio doesn't work, because then the maximum doesn't
@@ -41,10 +39,9 @@
 -- - Fix the model(s), so a contaminant fraction can be estimated.
 -- - Implement both SSD and DSD.
 
--- [7.703719777548947e-32,0.4066567558053985,2.0604463422287063e-2,0.7203477637036517,0.2617989748241163]
-
 
 import Bio.Bam.Header
+import Bio.Bam.Index
 import Bio.Bam.Raw
 import Bio.Bam.Rec
 import Bio.Base
@@ -57,6 +54,7 @@ import Data.Monoid
 import Data.Traversable
 import Data.Vec ( vec, Mat44, dot, getElem )
 import Numeric.Optimization.Algorithms.HagerZhang05
+import System.Environment
 
 import qualified Data.Vector                as V
 import qualified Data.Vector.Fusion.Stream  as S
@@ -121,7 +119,8 @@ combofn brs parms = (x,g)
 
 main :: IO ()
 main = do
-    brs <- concatDefaultInputs >=> run $ \_ ->
+    [fp] <- getArgs
+    brs <- subsampleBam fp >=> run $ \_ ->
            joinI $ filterStream (not . br_isUnmapped) $
            joinI $ mapStream pack_record $
            joinI $ filterStream (U.all (<16)) $

@@ -11,7 +11,8 @@ module Bio.Bam.Index (
     eneeBamRefseq,
     eneeBamSubseq,
     eneeBamRegions,
-    eneeBamUnaligned
+    eneeBamUnaligned,
+    subsampleBam
 ) where
 
 import Bio.Bam.Header
@@ -27,12 +28,14 @@ import Data.IntMap                  ( IntMap )
 import Data.Word                    ( Word32 )
 import System.Directory             ( doesFileExist )
 import System.FilePath              ( dropExtension, takeExtension, (<.>) )
+import System.Random                ( randomRIO )
 
 import qualified Bio.Bam.Regions                as R
-import qualified Data.IntMap                    as IM
+import qualified Control.Exception              as E
+import qualified Data.IntMap                    as M
 import qualified Data.ByteString                as B
 import qualified Data.Vector                    as V
-import qualified Data.Vector.Mutable            as M
+import qualified Data.Vector.Mutable            as W
 import qualified Data.Vector.Unboxed            as U
 import qualified Data.Vector.Unboxed.Mutable    as N
 import qualified Data.Vector.Algorithms.Intro   as N
@@ -106,7 +109,7 @@ segmentLists :: BamIndex a -> Refseq -> R.Subsequence -> [[Segment]]
 segmentLists bi@BamIndex{..} (Refseq ref) (R.Subsequence imap)
         | Just bins <- refseq_bins V.!? fromIntegral ref,
           Just cpts <- refseq_ckpoints V.!? fromIntegral ref
-        = [ rgnToSegments bi beg end bins cpts | (beg,end) <- IM.toList imap ]
+        = [ rgnToSegments bi beg end bins cpts | (beg,end) <- M.toList imap ]
 segmentLists _ _ _ = []
 
 -- from region to list of bins, then to list of segments
@@ -114,7 +117,7 @@ rgnToSegments :: BamIndex a -> Int -> Int -> Bins -> Ckpoints -> [Segment]
 rgnToSegments bi@BamIndex{..} beg end bins cpts =
     [ Segment boff' eoff end
     | bin <- binList bi beg end
-    , (boff,eoff) <- maybe [] U.toList $ IM.lookup bin bins
+    , (boff,eoff) <- maybe [] U.toList $ M.lookup bin bins
     , let boff' = max boff cpt
     , boff' < eoff ]
   where
@@ -190,7 +193,7 @@ readBaiIndex = iGetString 4 >>= switch
     addOneCheckpoint minshift depth bin cp = do
             loffset <- fromIntegral `liftM` endianRead8 LSB
             let key = llim (fromIntegral bin) (3*depth) minshift
-            return $! IM.insertWith min key loffset cp
+            return $! M.insertWith min key loffset cp
 
     -- compute left limit of bin
     llim bin dp sf | dp  ==  0 = 0
@@ -243,7 +246,7 @@ getIntervals (cp,mx0) = do
     nintv <- fromIntegral `liftM` endianRead4 LSB
     reduceM 0 nintv (cp,mx0) $ \(!im,!mx) int -> do
         oo <- fromIntegral `liftM` endianRead8 LSB
-        return (if oo == 0 then im else IM.insert (int * 0x4000) oo im, max mx oo)
+        return (if oo == 0 then im else M.insert (int * 0x4000) oo im, max mx oo)
 
 
 getIndexArrays :: MonadIO m => Int -> Int -> Int
@@ -253,18 +256,18 @@ getIndexArrays :: MonadIO m => Int -> Int -> Int
 getIndexArrays nref minshift depth addOneCheckpoint addManyCheckpoints
     | nref  < 1 = return $ BamIndex minshift depth 0 () V.empty V.empty
     | otherwise = do
-        rbins  <- liftIO $ M.new nref
-        rckpts <- liftIO $ M.new nref
+        rbins  <- liftIO $ W.new nref
+        rckpts <- liftIO $ W.new nref
         mxR <- reduceM 0 nref 0 $ \mx0 r -> do
                 nbins <- endianRead4 LSB
-                (bins,cpts,mx1) <- reduceM 0 nbins (IM.empty,IM.empty,mx0) $ \(!im,!cp,!mx) _ -> do
+                (!bins,!cpts,!mx1) <- reduceM 0 nbins (M.empty,M.empty,mx0) $ \(!im,!cp,!mx) _ -> do
                         bin <- endianRead4 LSB -- the "distinct bin"
                         cp' <- addOneCheckpoint bin cp
                         segsarr <- getSegmentArray
                         let !mx' = if U.null segsarr then mx else max mx (snd (U.last segsarr))
-                        return (IM.insert (fromIntegral bin) segsarr im, cp', mx')
-                (cpts',mx2) <- addManyCheckpoints (cpts,mx1)
-                liftIO $ M.write rbins r bins >> M.write rckpts r cpts'
+                        return (M.insert (fromIntegral bin) segsarr im, cp', mx')
+                (!cpts',!mx2) <- addManyCheckpoints (cpts,mx1)
+                liftIO $ W.write rbins r bins >> W.write rckpts r cpts'
                 return mx2
         liftM2 (BamIndex minshift depth mxR ()) (liftIO $ V.unsafeFreeze rbins) (liftIO $ V.unsafeFreeze rckpts)
 
@@ -298,7 +301,7 @@ loopM beg end k = if beg /= end then k beg >> loopM (succ beg) end k else return
 eneeBamRefseq :: Monad m => BamIndex b -> Refseq -> Enumeratee [BamRaw] [BamRaw] m a
 eneeBamRefseq BamIndex{..} (Refseq r) iter
     | Just ckpts <- refseq_ckpoints V.!? fromIntegral r
-    , Just (voff, _) <- IM.minView ckpts
+    , Just (voff, _) <- M.minView ckpts
     , voff /= 0 = do seek $ fromIntegral voff
                      breakE ((Refseq r /=) . br_rname) iter
     | otherwise = return iter
@@ -336,9 +339,34 @@ eneeBamRegions :: Monad m => BamIndex b -> [R.Region] -> Enumeratee [BamRaw] [Ba
 eneeBamRegions bi = foldr ((>=>) . uncurry (eneeBamSubseq bi)) return . R.toList . R.fromList
 
 
-lookupLE :: IM.Key -> IM.IntMap a -> Maybe (IM.Key, a)
+lookupLE :: M.Key -> M.IntMap a -> Maybe (M.Key, a)
 lookupLE k m = case ma of
-    Just a               -> Just (k,a)
-    Nothing | IM.null m1 -> Nothing
-                | otherwise  -> Just $ IM.findMax m1
-  where (m1,ma,_) = IM.splitLookup k m
+    Just a              -> Just (k,a)
+    Nothing | M.null m1 -> Nothing
+            | otherwise -> Just $ M.findMax m1
+  where (m1,ma,_) = M.splitLookup k m
+
+
+-- | Subsample randomly from a BAM file.  If an index exists, this
+-- produces an infinite stream taken from random locations in the file.
+subsampleBam :: (MonadIO m, MonadMask m) => FilePath -> Enumerator' BamMeta [BamRaw] m b
+subsampleBam fp o = decodeAnyBamFile fp >=> run $ \hdr ->
+                 liftIO (E.try (readBamIndex fp)) >>= go hdr
+  where
+    -- no index, so just keep streaming
+    go hdr (Left e) = takeWhileE (isValidRefseq . br_rname) (o hdr)
+      where _ = e :: E.SomeException
+
+    -- with index: chose random bins and read from them
+    go hdr (Right bix) = loop (o hdr)
+      where
+        !ckpts = U.fromList . V.foldr ((++) . M.elems) [] $ refseq_ckpoints bix
+
+        loop o' = do (f,o2) <- lift $ enumCheckIfDone o'
+                     if f then return o2
+                          else do i <- liftIO $ randomRIO (0, U.length ckpts -1)
+                                  liftIO $ putStrLn $ "seek " ++ show (fromIntegral $ ckpts U.! i)
+                                  seek . fromIntegral $ ckpts U.! i
+                                  takeStream 64 o2 >>= loop
+
+

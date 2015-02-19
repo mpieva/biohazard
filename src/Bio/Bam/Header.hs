@@ -368,6 +368,8 @@ readMd s | S.null s           = return []
                                 in (MdDel (map toNucleotides $ S.unpack a) :) <$> readMd b
          | otherwise          = (MdRep (toNucleotides $ S.head s) :) <$> readMd (S.tail s)
 
+-- | Normalizes a series of 'MdOp's and encodes them in the way BAM and
+-- SAM expect it.
 showMd :: [MdOp] -> S.ByteString
 showMd = S.pack . flip s1 []
   where

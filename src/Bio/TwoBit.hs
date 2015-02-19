@@ -43,7 +43,7 @@ import           System.Random
 -- kinds of implied annotation (repeats and large gaps for a typical
 -- genome), which can be interpreted in whatever way fits.  And that's why
 -- we have 'Mask' and 'getSubseqWith'.
--- 
+--
 -- TODO:  use binary search for the Int->Int mappings?
 
 data TwoBitFile = TBF {
@@ -209,27 +209,34 @@ clampPosition tbf (Range (Pos n start) len) = Range (Pos n start') (end' - start
 
 
 -- | Sample a piece of random sequence uniformly from the genome.
+-- Only pieces that are not hard masked are sampled, soft masking is
+-- allowed, but not reported.
 -- On a 32bit platform, this will fail for genomes larger than 1G bases.
 -- However, if you're running this code on a 32bit platform, you have
--- bigger problem to worry about.
+-- bigger problems to worry about.
 getRandomSeq :: RandomGen g => TwoBitFile                   -- ^ 2bit file
-                            -> ([Nucleotide] -> Bool)       -- ^ validation function
                             -> Int                          -- ^ desired length
                             -> g                            -- ^ RNG
                             -> ((Range, [Nucleotide]), g)   -- ^ position, sequence, new RNG
-getRandomSeq tbf = draw
+getRandomSeq tbf len = draw
   where
     names = getSeqnames tbf
     lengths = map (getSeqLength tbf) names
     total = sum lengths
     frags = I.fromList $ zip (scanl (+) 0 lengths) names
 
-    draw good len g0 | r_length r' == len && good sq = ((r', sq), gn)
-                     | otherwise                     = draw good len gn
+    draw g0 | good      = ((r', sq), gn)
+            | otherwise = draw gn
       where
         (p0, gn) = randomR (0, 2*total-1) g0
         p = p0 `shiftR` 1
         Just ((o,s),_) = I.maxViewWithKey $ fst $ I.split (p+1) frags
         r' = clampPosition tbf $ Range (Pos s (p-o)) len
-        sq = getSubseq tbf $ if odd p0 then r' else reverseRange r'
+        sq = catMaybes $ getSubseqWith mask2maybe tbf $ if odd p0 then r' else reverseRange r'
+        good = r_length r' == len && length sq == len
+
+        mask2maybe n None = Just n
+        mask2maybe n Soft = Just n
+        mask2maybe n Hard = Nothing
+        mask2maybe n Both = Nothing
 
