@@ -1,4 +1,4 @@
-{-# LANGUAGE RecordWildCards, NamedFieldPuns, BangPatterns, MultiParamTypeClasses, TypeFamilies  #-}
+{-# LANGUAGE RecordWildCards, NamedFieldPuns, BangPatterns, MultiParamTypeClasses, TypeFamilies, TemplateHaskell #-}
 -- Estimates aDNA damage.  Crude first version.
 --
 -- - Read a BAM file, make compact representation of the reads.
@@ -17,7 +17,7 @@
 -- The fastest version so far uses the cheap implementation of automatic
 -- differentiation in AD.hs together with the Hager-Zhang method from
 -- nonlinear-optimization.  BFGS from hmatrix-gsl takes longer to
--- converge.  hope gets unboxed.  Unboxed Vectors don't work, because
+-- converge.
 --
 -- If I include parameters, whose true value is zero, the transformation
 -- to the log-odds-ratio doesn't work, because then the maximum doesn't
@@ -34,10 +34,11 @@
 
 -- TODO:
 -- Before this can be packaged and used, the following needs to be done:
--- - Subsample large BAM files (don't always take the beginning),
 -- - Start with a crude estimate of parameters,
 -- - Fix the model(s), so a contaminant fraction can be estimated.
 -- - Implement both SSD and DSD.
+
+-- final estimate [5.770143305791021e-25,0.4686003683523658,1.93782286620759e-2,0.6960685465309394,0.2780883283160801]
 
 
 import Bio.Bam.Header
@@ -53,6 +54,7 @@ import Data.Foldable
 import Data.Monoid
 import Data.Traversable
 import Data.Vec ( vec, Mat44, dot, getElem )
+import Data.Vector.Unboxed.Deriving
 import Numeric.Optimization.Algorithms.HagerZhang05
 import System.Environment
 
@@ -64,6 +66,22 @@ import qualified Data.Vector.Unboxed        as U
 import AD
 import Prelude hiding ( mapM_ )
 
+import Debug.Trace
+
+-- | Roughly @Maybe (Nucleotide, Nucleotide)@, encoded compactly
+newtype NP = NP { unNP :: Word8 } deriving Eq
+derivingUnbox "NP" [t| NP -> Word8 |] [| unNP |] [| NP |]
+
+instance Show NP where
+    show (NP w) | w > 15 = "NN"
+    show (NP w) = [ "ACGT" !! fromIntegral (w `shiftR` 2)
+                  , "ACGT" !! fromIntegral (w .&. 3) ]
+
+isValid :: NP -> Bool
+isValid (NP x) = x < 16
+
+type Seq = U.Vector NP
+
 sigmoid, sigmoid2, isigmoid, isigmoid2 :: (Num a, Fractional a, Floating a) => a -> a
 sigmoid l = 1 / ( 1 + exp l )
 isigmoid p = log $ ( 1 - p ) / p
@@ -72,7 +90,7 @@ sigmoid2 x = y*y where y = (exp x - 1) / (exp x + 1)
 isigmoid2 y = log $ (1 + sqrt y) / (1 - sqrt y)
 
 {-# INLINE lk_fun1 #-}
-lk_fun1 :: (Num a, Fractional a, Floating a) => U.Vector Word8 -> [a] -> a
+lk_fun1 :: (Num a, Fractional a, Floating a) => Seq -> [a] -> a
 lk_fun1 bb parms = negate $ log $ lk bb
   where
     l_subst:l_sigma:l_delta:l_lam:l_kap:_ = parms
@@ -97,19 +115,19 @@ lk_fun1 bb parms = negate $ log $ lk bb
                                           G.stream (ssDamage SSD{..} False (U.length br)))
             -- + f_exo * G.foldl' (\acc pr -> acc * lk1 pr W.identity) 1 br
 
-    lk1 pr m | pr > 15   = 1
-             | otherwise = getElem b m `dot` getElem a subst_mat
+    lk1 (NP pr) m | pr > 15   = 1
+                  | otherwise = getElem b m `dot` getElem a subst_mat
       where
         a = fromIntegral $ pr `shiftR` 2  -- from
         b = fromIntegral $ pr .&. 3       -- to
 
 
-lkfun :: V.Vector (U.Vector Word8) -> U.Vector Double -> Double
+lkfun :: V.Vector Seq -> U.Vector Double -> Double
 lkfun brs parms = V.foldl' (\a b -> a + lk_fun1 b ps) 0 brs
   where
     !ps = U.toList parms
 
-combofn :: V.Vector (U.Vector Word8) -> U.Vector Double -> (Double, U.Vector Double)
+combofn :: V.Vector Seq -> U.Vector Double -> (Double, U.Vector Double)
 combofn brs parms = (x,g)
   where
     !ps     = paramVector $ U.toList parms
@@ -123,34 +141,28 @@ main = do
     brs <- subsampleBam fp >=> run $ \_ ->
            joinI $ filterStream (not . br_isUnmapped) $
            joinI $ mapStream pack_record $
-           joinI $ filterStream (U.all (<16)) $
+           joinI $ filterStream (U.all isValid) $
            stream2vectorN 10000
 
-    mapM_ print brs
+    putStrLn $ "no. input sequences " ++ show (V.length brs)
+    case crude_estimate brs of
+        Left  v0 -> do putStrLn $ "crude estimate (SS): " ++ show (backxform v0)
 
-    let v0 = U.fromList $ {-isigmoid2 0.05 :-} isigmoid2 0.001 : map isigmoid [0.02, 0.5, 0.3, 0.3]
+                       let params = defaultParameters { verbose = VeryVerbose }
+                       (xs, r, st) <- optimize params 0.00001 v0
+                                               (VFunction $ lkfun brs)
+                                               (VGradient $ snd . combofn brs)
+                                               (Just . VCombined $ combofn brs)
 
-    print $ V.length brs
-    print' v0
-    print $ lkfun brs v0
-    print $ snd $ combofn brs v0
-    print $ combofn brs v0
+                       print r
+                       print st
+                       putStrLn $ "crude estimate (SS): " ++ show (backxform v0)
+                       putStrLn $ "final estimate (SS): " ++ show (backxform xs)
 
-    let params = defaultParameters { verbose = VeryVerbose }
+        Right v0 -> putStrLn $ "crude estimate (DS): " ++ show (backxform v0)
 
-    (xs, r, st) <- optimize params 0.00001 v0
-                            (VFunction $ lkfun brs)
-                            (VGradient $ snd . combofn brs)
-                            (Just . VCombined $ combofn brs)
-
-    print' xs
-    print r
-    print st
-
-
-print' vec = print $
-    map sigmoid2 (G.toList $ G.take 1 vec) ++
-    map sigmoid (G.toList $ G.drop 1 vec)
+backxform vec = map sigmoid2 (G.toList $ G.take 1 vec)
+             ++ map sigmoid (G.toList $ G.drop 1 vec)
 
 
 -- We'll require the MD field to be present.  Then we cook each read
@@ -159,35 +171,19 @@ print' vec = print $
 --
 -- XXX  This is annoying... almost, but not quite the same as the code
 -- in the "Pileup" module.  This also relies on MD and doesn't offer the
--- alternative of accessing a reference genome.  The latter may not be
--- worth the trouble.
+-- alternative of accessing a reference genome.  (The latter may not be
+-- worth the trouble.)  It also resembles the 'ECig' logic from
+-- "Bio.Bam.Rmdup".
 
-pack_record :: BamRaw -> U.Vector Word8
+pack_record :: BamRaw -> Seq
 pack_record br = if br_isReversed br then revcom u1 else u1
   where
     BamRec{..} = decodeBamEntry br
 
-    revcom = U.reverse . U.map (xor 15)
+    revcom = U.reverse . U.map (NP . xor 15 . unNP)
 
     u1 = U.fromList $ go (unCigar b_cigar) (U.toList b_seq) (br_get_md br)
-
-    esc = 16
-
-    mk_pair :: Nucleotides -> Nucleotides -> Word8
-    mk_pair (Ns a) = case a of 1 -> mk_pair' 0
-                               2 -> mk_pair' 1
-                               4 -> mk_pair' 2
-                               8 -> mk_pair' 3
-                               _ -> const esc
-
-    mk_pair' :: Word8 -> Nucleotides -> Word8
-    mk_pair' a (Ns b) = case b of 1 -> a .|. 0
-                                  2 -> a .|. 4
-                                  4 -> a .|. 8
-                                  8 -> a .|. 12
-                                  _ -> esc
-
-    go :: [(CigOp,Int)] -> [Nucleotides] -> [MdOp] -> [Word8]
+    go :: [(CigOp,Int)] -> [Nucleotides] -> [MdOp] -> [NP]
 
     go ((_,0):cs)   ns mds  = go cs ns mds
     go cs ns (MdNum  0:mds) = go cs ns mds
@@ -206,5 +202,89 @@ pack_record br = if br_isReversed br then revcom u1 else u1
     go (_:cs) nd mds = go cs nd mds
 
 
+esc :: NP
+esc = NP 16
 
+mk_pair :: Nucleotides -> Nucleotides -> NP
+mk_pair (Ns a) = case a of 1 -> mk_pair' 0
+                           2 -> mk_pair' 1
+                           4 -> mk_pair' 2
+                           8 -> mk_pair' 3
+                           _ -> const esc
+  where
+    mk_pair' a (Ns b) = case b of 1 -> NP $ a .|. 0
+                                  2 -> NP $ a .|. 4
+                                  4 -> NP $ a .|. 8
+                                  8 -> NP $ a .|. 12
+                                  _ -> esc
+
+
+infix 6 /%/
+(/%/) :: Integral a => a -> a -> Double
+0 /%/ 0 = 0
+a /%/ b = fromIntegral a / fromIntegral (a+b)
+
+-- Crude estimate.  Need two overhang lengths, two deamination rates,
+-- undamaged fraction, SS/DS, substitution rate.
+--
+-- DS or SS: look whether CT or GA is greater at 3' terminal position  √
+-- Left overhang length:  ratio of damage at second position to first  √
+-- Right overang length:  ratio of CT at last to snd-to-last posn      √
+--                      + ratio of GA at last to snd-to-last posn      √
+-- SS rate: condition on damage on one end, compute rate at other      √
+-- DS rate: condition on damage, compute rate in interior              √
+-- substitution rate:  count all substitutions not due to damage       √
+-- undamaged fraction:  ???
+
+
+crude_estimate :: V.Vector Seq -> Either (U.Vector Double) (U.Vector Double)
+crude_estimate seqs0
+    | rate_ct > rate_ga = Left  $ U.fromList [ l_subst, l_sigma, l_delta, l_lam, l_kap ]        -- SS
+    | otherwise         = Right $ U.fromList [ l_subst, l_sigma, l_delta, l_lam ]               -- DS
+  where
+    seqs = V.filter ((>= 10) . U.length) seqs0
+
+    total_equals = V.sum (V.map (U.length . U.filter      isNotSubst) seqs)
+    total_substs = V.sum (V.map (U.length . U.filter isOrdinarySubst) seqs) * 6 `div` 5
+    l_subst = isigmoid2 $ total_substs /%/ total_equals
+
+    isNotSubst (NP x) = x < 16 && x `shiftR` 2 == x .&. 3
+    isOrdinarySubst (NP x) = x < 16 && x `shiftR` 2 /= x .&. 3 &&
+                             x /= 7 {- CT -} && x /= 8 {- GA -}
+
+    ct_at_alpha = V.length $ V.filter (\v -> v U.! 0 == NP 7 && dmg_omega v) seqs
+    cc_at_alpha = V.length $ V.filter (\v -> v U.! 0 == NP 5 && dmg_omega v) seqs
+    ct_at_beta  = V.length $ V.filter (\v -> v U.! 1 == NP 7 && dmg_omega v) seqs
+    cc_at_beta  = V.length $ V.filter (\v -> v U.! 1 == NP 5 && dmg_omega v) seqs
+
+    dmg_omega v = v U.! (l-1) == NP 7 || v U.! (l-1) == NP 8 ||
+                  v U.! (l-2) == NP 7 || v U.! (l-2) == NP 8 ||
+                  v U.! (l-3) == NP 7 || v U.! (l-3) == NP 8
+        where l = U.length v
+
+    l_lam = isigmoid lambda
+    lambda = (ct_at_beta /%/ cc_at_beta) / (ct_at_alpha /%/ cc_at_alpha)
+
+    ct_at_omega = V.length $ V.filter (\v -> v U.! (U.length v -1) == NP 7 && dmg_alpha v) seqs
+    cc_at_omega = V.length $ V.filter (\v -> v U.! (U.length v -1) == NP 5 && dmg_alpha v) seqs
+    ct_at_psi   = V.length $ V.filter (\v -> v U.! (U.length v -2) == NP 7 && dmg_alpha v) seqs
+    cc_at_psi   = V.length $ V.filter (\v -> v U.! (U.length v -2) == NP 5 && dmg_alpha v) seqs
+
+    ga_at_omega = V.length $ V.filter (\v -> v U.! (U.length v -1) == NP  8 && dmg_alpha v) seqs
+    gg_at_omega = V.length $ V.filter (\v -> v U.! (U.length v -1) == NP 10 && dmg_alpha v) seqs
+
+    dmg_alpha v = v U.! 0 == NP 7 || v U.! 1 == NP 7 || v U.! 2 == NP 7
+
+    l_kap = isigmoid $ (ct_at_psi /%/ cc_at_psi) / (ct_at_omega /%/ cc_at_omega)
+
+    rate_ct = ct_at_omega /%/ cc_at_omega
+    rate_ga = ga_at_omega /%/ gg_at_omega
+
+    total_inner_CCs = V.sum $ V.map (U.length . U.filter (== NP 5) . takeInner) seqs
+    total_inner_CTs = V.sum $ V.map (U.length . U.filter (== NP 7) . takeInner) seqs
+    takeInner v = U.slice 5 (U.length v - 10) v
+
+    l_delta = isigmoid $ total_inner_CTs /%/ total_inner_CCs
+    raw_rate = ct_at_alpha /%/ cc_at_alpha
+    l_sigma = isigmoid $ {- XXX  2 * -} raw_rate / lambda
 

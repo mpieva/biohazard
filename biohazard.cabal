@@ -194,7 +194,8 @@ Executable dmg-est
                        biohazard,
                        nonlinear-optimization == 0.3.*,
                        Vec,
-                       vector
+                       vector,
+                       vector-th-unbox
 
 Executable fastq2bam
   Main-is:             fastq2bam.hs
