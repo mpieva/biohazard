@@ -365,7 +365,6 @@ subsampleBam fp o = decodeAnyBamFile fp >=> run $ \hdr ->
         loop o' = do (f,o2) <- lift $ enumCheckIfDone o'
                      if f then return o2
                           else do i <- liftIO $ randomRIO (0, U.length ckpts -1)
-                                  liftIO $ putStrLn $ "seek " ++ show (fromIntegral $ ckpts U.! i)
                                   seek . fromIntegral $ ckpts U.! i
                                   takeStream 64 o2 >>= loop
 

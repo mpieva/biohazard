@@ -237,6 +237,6 @@ getRandomSeq tbf len = draw
 
         mask2maybe n None = Just n
         mask2maybe n Soft = Just n
-        mask2maybe n Hard = Nothing
-        mask2maybe n Both = Nothing
+        mask2maybe _ Hard = Nothing
+        mask2maybe _ Both = Nothing
 

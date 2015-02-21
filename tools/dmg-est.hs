@@ -1,40 +1,38 @@
 {-# LANGUAGE RecordWildCards, NamedFieldPuns, BangPatterns, MultiParamTypeClasses, TypeFamilies, TemplateHaskell #-}
 -- Estimates aDNA damage.  Crude first version.
 --
--- - Read a BAM file, make compact representation of the reads.
--- - Compute likelihood of read under simple model of
+-- - Read or subsample a BAM file, make compact representation of the reads.
+-- - Compute likelihood of each read under simple model of
 --   damage, error/divergence, contamination.
 --
--- For the less crude version:  follow the iobio subsampling strategy
--- using an index.
-
+-- For the fitting, we simplify radically: ignore sequencing error,
+-- assume damage and simple, symmetric substitutions which subsume error
+-- and divergence.
+-- 
 -- Trying to compute symbolically is too much, the high power terms get
 -- out of hand quickly, and we get mixed powers of \lambda and \kappa.
-
--- For the fitting, we simplify radically: ignore sequencing error,
--- assume damage and simple, symmetric substitutions.
-
 -- The fastest version so far uses the cheap implementation of automatic
 -- differentiation in AD.hs together with the Hager-Zhang method from
--- nonlinear-optimization.  BFGS from hmatrix-gsl takes longer to
--- converge.
+-- package nonlinear-optimization.  BFGS from hmatrix-gsl takes longer
+-- to converge.  Didn't try an actual Newton iteration (yet?), AD from
+-- package ad appears slower.
 --
 -- If I include parameters, whose true value is zero, the transformation
 -- to the log-odds-ratio doesn't work, because then the maximum doesn't
--- exist anymore.  A different transformation ('sigmoid2'/'isigmoid2'
--- below) allows for an actual zero (but not one), while avoiding ugly
--- boundary conditions.  That works.
+-- exist anymore.  For many parameters, zero makes sense, but one
+-- doesn't.  A different transformation ('sigmoid2'/'isigmoid2'
+-- below) allows for an actual zero (but not an actual one), while
+-- avoiding ugly boundary conditions.  That appears to work well.
 --
 -- The current hack assumes all molecules have an overhang at both ends,
--- then each base gets deaminated with a position dependent probability.
--- If we try to model a fraction of undeaminated molecules in addition,
--- this fails.  To rescue the idea, I guess we must really decide if the
--- molecule has an overhang at all (probability 1/2) at each end, then
--- deaminate it.
+-- then each base gets deaminated with a position dependent probability
+-- following a geometric distribution.  If we try to model a fraction of
+-- undeaminated molecules (a contaminant) in addition, this fails.  To
+-- rescue the idea, I guess we must really decide if the molecule has an
+-- overhang at all (probability 1/2) at each end, then deaminate it.
 
 -- TODO:
 -- Before this can be packaged and used, the following needs to be done:
--- - Start with a crude estimate of parameters,
 -- - Fix the model(s), so a contaminant fraction can be estimated.
 -- - Implement both SSD and DSD.
 
@@ -53,7 +51,7 @@ import Data.Bits
 import Data.Foldable
 import Data.Monoid
 import Data.Traversable
-import Data.Vec ( vec, Mat44, dot, getElem )
+import Data.Vec ( vec, Mat44, dot, getElem, identity )
 import Data.Vector.Unboxed.Deriving
 import Numeric.Optimization.Algorithms.HagerZhang05
 import System.Environment
@@ -82,10 +80,7 @@ isValid (NP x) = x < 16
 
 type Seq = U.Vector NP
 
-sigmoid, sigmoid2, isigmoid, isigmoid2 :: (Num a, Fractional a, Floating a) => a -> a
-sigmoid l = 1 / ( 1 + exp l )
-isigmoid p = log $ ( 1 - p ) / p
-
+sigmoid2, isigmoid2 :: (Num a, Fractional a, Floating a) => a -> a
 sigmoid2 x = y*y where y = (exp x - 1) / (exp x + 1)
 isigmoid2 y = log $ (1 + sqrt y) / (1 - sqrt y)
 
@@ -93,17 +88,16 @@ isigmoid2 y = log $ (1 + sqrt y) / (1 - sqrt y)
 lk_fun1 :: (Num a, Fractional a, Floating a) => Seq -> [a] -> a
 lk_fun1 bb parms = negate $ log $ lk bb
   where
-    l_subst:l_sigma:l_delta:l_lam:l_kap:_ = parms
+    l_exo:l_subst:l_sigma:l_delta:l_lam:l_kap:_ = parms
 
-    -- Good initial guesses may be necessary, too.
-    -- f_exo = sigmoid l_endo
+    f_exo = sigmoid2 l_exo
     p_self = 1 - sigmoid2 l_subst
     p_subst = (1 - p_self) * 0.333
 
-    ssd_sigma  = sigmoid l_sigma
-    ssd_delta  = sigmoid l_delta
-    ssd_lambda = sigmoid l_lam
-    ssd_kappa  = sigmoid l_kap
+    ssd_sigma  = sigmoid2 l_sigma
+    ssd_delta  = sigmoid2 l_delta
+    ssd_lambda = sigmoid2 l_lam
+    ssd_kappa  = sigmoid2 l_kap
 
     -- Technically, its transpose.  But it's symmetric anyway.
     subst_mat = vec4 (vec4 p_self p_subst p_subst p_subst)
@@ -111,9 +105,9 @@ lk_fun1 bb parms = negate $ log $ lk bb
                      (vec4 p_subst p_subst p_self p_subst)
                      (vec4 p_subst p_subst p_subst p_self)
 
-    lk br = {-(1-f_exo) *-} S.foldl' (*) 1 (S.zipWith lk1 (G.stream br) $
-                                          G.stream (ssDamage SSD{..} False (U.length br)))
-            -- + f_exo * G.foldl' (\acc pr -> acc * lk1 pr W.identity) 1 br
+    lk br = (1-f_exo) * S.foldl' (*) 1 (S.zipWith lk1 (G.stream br) $
+                                G.stream (ssDamage SSD{..} False (U.length br)))
+            + f_exo * G.foldl' (\acc pr -> acc * lk1 pr identity) 1 br
 
     lk1 (NP pr) m | pr > 15   = 1
                   | otherwise = getElem b m `dot` getElem a subst_mat
@@ -146,7 +140,7 @@ main = do
 
     putStrLn $ "no. input sequences " ++ show (V.length brs)
     case crude_estimate brs of
-        Left  v0 -> do putStrLn $ "crude estimate (SS): " ++ show (backxform v0)
+        Left  v0 -> do putStrLn $ "crude estimate (SS): " ++ showV v0
 
                        let params = defaultParameters { verbose = VeryVerbose }
                        (xs, r, st) <- optimize params 0.00001 v0
@@ -156,14 +150,12 @@ main = do
 
                        print r
                        print st
-                       putStrLn $ "crude estimate (SS): " ++ show (backxform v0)
-                       putStrLn $ "final estimate (SS): " ++ show (backxform xs)
+                       putStrLn $ "crude estimate (SS): " ++ showV v0
+                       putStrLn $ "final estimate (SS): " ++ showV xs
 
-        Right v0 -> putStrLn $ "crude estimate (DS): " ++ show (backxform v0)
+        Right v0 -> putStrLn $ "crude estimate (DS): " ++ showV v0
 
-backxform vec = map sigmoid2 (G.toList $ G.take 1 vec)
-             ++ map sigmoid (G.toList $ G.drop 1 vec)
-
+showV v = show . map sigmoid2 . G.toList $ v
 
 -- We'll require the MD field to be present.  Then we cook each read
 -- into a list of paired bases.  Deleted bases are dropped, inserted
@@ -219,7 +211,7 @@ mk_pair (Ns a) = case a of 1 -> mk_pair' 0
                                   _ -> esc
 
 
-infix 6 /%/
+infix 7 /%/
 (/%/) :: Integral a => a -> a -> Double
 0 /%/ 0 = 0
 a /%/ b = fromIntegral a / fromIntegral (a+b)
@@ -239,8 +231,8 @@ a /%/ b = fromIntegral a / fromIntegral (a+b)
 
 crude_estimate :: V.Vector Seq -> Either (U.Vector Double) (U.Vector Double)
 crude_estimate seqs0
-    | rate_ct > rate_ga = Left  $ U.fromList [ l_subst, l_sigma, l_delta, l_lam, l_kap ]        -- SS
-    | otherwise         = Right $ U.fromList [ l_subst, l_sigma, l_delta, l_lam ]               -- DS
+    | rate_ct > rate_ga = Left  $ U.fromList [ l_exo, l_subst, l_sigma, l_delta, l_lam, l_kap ]        -- SS
+    | otherwise         = Right $ U.fromList [ l_exo, l_subst, l_sigma, l_delta, l_lam ]               -- DS
   where
     seqs = V.filter ((>= 10) . U.length) seqs0
 
@@ -262,7 +254,7 @@ crude_estimate seqs0
                   v U.! (l-3) == NP 7 || v U.! (l-3) == NP 8
         where l = U.length v
 
-    l_lam = isigmoid lambda
+    l_lam = isigmoid2 lambda
     lambda = (ct_at_beta /%/ cc_at_beta) / (ct_at_alpha /%/ cc_at_alpha)
 
     ct_at_omega = V.length $ V.filter (\v -> v U.! (U.length v -1) == NP 7 && dmg_alpha v) seqs
@@ -275,7 +267,7 @@ crude_estimate seqs0
 
     dmg_alpha v = v U.! 0 == NP 7 || v U.! 1 == NP 7 || v U.! 2 == NP 7
 
-    l_kap = isigmoid $ (ct_at_psi /%/ cc_at_psi) / (ct_at_omega /%/ cc_at_omega)
+    l_kap = isigmoid2 $ (ct_at_psi /%/ cc_at_psi) / (ct_at_omega /%/ cc_at_omega)
 
     rate_ct = ct_at_omega /%/ cc_at_omega
     rate_ga = ga_at_omega /%/ gg_at_omega
@@ -284,7 +276,34 @@ crude_estimate seqs0
     total_inner_CTs = V.sum $ V.map (U.length . U.filter (== NP 7) . takeInner) seqs
     takeInner v = U.slice 5 (U.length v - 10) v
 
-    l_delta = isigmoid $ total_inner_CTs /%/ total_inner_CCs
+    -- clamping is necessary if f_endo ends up wrong
+    l_delta = isigmoid2 . min 0.99 $ (total_inner_CTs /%/ total_inner_CCs) / f_endo
+    l_sigma = isigmoid2 . min 0.99 $ {- XXX  2 * -} raw_rate / lambda / f_endo
     raw_rate = ct_at_alpha /%/ cc_at_alpha
-    l_sigma = isigmoid $ {- XXX  2 * -} raw_rate / lambda
+
+    -- Contaminant fraction:  let f5 (f3, f1) be the fraction of reads
+    -- showing damage at the 5' end (3' end, both ends).  Let a (b) be
+    -- the probability of an endogenous reads to show damage at the 5'
+    -- end (3' end).  Let e be the fraction of endogenous reads.  Then
+    -- we have:
+    --
+    -- f5 = e * a
+    -- f3 = e * b
+    -- f1 = e * a * b
+    --
+    -- f5 * f3 / f1 = e
+    --
+    -- This estimate is unstable and can go catastrophically wrong (e
+    -- might be estimated to be greater than 1).  Still, it should be
+    -- good enough for a starting point.
+
+    n5 = V.length $ V.filter dmg_alpha seqs
+    n3 = V.length $ V.filter dmg_omega seqs
+    n1 = V.length $ V.filter (\v -> dmg_alpha v && dmg_omega v) seqs
+    nn = V.length seqs
+
+    -- f_endo can be greater than 1, which is wrong, but unavoidable.
+    -- Use of f_endo must somehow fudge the edge case.
+    f_endo = fromIntegral (n5 * n3) / fromIntegral (nn * n1) :: Double
+    l_exo = isigmoid2 . max 0 $ 1 - f_endo
 

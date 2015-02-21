@@ -73,7 +73,7 @@ import Control.Monad.Trans.Class
 import Data.Iteratee.Binary     as X
 import Data.Iteratee.Char       as X
 import Data.Iteratee.IO         as X hiding ( defaultBufSize )
-import Data.Iteratee.Iteratee   as X
+import Data.Iteratee.Iteratee   as X hiding ( identity )
 import Data.ListLike                        ( ListLike )
 import Data.Monoid
 import Data.Typeable
