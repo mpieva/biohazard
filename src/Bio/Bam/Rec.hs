@@ -68,8 +68,6 @@ import Bio.Iteratee
 
 import Control.Monad
 import Control.Applicative
-import Data.Array.IArray
-import Data.Array.Unboxed
 import Data.Attoparsec.ByteString   ( anyWord8 )
 import Data.Binary.Builder          ( toLazyByteString )
 import Data.Binary.Get
@@ -94,7 +92,7 @@ import qualified Data.ByteString.Lazy.Char8         as L
 import qualified Data.Foldable                      as F
 import qualified Data.Iteratee                      as I
 import qualified Data.Map                           as M
-import qualified Data.Vector.Unboxed                as V
+import qualified Data.Vector.Unboxed                as U
 
 -- ^ Parsers and Printers for BAM and SAM.  We employ an @Iteratee@
 -- interface, and we strive to support everything possible in BAM.  So
@@ -113,7 +111,7 @@ data BamRec = BamRec {
         b_mrnm  :: {-# UNPACK #-} !Refseq,
         b_mpos  :: {-# UNPACK #-} !Int,
         b_isize :: {-# UNPACK #-} !Int,
-        b_seq   :: !(V.Vector Nucleotides),
+        b_seq   :: !(U.Vector Nucleotides),
         b_qual  :: !ByteString,         -- ^ quality, may be empty
         b_exts  :: Extensions,
         b_virtual_offset :: {-# UNPACK #-} !FileOffset -- ^ virtual offset for indexing purposes
@@ -130,7 +128,7 @@ nullBamRec = BamRec {
         b_mrnm  = invalidRefseq,
         b_mpos  = invalidPos,
         b_isize = 0,
-        b_seq   = V.empty,
+        b_seq   = U.empty,
         b_qual  = S.empty,
         b_exts  = M.empty,
         b_virtual_offset = 0
@@ -189,7 +187,7 @@ decodeBamEntry br = case pushEndOfInput $ runGetIncremental go `pushChunk` raw_d
 
             return $ BamRec read_name flag rid start mapq cigar
                             mate_rid mate_pos ins_size
-                            (V.fromListN read_len $ expand qry_seq)
+                            (U.fromListN read_len $ expand qry_seq)
                             qual exts (virt_offset br)
 
     expand t = if S.null t then [] else let x = B.head t in Ns (x `shiftR` 4) : Ns (x .&. 0xf) : expand (B.tail t)
@@ -249,7 +247,7 @@ fixup_bam_rec b =
 type Extensions = M.Map String Ext
 
 data Ext = Int Int | Float Float | Text ByteString | Bin ByteString | Char Word8
-         | IntArr (UArray Int Int) | FloatArr (UArray Int Float)
+         | IntArr (U.Vector Int) | FloatArr (U.Vector Float)
     deriving (Show, Eq, Ord)
 
 getExtensions :: Extensions -> Get Extensions
@@ -268,8 +266,8 @@ getExtensions m = getExt <|> return m
                     'B' -> do tp <- getWord8
                               n <- fromIntegral <$> getWord32le
                               case w2c tp of
-                                 'f' -> cont . FloatArr . listArray (0,n) . map to_float =<< replicateM (n+1) getWord32le
-                                 x | Just get <- M.lookup x get_some_int -> cont . IntArr . listArray (0,n) =<< replicateM (n+1) get
+                                 'f' -> cont . FloatArr . U.fromListN (n+1) . map to_float =<< replicateM (n+1) getWord32le
+                                 x | Just get <- M.lookup x get_some_int -> cont . IntArr . U.fromListN (n+1) =<< replicateM (n+1) get
                                    | otherwise                           -> fail $ "array type code " ++ show x ++ " not recognized"
                     x | Just get <- M.lookup x get_some_int -> cont . Int =<< get
                       | otherwise                           -> fail $ "type code " ++ show x ++ " not recognized"
@@ -307,7 +305,7 @@ encodeBamEntry = bamRaw 0 . S.concat . L.toChunks . runPut . putEntry
                      put_int_16    $ distinctBin (b_pos b) (cigarToAlnLen (b_cigar b))
                      put_int_16    $ length $ unCigar $ b_cigar b
                      put_int_16    $ b_flag b
-                     put_int_32    $ V.length $ b_seq b
+                     put_int_32    $ U.length $ b_seq b
                      putWord32le   $ unRefseq $ b_mrnm b
                      put_int_32    $ b_mpos b
                      put_int_32    $ b_isize b
@@ -316,7 +314,7 @@ encodeBamEntry = bamRaw 0 . S.concat . L.toChunks . runPut . putEntry
                      mapM_ (put_int_32 . encodeCigar) $ unCigar $ b_cigar b
                      putSeq $ b_seq b
                      putByteString $ if not (S.null (b_qual b)) then b_qual b
-                                     else B.replicate (V.length $ b_seq b) 0xff
+                                     else B.replicate (U.length $ b_seq b) 0xff
                      forM_ (M.toList $ more_exts b) $ \(k,v) ->
                         case k of [c,d] -> putChr c >> putChr d >> putValue v
                                   _     -> error $ "invalid field key " ++ show k
@@ -329,13 +327,13 @@ encodeBamEntry = bamRaw 0 . S.concat . L.toChunks . runPut . putEntry
     encodeCigar :: (CigOp,Int) -> Int
     encodeCigar (op,l) = fromEnum op .|. l `shiftL` 4
 
-    putSeq :: V.Vector Nucleotides -> Put
+    putSeq :: U.Vector Nucleotides -> Put
     putSeq v = case v !? 0 of
                  Nothing -> return ()
                  Just a  -> case v !? 1 of
                     Nothing -> putWord8 (unNs a `shiftL` 4)
                     Just b  -> do putWord8 (unNs a `shiftL` 4 .|. unNs b)
-                                  putSeq (V.drop 2 v)
+                                  putSeq (U.drop 2 v)
 
 -- | writes BAM encoded stuff to a @Handle@
 -- We generate BAM with dynamic blocks, then stream them out to the file.
@@ -385,21 +383,22 @@ putValue v = case v of
     Bin b       -> putChr 'H' >> putByteString b >> putWord8 0
     Char c      -> putChr 'A' >> putWord8 c
     Float f     -> putChr 'f' >> put_int_32 (fromFloat f)
-    Int i       -> case put_some_int [i] of (c,op) -> putChr c >> op i
-    FloatArr fa -> putChr 'B' >> putChr 'f' >> put_int_32 (rangeSize (bounds fa))
-                   >> mapM_ (put_int_32 . fromFloat) (elems fa)
-    IntArr   ia -> case put_some_int (elems ia) of
-                    (c,op) -> putChr 'B' >> putChr c >> put_int_32 (rangeSize (bounds ia)-1)
-                              >> mapM_ op (elems ia)
+    Int i       -> case put_some_int (U.singleton i) of
+                        (c,op) -> putChr c >> op i
+    IntArr   ia -> case put_some_int ia of
+                        (c,op) -> putChr 'B' >> putChr c >> put_int_32 (U.length ia-1)
+                                  >> mapM_ op (U.toList ia)
+    FloatArr fa -> putChr 'B' >> putChr 'f' >> put_int_32 (U.length fa-1)
+                   >> mapM_ (put_int_32 . fromFloat) (U.toList fa)
   where
-    put_some_int :: [Int] -> (Char, Int -> Put)
+    put_some_int :: U.Vector Int -> (Char, Int -> Put)
     put_some_int is
-        | all (between        0    0xff) is = ('C', put_int_8)
-        | all (between   (-0x80)   0x7f) is = ('c', put_int_8)
-        | all (between        0  0xffff) is = ('S', put_int_16)
-        | all (between (-0x8000) 0x7fff) is = ('s', put_int_16)
-        | all                      (> 0) is = ('I', put_int_32)
-        | otherwise                         = ('i', put_int_32)
+        | U.all (between        0    0xff) is = ('C', put_int_8)
+        | U.all (between   (-0x80)   0x7f) is = ('c', put_int_8)
+        | U.all (between        0  0xffff) is = ('S', put_int_16)
+        | U.all (between (-0x8000) 0x7fff) is = ('s', put_int_16)
+        | U.all                      (> 0) is = ('I', put_int_32)
+        | otherwise                           = ('i', put_int_32)
 
     between :: Int -> Int -> Int -> Bool
     between l r x = l <= x && x <= r
@@ -493,8 +492,8 @@ parseSamRec ref = (\nm fl rn po mq cg rn' -> BamRec nm fl rn po mq cg (rn' rn))
 
     rnext    = id <$ P.char '=' <* sep <|> const . ref <$> word
     sequ     = {-# SCC "parseSamRec/sequ" #-}
-               (V.empty <$ P.char '*' <|>
-               V.fromList . map toNucleotides . S.unpack <$> P.takeWhile (P.inClass "acgtnACGTN")) <* sep
+               (U.empty <$ P.char '*' <|>
+               U.fromList . map toNucleotides . S.unpack <$> P.takeWhile (P.inClass "acgtnACGTN")) <* sep
 
     quals    = {-# SCC "parseSamRec/quals" #-} B.empty <$ P.char '*' <* sep <|> B.map (subtract 33) <$> word
 
@@ -514,8 +513,8 @@ parseSamRec ref = (\nm fl rn po mq cg rn' -> BamRec nm fl rn po mq cg (rn' rn))
                     P.satisfy (P.inClass "cCsSiI") *> (intArr   <$> many (P.char ',' *> P.signed P.decimal)) <|>
                     P.char 'f'                     *> (floatArr <$> many (P.char ',' *> P.double)))
 
-    intArr   is = IntArr   $ listArray (0, length is -1) is
-    floatArr fs = FloatArr $ listArray (0, length fs -1) $ map realToFrac fs
+    intArr   is = IntArr   $ U.fromList is
+    floatArr fs = FloatArr $ U.fromList $ map realToFrac fs
     hexarray    = B.pack . repack . S.unpack <$> P.takeWhile (P.inClass "0-9A-Fa-f")
     repack (a:b:cs) = fromIntegral (digitToInt a * 16 + digitToInt b) : repack cs ; repack _ = []
 
@@ -530,7 +529,7 @@ encodeSamEntry refs b = conjoin '\t' [
     unpck (sq_name $ getRef refs $ b_mrnm b),
     shows (b_mpos b + 1),
     shows (b_isize b + 1),
-    shows (V.toList $ b_seq b),
+    shows (U.toList $ b_seq b),
     unpck (B.map (+33) $ b_qual b) ] .
     M.foldWithKey (\k v f -> (:) '\t' . (++) k . (:) ':' . extToSam v . f) id (b_exts b)
   where
@@ -547,5 +546,5 @@ encodeSamEntry refs b = conjoin '\t' [
 
     tohex = B.foldr (\c f -> w2d (c `shiftR` 4) . w2d (c .&. 0xf) . f) id
     w2d = (:) . S.index "0123456789ABCDEF" . fromIntegral
-    sarr = conjoin ',' . map shows . elems
+    sarr = conjoin ',' . map shows . U.toList
 

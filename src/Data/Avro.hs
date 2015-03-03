@@ -75,7 +75,7 @@ class Avro a where
     toAvron :: a -> Value
 
 
-newtype MkSchema a = MkSchema 
+newtype MkSchema a = MkSchema
     { mkSchema :: (a -> H.HashMap T.Text Value -> Value) -> H.HashMap T.Text Value -> Value }
 
 instance Functor MkSchema where fmap f m = MkSchema (\k -> mkSchema m (k . f))
@@ -253,7 +253,7 @@ instance Avro a => Avro (V.Vector a) where
     fromBin     = get_blocks []
       where
         get_blocks acc = zagInt >>= \l -> if l == 0 then return $ V.concat $ reverse acc
-                                                    else get_block [] l >>= 
+                                                    else get_block [] l >>=
                                                          get_blocks . (: acc) . V.fromListN l . reverse
         get_block acc l = if l == 0 then return acc
                                     else fromBin >>= \a -> get_block (a:acc) (l-1)
@@ -270,7 +270,7 @@ instance (Avro a, U.Unbox a) => Avro (U.Vector a) where
     fromBin     = get_blocks []
       where
         get_blocks acc = zagInt >>= \l -> if l == 0 then return $ U.concat $ reverse acc
-                                                    else get_block [] l >>= 
+                                                    else get_block [] l >>=
                                                          get_blocks . (: acc) . U.fromListN l . reverse
         get_block acc l = if l == 0 then return acc
                                     else fromBin >>= \a -> get_block (a:acc) (l-1)
@@ -347,22 +347,22 @@ deriveAvro nm = reify nm >>= case_info
                 toSchema _ = return $ object [ "type" .= string "enum"
                                              , "name" .= string $(tolit nm)
                                              , "symbols" .= $(tolitlist nms) ]
-                toBin x = $( 
-                    return $ CaseE (VarE 'x) 
+                toBin x = $(
+                    return $ CaseE (VarE 'x)
                         [ Match (ConP nm1 [])
                                 (NormalB (AppE (VarE 'zigInt)
                                                (LitE (IntegerL i)))) []
                         | (i,nm1) <- zip [0..] nms ] )
 
                 fromBin = zagInt >>= \x -> $(
-                    return $ CaseE (VarE 'x) 
+                    return $ CaseE (VarE 'x)
                         [ Match (LitP (IntegerL i))
                                 (NormalB (AppE (VarE 'return)
                                                (ConE nm1))) []
                         | (i,nm1) <- zip [0..] nms ] )
 
                 toAvron x = $(
-                    return $ CaseE (VarE 'x) 
+                    return $ CaseE (VarE 'x)
                         [ Match (ConP nm1 [])
                                 (NormalB (AppE (VarE 'string)
                                                (LitE (StringL (nameBase nm1))))) []
@@ -385,9 +385,9 @@ deriveAvro nm = reify nm >>= case_info
                 toSchema _ = Array . V.fromList <$> sequence
                              $( foldr (\(nm1,fs) k -> [| $(mk_product_schema nm1 fs) : $k |])
                                       [| [] |] arms )
-                toBin = 
+                toBin =
                     $( do x <- newName "x"
-                          LamE [VarP x] . CaseE (VarE x) 
+                          LamE [VarP x] . CaseE (VarE x)
                              <$> sequence [ ($ []) . Match (RecP nm1 []) . NormalB
                                                 <$> [| zigInt $(litE (IntegerL i)) <> $(to_bin_product fs) $(varE x) |]
                                           | (i,(nm1,fs)) <- zip [0..] arms ] )
@@ -399,9 +399,9 @@ deriveAvro nm = reify nm >>= case_info
                                                 <$> from_bin_product [| return $(conE nm1) |] fs
                                          | (i,(nm1,fs)) <- zip [0..] arms ] )
 
-                toAvron = 
+                toAvron =
                     $( do x <- newName "x"
-                          LamE [VarP x] . CaseE (VarE x) 
+                          LamE [VarP x] . CaseE (VarE x)
                              <$> sequence [ ($ []) . Match (RecP nm1 []) . NormalB
                                                 <$> [| object [ $(tolit nm1) .= $(to_avron_product fs) $(varE x) ] |]
                                           | (nm1,fs) <- arms ] )
@@ -416,7 +416,7 @@ deriveAvro nm = reify nm >>= case_info
 
     fieldlist = foldr go [| return [] |]
         where
-            go (nm1,_,tp) k = 
+            go (nm1,_,tp) k =
                 [| do sch <- toSchema $(sigE (varE 'undefined) (return tp))
                       obs <- $k
                       return $ object [ "name" .= string $(tolit nm1)
@@ -424,16 +424,16 @@ deriveAvro nm = reify nm >>= case_info
                              : obs |]
 
     -- binary encoding of records: field by field.
-    to_bin_product nms = 
+    to_bin_product nms =
         [| \x -> $( foldr (\(nm1,_,_) k -> [| mappend (toBin ($(varE nm1) x)) $k |] )
                           [| mempty |] nms ) |]
 
     from_bin_product =
-        foldl (\expr (_,_,_) -> [| $expr <*> fromBin |]) 
+        foldl (\expr (_,_,_) -> [| $expr <*> fromBin |])
 
     -- json encoding of records: fields in an object
     to_avron_product nms =
-        [| \x -> object $( 
+        [| \x -> object $(
             foldr (\(nm1,_,_) k -> [| ($(tolit nm1) .= toAvron ($(varE nm1) x)) : $k |] )
                   [| [] |] nms ) |]
 
@@ -459,7 +459,7 @@ writeAvroContainer ContainerOpts{..} out = do
 
             hdr = fromByteString "Obj\1" <> toBin meta <> fromByteString sync_marker
 
-        let enc_blocks = iterLoop $ \out' -> do (num,code) <- joinI $ takeStream objects_per_block $ 
+        let enc_blocks = iterLoop $ \out' -> do (num,code) <- joinI $ takeStream objects_per_block $
                                                                 foldStream (\(!n,c) o -> (n+1, c <> toBin o)) (0::Int,mempty)
 
                                                 let code1 = toLazyByteString code

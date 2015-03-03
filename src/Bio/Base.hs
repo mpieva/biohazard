@@ -60,7 +60,7 @@ import qualified Data.ByteString.Char8 as S
 
 -- | A nucleotide base.  We only represent A,C,G,T.
 
-newtype Nucleotide = N { unN :: Word8 } deriving ( Eq, Ord, Ix, Storable )
+newtype Nucleotide = N { unN :: Word8 } deriving ( Eq, Ord, Enum, Ix, Storable )
 
 derivingUnbox "Nucleotide" [t| Nucleotide -> Word8 |] [| unN |] [| N |]
 
@@ -80,7 +80,7 @@ everything = range (minBound, maxBound)
 -- format:  as a 4 bit wide field.  Gaps are encoded as 0 where they
 -- make sense, N is 15.
 
-newtype Nucleotides = Ns { unNs :: Word8 } deriving ( Eq, Ord, Ix, Storable )
+newtype Nucleotides = Ns { unNs :: Word8 } deriving ( Eq, Ord, Enum, Ix, Storable )
 
 derivingUnbox "Nucleotides" [t| Nucleotides -> Word8 |] [| unNs |] [| Ns |]
 

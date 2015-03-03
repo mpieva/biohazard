@@ -5,12 +5,12 @@ module SimpleSeed where
 import Bio.Base
 import Bio.Bam.Raw
 
-import Data.Array.Unboxed
 import Data.Bits
 import Data.List
 import Data.Maybe
 
 import qualified Data.IntMap as IM
+import qualified Data.Vector.Unboxed as U
 
 -- | Discontiguous template "12 of 16", stolen from MegaBLAST:
 -- 1,110,110,110,110,111, with two bits per base gives 0xFCF3CF3F
@@ -24,15 +24,15 @@ create_seed_words = drop 32 . go 0x0 (-16) 0x0 0
     go !accf !i !accr !ir s =
         (accf .&. template, i) : (accr .&. template, ir) : case s of
             [    ] -> []
-            (n:ns) -> go (accf `shiftR` 2 .|. (codef ! n) `shiftL` 30) (i+1)
-                         (accr `shiftL` 2 .|. (coder ! n)) (ir-1) ns
+            (Ns n:ns) -> go (accf `shiftR` 2 .|. (codef U.! fromIntegral n) `shiftL` 30) (i+1)
+                            (accr `shiftL` 2 .|. (coder U.! fromIntegral n)) (ir-1) ns
 
     -- These codes are chosen so that ambiguity codes result in zeroes.
     -- The seed word 0, which would otherwise be the low-complexity and
     -- useless poly-A, is later ignored.
-    codef, coder :: UArray Nucleotides Int
-    codef = listArray (Ns 0, Ns 15) [0,0,1,0,2,0,0,0,3,0,0,0,0,0,0,0]
-    coder = listArray (Ns 0, Ns 15) [0,3,2,0,1,0,0,0,0,0,0,0,0,0,0,0]
+    codef, coder :: U.Vector Int
+    codef = U.fromList [0,0,1,0,2,0,0,0,3,0,0,0,0,0,0,0]
+    coder = U.fromList [0,3,2,0,1,0,0,0,0,0,0,0,0,0,0,0]
 
 -- Turns a list of seed words into a map.  Only the first entry is used,
 -- duplicates are discarded silenty.

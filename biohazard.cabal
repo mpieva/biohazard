@@ -117,7 +117,6 @@ Executable afroengineer
   Hs-source-dirs:      tools
   Other-Modules:       Align, SimpleSeed
   Build-Depends:       base,
-                       array,
                        biohazard,
                        bytestring,
                        containers,
@@ -193,9 +192,7 @@ Executable dmg-est
   Build-depends:       base,
                        biohazard,
                        nonlinear-optimization == 0.3.*,
-                       Vec,
-                       vector,
-                       vector-th-unbox
+                       vector
 
 Executable fastq2bam
   Main-is:             fastq2bam.hs

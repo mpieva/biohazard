@@ -12,7 +12,6 @@ import Bio.Bam.Rec
 import Bio.Base
 import Bio.Iteratee
 import Control.Monad                    ( when )
-import Data.Array.Unboxed
 import Data.Bits
 import Data.List
 import Data.Ord                         ( comparing )
@@ -23,6 +22,7 @@ import qualified Data.ByteString.Char8  as T
 import qualified Data.Iteratee          as I
 import qualified Data.Map               as M
 import qualified Data.Vector.Generic    as V
+import qualified Data.Vector.Unboxed    as U
 
 -- | Uniform treatment of raw and parsed BAM records.  Might grow into
 -- something even bigger.
@@ -536,10 +536,10 @@ mk_new_md' _acc cigs ms osq nsq = Left $ MdFail cigs ms osq nsq
 consensus :: Qual -> [ (Nucleotides, Qual) ] -> (Nucleotides, Qual)
 consensus (Q maxq) nqs = if qr > 3 then (n0, Q qr) else (nucsN, Q 0)
   where
-    accs :: UArray Nucleotides Int
-    accs = accumArray (+) 0 (minBound,maxBound) [ (n,fromIntegral q) | (n,Q q) <- nqs ]
+    accs :: U.Vector Int
+    accs = U.accum (+) (U.replicate 16 0) [ (fromIntegral n, fromIntegral q) | (Ns n,Q q) <- nqs ]
 
-    (n0,q0) : (_,q1) : _ = sortBy (flip $ comparing snd) $ assocs accs
+    (n0,q0) : (_,q1) : _ = sortBy (flip $ comparing snd) $ zip [Ns 0 ..] $ U.toList accs
     qr = fromIntegral $ (q0-q1) `min` fromIntegral maxq
 
 
