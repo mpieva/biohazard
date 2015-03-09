@@ -57,6 +57,7 @@ module Bio.Bam.Raw (
     br_isAuxillary,
     br_isFailsQC,
     br_isDuplicate,
+    br_isMergeTrimmed,
 
     br_rname,
     br_pos,
@@ -330,7 +331,7 @@ br_extflag br = shiftL ef 16 .|. ff
 {-# INLINE br_isDuplicate      #-}
 br_isPaired, br_isProperlyPaired, br_isUnmapped, br_isMateUnmapped, br_isReversed,
     br_isMateReversed, br_isFirstMate, br_isSecondMate, br_isAuxillary, br_isFailsQC,
-    br_isDuplicate :: BamRaw -> Bool
+    br_isDuplicate, br_isMergeTrimmed :: BamRaw -> Bool
 
 br_isPaired         = flip testBit  0 . br_flag
 br_isProperlyPaired = flip testBit  1 . br_flag
@@ -343,6 +344,9 @@ br_isSecondMate     = flip testBit  7 . br_flag
 br_isAuxillary      = flip testBit  8 . br_flag
 br_isFailsQC        = flip testBit  9 . br_flag
 br_isDuplicate      = flip testBit 10 . br_flag
+
+br_isMergeTrimmed br = br_extflag br .&. (flagTrimmed .|. flagMerged) /= 0
+
 
 {-# INLINE br_rname #-}
 br_rname :: BamRaw -> Refseq

@@ -74,17 +74,17 @@ sigmoid2 x = y*y where y = (exp x - 1) / (exp x + 1)
 isigmoid2 y = log $ (1 + sqrt y) / (1 - sqrt y)
 
 {-# INLINE lk_fun1 #-}
-lk_fun1 :: (Num a, Show a, Fractional a, Floating a, Memorable a) => [a] -> V.Vector Seq -> a
-lk_fun1 (l_subst:l_sigma:l_delta:l_lam:parms) = case parms of
+lk_fun1 :: (Num a, Show a, Fractional a, Floating a, Memorable a) => Int -> [a] -> V.Vector Seq -> a
+lk_fun1 lmax (l_subst:l_sigma:l_delta:l_lam:parms) = case parms of
 
-    [     ] -> V.foldl' (\a b -> a - log (lk tabDS b)) 0        -- double strand case
+    [     ] -> V.foldl' (\a b -> a - log (lk tabDS b)) 0 . guardV           -- double strand case
       where
         !tabDS = fromListN (rangeSize my_bounds) [ l_epq p_subst p_d p_e x
                                                  | (l,i,x) <- range my_bounds
                                                  , let p_d = mu $ lambda ^^ (1+i)
                                                  , let p_e = mu $ lambda ^^ (l-i) ]
 
-    [l_kap] -> V.foldl' (\a b -> a - log (lk tabSS b)) 0        -- single strand case
+    [l_kap] -> V.foldl' (\a b -> a - log (lk tabSS b)) 0 . guardV           -- single strand case
       where
         !kappa  = sigmoid2 l_kap
         !tabSS = fromListN (rangeSize my_bounds) [ l_epq p_subst p_d 0 x
@@ -96,6 +96,8 @@ lk_fun1 (l_subst:l_sigma:l_delta:l_lam:parms) = case parms of
     !sigma  = sigmoid2 l_sigma
     !delta  = sigmoid2 l_delta
     !lambda = sigmoid2 l_lam
+
+    guardV = V.filter (\(Seq u) -> U.length u >= lmin && U.length u <= lmax)
 
     -- Likelihood given precomputed damage table.  We compute the giant
     -- table ahead of time, which maps length, index and base pair to a
@@ -117,55 +119,60 @@ l_epq e p q (NP x) = case x of {
      _ -> 1 } where s = 1 - 3 * e
 
 
-lkfun :: V.Vector Seq -> U.Vector Double -> Double
-lkfun brs parms = lk_fun1 (U.toList parms) brs
+lkfun :: Int -> V.Vector Seq -> U.Vector Double -> Double
+lkfun lmax brs parms = lk_fun1 lmax (U.toList parms) brs
 
-combofn :: V.Vector Seq -> U.Vector Double -> (Double, U.Vector Double)
-combofn brs parms = (x,g)
-  where D x g = lk_fun1 (paramVector $ U.toList parms) brs
+combofn :: Int -> V.Vector Seq -> U.Vector Double -> (Double, U.Vector Double)
+combofn lmax brs parms = (x,g)
+  where D x g = lk_fun1 lmax (paramVector $ U.toList parms) brs
 
 params :: Parameters
 params = defaultParameters { verbose = Verbose }
 
-lmin, lmax :: Int
-lmin = 30
-lmax = 70
+lmin :: Int
+lmin = 25
 
 main :: IO ()
 main = do
     [fp] <- getArgs
     brs <- subsampleBam fp >=> run $ \_ ->
-           joinI $ filterStream (\b -> not (br_isUnmapped b) && br_l_seq b <= lmax && br_l_seq b >= lmin) $
+           joinI $ filterStream (\b -> not (br_isUnmapped b) && br_l_seq b >= lmin) $
+           joinI $ takeStream 100000 $
+           joinI $ filterStream br_isMergeTrimmed $
            joinI $ mapStream pack_record $
-           joinI $ filterStream (U.all (<16) . unSeq) $
+           joinI $ filterStream (\(Seq u) -> U.length (U.filter (<16) u) * 10 >= 9 * U.length u) $
            stream2vectorN 30000
 
-    let ve = U.fromList $ map isigmoid2 [ 0.01, 0.9, 0.02, 0.3, 0.3 ]
+    let ve = U.fromList $ map isigmoid2 [ 0.01, 0.9, 0.02, 0.3, 0.3 ] -- XXX
+    let lmax = V.maximum $ V.map (U.length . unSeq) brs
 
     putStrLn $ "no. input sequences " ++ show (V.length brs)
-    putStrLn . (++) "eval @true parms: " . show . lkfun brs $ ve
 
-    let v0 = crude_estimate brs
-    putStrLn $ "crude estimate: " ++ showV v0
+    if V.length brs < 30000 then putStrLn "this appears to be fresh DNA" else do
+        putStrLn . (++) "eval @true parms: " . show . lkfun lmax brs $ ve
 
-    (xs, r, st) <- optimize params 0.00001 v0
-                            (VFunction $ lkfun brs)
-                            (VGradient $ snd . combofn brs)
-                            (Just . VCombined $ combofn brs)
+        let v0 = crude_estimate brs
+        putStrLn $ "crude estimate: " ++ showV v0
 
-    print r
-    print st
-    putStrLn $ "crude estimate: " ++ showV v0
-    putStrLn $ "final estimate: " ++ showV xs
+        (xs, r, st) <- optimize params 0.00001 v0
+                                (VFunction $ lkfun lmax brs)
+                                (VGradient $ snd . combofn lmax brs)
+                                (Just . VCombined $ combofn lmax brs)
 
-    putStrLn . (++) "eval @true parms: " . show . lkfun brs $ ve
-    putStrLn . (++) "eval @crud parms: " . show . lkfun brs $ v0
-    putStrLn . (++) "eval @estd parms: " . show . lkfun brs . U.fromList . G.toList $ xs
+        print r
+        print st
+        putStrLn $ "crude estimate: " ++ showV v0
+        putStrLn $ "final estimate: " ++ showV xs
+
+        putStrLn . (++) "eval @true parms: " . show . lkfun lmax brs $ ve
+        putStrLn . (++) "eval @crud parms: " . show . lkfun lmax brs $ v0
+        putStrLn . (++) "eval @estd parms: " . show . lkfun lmax brs . U.fromList . G.toList $ xs
 
 
 showV v = (++) label . show . map sigmoid2 . G.toList $ v
   where
-    label = if G.length v == 5 then "(SS) " else "(DS) "
+    label | G.length v == 5  =  "(SS) "
+          | G.length v == 4  =  "(DS) "
 
 -- We'll require the MD field to be present.  Then we cook each read
 -- into a list of paired bases.  Deleted bases are dropped, inserted

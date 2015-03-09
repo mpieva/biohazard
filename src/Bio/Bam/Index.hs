@@ -19,6 +19,7 @@ import Bio.Bam.Header
 import Bio.Bam.Raw
 import Bio.Bam.Regions              ( Region(..), Subsequence(..) )
 import Bio.Iteratee
+import Bio.Iteratee.Bgzf
 import Control.Monad
 import Data.Bits                    ( shiftL, shiftR, testBit )
 import Data.ByteString              ( ByteString )
@@ -350,8 +351,10 @@ lookupLE k m = case ma of
 -- | Subsample randomly from a BAM file.  If an index exists, this
 -- produces an infinite stream taken from random locations in the file.
 subsampleBam :: (MonadIO m, MonadMask m) => FilePath -> Enumerator' BamMeta [BamRaw] m b
-subsampleBam fp o = decodeAnyBamFile fp >=> run $ \hdr ->
-                 liftIO (E.try (readBamIndex fp)) >>= go hdr
+subsampleBam fp o = enumFileRandom defaultBufSize fp >=> run $
+                    joinI $ decompressBgzfBlocks' 1 $
+                    joinI $ decodeBam $ \hdr ->
+                    liftIO (E.try (readBamIndex fp)) >>= go hdr
   where
     -- no index, so just keep streaming
     go hdr (Left e) = takeWhileE (isValidRefseq . br_rname) (o hdr)
@@ -366,6 +369,6 @@ subsampleBam fp o = decodeAnyBamFile fp >=> run $ \hdr ->
                      if f then return o2
                           else do i <- liftIO $ randomRIO (0, U.length ckpts -1)
                                   seek . fromIntegral $ ckpts U.! i
-                                  takeStream 64 o2 >>= loop
+                                  takeStream 512 o2 >>= loop
 
 
