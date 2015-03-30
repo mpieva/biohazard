@@ -350,25 +350,38 @@ lookupLE k m = case ma of
 
 -- | Subsample randomly from a BAM file.  If an index exists, this
 -- produces an infinite stream taken from random locations in the file.
+
 subsampleBam :: (MonadIO m, MonadMask m) => FilePath -> Enumerator' BamMeta [BamRaw] m b
-subsampleBam fp o = enumFileRandom defaultBufSize fp >=> run $
-                    joinI $ decompressBgzfBlocks' 1 $
-                    joinI $ decodeBam $ \hdr ->
-                    liftIO (E.try (readBamIndex fp)) >>= go hdr
+subsampleBam fp o = liftIO (E.try (readBamIndex fp)) >>= subsam
   where
-    -- no index, so just keep streaming
-    go hdr (Left e) = takeWhileE (isValidRefseq . br_rname) (o hdr)
-      where _ = e :: E.SomeException
+    -- no index, so just stream
+    subsam (Left e) = enumFile defaultBufSize fp >=> run $
+                      joinI $ decompressBgzfBlocks $
+                      joinI $ decodeBam $ \hdr ->
+                      takeWhileE (isValidRefseq . br_rname) (o hdr)
+                            `const` (e::E.SomeException)
 
     -- with index: chose random bins and read from them
-    go hdr (Right bix) = loop (o hdr)
+    subsam (Right bix) = withFileFd fp $ \fd -> do
+                         hdr <- enumFdRandom defaultBufSize fd >=> run $
+                                joinI $ decompressBgzfBlocks' 1 $
+                                joinI $ decodeBam return
+                         loop fd (o hdr)
       where
         !ckpts = U.fromList . V.foldr ((++) . M.elems) [] $ refseq_ckpoints bix
 
-        loop o' = do (f,o2) <- lift $ enumCheckIfDone o'
-                     if f then return o2
-                          else do i <- liftIO $ randomRIO (0, U.length ckpts -1)
-                                  seek . fromIntegral $ ckpts U.! i
-                                  takeStream 512 o2 >>= loop
+        loop fd o1 = enumCheckIfDone o1 >>= loop' fd
 
+        loop'  _ (True,  o2) = return o2
+        loop' fd (False, o2) = do
+                    i <- liftIO $ randomRIO (0, U.length ckpts -1)
+                    let p =  ckpts U.! i
+                    liftIO $ putStrLn $ "seek " ++ show (p `divMod` 0x1000)
+
+                    let enum = enumFdRandom defaultBufSize fd           $=
+                               decompressBgzfBlocks' 1                  $=
+                               (\it -> do seek (fromIntegral p)
+                                          convStream getBamRaw it)      $=
+                               takeStream 512
+                    enum o2 >>= loop fd
 

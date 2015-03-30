@@ -437,9 +437,9 @@ decodeBam inner = do meta <- liftBlock get_bam_header
 
     get_ref_array = do nref <- endianRead4 LSB
                        foldM (\acc _ -> do
-                           nm <- endianRead4 LSB >>= iGetString . fromIntegral
-                           ln <- endianRead4 LSB
-                           return $! acc |> BamSQ (S.init nm) (fromIntegral ln) []
+                                   nm <- endianRead4 LSB >>= iGetString . fromIntegral
+                                   ln <- endianRead4 LSB
+                                   return $! acc |> BamSQ (S.init nm) (fromIntegral ln) []
                              ) Z.empty $ [1..nref]
 
     -- Need to merge information from header into actual reference list.

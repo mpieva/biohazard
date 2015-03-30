@@ -61,6 +61,8 @@ module Bio.Iteratee (
     stream2vector,
     stream2vectorN,
 
+    Fd,
+    withFileFd,
     module X ) where
 
 import Bio.Base                             ( findAuxFile )
@@ -79,6 +81,7 @@ import Data.Monoid
 import Data.Typeable
 import System.IO                            ( stdin, stdout, stderr, hIsTerminalDevice )
 import System.Environment                   ( getArgs )
+import System.Posix                         ( Fd, openFd, closeFd, OpenMode(..), defaultFileFlags )
 
 import qualified Data.Attoparsec.ByteString     as A
 import qualified Data.ByteString                as S
@@ -393,7 +396,7 @@ stream2vectorN n = do
   where
     go mv i
         | i == n    = return n
-        | otherwise = 
+        | otherwise =
             I.tryHead >>= \x -> case x of
                 Nothing -> return i
                 Just  a -> lift (VM.write mv i a) >> go mv (i+1)
@@ -408,4 +411,9 @@ stream2vector = do
     go mv i = I.tryHead >>= \x -> case x of
                 Nothing -> return i
                 Just  a -> lift (VM.grow mv 1 >> VM.write mv i a) >> go mv (i+1)
+
+withFileFd :: (MonadIO m, MonadMask m) => FilePath -> (Fd -> m a) -> m a
+withFileFd filepath iter = bracket -- CIO.bracket
+    (liftIO $ openFd filepath ReadOnly Nothing defaultFileFlags)
+    (liftIO . closeFd) iter
 
