@@ -33,8 +33,9 @@
 --
 -- TODO
 --   - needs better packaging, better output
---   - needs support for multiple input files
---   - needs read group awareness
+--   - needs support for multiple input files(?)
+--   - needs read group awareness(?)
+--   - needs to deal with long (unmerged) reads (by ignoring them?)
 
 import Bio.Bam.Header
 import Bio.Bam.Index
@@ -43,12 +44,12 @@ import Bio.Bam.Rec
 import Bio.Base
 import Bio.Genocall.Adna
 import Bio.Iteratee
-import Control.Applicative
+import Control.Concurrent.Async
+import Control.Monad ( when )
 import Data.Bits
 import Data.Foldable
 import Data.Ix
-import Data.Monoid
-import Data.Traversable
+import Numeric ( showFFloat )
 import Numeric.Optimization.Algorithms.HagerZhang05
 import System.Environment
 
@@ -57,16 +58,18 @@ import qualified Data.Vector.Generic        as G
 import qualified Data.Vector.Unboxed        as U
 
 import AD
-import Prelude hiding ( mapM_, concatMap, sum )
+import Prelude hiding ( sequence_, mapM, mapM_, concatMap, sum, minimum, foldr1 )
 
 -- | Roughly @Maybe (Nucleotide, Nucleotide)@, encoded compactly
 newtype NP = NP { unNP :: Word8 } deriving (Eq, Ord, Ix)
 newtype Seq = Seq { unSeq :: U.Vector Word8 }
 
 instance Show NP where
-    show (NP w) | w > 15 = "NN"
-    show (NP w) = [ "ACGT" !! fromIntegral (w `shiftR` 2)
-                  , "ACGT" !! fromIntegral (w .&. 3) ]
+    show (NP w)
+        | w  ==  16 = "NN"
+        | w   >  16 = "XX"
+        | otherwise = [ "ACGT" !! fromIntegral (w `shiftR` 2)
+                      , "ACGT" !! fromIntegral (w .&. 3) ]
 
 
 sigmoid2, isigmoid2 :: (Num a, Fractional a, Floating a) => a -> a
@@ -75,34 +78,43 @@ isigmoid2 y = log $ (1 + sqrt y) / (1 - sqrt y)
 
 {-# INLINE lk_fun1 #-}
 lk_fun1 :: (Num a, Show a, Fractional a, Floating a, Memorable a) => Int -> [a] -> V.Vector Seq -> a
-lk_fun1 lmax (l_subst:l_sigma:l_delta:l_lam:parms) = case parms of
+lk_fun1 lmax parms = case length parms of
+    1 -> V.foldl' (\a b -> a - log (lk tab00 b)) 0 . guardV           -- undamaged case
+      where
+        !tab00 = fromListN (rangeSize my_bounds) [ l_epq p_subst 0 0 x
+                                                 | (_,_,x) <- range my_bounds ]
 
-    [     ] -> V.foldl' (\a b -> a - log (lk tabDS b)) 0 . guardV           -- double strand case
+    4 -> V.foldl' (\a b -> a - log (lk tabDS b)) 0 . guardV           -- double strand case
       where
         !tabDS = fromListN (rangeSize my_bounds) [ l_epq p_subst p_d p_e x
                                                  | (l,i,x) <- range my_bounds
                                                  , let p_d = mu $ lambda ^^ (1+i)
                                                  , let p_e = mu $ lambda ^^ (l-i) ]
 
-    [l_kap] -> V.foldl' (\a b -> a - log (lk tabSS b)) 0 . guardV           -- single strand case
+    5 -> V.foldl' (\a b -> a - log (lk tabSS b)) 0 . guardV           -- single strand case
       where
-        !kappa  = sigmoid2 l_kap
         !tabSS = fromListN (rangeSize my_bounds) [ l_epq p_subst p_d 0 x
                                                  | (l,i,x) <- range my_bounds
                                                  , let lam5 = lambda ^^ (1+i) ; lam3 = kappa ^^ (l-i)
                                                  , let p_d = mu $ lam3 + lam5 - lam3 * lam5 ]
   where
-    !p_subst = 0.33333 * sigmoid2 l_subst
-    !sigma  = sigmoid2 l_sigma
-    !delta  = sigmoid2 l_delta
-    !lambda = sigmoid2 l_lam
+    ~(l_subst : ~(l_sigma : ~(l_delta : ~(l_lam : ~(l_kap : _))))) = parms
+
+    p_subst = 0.33333 * sigmoid2 l_subst
+    sigma   = sigmoid2 l_sigma
+    delta   = sigmoid2 l_delta
+    lambda  = sigmoid2 l_lam
+    kappa   = sigmoid2 l_kap
 
     guardV = V.filter (\(Seq u) -> U.length u >= lmin && U.length u <= lmax)
 
     -- Likelihood given precomputed damage table.  We compute the giant
     -- table ahead of time, which maps length, index and base pair to a
     -- likelihood.
-    lk tab_at (Seq b) = U.ifoldl' (\a i np -> a * tab_at `bang` index my_bounds (U.length b, i, NP np)) 1 b
+    lk tab_at (Seq b) = U.ifoldl' (\a i np -> a * tab_at `bang` index' my_bounds (U.length b, i, NP np)) 1 b
+
+    index' bnds x | inRange bnds x = index bnds x
+                  | otherwise = error $ "Huh? " ++ show x ++ " \\nin " ++ show bnds
 
     my_bounds = ((lmin,0,NP 0),(lmax,lmax,NP 16))
     mu p = sigma * p + delta * (1-p)
@@ -127,7 +139,7 @@ combofn lmax brs parms = (x,g)
   where D x g = lk_fun1 lmax (paramVector $ U.toList parms) brs
 
 params :: Parameters
-params = defaultParameters { verbose = Verbose }
+params = defaultParameters { printFinal = False, verbose = Quiet }
 
 lmin :: Int
 lmin = 25
@@ -143,36 +155,53 @@ main = do
            joinI $ filterStream (\(Seq u) -> U.length (U.filter (<16) u) * 10 >= 9 * U.length u) $
            stream2vectorN 30000
 
-    let ve = U.fromList $ map isigmoid2 [ 0.01, 0.9, 0.02, 0.3, 0.3 ] -- XXX
     let lmax = V.maximum $ V.map (U.length . unSeq) brs
 
     putStrLn $ "no. input sequences " ++ show (V.length brs)
+    when (V.length brs < 30000) $ putStrLn "this appears to be fresh DNA"
 
-    if V.length brs < 30000 then putStrLn "this appears to be fresh DNA" else do
-        putStrLn . (++) "eval @true parms: " . show . lkfun lmax brs $ ve
+    let v0 = crude_estimate brs
+        opt v = optimize params 0.0001 v
+                         (VFunction $ lkfun lmax brs)
+                         (VGradient $ snd . combofn lmax brs)
+                         (Just . VCombined $ combofn lmax brs)
 
-        let v0 = crude_estimate brs
-        putStrLn $ "crude estimate: " ++ showV v0
+    results <- mapConcurrently opt [ v0, U.take 4 v0, U.take 1 v0 ]
 
-        (xs, r, st) <- optimize params 0.00001 v0
-                                (VFunction $ lkfun lmax brs)
-                                (VGradient $ snd . combofn lmax brs)
-                                (Just . VCombined $ combofn lmax brs)
+    sequence_ [ print st | (_,_,st) <- results ]
+    putStrLn $ "crude estimate: " ++ showV v0
+    sequence_ [ putStrLn $ "final estimate: " ++ showV xs | (xs,_,_) <- results ]
 
-        print r
-        print st
-        putStrLn $ "crude estimate: " ++ showV v0
-        putStrLn $ "final estimate: " ++ showV xs
+    putStrLn . (++) "eval @crud parms (SS): " . show . lkfun lmax brs $ v0
+    putStrLn . (++) "eval @crud parms (DS): " . show . lkfun lmax brs $ U.init v0
+    putStrLn . (++) "eval @crud parms (00): " . show . lkfun lmax brs $ U.take 1 v0
 
-        putStrLn . (++) "eval @true parms: " . show . lkfun lmax brs $ ve
-        putStrLn . (++) "eval @crud parms: " . show . lkfun lmax brs $ v0
-        putStrLn . (++) "eval @estd parms: " . show . lkfun lmax brs . U.fromList . G.toList $ xs
+    let mlk = minimum [ finalValue st | (_,_,st) <- results ]
+        tot = sum [ exp $ mlk - finalValue st | (_,_,st) <- results ]
+        p l = 100 * exp (mlk - l) / tot
+        showL l = showFFloat (Just 2) l " (" ++ showFFloat (Just 2) (p l) "%)"
+
+    sequence_ [ putStrLn . (++) "eval @estd parms (" . (++) key . (++) "): " . showL $ finalValue st
+              | (key, (_,_,st)) <- zip ["SS","DS","00"] results ]
+
+    let [ (p_ss, [ _, ssd_sigma_, ssd_delta_, ssd_lambda, ssd_kappa ]),
+          (p_ds, [ _, dsd_sigma_, dsd_delta_, dsd_lambda ]),
+          (_   , [ _ ]) ] = [ (p (finalValue st), map sigmoid2 $ G.toList xs) | (xs,_,st) <- results ]
+        ssd_sigma = p_ss * ssd_sigma_
+        ssd_delta = p_ss * ssd_delta_
+        dsd_sigma = p_ds * dsd_sigma_
+        dsd_delta = p_ds * dsd_delta_
+
+    print DP{..}
 
 
-showV v = (++) label . show . map sigmoid2 . G.toList $ v
+showV :: (G.Vector v b, RealFloat b) => v b -> [Char]
+showV v = (++) label . (++) " [" . ($ "]") . foldr1 (\a b -> a . (:) ',' . b)
+        . map (showFFloat (Just 4) . sigmoid2) . G.toList $ v
   where
     label | G.length v == 5  =  "(SS) "
           | G.length v == 4  =  "(DS) "
+          | G.length v == 1  =  "(00) "
 
 -- We'll require the MD field to be present.  Then we cook each read
 -- into a list of paired bases.  Deleted bases are dropped, inserted
@@ -190,7 +219,7 @@ pack_record br = if br_isReversed br then Seq (revcom u1) else Seq u1
     cigar = map (br_cigar_at br) [0 .. br_n_cigar_op br-1]
     sequ  = map (br_seq_at   br) [0 .. br_l_seq      br-1]
 
-    revcom = U.reverse . U.map (xor 15)
+    revcom = U.reverse . U.map (\x -> if x > 15 then x else xor x 15)
 
     u1 = U.fromList . map unNP $ go cigar sequ (br_get_md br)
     go :: [(CigOp,Int)] -> [Nucleotides] -> [MdOp] -> [NP]
@@ -199,10 +228,11 @@ pack_record br = if br_isReversed br then Seq (revcom u1) else Seq u1
     go cs ns (MdNum  0:mds) = go cs ns mds
     go cs ns (MdDel []:mds) = go cs ns mds
     go  _ []              _ = []
+    go []  _              _ = []
 
     go ((Mat,nm):cs) (n:ns) (MdNum mm:mds) = mk_pair n n  : go ((Mat,nm-1):cs) ns (MdNum (mm-1):mds)
     go ((Mat,nm):cs) (n:ns) (MdRep n':mds) = mk_pair n n' : go ((Mat,nm-1):cs) ns               mds
-    go ((Mat,nm):cs)    ns  (MdDel ds:mds) =                go ((Mat, nm ):cs) ns               mds
+    go ((Mat,nm):cs)    ns  (MdDel _ :mds) =                go ((Mat, nm ):cs) ns               mds
 
     go ((Ins,nm):cs) ns mds = replicate nm esc ++ go cs (drop nm ns) mds
     go ((SMa,nm):cs) ns mds = replicate nm esc ++ go cs (drop nm ns) mds
@@ -222,10 +252,10 @@ mk_pair (Ns a) = case a of 1 -> mk_pair' 0
                            8 -> mk_pair' 3
                            _ -> const esc
   where
-    mk_pair' a (Ns b) = case b of 1 -> NP $ a .|. 0
-                                  2 -> NP $ a .|. 4
-                                  4 -> NP $ a .|. 8
-                                  8 -> NP $ a .|. 12
+    mk_pair' u (Ns b) = case b of 1 -> NP $ u .|. 0
+                                  2 -> NP $ u .|. 4
+                                  4 -> NP $ u .|. 8
+                                  8 -> NP $ u .|. 12
                                   _ -> esc
 
 
@@ -265,8 +295,7 @@ a /%/ b = fromIntegral a / fromIntegral b
 
 
 crude_estimate :: V.Vector Seq -> U.Vector Double
-crude_estimate seqs0 = U.fromList $
-    l_subst : l_sigma : l_delta : l_lam : if rate_ct > rate_ga then [l_kap] else []
+crude_estimate seqs0 = U.fromList [ l_subst, l_sigma, l_delta, l_lam, l_kap ]
   where
     seqs = V.filter ((>= 10) . U.length) $ V.map unSeq seqs0
 
@@ -274,11 +303,10 @@ crude_estimate seqs0 = U.fromList $
     total_substs = V.sum (V.map (U.length . U.filter isOrdinarySubst) seqs) * 6 `div` 5
     l_subst = isigmoid2 $ max 0.001 $ total_substs /%/ (total_equals + total_substs)
 
-    c_to_t, g_to_a, c_to_c, g_to_g :: Word8
+    c_to_t, g_to_a, c_to_c :: Word8
     c_to_t = 7
     g_to_a = 8
     c_to_c = 5
-    g_to_g = 10
 
     isNotSubst x = x < 16 && x `shiftR` 2 == x .&. 3
     isOrdinarySubst x = x < 16 && x `shiftR` 2 /= x .&. 3 &&
@@ -304,17 +332,11 @@ crude_estimate seqs0 = U.fromList $
     ct_at_psi   = V.length $ V.filter (\v -> v U.! (U.length v -2) == c_to_t && dmg_alpha v) seqs
     cc_at_psi   = V.length $ V.filter (\v -> v U.! (U.length v -2) == c_to_c && dmg_alpha v) seqs
 
-    ga_at_omega = V.length $ V.filter (\v -> v U.! (U.length v -1) == g_to_a && dmg_alpha v) seqs
-    gg_at_omega = V.length $ V.filter (\v -> v U.! (U.length v -1) == g_to_g && dmg_alpha v) seqs
-
     dmg_alpha v = v U.! 0 == c_to_t || v U.! 1 == c_to_t || v U.! 2 == c_to_t
 
     l_kap = isigmoid2 $ min 0.9 $ max 0.1 $
                 (ct_at_psi * (cc_at_omega+ct_at_omega)) /%/
                 ((cc_at_psi+ct_at_psi) * ct_at_omega)
-
-    rate_ct = ct_at_omega /%/ (cc_at_omega + ct_at_omega)
-    rate_ga = ga_at_omega /%/ (gg_at_omega + ga_at_omega)
 
     total_inner_CCs = V.sum $ V.map (U.length . U.filter (== c_to_c) . takeInner) seqs
     total_inner_CTs = V.sum $ V.map (U.length . U.filter (== c_to_t) . takeInner) seqs

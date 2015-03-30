@@ -119,6 +119,18 @@ import Debug.Trace
 --  TSV1:  chr start end score
 --  TSV2:  chr pos score
 
+-- About damage parameters:  We effectively have three different models
+-- (SS, DS, no damage) and it may not be possible to choose one a
+-- priori.  To manage this cleanly, we should have one universal model,
+-- but the three we have are not generalizations of each other.
+--
+-- So we treat the choice of model as another parameter.  We feed
+-- parameters for all three in, together with probabilities for each.
+-- Said probabilities are derived from the likelihoods obtained when
+-- fitting the parameters individually.  Genotype calling then involves
+-- calling once under each model and summing them (effectively
+-- marginalizing on the choice of model).
+
 data Conf = Conf {
     conf_output      :: Maybe Output,
     conf_sample      :: S.ByteString,
@@ -198,14 +210,14 @@ main = do
     conf@Conf{..} <- foldl (>>=) (return defaultConf) opts
 
     let no_damage   = conf_report "using no damage model" >> return noDamage
-        ss_damage p = conf_report ("using single strand damage model with " ++ show p) >> return (ssDamage p)
-        ds_damage p = conf_report ("using double strand damage model with " ++ show p) >> return (dsDamage p)
+        ss_damage p = conf_report ("using single strand damage model with " ++ show p) >> return (univDamage p)
+        ds_damage p = conf_report ("using double strand damage model with " ++ show p) >> return (univDamage p)
 
     dmg_model <- case (conf_loverhang, conf_roverhang) of
             (Nothing, Nothing) -> no_damage
-            (Just pl, Nothing) -> ds_damage $ DSD conf_ss_deam conf_ds_deam pl
-            (Nothing, Just pr) -> ss_damage $ SSD conf_ss_deam conf_ds_deam pr pr
-            (Just pl, Just pr) -> ss_damage $ SSD conf_ss_deam conf_ds_deam pl pr
+            (Just pl, Nothing) -> ds_damage $ DP 0 0 0 0 conf_ss_deam conf_ds_deam pl
+            (Nothing, Just pr) -> ss_damage $ DP conf_ss_deam conf_ds_deam pr pr 0 0 0
+            (Just pl, Just pr) -> ss_damage $ DP conf_ss_deam conf_ds_deam pl pr 0 0 0
 
     maybe (output_fasta "-") id conf_output $ \oiter ->
         mergeInputs combineCoordinates files >=> run $ \hdr ->
