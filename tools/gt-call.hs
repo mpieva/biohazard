@@ -135,6 +135,7 @@ data Conf = Conf {
     conf_output      :: Maybe Output,
     conf_sample      :: S.ByteString,
     conf_ploidy      :: S.ByteString -> Int,
+    conf_damage      :: Maybe (DamageParameters Double),
     conf_loverhang   :: Maybe Double,
     conf_roverhang   :: Maybe Double,
     conf_ds_deam     :: Double,
@@ -145,7 +146,7 @@ data Conf = Conf {
     conf_prior_indel :: Prob }
 
 defaultConf :: Conf
-defaultConf = Conf Nothing "John_Doe" (const 2) Nothing Nothing
+defaultConf = Conf Nothing "John_Doe" (const 2) Nothing Nothing Nothing
                    0.02 0.45 Nothing (\_ -> return ())
                    (qualToProb $ Q 30) (qualToProb $ Q 45)
 
@@ -156,6 +157,7 @@ options = [
     Option "N" ["name","sample-name"]       (ReqArg set_sample "NAME")      "Set sample name to NAME",
     Option "1" ["haploid-chromosomes"]      (ReqArg set_haploid "PRF")      "Targets starting with PRF are haploid",
     Option "2" ["diploid-chromosomes"]      (ReqArg set_diploid "PRF")      "Targets starting with PRF are diploid",
+    Option "D" ["damage"]                   (ReqArg set_damage "PARMS")     "Set universal damage parameters",
     Option "l" ["overhang-param","left-overhang-param"]
                                             (ReqArg set_loverhang "PROB")   "Parameter for 5' overhang length is PROB",
     Option "r" ["right-overhang-param"]     (ReqArg set_roverhang "PROB")   "Parameter for 3' overhang length is PROB, assume single-strand prep",
@@ -169,6 +171,7 @@ options = [
                                             (ReqArg set_phet "PROB")        "Set prior for a heterozygous variant to PROB",
     -- Removed this, because it needs access to a reference.
     -- But maybe we can derive this from a suitable BAM file?
+    -- Or move it to another tool?
     -- Option "S" ["prior-snp","snp-rate","divergence"]
                                             -- (ReqArg set_pdiv "PROB")        "Set prior for an indel variant to PROB",
     Option "I" ["prior-indel","indel-rate"] (ReqArg set_pindel "PROB")      "Set prior for an indel variant to PROB",
@@ -202,6 +205,7 @@ options = [
     set_ds_deam   a c = (\r -> c { conf_ds_deam     =        r }) <$> readIO a
     set_phet      a c = (\r -> c { conf_prior_het   = toProb r }) <$> readIO a
     set_pindel    a c = (\r -> c { conf_prior_indel = toProb r }) <$> readIO a
+    set_damage    a c = (\u -> c { conf_damage      = Just   u }) <$> readIO a
 
 main :: IO ()
 main = do
@@ -212,12 +216,14 @@ main = do
     let no_damage   = conf_report "using no damage model" >> return noDamage
         ss_damage p = conf_report ("using single strand damage model with " ++ show p) >> return (univDamage p)
         ds_damage p = conf_report ("using double strand damage model with " ++ show p) >> return (univDamage p)
+        u_damage  p = conf_report ("using universal damage parameters " ++ show p) >> return (univDamage p)
 
-    dmg_model <- case (conf_loverhang, conf_roverhang) of
-            (Nothing, Nothing) -> no_damage
-            (Just pl, Nothing) -> ds_damage $ DP 0 0 0 0 conf_ss_deam conf_ds_deam pl
-            (Nothing, Just pr) -> ss_damage $ DP conf_ss_deam conf_ds_deam pr pr 0 0 0
-            (Just pl, Just pr) -> ss_damage $ DP conf_ss_deam conf_ds_deam pl pr 0 0 0
+    dmg_model <- case (conf_damage, conf_loverhang, conf_roverhang) of
+            (Just u,        _, _) -> u_damage u
+            (_, Nothing, Nothing) -> no_damage
+            (_, Just pl, Nothing) -> ds_damage $ DP 0 0 0 0 conf_ss_deam conf_ds_deam pl
+            (_, Nothing, Just pr) -> ss_damage $ DP conf_ss_deam conf_ds_deam pr pr 0 0 0
+            (_, Just pl, Just pr) -> ss_damage $ DP conf_ss_deam conf_ds_deam pl pr 0 0 0
 
     maybe (output_fasta "-") id conf_output $ \oiter ->
         mergeInputs combineCoordinates files >=> run $ \hdr ->

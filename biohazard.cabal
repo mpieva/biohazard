@@ -189,7 +189,7 @@ Executable count-coverage
 Executable dmg-est
   Main-is:             dmg-est.hs
   Hs-Source-Dirs:      tools
-  Ghc-options:         -Wall -auto-all -rtsopts -threaded
+  Ghc-options:         -Wall -threaded -with-rtsopts=-N3
   Other-Modules:       AD
   Build-depends:       async,
                        base,

@@ -62,7 +62,9 @@ import Prelude hiding ( sequence_, mapM, mapM_, concatMap, sum, minimum, foldr1 
 
 -- | Roughly @Maybe (Nucleotide, Nucleotide)@, encoded compactly
 newtype NP = NP { unNP :: Word8 } deriving (Eq, Ord, Ix)
-newtype Seq = Seq { unSeq :: U.Vector Word8 }
+data Seq = Merged { unSeq :: U.Vector Word8 }
+         | First  { unSeq :: U.Vector Word8 }
+         | Second { unSeq :: U.Vector Word8 }
 
 instance Show NP where
     show (NP w)
@@ -79,24 +81,36 @@ isigmoid2 y = log $ (1 + sqrt y) / (1 - sqrt y)
 {-# INLINE lk_fun1 #-}
 lk_fun1 :: (Num a, Show a, Fractional a, Floating a, Memorable a) => Int -> [a] -> V.Vector Seq -> a
 lk_fun1 lmax parms = case length parms of
-    1 -> V.foldl' (\a b -> a - log (lk tab00 b)) 0 . guardV           -- undamaged case
+    1 -> V.foldl' (\a b -> a - log (lk tab00 tab00 tab00 b)) 0 . guardV           -- undamaged case
       where
         !tab00 = fromListN (rangeSize my_bounds) [ l_epq p_subst 0 0 x
                                                  | (_,_,x) <- range my_bounds ]
 
-    4 -> V.foldl' (\a b -> a - log (lk tabDS b)) 0 . guardV           -- double strand case
+    4 -> V.foldl' (\a b -> a - log (lk tabDS tabDS1 tabDS1 b)) 0 . guardV           -- double strand case
       where
         !tabDS = fromListN (rangeSize my_bounds) [ l_epq p_subst p_d p_e x
                                                  | (l,i,x) <- range my_bounds
                                                  , let p_d = mu $ lambda ^^ (1+i)
                                                  , let p_e = mu $ lambda ^^ (l-i) ]
 
-    5 -> V.foldl' (\a b -> a - log (lk tabSS b)) 0 . guardV           -- single strand case
+        !tabDS1 = fromListN (rangeSize my_bounds) [ l_epq p_subst p_d 0 x
+                                                  | (_,i,x) <- range my_bounds
+                                                  , let p_d = mu $ lambda ^^ (1+i) ]
+
+    5 -> V.foldl' (\a b -> a - log (lk tabSS tabSS1 tabSS2 b)) 0 . guardV           -- single strand case
       where
         !tabSS = fromListN (rangeSize my_bounds) [ l_epq p_subst p_d 0 x
                                                  | (l,i,x) <- range my_bounds
                                                  , let lam5 = lambda ^^ (1+i) ; lam3 = kappa ^^ (l-i)
                                                  , let p_d = mu $ lam3 + lam5 - lam3 * lam5 ]
+
+        !tabSS1 = fromListN (rangeSize my_bounds) [ l_epq p_subst p_d 0 x
+                                                  | (_,i,x) <- range my_bounds
+                                                  , let p_d = mu $ lambda ^^ (1+i) ]
+
+        !tabSS2 = fromListN (rangeSize my_bounds) [ l_epq p_subst 0 p_d x
+                                                  | (_,i,x) <- range my_bounds
+                                                  , let p_d = mu $ lambda ^^ (1+i) ]
   where
     ~(l_subst : ~(l_sigma : ~(l_delta : ~(l_lam : ~(l_kap : _))))) = parms
 
@@ -106,12 +120,14 @@ lk_fun1 lmax parms = case length parms of
     lambda  = sigmoid2 l_lam
     kappa   = sigmoid2 l_kap
 
-    guardV = V.filter (\(Seq u) -> U.length u >= lmin && U.length u <= lmax)
+    guardV = V.filter (\u -> U.length (unSeq u) >= lmin && U.length (unSeq u) <= lmax)
 
     -- Likelihood given precomputed damage table.  We compute the giant
     -- table ahead of time, which maps length, index and base pair to a
     -- likelihood.
-    lk tab_at (Seq b) = U.ifoldl' (\a i np -> a * tab_at `bang` index' my_bounds (U.length b, i, NP np)) 1 b
+    lk tab_m     _     _ (Merged b) = U.ifoldl' (\a i np -> a * tab_m `bang` index' my_bounds (U.length b, i, NP np)) 1 b
+    lk     _ tab_f     _ (First  b) = U.ifoldl' (\a i np -> a * tab_f `bang` index' my_bounds (U.length b, i, NP np)) 1 b
+    lk     _     _ tab_s (Second b) = U.ifoldl' (\a i np -> a * tab_s `bang` index' my_bounds (U.length b, i, NP np)) 1 b
 
     index' bnds x | inRange bnds x = index bnds x
                   | otherwise = error $ "Huh? " ++ show x ++ " \\nin " ++ show bnds
@@ -139,7 +155,7 @@ combofn lmax brs parms = (x,g)
   where D x g = lk_fun1 lmax (paramVector $ U.toList parms) brs
 
 params :: Parameters
-params = defaultParameters { printFinal = False, verbose = Quiet }
+params = defaultParameters { printFinal = False, verbose = Quiet, maxItersFac = 20 }
 
 lmin :: Int
 lmin = 25
@@ -150,17 +166,12 @@ main = do
     brs <- subsampleBam fp >=> run $ \_ ->
            joinI $ filterStream (\b -> not (br_isUnmapped b) && br_l_seq b >= lmin) $
            joinI $ takeStream 100000 $
-           joinI $ filterStream br_isMergeTrimmed $
            joinI $ mapStream pack_record $
-           joinI $ filterStream (\(Seq u) -> U.length (U.filter (<16) u) * 10 >= 9 * U.length u) $
+           joinI $ filterStream (\u -> U.length (U.filter (<16) (unSeq u)) * 10 >= 9 * U.length (unSeq u)) $
            stream2vectorN 30000
 
     let lmax = V.maximum $ V.map (U.length . unSeq) brs
-
-    putStrLn $ "no. input sequences " ++ show (V.length brs)
-    when (V.length brs < 30000) $ putStrLn "this appears to be fresh DNA"
-
-    let v0 = crude_estimate brs
+        v0 = crude_estimate brs
         opt v = optimize params 0.0001 v
                          (VFunction $ lkfun lmax brs)
                          (VGradient $ snd . combofn lmax brs)
@@ -168,25 +179,15 @@ main = do
 
     results <- mapConcurrently opt [ v0, U.take 4 v0, U.take 1 v0 ]
 
-    sequence_ [ print st | (_,_,st) <- results ]
-    putStrLn $ "crude estimate: " ++ showV v0
-    sequence_ [ putStrLn $ "final estimate: " ++ showV xs | (xs,_,_) <- results ]
-
-    putStrLn . (++) "eval @crud parms (SS): " . show . lkfun lmax brs $ v0
-    putStrLn . (++) "eval @crud parms (DS): " . show . lkfun lmax brs $ U.init v0
-    putStrLn . (++) "eval @crud parms (00): " . show . lkfun lmax brs $ U.take 1 v0
-
     let mlk = minimum [ finalValue st | (_,_,st) <- results ]
         tot = sum [ exp $ mlk - finalValue st | (_,_,st) <- results ]
-        p l = 100 * exp (mlk - l) / tot
-        showL l = showFFloat (Just 2) l " (" ++ showFFloat (Just 2) (p l) "%)"
+        p l = exp (mlk - l) / tot
+        showL l = showFFloat (Just 2) l " (" ++ showFFloat (Just 2) (100 * p l) "%)"
 
-    sequence_ [ putStrLn . (++) "eval @estd parms (" . (++) key . (++) "): " . showL $ finalValue st
-              | (key, (_,_,st)) <- zip ["SS","DS","00"] results ]
-
-    let [ (p_ss, [ _, ssd_sigma_, ssd_delta_, ssd_lambda, ssd_kappa ]),
+        [ (p_ss, [ _, ssd_sigma_, ssd_delta_, ssd_lambda, ssd_kappa ]),
           (p_ds, [ _, dsd_sigma_, dsd_delta_, dsd_lambda ]),
           (_   , [ _ ]) ] = [ (p (finalValue st), map sigmoid2 $ G.toList xs) | (xs,_,st) <- results ]
+
         ssd_sigma = p_ss * ssd_sigma_
         ssd_delta = p_ss * ssd_delta_
         dsd_sigma = p_ds * dsd_sigma_
@@ -214,10 +215,14 @@ showV v = (++) label . (++) " [" . ($ "]") . foldr1 (\a b -> a . (:) ',' . b)
 -- "Bio.Bam.Rmdup".
 
 pack_record :: BamRaw -> Seq
-pack_record br = if br_isReversed br then Seq (revcom u1) else Seq u1
+pack_record br = if br_isReversed br then k (revcom u1) else k u1
   where
     cigar = map (br_cigar_at br) [0 .. br_n_cigar_op br-1]
     sequ  = map (br_seq_at   br) [0 .. br_l_seq      br-1]
+
+    k | br_isMergeTrimmed br = Merged
+      | br_isSecondMate   br = Second
+      | otherwise            = First
 
     revcom = U.reverse . U.map (\x -> if x > 15 then x else xor x 15)
 

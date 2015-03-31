@@ -373,15 +373,11 @@ subsampleBam fp o = liftIO (E.try (readBamIndex fp)) >>= subsam
         loop fd o1 = enumCheckIfDone o1 >>= loop' fd
 
         loop'  _ (True,  o2) = return o2
-        loop' fd (False, o2) = do
-                    i <- liftIO $ randomRIO (0, U.length ckpts -1)
-                    let p =  ckpts U.! i
-                    liftIO $ putStrLn $ "seek " ++ show (p `divMod` 0x1000)
+        loop' fd (False, o2) = do i <- liftIO $ randomRIO (0, U.length ckpts -1)
+                                  enum fd i o2 >>= loop fd
 
-                    let enum = enumFdRandom defaultBufSize fd           $=
-                               decompressBgzfBlocks' 1                  $=
-                               (\it -> do seek (fromIntegral p)
-                                          convStream getBamRaw it)      $=
-                               takeStream 512
-                    enum o2 >>= loop fd
-
+        enum fd i = enumFdRandom defaultBufSize fd               $=
+                    decompressBgzfBlocks' 1                      $=
+                    (\it -> do seek . fromIntegral $ ckpts U.! i
+                               convStream getBamRaw it)          $=
+                    takeStream 512
