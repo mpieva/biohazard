@@ -45,11 +45,9 @@ import Bio.Base
 import Bio.Genocall.Adna
 import Bio.Iteratee
 import Control.Concurrent.Async
-import Control.Monad ( when )
 import Data.Bits
 import Data.Foldable
 import Data.Ix
-import Numeric ( showFFloat )
 import Numeric.Optimization.Algorithms.HagerZhang05
 import System.Environment
 
@@ -111,6 +109,8 @@ lk_fun1 lmax parms = case length parms of
         !tabSS2 = fromListN (rangeSize my_bounds) [ l_epq p_subst 0 p_d x
                                                   | (_,i,x) <- range my_bounds
                                                   , let p_d = mu $ lambda ^^ (1+i) ]
+
+    _ -> error "Not supposed to happen:  unexpected number of model parameters."
   where
     ~(l_subst : ~(l_sigma : ~(l_delta : ~(l_lam : ~(l_kap : _))))) = parms
 
@@ -182,7 +182,6 @@ main = do
     let mlk = minimum [ finalValue st | (_,_,st) <- results ]
         tot = sum [ exp $ mlk - finalValue st | (_,_,st) <- results ]
         p l = exp (mlk - l) / tot
-        showL l = showFFloat (Just 2) l " (" ++ showFFloat (Just 2) (100 * p l) "%)"
 
         [ (p_ss, [ _, ssd_sigma_, ssd_delta_, ssd_lambda, ssd_kappa ]),
           (p_ds, [ _, dsd_sigma_, dsd_delta_, dsd_lambda ]),
@@ -194,15 +193,6 @@ main = do
         dsd_delta = p_ds * dsd_delta_
 
     print DP{..}
-
-
-showV :: (G.Vector v b, RealFloat b) => v b -> [Char]
-showV v = (++) label . (++) " [" . ($ "]") . foldr1 (\a b -> a . (:) ',' . b)
-        . map (showFFloat (Just 4) . sigmoid2) . G.toList $ v
-  where
-    label | G.length v == 5  =  "(SS) "
-          | G.length v == 4  =  "(DS) "
-          | G.length v == 1  =  "(00) "
 
 -- We'll require the MD field to be present.  Then we cook each read
 -- into a list of paired bases.  Deleted bases are dropped, inserted

@@ -260,9 +260,9 @@ type IndelPile = [( Qual, (Int, [DamagedBase]) )]   -- a list of indel variants
 
 data Pile' a b = Pile { p_refseq     :: !Refseq
                       , p_pos        :: !Int
-                      , p_snp_stat   :: CallStats
+                      , p_snp_stat   :: !CallStats
                       , p_snp_pile   :: a
-                      , p_indel_stat :: CallStats
+                      , p_indel_stat :: !CallStats
                       , p_indel_pile :: b }
   deriving Show
 

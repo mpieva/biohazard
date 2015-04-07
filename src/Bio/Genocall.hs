@@ -55,8 +55,7 @@ simple_indel_call ploidy vars = (simple_call ploidy mkpls vars, vars')
 -- the face of damage.
 
 simple_snp_call :: Int -> BasePile -> GL
-simple_snp_call ploidy vars = let gls = simple_call ploidy mkpls vars
-                              in trace ("simple_snp_call " ++ show gls) gls
+simple_snp_call ploidy vars = simple_call ploidy mkpls vars
   where
     mkpls (q, DB b qq m) = [ toProb $ x + pe*(s-x) | n <- [0..3], let x = m ! N n :-> b ]
       where
@@ -136,8 +135,7 @@ mk_snp_gts ploidy = go ploidy alleles
 -- how many errors we made, approximately.
 
 maq_snp_call :: Int -> Double -> BasePile -> GL
-maq_snp_call ploidy theta bases = let gls = V.fromList $ map l $ mk_snp_gts ploidy
-                                  in trace ("maq_snp_call: " ++ show gls) gls
+maq_snp_call ploidy theta bases = V.fromList $ map l $ mk_snp_gts ploidy
   where
     -- Bases with effective qualities in order of decreasing(!) quality.
     -- A vector based algorithm may fit here.
@@ -220,5 +218,5 @@ showCall f vc = shows (vc_refseq vc) . (:) ':' .
 
 -- | Error model with dependency parameter.  Since both strands are
 -- supposed to still be independent, we feed in only one pile, and
--- later combine both calls.
+-- later combine both calls.  XXX What's that doing HERE?!
 

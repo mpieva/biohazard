@@ -224,6 +224,7 @@ Executable gt-call
                        biohazard,
                        bytestring,
                        -- containers,
+                       deepseq,
                        iteratee,
                        text,
                        vector

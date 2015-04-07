@@ -205,7 +205,7 @@ main = do
                      filterStream (\br -> (keep_unaligned || is_aligned br) &&
                                           (keep_improper || is_proper br) &&
                                           eff_len br >= min_len) ><>
-                     progress debug refs'
+                     progress "Rmdup at " debug refs'
 
        let (co, ou) = case output of Nothing -> (cheap_collapse', skipToEof)
                                      Just  o -> (collapse, joinI $ wrapSortWith circtable $
@@ -299,18 +299,6 @@ make_single br | br_isPaired br && br_isSecondMate br = Nothing
     pair_flags = flagPaired .|. flagProperlyPaired .|.
                  flagFirstMate .|. flagSecondMate .|.
                  flagMateUnmapped
-
-
-progress :: MonadIO m => (String -> IO ()) -> Refs -> Enumeratee [BamRaw] [BamRaw] m a
-progress put refs = eneeCheckIfDonePass (icont . go 0)
-  where
-    go !_ k (EOF         mx) = idone (liftI k) (EOF mx)
-    go !n k (Chunk    [   ]) = liftI $ go n k
-    go !n k (Chunk as@(a:_)) = do let !n' = n + length as
-                                      nm = unpackSeqid (sq_name (getRef refs (br_rname a))) ++ ":"
-                                  when (n `div` 65536 /= n' `div` 65536) $ liftIO $ put $
-                                        "\27[KRmdup at " ++ nm ++ showNum (br_pos a) ++ "\r"
-                                  eneeCheckIfDonePass (icont . go n') . k $ Chunk as
 
 
 mergeInputRanges :: (MonadIO m, MonadMask m)

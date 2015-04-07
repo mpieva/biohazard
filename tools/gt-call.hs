@@ -12,7 +12,7 @@ import Bio.Genocall.AvroFile
 import Bio.Iteratee
 import Bio.Util                                 ( float2mini )
 import Control.Applicative
-import Control.Arrow
+import Control.DeepSeq
 import Control.Monad
 import Data.Avro
 import Data.Function
@@ -21,14 +21,14 @@ import System.Environment
 import System.Exit
 import System.IO
 
-import qualified Data.ByteString                as B
+-- import qualified Data.ByteString                as B
 import qualified Data.ByteString.Char8          as S
 import qualified Data.Iteratee                  as I
-import qualified Data.Text                      as T
+-- import qualified Data.Text                      as T
 import qualified Data.Text.Encoding             as T
 import qualified Data.Vector.Unboxed            as V
 
-import Debug.Trace
+-- import Debug.Trace
 
 -- Ultimately, we might produce a VCF file looking somewhat like this:
 --
@@ -188,9 +188,9 @@ options = [
     set_fa_output fn = add_output $ output_fasta fn
     set_avro_out  fn = add_output $ output_avro  fn
 
-    add_output ofn c =
-        return $ c { conf_output = Just $ \k ->
-            ofn $ \oit1 -> maybe (k oit1) ($ \oit2 -> k (\c r -> () <$ I.zip (oit1 c r) (oit2 c r))) (conf_output c) }
+    add_output ofn cf =
+        return $ cf { conf_output = Just $ \k ->
+            ofn $ \oit1 -> maybe (k oit1) ($ \oit2 -> k (\c r -> () <$ I.zip (oit1 c r) (oit2 c r))) (conf_output cf) }
 
     set_sample   nm c = return $ c { conf_sample = S.pack nm }
 
@@ -229,6 +229,7 @@ main = do
         mergeInputs combineCoordinates files >=> run $ \hdr ->
             filterStream (not . br_isUnmapped) =$
             filterStream (isValidRefseq . br_rname) =$
+            progress "GT call at " conf_report (meta_refs hdr) =$
             by_groups ((==) `on` br_rname) (\br out -> do
                 let sname = sq_name $ getRef (meta_refs hdr) $ br_rname br
                     pl = conf_ploidy sname
@@ -249,9 +250,9 @@ output_fasta fn k = if fn == "-" then k (fa_out stdout)
             by_groups ((==) `on` p_refseq) (\cs out -> do
                     let sname = sq_name $ getRef refs $ p_refseq cs
                     out' <- lift $ enumPure1Chunk [S.concat [">", conf_sample, "--", sname]] out
-                    convStream (do calls <- headStream
-                                   let s1 = format_snp_call conf_prior_het calls
-                                   S.append s1 <$> format_indel_call conf_prior_indel calls)
+                    convStream (do callz <- headStream
+                                   let s1 = format_snp_call conf_prior_het callz
+                                   S.append s1 <$> format_indel_call conf_prior_indel callz)
                           =$ collect_lines out') =$
             mapStreamM_ (S.hPut hdl . (flip S.snoc '\n'))
 
@@ -262,18 +263,21 @@ output_fasta fn k = if fn == "-" then k (fa_out stdout)
 --
 -- XXX  For the time being, forward and reverse piles get concatenated.
 -- For the naive call, this doesn't matter.  For the MAQ call, it feels
--- more correct to treat the separately and multiply the results.
+-- more correct to treat them separately and multiply (add?) the results.
 
 calls :: Maybe Double -> Int -> Pile -> Calls
-calls _ _ pile | trace (show (p_refseq pile, p_pos pile)) False = undefined
+calls Nothing pl pile = pile { p_snp_pile = s, p_indel_pile = i }
+  where
+    !s = simple_snp_call pl $ uncurry (++) $ p_snp_pile pile
+    !i = force $ simple_indel_call pl $ p_indel_pile pile
 
-calls Nothing pl pile =
-    pile { p_snp_pile   = simple_snp_call pl $ uncurry (++) $ p_snp_pile pile
-         , p_indel_pile = simple_indel_call pl $ p_indel_pile pile }
+calls (Just theta) pl pile = pile { p_snp_pile = s, p_indel_pile = i }
+  where
+    !s = maq_snp_call pl theta $ uncurry (++) $ p_snp_pile pile -- XXX
+    !i = force $ simple_indel_call pl $ p_indel_pile pile
 
-calls (Just theta) pl pile =
-    pile { p_snp_pile   = maq_snp_call pl theta $ uncurry (++) $ p_snp_pile pile -- XXX
-         , p_indel_pile = simple_indel_call pl $ p_indel_pile pile }
+instance NFData IndelVariant where
+    rnf (IndelVariant d (V_Nuc i)) = rnf d `seq` rnf i `seq` ()
 
 
 -- | Formatting a SNP call.  If this was a haplopid call (four GL
@@ -358,13 +362,13 @@ output_avro fn k = if fn == "-" then k (av_out stdout)
 compileBlocks :: Monad m => Refs -> Enumeratee [Calls] [GenoCallBlock] m a
 compileBlocks refs = convStream $ do
         c1 <- headStream
-        tailBlock (p_refseq c1) (p_pos c1) (p_pos c1) (16*1024) [pack c1]
+        tailBlock (p_refseq c1) (p_pos c1) (p_pos c1) (16*1024 :: Int) [pack c1]
   where
     tailBlock !rs !p0 !po !n acc = do
         mc <- peekStream
         case mc of
             Just c1 | rs == p_refseq c1 && po+1 == p_pos c1 && n > 0 -> do
-                    headStream
+                    _ <- headStream
                     tailBlock rs p0 (po+1) (n-1) $ pack c1 : acc
 
             _ -> return [ GenoCallBlock

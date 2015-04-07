@@ -15,6 +15,7 @@ module Bio.Bam.Raw (
     getBamRaw,
     decodeAnyBam,
     decodeAnyBamFile,
+    progress,
 
     concatInputs,
     concatDefaultInputs,
@@ -92,6 +93,7 @@ import Bio.Bam.Header
 import Bio.Iteratee
 import Bio.Iteratee.ZLib hiding ( CompressionLevel )
 import Bio.Iteratee.Bgzf
+import Bio.Util ( showNum )
 
 import Control.Applicative
 import Control.Monad
@@ -614,4 +616,16 @@ appendStringExt [u,v] value = Mut $ \_ l fs -> return (l,f:fs,())
   where
     f = S.concat [ SC.singleton u, SC.singleton v, SC.singleton 'Z', value, S.singleton 0 ]
 appendStringExt _ _ = error "illegal key, must be two characters"
+
+-- | A simple progress indicator that prints sequence id and position.
+progress :: MonadIO m => String -> (String -> IO ()) -> Refs -> Enumeratee [BamRaw] [BamRaw] m a
+progress msg put refs = eneeCheckIfDonePass (icont . go 0)
+  where
+    go !_ k (EOF         mx) = idone (liftI k) (EOF mx)
+    go !n k (Chunk    [   ]) = liftI $ go n k
+    go !n k (Chunk as@(a:_)) = do let !n' = n + length as
+                                      nm = unpackSeqid (sq_name (getRef refs (br_rname a))) ++ ":"
+                                  when (n `div` 65536 /= n' `div` 65536) $ liftIO $ put $
+                                        "\27[K" ++ msg ++ nm ++ showNum (br_pos a) ++ "\r"
+                                  eneeCheckIfDonePass (icont . go n') . k $ Chunk as
 
