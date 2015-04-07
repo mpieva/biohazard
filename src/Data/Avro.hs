@@ -484,25 +484,3 @@ readAvroContainer out = do
                                               convStream (LL.singleton `liftM` iterGet fromBin) o
                                      16 <- heads sync_marker
                                      return o'
-
--- | Repeatedly apply an 'Iteratee' to a value until end of stream.
--- Returns the final value.
-iterLoop :: (Nullable s, Monad m) => (a -> Iteratee s m a) -> a -> Iteratee s m a
-iterLoop it a = do e <- isFinished
-                   if e then return a
-                        else it a >>= iterLoop it
-
-
-iterGet :: Monad m => Get a -> Iteratee B.ByteString m a
-iterGet = go . runGetIncremental
-  where
-    go (Fail  _ _ err) = throwErr (iterStrExc err)
-    go (Done rest _ a) = idone a (Chunk rest)
-    go (Partial   dec) = liftI $ \ck -> case ck of
-        Chunk s -> go (dec $ Just s)
-        EOF  mx -> case dec Nothing of
-            Fail  _ _ err -> throwErr (iterStrExc err)
-            Partial     _ -> throwErr (iterStrExc "<partial>")
-            Done rest _ a | B.null rest -> idone a (EOF mx)
-                          | otherwise   -> idone a (Chunk rest)
-

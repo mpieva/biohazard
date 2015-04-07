@@ -7,6 +7,8 @@ module Bio.Iteratee (
     groupStreamBy,
     groupStreamOn,
     iGetString,
+    iterGet,
+    iterLoop,
     iLookAhead,
     headStream,
     peekStream,
@@ -73,6 +75,7 @@ import Control.Monad
 import Control.Monad.Catch
 import Control.Monad.IO.Class
 import Control.Monad.Trans.Class
+import Data.Binary.Get
 import Data.Iteratee.Binary     as X
 import Data.Iteratee.Char       as X
 import Data.Iteratee.IO         as X hiding ( defaultBufSize )
@@ -200,6 +203,28 @@ iGetString n = liftI $ step [] 0
     step acc l (Chunk c) | l + S.length c >= n = let r = S.concat . reverse $ S.take (n-l) c : acc
                                                  in idone r (Chunk $ S.drop (n-l) c)
                          | otherwise           = liftI $ step (c:acc) (l + S.length c)
+
+-- | Repeatedly apply an 'Iteratee' to a value until end of stream.
+-- Returns the final value.
+iterLoop :: (Nullable s, Monad m) => (a -> Iteratee s m a) -> a -> Iteratee s m a
+iterLoop it a = do e <- I.isFinished
+                   if e then return a
+                        else it a >>= iterLoop it
+
+-- | Convert a 'Get' into an 'Iteratee'.  The 'Get' is applied once, the
+-- decoded data is returned, unneded input remains in the stream.
+iterGet :: Monad m => Get a -> Iteratee S.ByteString m a
+iterGet = go . runGetIncremental
+  where
+    go (Fail  _ _ err) = throwErr (iterStrExc err)
+    go (Done rest _ a) = idone a (Chunk rest)
+    go (Partial   dec) = liftI $ \ck -> case ck of
+        Chunk s -> go (dec $ Just s)
+        EOF  mx -> case dec Nothing of
+            Fail  _ _ err -> throwErr (iterStrExc err)
+            Partial     _ -> throwErr (iterStrExc "<partial>")
+            Done rest _ a | S.null rest -> idone a (EOF mx)
+                          | otherwise   -> idone a (Chunk rest)
 
 infixl 1 $==
 {-# INLINE ($==) #-}
