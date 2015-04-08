@@ -379,7 +379,7 @@ mapAtGroups m f = eneeCheckIfDonePass no_group
             Nothing  -> eneeCheckIfDonePass no_group . k $ Chunk [a]
             Just arg -> cont_group (br_rname a) arg [a] k Nothing
 
-    cont_group rn arg acc k (Just e) = idone (liftI k) $ EOF (Just e)
+    cont_group  _   _   _ k (Just e) = idone (liftI k) $ EOF (Just e)
     cont_group rn arg acc k Nothing = tryHead >>= maybe flush_eof check1
       where
         flush_eof  = idone (k $ Chunk $ f arg acc) (EOF Nothing)

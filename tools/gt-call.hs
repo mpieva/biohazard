@@ -276,10 +276,6 @@ calls (Just theta) pl pile = pile { p_snp_pile = s, p_indel_pile = i }
     !s = maq_snp_call pl theta $ uncurry (++) $ p_snp_pile pile -- XXX
     !i = force $ simple_indel_call pl $ p_indel_pile pile
 
-instance NFData IndelVariant where
-    rnf (IndelVariant d (V_Nuc i)) = rnf d `seq` rnf i `seq` ()
-
-
 -- | Formatting a SNP call.  If this was a haplopid call (four GL
 -- values), we pick the most likely base and pass it on.  If it was
 -- diploid, we pick the most likely dinucleotide and pass it on.

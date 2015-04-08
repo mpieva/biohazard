@@ -11,6 +11,7 @@ import Bio.Genocall.Adna
 import Bio.Iteratee
 
 import Control.Applicative
+import Control.DeepSeq ( NFData(..) )
 import Control.Monad hiding ( mapM_ )
 import Control.Monad.Fix ( fix )
 import Data.Foldable hiding ( sum, product )
@@ -214,7 +215,7 @@ data CallStats = CallStats { read_depth       :: !Int       -- number of contrib
                            , reads_mapq0      :: !Int       -- number of (non-)contributing reads with MAPQ==0
                            , sum_mapq         :: !Int       -- sum of map qualities of contributing reads
                            , sum_mapq_squared :: !Int }     -- sum of squared map qualities of contributing reads
-  deriving Show
+  deriving (Show, Eq)
 
 instance Monoid CallStats where
     mempty      = CallStats { read_depth       = 0
@@ -243,9 +244,15 @@ instance Monoid CallStats where
 type GL = V.Vector Prob
 
 newtype V_Nuc = V_Nuc (V.Vector Nucleotide) deriving (Eq, Ord, Show)
+
 data IndelVariant = IndelVariant { deleted_bases  :: !Int
                                  , inserted_bases :: !V_Nuc }
   deriving (Eq, Ord, Show)
+
+instance NFData IndelVariant where
+    rnf (IndelVariant d (V_Nuc i)) = rnf d `seq` rnf i `seq` ()
+
+
 
 -- Both types of piles carry along the map quality.  We'll only need it
 -- in the case of Indels.

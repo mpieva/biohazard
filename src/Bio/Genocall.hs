@@ -35,6 +35,8 @@ import qualified Data.Vec               as Vec
 -- priority, the approximations are declared good enough.
 
 simple_indel_call :: Int -> IndelPile -> (GL, [IndelVariant])
+simple_indel_call _ [ ] = (V.empty, [])
+simple_indel_call _ [_] = (V.empty, [])
 simple_indel_call ploidy vars = (simple_call ploidy mkpls vars, vars')
   where
     vars' = Set.toList $ Set.fromList

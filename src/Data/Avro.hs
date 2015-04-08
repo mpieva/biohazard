@@ -24,13 +24,13 @@ import Foreign.Storable ( Storable, sizeOf )
 import Language.Haskell.TH
 import System.Random
 
-import qualified Data.ByteString as B
-import qualified Data.ByteString.Lazy as BL
-import qualified Data.HashMap.Strict as H
-import qualified Data.ListLike as LL
-import qualified Data.Text as T
-import qualified Data.Vector as V
-import qualified Data.Vector.Unboxed as U
+import qualified Data.ByteString            as B
+import qualified Data.ByteString.Lazy       as BL
+import qualified Data.HashMap.Strict        as H
+import qualified Data.ListLike              as LL
+import qualified Data.Text                  as T
+import qualified Data.Vector                as V
+import qualified Data.Vector.Unboxed        as U
 
 -- ^ Support for Avro.
 -- Current status is that we can generate schemas for certain Haskell
@@ -156,7 +156,6 @@ instance Avro T.Text where
     fromBin    = decodeUtf8 <$> fromBin
     toAvron    = String
 
-
 -- Integer<->Float conversions, stolen from cereal.
 
 {-# INLINE wordToFloat #-}
@@ -199,10 +198,8 @@ decodeWordBase128 :: (Integral a, Bits a) => Get a
 decodeWordBase128 = go 0 0
   where
     go acc sc = do x <- getWord8
-                   let !acc' = acc .|. fromIntegral x `shiftL` sc
-                   if x .&. 0x80 == 0
-                        then return acc'
-                        else go acc' (sc+7)
+                   let !acc' = acc .|. (fromIntegral x .&. 0x7f) `shiftL` sc
+                   if x .&. 0x80 == 0 then return acc' else go acc' (sc+7)
 
 -- | Encodes an int of any size by combining the zig-zag coding with the
 -- base 128 encoding.
@@ -218,7 +215,7 @@ zigInt :: Int -> Builder
 zigInt = encodeIntBase128
 
 zagInt :: Get Int
-zagInt = decodeWordBase128
+zagInt = decodeIntBase128
 
 -- Complex Types
 
@@ -289,6 +286,7 @@ instance Avro a => Avro (H.HashMap T.Text a) where
       where
         get_blocks !acc = zagInt >>= \l -> if l == 0 then return acc
                                                      else get_block acc l >>= get_blocks
+
         get_block !acc l = if l == 0 then return acc
                                      else fromBin >>= \k -> fromBin >>= \v -> get_block (H.insert k v acc) (l-1)
 
@@ -463,24 +461,34 @@ writeAvroContainer ContainerOpts{..} out = do
                                                                 foldStream (\(!n,c) o -> (n+1, c <> toBin o)) (0::Int,mempty)
 
                                                 let code1 = toLazyByteString code
-                                                    block = toBin num <> toBin (BL.length code1) <>
+                                                    block = zigInt num <> toBin (BL.length code1) <>
                                                             fromLazyByteString code1 <> fromByteString sync_marker
                                                 lift (enumList (BL.toChunks $ toLazyByteString block) out')
 
         lift (enumList (BL.toChunks $ toLazyByteString hdr) out) >>= enc_blocks
 
+-- | Decodes an AVRO container file into a list.  Meta data is passed
+-- on.  Note that if this blows up, it's usually due to it being applied
+-- at the wrong type.  Be sure to correctly count the brackets...
+--
 -- XXX Possible codecs: null, zlib, snappy, lzma; all missing
 -- XXX Should check schema on reading.
 
-readAvroContainer :: (Monad m, ListLike s a, Avro a) => Enumeratee B.ByteString s m r
+type AvroMeta = H.HashMap T.Text B.ByteString
+
+readAvroContainer :: (Monad m, Avro a) => Enumeratee' AvroMeta B.ByteString [a] m r
 readAvroContainer out = do
         4 <- heads "Obj\1"  -- enough magic?
-        meta <- iterGet (fromBin :: Get (H.HashMap T.Text B.ByteString))
+        meta <- iterGet fromBin
         sync_marker <- iGetString 16
 
-        flip iterLoop out $ \o -> do num <- iterGet zagInt
-                                     sz <- iterGet fromBin
-                                     o' <- joinI $ takeStream sz $ -- codec goes here
-                                              convStream (LL.singleton `liftM` iterGet fromBin) o
-                                     16 <- heads sync_marker
-                                     return o'
+        flip iterLoop (out meta) $ \o -> do
+                num <- iterGet zagInt
+                sz <- iterGet zagInt
+                -- liftIO $ hPutStrLn stderr $ "got block: " ++ showNum num
+                       -- ++ " things in " ++ showNum sz ++ " bytes."
+                o' <- joinI $ takeStream sz  -- codec goes here
+                            $ convStream (LL.singleton `liftM` iterGet fromBin) o
+                16 <- heads sync_marker
+                -- liftIO $ hPutStrLn stderr "got good sync"
+                return o'
