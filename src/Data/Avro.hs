@@ -19,7 +19,7 @@ import Data.Maybe
 import Data.Monoid
 import Data.Scientific
 import Data.Text.Encoding
-import Data.Word ( Word32, Word64 )
+import Data.Word ( Word8, Word32, Word64 )
 import Foreign.Storable ( Storable, sizeOf )
 import Language.Haskell.TH
 import System.Random
@@ -121,6 +121,12 @@ instance Avro Bool where
     toAvron    = Bool
 
 instance Avro Int where
+    toSchema _ = return $ String "long"
+    toBin      = encodeIntBase128
+    fromBin    = decodeIntBase128
+    toAvron    = Number . fromIntegral
+
+instance Avro Word8 where
     toSchema _ = return $ String "long"
     toBin      = encodeIntBase128
     fromBin    = decodeIntBase128

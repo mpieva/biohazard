@@ -9,6 +9,7 @@ import Data.Avro hiding ((.=))
 import Data.Binary.Builder
 import Data.Binary.Get
 import Data.Monoid
+import Data.Word ( Word8 )
 
 import qualified Data.ByteString                as B
 import qualified Data.Text                      as T
@@ -24,17 +25,17 @@ import qualified Data.Vector.Unboxed            as U
 -- the current one is getting too large.
 
 data GenoCallBlock = GenoCallBlock
-    { reference_name :: T.Text
-    , start_position :: Int
+    { reference_name :: {-# UNPACK #-} !T.Text
+    , start_position :: {-# UNPACK #-} !Int
     , called_sites :: [ GenoCallSite ] }
   deriving (Show, Eq)
 
 data GenoCallSite = GenoCallSite
-    { snp_stats         :: CallStats
-    , snp_likelihoods   :: [ Int ] -- B.ByteString?
-    , indel_stats       :: CallStats
+    { snp_stats         :: {-# UNPACK #-} !CallStats
+    , snp_likelihoods   :: {-# UNPACK #-} !(U.Vector Word8) -- B.ByteString?
+    , indel_stats       :: {-# UNPACK #-} !CallStats
     , indel_variants    :: [ IndelVariant ]
-    , indel_likelihoods :: [ Int ] } -- B.ByteString?
+    , indel_likelihoods :: {-# UNPACK #-} !(U.Vector Word8) } -- B.ByteString?
   deriving (Show, Eq)
 
 deriveAvros [ ''GenoCallBlock, ''GenoCallSite, ''CallStats, ''IndelVariant ]

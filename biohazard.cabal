@@ -141,7 +141,6 @@ Executable gt-scan
                        biohazard,
                        bytestring,
                        -- containers,
-                       -- deepseq,
                        iteratee,
                        unordered-containers,
                        text,

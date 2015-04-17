@@ -383,6 +383,6 @@ compileBlocks refs = convStream $ do
 -- | Storing likelihoods:  we take the natural logarithm (GL values are
 -- already in a log scale) and convert to minifloat 0.4.4
 -- representation.  Range and precision should be plenty.
-compact_likelihoods :: V.Vector Prob -> [Int] -- B.ByteString
-compact_likelihoods = map fromIntegral {- B.pack -} . V.toList . V.map (float2mini . negate . unPr)
+compact_likelihoods :: V.Vector Prob -> V.Vector Word8
+compact_likelihoods = V.map (float2mini . negate . unPr)
 
