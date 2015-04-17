@@ -9,7 +9,6 @@ import Data.Avro hiding ((.=))
 import Data.Binary.Builder
 import Data.Binary.Get
 import Data.Monoid
-import Data.Word ( Word8 )
 
 import qualified Data.ByteString                as B
 import qualified Data.Text                      as T

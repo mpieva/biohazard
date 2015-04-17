@@ -2,8 +2,6 @@
 {-# OPTIONS_GHC -funbox-strict-fields #-}
 module Bio.Bam.Pileup where
 
--- import Text.Printf
-
 import Bio.Base
 import Bio.Bam.Header
 import Bio.Bam.Raw
@@ -11,7 +9,6 @@ import Bio.Genocall.Adna
 import Bio.Iteratee
 
 import Control.Applicative
-import Control.DeepSeq ( NFData(..) )
 import Control.Monad hiding ( mapM_ )
 import Control.Monad.Fix ( fix )
 import Data.Foldable hiding ( sum, product )
@@ -20,7 +17,7 @@ import Data.Ord
 import Data.Vec.Packed ( Mat44D, packMat )
 
 import qualified Data.ByteString        as B
-import qualified Data.Vector.Unboxed    as V
+import qualified Data.Vector.Unboxed    as U
 
 import Prelude hiding ( foldr, foldr1, concat, mapM_, all )
 
@@ -110,9 +107,9 @@ data PrimBase = Base { _pb_wait   :: !Int                       -- ^ number of b
 -- Unfortunately, none of this can be rolled into something more simple,
 -- because damage and sequencing error behave so differently.
 
-data DamagedBase = DB { db_call :: !Nucleotide
-                      , db_qual :: !Qual
-                      , db_dmg  :: !Mat44D }
+data DamagedBase = DB { db_call :: {-# UNPACK #-} !Nucleotide
+                      , db_qual :: {-# UNPACK #-} !Qual
+                      , db_dmg  :: {-# UNPACK #-} !Mat44D }
 
 instance Show DamagedBase where
     showsPrec _ (DB n q _) = shows n . (:) '@' . shows q
@@ -199,22 +196,25 @@ decompose br matrices
             (Del,cl) ->             nextIndel  ins (cl+del) (pos+cl) is  (ic+1) 0 mms
             (Pad, _) ->             nextIndel  ins     del   pos     is  (ic+1) 0 mms
             (HMa, _) ->             nextIndel  ins     del   pos     is  (ic+1) 0 mms
-            (Mat,cl) | io == cl  -> nextIndel  ins     del   pos     is  (ic+1) 0 mms
-                     | otherwise -> Indel del out $ nextBase del pos is   ic  io m ms  -- ends up generating a 'Base'
             (Nop,cl) ->             firstBase               (pos+cl) is  (ic+1)   mms  -- ends up generating a 'Seek'
+            (Mat,cl) | io == cl  -> nextIndel  ins     del   pos     is  (ic+1) 0 mms
+                     | otherwise -> indel del out $ nextBase del pos is   ic  io m ms  -- ends up generating a 'Base'
       where
+        indel d o k = rlist o `seq` Indel d o k
         out    = concat $ reverse ins
         isq cl = zipWith ($) [ get_seq i | i <- [is..is+cl-1] ] (take cl mms) : ins
+        rlist [] = ()
+        rlist (a:as) = a `seq` rlist as
 
 
 -- | Statistics about a genotype call.  Probably only useful for
 -- fitlering (so not very useful), but we keep them because it's easy to
 -- track them.
 
-data CallStats = CallStats { read_depth       :: !Int       -- number of contributing reads
-                           , reads_mapq0      :: !Int       -- number of (non-)contributing reads with MAPQ==0
-                           , sum_mapq         :: !Int       -- sum of map qualities of contributing reads
-                           , sum_mapq_squared :: !Int }     -- sum of squared map qualities of contributing reads
+data CallStats = CallStats { read_depth       :: {-# UNPACK #-} !Int       -- number of contributing reads
+                           , reads_mapq0      :: {-# UNPACK #-} !Int       -- number of (non-)contributing reads with MAPQ==0
+                           , sum_mapq         :: {-# UNPACK #-} !Int       -- sum of map qualities of contributing reads
+                           , sum_mapq_squared :: {-# UNPACK #-} !Int }     -- sum of squared map qualities of contributing reads
   deriving (Show, Eq)
 
 instance Monoid CallStats where
@@ -241,18 +241,13 @@ instance Monoid CallStats where
 -- ordering is: AA,AB,BB; for triallelic sites the ordering is:
 -- AA,AB,BB,AC,BC,CC, etc.\"
 
-type GL = V.Vector Prob
+type GL = U.Vector Prob
 
-newtype V_Nuc = V_Nuc (V.Vector Nucleotide) deriving (Eq, Ord, Show)
+newtype V_Nuc = V_Nuc (U.Vector Nucleotide) deriving (Eq, Ord, Show)
 
-data IndelVariant = IndelVariant { deleted_bases  :: !Int
-                                 , inserted_bases :: !V_Nuc }
+data IndelVariant = IndelVariant { deleted_bases  :: {-# UNPACK #-} !Int
+                                 , inserted_bases :: {-# UNPACK #-} !V_Nuc }
   deriving (Eq, Ord, Show)
-
-instance NFData IndelVariant where
-    rnf (IndelVariant d (V_Nuc i)) = rnf d `seq` rnf i `seq` ()
-
-
 
 -- Both types of piles carry along the map quality.  We'll only need it
 -- in the case of Indels.
@@ -265,11 +260,11 @@ type IndelPile = [( Qual, (Int, [DamagedBase]) )]   -- a list of indel variants
 -- 'BasePile's (one for each strand) and one 'IndelPile' (the one
 -- immediately following) at a time.
 
-data Pile' a b = Pile { p_refseq     :: !Refseq
-                      , p_pos        :: !Int
-                      , p_snp_stat   :: !CallStats
+data Pile' a b = Pile { p_refseq     :: {-# UNPACK #-} !Refseq
+                      , p_pos        :: {-# UNPACK #-} !Int
+                      , p_snp_stat   :: {-# UNPACK #-} !CallStats
                       , p_snp_pile   :: a
-                      , p_indel_stat :: !CallStats
+                      , p_indel_stat :: {-# UNPACK #-} !CallStats
                       , p_indel_pile :: b }
   deriving Show
 
@@ -336,9 +331,6 @@ instance Monad (PileM m) where
     return a = PileM $ \k -> k a
     m >>=  k = PileM $ \k' -> runPileM m (\a -> runPileM (k a) k')
 
-instance MonadIO m => MonadIO (PileM m) where
-    liftIO m = PileM $ \k r p a w d o i -> liftIO m >>= \x -> k x r p a w d o i
-
 get_refseq :: PileM m Refseq
 get_refseq = PileM $ \k r -> k r r
 
@@ -357,11 +349,20 @@ get_active = PileM $ \k r p a -> k a r p a
 upd_active :: ([PrimBase] -> [PrimBase]) -> PileM m ()
 upd_active f = PileM $ \k r p a -> k () r p $! f a
 
+add_active :: PrimBase -> PileM m ()
+add_active !pb = PileM $ \k r p a -> k () r p (pb:a)
+
+clr_active :: PileM m [PrimBase]
+clr_active = PileM $ \k r p a -> k a r p []
+
+ins_waiting :: Int -> PrimBase -> PileM m ()
+ins_waiting !q !v = PileM $ \ k r p a w -> k () r p a $! Node q v Empty Empty `union` w
+
 get_waiting :: PileM m Heap
 get_waiting = PileM $ \k r p a w -> k w r p a w
 
-upd_waiting :: (Heap -> Heap) -> PileM m ()
-upd_waiting f = PileM $ \k r p a w -> k () r p a $! f w
+set_waiting :: Heap -> PileM m ()
+set_waiting !w = PileM $ \k r p a _ -> k () r p a w
 
 get_damage_model :: PileM m (DamageModel Double)
 get_damage_model = PileM $ \k r p a w d -> k d r p a w d
@@ -420,51 +421,10 @@ pileup'' = do
     -- if so, decompose it and add it to the appropriate queue.
     rs <- get_refseq
     po <- get_pos
-    dm <- get_damage_model
 
-    -- liftIO $ printf "pileup' @%d:%d, %d active, %d waiting\n"
-        -- (unRefseq rs) po (-1::Int) (-1::Int)
-
-    -- feed in input as long as it starts at the current position
-    fix $ \loop -> peek >>= mapM_ (\br ->
-            when (br_rname br == rs && br_pos br == po) $ do
-                bump
-                case decompose br $ map packMat $ toList $ dm (br_isReversed br) (br_l_seq br) of
-                    Seek    p pb -> upd_waiting (insert p pb)
-                    Indel _ _ pb -> upd_active (pb:)
-                    EndOfRead    -> return ()
-                loop)
-
-
-    -- Check /waiting/ queue.  If there is anything waiting for the
-    -- current position, move it to /active/ queue.
-    fix $ \loop -> (viewMin <$> get_waiting) >>= mapM_ (\(mk,pb,w') ->
-            when (mk == po) $ do upd_active (pb:)
-                                 upd_waiting (const w')
-                                 loop)
-
-    -- Scan /active/ queue and make a 'BasePile'.  Also see what's next in the
-    -- 'PrimChunks':  'Indel's contribute to an 'IndelPile', 'Seek's and
-    -- deletions are pushed back to the /waiting/ queue, 'EndOfRead's are
-    -- removed, and everything else is added to the fresh /active/ queue.
-    ((fin_bs, fin_bp), (fin_is, fin_ip)) <- consume_active (mempty, mempty) $
-        \(!bpile, !ipile) (Base wt qs mq str pchunks) ->
-                let put (Q q) x (!st,!vs) = ( st { read_depth       = read_depth st + 1
-                                                 , reads_mapq0      = reads_mapq0 st + (if q == 0 then 1 else 0)
-                                                 , sum_mapq         = sum_mapq st + fromIntegral q
-                                                 , sum_mapq_squared = sum_mapq_squared st + fromIntegral q * fromIntegral q }
-                                            , (Q q, x) : vs )
-                    b' = Base (wt-1) qs mq str pchunks
-                    put' = put mq (if str then Left qs else Right qs)
-                in case pchunks of
-                    _ | wt > 0        -> do upd_active  (b'  :)         ; return (      bpile,                  ipile )
-                    Seek p' pb'       -> do upd_waiting (insert p' pb') ; return ( put' bpile,                  ipile )
-                    Indel del ins pb' -> do upd_active  (pb' :)         ; return ( put' bpile, put mq (del,ins) ipile )
-                    EndOfRead         -> do                               return ( put' bpile,                  ipile )
-
-    -- We just reversed /active/ inplicitly, which is no desaster, but may come
-    -- as a surprise downstream.  So reverse it back.
-    upd_active reverse
+    p'feed_input
+    p'check_waiting
+    ((fin_bs, fin_bp), (fin_is, fin_ip)) <- p'scan_active
 
     -- Output, but don't bother emitting empty piles.  Note that a plain
     -- basecall still yields an entry in the 'IndelPile'.  This is necessary,
@@ -472,15 +432,64 @@ pileup'' = do
     -- show the variant.  However, if no reads show any variant, and here is the
     -- first place where we notice that, the pile is useless.
     let uninteresting (_,(d,i)) = d == 0 && null i
-
-    unless (null fin_bp && all uninteresting fin_ip)
-        $ yield $ Pile rs po fin_bs (partitionPairEithers fin_bp) fin_is fin_ip
+    unless (null fin_bp && all uninteresting fin_ip) . yield $
+        Pile rs po fin_bs (partitionPairEithers fin_bp) fin_is fin_ip
 
     -- Bump coordinate and loop.  (Note that the bump to the next
     -- reference /sequence/ is done implicitly, because we will run out of
     -- reads and restart in 'pileup''.)
     upd_pos succ
     pileup'
+
+-- | Feeds input as long as it starts at the current position
+p'feed_input :: PileM m ()
+p'feed_input = do
+    rs <- get_refseq
+    po <- get_pos
+    dm <- get_damage_model
+
+    fix $ \loop -> peek >>= mapM_ (\br ->
+            when (br_rname br == rs && br_pos br == po) $ do
+                bump
+                case decompose br $ map packMat $ toList $ dm (br_isReversed br) (br_l_seq br) of
+                    Seek   !p !pb -> ins_waiting p pb
+                    Indel _ _ !pb -> add_active pb
+                    EndOfRead     -> return ()
+                loop)
+
+-- | Checks /waiting/ queue.  If there is anything waiting for the
+-- current position, moves it to /active/ queue.
+p'check_waiting :: PileM m ()
+p'check_waiting = do
+    po <- get_pos
+    fix $ \loop -> (viewMin <$> get_waiting) >>= mapM_ (\(!mk,!pb,w') ->
+            when (mk == po) $ do add_active pb
+                                 set_waiting w'
+                                 loop)
+
+-- | Scans /active/ queue and makes a 'BasePile'.  Also sees what's next
+-- in the 'PrimChunks':  'Indel's contribute to an 'IndelPile', 'Seek's
+-- and deletions are pushed back to the /waiting/ queue, 'EndOfRead's
+-- are removed, and everything else is added to the fresh /active/
+-- queue.
+p'scan_active :: PileM m (( CallStats, [( Qual, Either DamagedBase DamagedBase )] ),
+                          ( CallStats, [( Qual, (Int, [DamagedBase]) )] ))
+p'scan_active =
+    consume_active (mempty, mempty) $
+        \(!bpile, !ipile) (Base wt qs mq str pchunks) ->
+                let put (Q !q) !x (!st,!vs) = ( st { read_depth       = read_depth st + 1
+                                                   , reads_mapq0      = reads_mapq0 st + (if q == 0 then 1 else 0)
+                                                   , sum_mapq         = sum_mapq st + fromIntegral q
+                                                   , sum_mapq_squared = sum_mapq_squared st + fromIntegral q * fromIntegral q }
+                                              , (Q q, x) : vs )
+                    b' = Base (wt-1) qs mq str pchunks
+                    put' = put mq (if str then Left qs else Right qs)
+                in case pchunks of
+                    _ | wt > 0        -> do add_active      b' ; return (      bpile,                  ipile )
+                    Seek p' pb'       -> do ins_waiting p' pb' ; return ( put' bpile,                  ipile )
+                    Indel del ins pb' -> do add_active     pb' ; return ( put' bpile, put mq (del,ins) ipile )
+                    EndOfRead         -> do                      return ( put' bpile,                  ipile )
+
 
 partitionPairEithers :: [(a, Either b c)] -> ([(a,b)], [(a,c)])
 partitionPairEithers = foldr either' ([],[])
@@ -501,9 +510,6 @@ t1                    `union` Empty                 = t1
 t1@(Node k1 x1 l1 r1) `union` t2@(Node k2 x2 l2 r2)
    | k1 <= k2                                       = Node k1 x1 (t2 `union` r1) l1
    | otherwise                                      = Node k2 x2 (t1 `union` r2) l2
-
-insert :: Int -> PrimBase -> Heap -> Heap
-insert k v heap = Node k v Empty Empty `union` heap
 
 getMinKey :: Heap -> Maybe Int
 getMinKey Empty          = Nothing

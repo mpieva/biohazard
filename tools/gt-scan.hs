@@ -7,14 +7,17 @@
 import Bio.Bam.Pileup
 import Bio.Genocall.AvroFile
 import Bio.Iteratee
+import Bio.Util
 import Control.Monad ( zipWithM_, forM_ )
 import Data.Avro
 import Data.ByteString ( ByteString )
 import Data.HashMap.Strict ( toList )
-import Data.Iteratee
+-- import Data.Iteratee
+import Data.List ( foldl' )
 import Data.Text.Encoding ( decodeUtf8 )
 import Data.Text ( Text, unpack )
-import Data.Vector.Unboxed ( fromList )
+
+import qualified Data.Vector.Unboxed as U
 
 {-
 main = do -- let ctr :: ByteString
@@ -39,11 +42,13 @@ main = do -- let ctr :: ByteString
 -}
 
 main :: IO ()
-main = enumDefaultInputs >=> run $
+main = enumDefaultInputs >=> run >=> print $
        joinI $ readAvroContainer $ \meta -> do
-            liftIO . forM_ (toList meta) $ \(k,v) ->
-                putStrLn $ unpack k ++ ": " ++ unpack (decodeUtf8 v)
-            mapStreamM_ pblock
+            -- liftIO . forM_ (toList meta) $ \(k,v) ->
+                -- putStrLn $ unpack k ++ ": " ++ unpack (decodeUtf8 v)
+            foldStream plus (0::Double)
+  where
+    plus acc cb = foldl' (\a cs -> a + U.minimum (U.map mini2float $ snp_likelihoods cs)) acc (called_sites cb)
 
 pblock :: GenoCallBlock -> IO ()
 pblock b = zipWithM_ psite [start_position b ..] (called_sites b)
