@@ -7,6 +7,7 @@
 \newcommandx{\beware}[2][1=]{\todo[nolist,noline,inline,linecolor=red,backgroundcolor=red!25,bordercolor=red,#1]{#2}}
 \newcommandx{\idea}[2][1=]{\todo[nolist,noline,inline,linecolor=blue,backgroundcolor=blue!25,bordercolor=blue,#1]{#2}}
 \newcommandx{\oops}[2][1=]{\todo[nolist,noline,inline,linecolor=yellow,backgroundcolor=yellow!25,bordercolor=yellow,#1]{#2}}
+\newcommandx{\result}[2][1=]{\todo[nolist,noline,inline,linecolor=green,backgroundcolor=green!25,bordercolor=green,#1]{#2}}
 
 \title{Error Models For Genotype Calling}
 \author{Udo Stenzel}
@@ -173,16 +174,20 @@ provides no benefit.}
 into the genotype calling, which makes testing harder while providing no
 insight at all.}
 
+\beware{It is not actually possible to test the precision of a genotype
+caller by counting miscalls.  In any such tests, a genotype callers that
+doesn't try to call heterozygotes ``wins''.  Since that's undesirable,
+``simply counting errors'' is a terrible testing method.}
+
 \paragraph{Simulated Modern Data}
 
 Starting from a genome with known divergence and heterozygosity, we
 simulate plain reads with some sequencing error and suitable quality
-scores, then genotype call. 
+scores, then call genotypes.
 
-Called genotypes can be compared to the correct genome, but more
-importantly, parameters (divergence, heterozygosity) should be fitted
-and compared to their true values, particularly at low (roughly one or
-twofold) coverage.
+Parameters (divergence, heterozygosity) should be fitted and compared to
+their true values, particularly at low (roughly one or twofold)
+coverage.
 
 \beware{There is no point in simulating fancy sequencing error.
 Here, we assume the simple model is correct and show that maximum
@@ -208,10 +213,10 @@ based on a formula, so there is nothing to be learned from it.  We could
 use an empirical distribution of overhang lengths, if that could be
 obtained.}
 
-\idea{Since damage should not correlate with genotypes, estimating
-damage in a separate first pass might work and would be lot cheaper,
+\result{Since damage should not correlate with genotypes, estimating
+damage in a separate first pass works and is a lot cheaper,
 both conceptually and operationally, than co-estimating damage with
-heterozygosity. This is a good time to try it.}
+heterozygosity.}
 
 \subsection{Real Sequencing Data}
 
@@ -219,15 +224,23 @@ heterozygosity. This is a good time to try it.}
 
 We need actual sequencing data from a haploid region at sensible
 coverage.  The goal is to test the two available error models in a
-setting without confounding factors, especially heterozygosity.  
-This should be used to select the better error model and to fit the
-$\theta$ parameter if the \texttt{Maq} model is selected.
+setting without confounding factors, especially heterozygosity.  This
+should be used to select the better error model and to fit the $\theta$
+parameter by the maximum likelihood method, if the \texttt{Maq} model is
+selected.  It's a good idea to check whether $\theta$ varies between
+sample sor sequencing runs.
 
 The haploid region of choice might be the mitochondrion, which is
 haploid, but the data will be somewhat contaminated with nuMT sequences.
 Alternatively, a uniquely mappable region of the X or Y chromosomes of a
 male specimen would work, here the difficulty is to find that unique
 region.
+
+\idea{A couple of variations on the error model need to be investigated:
+handle in bases in ascending or descending order of quality; treat
+errors on different strands as dependent or independent; various values
+of $\theta$.  For $\theta = 1$, all of these should match the naïve
+error model.}
 
 \paragraph{Clean, high-coverage, modern data, two mixed haploids}
 
@@ -236,6 +249,10 @@ mixed in equal parts.  Here, we simulate a diploid sample, but we know
 from the individual calls which positions are heterozygous.  Again, we
 test which error model is better and assess the correctness of the
 calls.
+
+\beware{Counting miscalls suffers from the usual problem that it's
+entirely unclear how to count errors.  The plan is therefore to estimate
+heterozygosity.}
 
 \paragraph{Clean, high-coverage, diploid modern data}
 
@@ -251,10 +268,10 @@ above tests until we like the results.}
 \paragraph{Clean, low-coverage, modern data}
 
 Assuming we fixed the error model, assuming we can reliably estimate
-difficult parameters like heterozygosity, he we investigate the bahviour
-at low coverage.  The sample can be a high coverage sample suitably
-downsampled.  In this case, we have an expectation for the estimated
-parameters.
+difficult parameters like heterozygosity, here we investigate the
+behaviour at low coverage.  The sample can be a high coverage sample
+suitably downsampled.  In this case, we have a reasonable expectation
+for the estimated parameters.
 
 \paragraph{Ancient data, one mitochondrion}
 
@@ -271,7 +288,7 @@ might come with less trouble due to bacterial contamination.}
 To investigate interaction of heterozygosity, deamination, error model
 in a setting where true heterozygous genotypes are known.  Data should
 be clean and ideally from the same run (we don't want to deal with
-additional contamination and different error profiles).  The assumtion
+additional contamination and different error profiles).  The assumption
 is that we can correctly call either sample on its own.
 
 In principle, if we haven't encountered difficulties so far, this should

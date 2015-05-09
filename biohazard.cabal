@@ -66,6 +66,7 @@ Library
                        Bio.PriorityQueue,
                        Bio.TwoBit,
                        Bio.Util,
+                       Data.MiniFloat,
                        Data.Avro
                        
   Other-modules:       Paths_biohazard
@@ -141,6 +142,7 @@ Executable gt-scan
                        bytestring,
                        -- containers,
                        iteratee,
+                       primitive,
                        unordered-containers,
                        text,
                        vector

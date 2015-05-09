@@ -1,5 +1,5 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving, TypeFamilies, FlexibleInstances #-}
-{-# LANGUAGE MultiParamTypeClasses, BangPatterns, TemplateHaskell #-}
+{-# LANGUAGE MultiParamTypeClasses, BangPatterns, TemplateHaskell, RankNTypes #-}
 -- | Common data types used everywhere.  This module is a collection of
 -- very basic "bioinformatics" data types that are simple, but don't
 -- make sense to define over and over.
@@ -48,7 +48,8 @@ import Data.Bits
 import Data.ByteString.Internal     ( c2w, w2c )
 import Data.Char                    ( isAlpha, isSpace, ord, toUpper )
 import Data.Word                    ( Word8 )
-import Data.Vector.Unboxed.Deriving
+import Data.Vector.Unboxed          ( Unbox )
+import Data.Vector.Unboxed.Deriving ( derivingUnbox )
 import Foreign.Storable             ( Storable(..) )
 import Numeric                      ( showFFloat )
 import System.Directory             ( doesFileExist )
@@ -58,8 +59,8 @@ import System.Environment           ( getEnvironment )
 import qualified Data.ByteString.Char8 as S
 
 
--- | A nucleotide base.  We only represent A,C,G,T.
-
+-- | A nucleotide base.  We only represent A,C,G,T.  The contained
+-- 'Word8' ist guaranteed to be 0..3.
 newtype Nucleotide = N { unN :: Word8 } deriving ( Eq, Ord, Enum, Ix, Storable )
 
 derivingUnbox "Nucleotide" [t| Nucleotide -> Word8 |] [| unN |] [| N |]
@@ -78,7 +79,8 @@ everything = range (minBound, maxBound)
 -- To allow @Nucleotides@s to be unpacked and incorparated into
 -- containers, we choose to represent them the same way as the BAM file
 -- format:  as a 4 bit wide field.  Gaps are encoded as 0 where they
--- make sense, N is 15.
+-- make sense, N is 15.  The contained 'Word8' is guaranteed to be
+-- 0..15.
 
 newtype Nucleotides = Ns { unNs :: Word8 } deriving ( Eq, Ord, Enum, Ix, Storable )
 
@@ -96,6 +98,7 @@ nucToNucs (N x) = Ns $ 1 `shiftL` fromIntegral (x .&. 3)
 -- directly on the \"Phred\" value, as the name suggests.  The same goes
 -- for the 'Ord' instance:  greater quality means higher \"Phred\"
 -- score, meand lower error probability.
+
 newtype Qual = Q { unQ :: Word8 } deriving ( Eq, Ord, Storable, Bounded )
 
 derivingUnbox "Qual" [t| Qual -> Word8 |] [| unQ |] [| Q |]
@@ -112,18 +115,18 @@ fromQual (Q q) = 10 ** (- fromIntegral q / 10)
 fromQualRaised :: Double -> Qual -> Double
 fromQualRaised k (Q q) = 10 ** (- k * fromIntegral q / 10)
 
--- | A positive 'Double' value stored in log domain.  We store the
+-- | A positive floating point value stored in log domain.  We store the
 -- natural logarithm (makes computation easier), but allow conversions
 -- to the familiar \"Phred\" scale used for 'Qual' values.
-newtype Prob = Pr { unPr :: Double } deriving ( Eq, Ord, Storable )
+newtype Prob a = Pr { unPr :: a } deriving ( Eq, Ord, Storable )
 
-derivingUnbox "Prob" [t| Prob -> Double |] [| unPr |] [| Pr |]
+derivingUnbox "Prob" [t| Unbox a => Prob a -> a |] [| unPr |] [| Pr |]
 
-instance Show Prob where
+instance Show (Prob Double) where
     showsPrec _ (Pr p) = (:) 'q' . showFFloat (Just 1) q
       where q = - 10 * p / log 10
 
-instance Num Prob where
+instance (Floating a, Ord a) => Num (Prob a) where
     fromInteger a = Pr (log (fromInteger a))
     Pr x + Pr y = Pr $ if x >= y then x + log1p (  exp (y-x)) else y + log1p (exp (x-y))
     Pr x - Pr y = Pr $ if x >= y then x + log1p (- exp (y-x)) else error "no negative error probabilities"
@@ -132,26 +135,26 @@ instance Num Prob where
     abs       x = x
     signum    _ = Pr 0
 
-instance Fractional Prob where
+instance (Floating a, Fractional a, Ord a) => Fractional (Prob a) where
     fromRational a = Pr (log (fromRational a))
     Pr a  /  Pr b = Pr (a - b)
     recip  (Pr a) = Pr (negate a)
 
 infixr 8 `pow`
-pow :: Prob -> Double -> Prob
-pow (Pr a) e = Pr (a*e)
+pow :: (Num a, Integral b) => Prob a -> b -> Prob a
+pow (Pr a) e = Pr (a * fromIntegral e)
 
 
-toProb :: Double -> Prob
+toProb :: Floating a => a -> Prob a
 toProb p = Pr (log p)
 
-fromProb :: Prob -> Double
+fromProb :: Floating a => Prob a -> a
 fromProb (Pr q) = exp q
 
-qualToProb :: Qual -> Prob
+qualToProb :: Floating a => Qual -> Prob a
 qualToProb (Q q) = Pr (- log 10 * fromIntegral q / 10)
 
-probToQual :: Prob -> Qual
+probToQual :: (Floating a, RealFrac a) => Prob a -> Qual
 probToQual (Pr p) = Q (round (- 10 * p / log 10))
 
 nucA, nucC, nucG, nucT :: Nucleotide
@@ -171,9 +174,8 @@ nucsN = Ns 15
 
 -- | Sequence identifiers are ASCII strings
 -- Since we tend to store them for a while, we use strict byte strings.
--- If you get a lazy bytestring from somewhere, use 'shelve' to convert
--- it for storage.  Use @unpackSeqid@ and @packSeqid@ to avoid the
--- import of @Data.ByteString@.
+-- Use @unpackSeqid@ and @packSeqid@ to avoid the qualified import of
+-- @Data.ByteString@.
 type Seqid = S.ByteString
 
 -- | Unpacks a @Seqid@ into a @String@

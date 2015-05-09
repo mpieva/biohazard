@@ -241,7 +241,7 @@ instance Monoid CallStats where
 -- ordering is: AA,AB,BB; for triallelic sites the ordering is:
 -- AA,AB,BB,AC,BC,CC, etc.\"
 
-type GL = U.Vector Prob
+type GL = U.Vector (Prob Double)
 
 newtype V_Nuc = V_Nuc (U.Vector Nucleotide) deriving (Eq, Ord, Show)
 

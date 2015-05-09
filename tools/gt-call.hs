@@ -10,7 +10,6 @@ import Bio.Genocall
 import Bio.Genocall.Adna
 import Bio.Genocall.AvroFile
 import Bio.Iteratee
-import Bio.Util                                 ( float2mini )
 import Control.Applicative
 import Control.Monad
 import Data.Avro
@@ -47,8 +46,8 @@ data Conf = Conf {
     conf_ss_deam     :: Double,
     conf_theta       :: Maybe Double,
     conf_report      :: String -> IO (),
-    conf_prior_het   :: Prob,
-    conf_prior_indel :: Prob }
+    conf_prior_het   :: Prob Double,
+    conf_prior_indel :: Prob Double }
 
 defaultConf :: Conf
 defaultConf = Conf Nothing "John_Doe" (const 2) Nothing Nothing Nothing
@@ -185,7 +184,7 @@ calls (Just theta) pl pile = pile { p_snp_pile = s, p_indel_pile = i }
 -- values), we pick the most likely base and pass it on.  If it was
 -- diploid, we pick the most likely dinucleotide and pass it on.
 
-format_snp_call :: Prob -> Calls -> S.ByteString
+format_snp_call :: Prob Double -> Calls -> S.ByteString
 format_snp_call p cs
     | U.length gl ==  4 = S.take 1 $ S.drop (maxQualIndex gl) hapbases
     | U.length gl == 10 = S.take 1 $ S.drop (maxQualIndex $ U.zipWith (*) ps gl) dipbases
@@ -202,7 +201,7 @@ format_snp_call p cs
 -- unless the call was done assuming a haploid genome (which is
 -- guaranteeed /in this program/)!
 
-format_indel_call :: Monad m => Prob -> Calls -> Iteratee [Calls] m S.ByteString
+format_indel_call :: Monad m => Prob Double -> Calls -> Iteratee [Calls] m S.ByteString
 format_indel_call p cs
     | U.length gl0 == nv                  = go gl0
     | U.length gl0 == nv * (nv+1) `div` 2 = go homs
@@ -220,7 +219,7 @@ format_indel_call p cs
         IndelVariant del (V_Nuc ins) = ( IndelVariant 0 (V_Nuc U.empty) : vars ) !! maxQualIndex eff_gl
         skip ocs  = p_refseq ocs == p_refseq cs && p_pos ocs < p_pos cs + del
 
-maxQualIndex :: U.Vector Prob -> Int
+maxQualIndex :: U.Vector (Prob Double) -> Int
 maxQualIndex vec = case U.ifoldl' step (0, 0, 0) vec of
     (!i, !m, !m2) -> if m / m2 > 2 then i else 0
   where
@@ -285,10 +284,4 @@ compileBlocks refs = convStream $ do
 
         rlist [] = ()
         rlist (x:xs) = x `seq` rlist xs
-
--- | Storing likelihoods:  we take the natural logarithm (GL values are
--- already in a log scale) and convert to minifloat 0.4.4
--- representation.  Range and precision should be plenty.
-compact_likelihoods :: U.Vector Prob -> U.Vector Word8 -- B.ByteString
-compact_likelihoods = U.map $ float2mini . negate . unPr
 

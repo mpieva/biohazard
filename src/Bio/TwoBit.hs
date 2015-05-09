@@ -9,6 +9,7 @@ module Bio.TwoBit (
         getSubseqWith,
         getSubseqAscii,
         getSubseqMasked,
+        getLazySubseq,
         getSeqnames,
         hasSequence,
         getSeqLength,
@@ -112,12 +113,11 @@ data Mask = None | Soft | Hard | Both deriving (Eq, Ord, Enum, Show)
 getFwdSubseqWith :: B.ByteString -> Int                         -- raw data, dna offset
                  -> I.IntMap Int -> I.IntMap Int                -- N blocks, M blocks
                  -> (Word8 -> Mask -> a)                        -- mask function
-                 -> Int -> Int -> [a]                           -- start, len, result
-getFwdSubseqWith raw ofs n_blocks m_blocks nt start len =
+                 -> Int -> [a]                                  -- start, lazy result
+getFwdSubseqWith raw ofs n_blocks m_blocks nt start =
     do_mask (takeOverlap start n_blocks `mergeblocks` takeOverlap start m_blocks) start .
-    take len . drop (start .&. 3) .
+    drop (start .&. 3) .
     B.foldr toDNA [] .
-    B.take (len `shiftR` 2 + 2) .       -- needed?!
     B.drop (fromIntegral $ ofs + (start `shiftR` 2)) $ raw
   where
     toDNA b = (++) [ 3 .&. (b `shiftR` x) | x <- [6,4,2,0] ]
@@ -155,11 +155,23 @@ getSubseqWith maskf tbf (Range { r_pos = Pos { p_seq = chr, p_start = start }, r
     let sq1 = maybe (error $ unpackSeqid chr ++ " doesn't exist") id $ M.lookup chr (tbf_seqs tbf)
     let go = getFwdSubseqWith (tbf_raw tbf) (tbs_dna_offset sq1) (tbs_n_blocks sq1) (tbs_m_blocks sq1)
     if start < 0
-        then reverse $ go (maskf . cmp_nt) (-start-len) len
-        else           go (maskf . fwd_nt)   start      len
+        then reverse $ take len $ go (maskf . cmp_nt) (-start-len)
+        else           take len $ go (maskf . fwd_nt)   start
   where
     fwd_nt = (!!) [nucT, nucC, nucA, nucG] . fromIntegral
     cmp_nt = (!!) [nucA, nucG, nucT, nucC] . fromIntegral
+
+-- | Works only in forward direction.
+getLazySubseq :: TwoBitFile -> Position -> [Nucleotide]
+getLazySubseq tbf (Pos { p_seq = chr, p_start = start }) = do
+    let sq1 = maybe (error $ unpackSeqid chr ++ " doesn't exist") id $ M.lookup chr (tbf_seqs tbf)
+    let go  = getFwdSubseqWith (tbf_raw tbf) (tbs_dna_offset sq1) (tbs_n_blocks sq1) (tbs_m_blocks sq1)
+    if start < 0
+        then error "sorry, can't go backwards"
+        -- then reverse $ take len $ go (maskf . cmp_nt) (-start-len)
+        else go fwd_nt start
+  where
+    fwd_nt n _ = [nucT, nucC, nucA, nucG] !! fromIntegral n
 
 
 -- | Extract a subsequence without masking.

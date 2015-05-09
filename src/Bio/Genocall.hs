@@ -77,13 +77,13 @@ simple_snp_call ploidy vars = simple_call ploidy mkpls vars
 -- NOTE, this may warrant specialization to diploidy and four alleles
 -- (common SNPs) and diploidy and two alleles (common indels).
 
-simple_call :: Int -> (a -> [Prob]) -> [a] -> GL
+simple_call :: Int -> (a -> [Prob Double]) -> [a] -> GL
 simple_call ploidy pls = foldl1' (V.zipWith (*)) . map step
   where
     foldl1' _ [    ] = V.singleton 1
     foldl1' f (a:as) = foldl' f a as
 
-    !mag = toProb (fromIntegral ploidy) `pow` (-1)
+    !mag = recip $ toProb (fromIntegral ploidy)
 
     -- XXX This could probably be simplified given the mk_pls function
     -- below.
