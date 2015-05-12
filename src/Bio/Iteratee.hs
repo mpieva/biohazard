@@ -66,7 +66,11 @@ module Bio.Iteratee (
 
     Fd,
     withFileFd,
-    module X ) where
+    module Data.Iteratee.Binary,
+    module Data.Iteratee.Char,
+    module Data.Iteratee.IO,
+    module Data.Iteratee.Iteratee
+        ) where
 
 import Bio.Base                             ( findAuxFile )
 import Bio.Util                             ( showNum )
@@ -76,10 +80,10 @@ import Control.Monad.Catch
 import Control.Monad.IO.Class
 import Control.Monad.Trans.Class
 import Data.Binary.Get
-import Data.Iteratee.Binary     as X
-import Data.Iteratee.Char       as X
-import Data.Iteratee.IO         as X hiding ( defaultBufSize )
-import Data.Iteratee.Iteratee   as X hiding ( identity )
+import Data.Iteratee.Binary
+import Data.Iteratee.Char
+import Data.Iteratee.IO              hiding ( defaultBufSize )
+import Data.Iteratee.Iteratee        hiding ( identity )
 import Data.ListLike                        ( ListLike )
 import Data.Monoid
 import Data.Typeable

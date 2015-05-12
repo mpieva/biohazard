@@ -97,7 +97,9 @@ lk_block tbf tbl p0 GenoCallBlock{..} = foldM lk1 p0 $ zip refseq called_sites
         return $ pp * lx
 
 -- | Actual log-likelihood.  Gets a table and a divergence value.
-llk :: (Ord a, Floating a) => LkTable -> a -> Prob a
+-- Returns likelihoods and first two derivatives with respect to the
+-- divergence value.
+llk :: (Ord a, Floating a) => LkTable -> a -> Prob a -- AD3
 llk tbl d = U.ifoldl' step 1 tbl
   where
     !d1 = toProb $ 1-d

@@ -1,11 +1,7 @@
 {-# LANGUAGE BangPatterns #-}
 module AD where
 
-import Control.Monad.ST
-
-import qualified Data.Vector as V
 import qualified Data.Vector.Unboxed as U
-import qualified Data.Vector.Unboxed.Mutable as M
 
 -- Simple forward-mode AD to get a scalar valued function and a
 -- gradient.
@@ -100,4 +96,77 @@ instance Floating AD where
 paramVector :: [Double] -> [AD]
 paramVector xs = [ D x (U.generate l (\j -> if i == j then 1 else 0)) | (i,x) <- zip [0..] xs ]
   where l = length xs
+
+
+{-
+-- | Number and first two derivatives.  Only one argument for the time
+-- being.
+data AD3 = AD3 !Double !Double !Double
+
+instance Num AD3 where
+    {-# INLINE (+) #-}
+    AD3 x u a + AD3 y v b = AD3 (x+y) (u+v) (a+b)
+
+    {-# INLINE (-) #-}
+    AD3 x u a - AD3 y v b = AD3 (x-y) (u-v) (a-b)
+
+    {-# INLINE (*) #-}
+    AD3 x u a * AD3 y v b = AD3 (x*y) (u*y + x*v) (a*v + u*b)
+
+    {-# INLINE negate #-}
+    negate (AD3 y v b) = AD3 (negate y) (negate v) (negate b)
+
+    {-# INLINE fromInteger #-}
+    fromInteger x = AD3 (fromInteger x) 0 0
+
+    {-# INLINE abs #-}
+    abs (AD3 x u a) | x < 0     = AD3 (negate x) (negate u) (negate a)
+                    | otherwise = AD3 x u a
+
+    {-# INLINE signum #-}
+    signum (AD3 x _ _)   = AD3 (signum x) 0 0
+
+instance Fractional AD3 where
+    {-# INLINE (/) #-}
+    AD3 x u a / AD3 y v b = AD3 (x/y) ((u*y-x*v)/(y*y)) ((a*v-u*b)/(v*v))
+
+    {-# INLINE recip #-}
+    recip (AD3 x u a) = AD3 (recip x) (-u/(x*x)) (-a/(u*u))
+
+    {-# INLINE fromRational #-}
+    fromRational x = AD3 (fromRational x) 0 0
+
+
+instance Floating AD where
+    {-# INLINE pi #-}
+    pi = AD3 pi 0 0
+
+    {-# INLINE exp #-}
+    exp (AD3 x u a) = AD3 (exp x) (exp x * u) (
+    exp (C x)   = C (exp x)
+    exp (D x u) = D (exp x) (U.map (* exp x) u)
+
+    {-# INLINE sqrt #-}
+    sqrt (C x)   = C (sqrt x)
+    sqrt (D x u) = D (sqrt x) (U.map (*w) u) where w = recip $ 2 * sqrt x
+
+    {-# INLINE log #-}
+    log (C x)   = C (log x)
+    log (D x u) = D (log x) (U.map (*w) u) where w = recip x
+-}
+
+    {- (**) = undefined -- :: a -> a -> a
+    logBase = undefined -- :: a -> a -> a
+    sin = undefined -- :: a -> a
+    tan = undefined -- :: a -> a
+    cos = undefined -- :: a -> a
+    asin = undefined -- :: a -> a
+    atan = undefined -- :: a -> a
+    acos = undefined -- :: a -> a
+    sinh = undefined -- :: a -> a
+    tanh = undefined -- :: a -> a
+    cosh = undefined -- :: a -> a
+    asinh = undefined -- :: a -> a
+    atanh = undefined -- :: a -> a
+    acosh = undefined -- :: a -> a -}
 
