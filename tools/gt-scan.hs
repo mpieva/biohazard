@@ -18,14 +18,17 @@ import Control.Monad.Primitive
 import Data.Avro
 import Data.ByteString ( ByteString )
 import Data.HashMap.Strict ( toList )
--- import Data.Iteratee
 import Data.List ( foldl' )
 import Data.MiniFloat ( mini2float )
 import Data.Text.Encoding ( encodeUtf8, decodeUtf8 )
 import Data.Text ( Text, unpack )
+import Data.Strict.Tuple
+import Numeric.Optimization.Algorithms.HagerZhang05
 
 import qualified Data.Vector.Unboxed as U
 import qualified Data.Vector.Unboxed.Mutable as UM
+
+import AD
 
 {-
 main = do -- let ctr :: ByteString
@@ -52,15 +55,36 @@ main = do -- let ctr :: ByteString
 main :: IO ()
 main = do hg19 <- openTwoBit "/mnt/datengrab/hg19.2bit"
           mtbl <- UM.replicate (max_lk-min_lk+1) 0
-          pe   <- enumDefaultInputs >=> run $
+          p0 :!: pe <- enumDefaultInputs >=> run $
                     joinI $ readAvroContainer $ \meta -> do
-                        -- liftIO . forM_ (toList meta) $ \(k,v) ->
-                            -- putStrLn $ unpack k ++ ": " ++ unpack (decodeUtf8 v)
-                        foldStreamM (lk_block hg19 mtbl) 1
+                        liftIO . forM_ (toList meta) $ \(k,v) ->
+                            putStrLn $ unpack k ++ ": " ++ unpack (decodeUtf8 v)
+                        foldStreamM (lk_block (all_lk mtbl) hg19) (1 :!: 1)
+
           tbl  <- U.unsafeFreeze mtbl
+          print (unPr p0, p0)
           print (unPr pe, pe)
           mapM_ print [ U.slice i 64 tbl | i <- [ 0, 64 .. U.length tbl-1 ] ]
+          print . unPr $ llk1 tbl pe (D 0.001 (U.fromList [1]))
+  where
+    all_lk tbl (p1 :!: p2) ref site = (lk0 p1 site :!:) `fmap` lk1 tbl p2 ref site
 
+-- | Scans block together with reference sequence.  Folds a monadic
+-- action over the called sites.
+lk_block :: Monad m => (b -> Nucleotide -> GenoCallSite -> m b) -> TwoBitFile -> b -> GenoCallBlock -> m b
+lk_block f tbf b GenoCallBlock{..} = foldM2 b refseq called_sites
+  where
+    refseq = getLazySubseq tbf (Pos (encodeUtf8 reference_name) start_position)
+
+    foldM2 acc (x:xs) (y:ys) = do !acc' <- f acc x y ; foldM2 acc' xs ys
+    foldM2 acc [    ]      _ = return acc
+    foldM2 acc      _ [    ] = return acc
+
+
+-- | Likelihood with flat prior (no parameters).
+lk0 :: Prob Double -> GenoCallSite -> Prob Double
+lk0 !pp GenoCallSite{..} | U.length snp_likelihoods == 4 =
+    pp * 0.25 * U.sum (U.map (Pr . negate . mini2float) snp_likelihoods)
 
 -- | Likelihood precomputation.  Total likelihood computes as product
 -- over sites @i@ with reference alleles @X_i@:
@@ -81,26 +105,22 @@ min_lk, max_lk :: Int
 min_lk = -256
 max_lk =  255
 
--- Scans block, computes independent part of likelihood andd returns it.
--- Computes and bins variable part of likelihood into @tbl@ argument.
-lk_block :: TwoBitFile -> LkTableM -> Prob Double -> GenoCallBlock -> IO (Prob Double)
-lk_block tbf tbl p0 GenoCallBlock{..} = foldM lk1 p0 $ zip refseq called_sites
-  where
-    refseq = getLazySubseq tbf (Pos (encodeUtf8 reference_name) start_position)
-
-    lk1 !pp (ref, GenoCallSite{..}) | U.length snp_likelihoods == 4 = do
-        let lx   = Pr . negate . mini2float $ snp_likelihoods U.! fromEnum ref
-            odds = U.ifoldl' (\a i v -> if i == fromEnum ref then a else a + Pr (- mini2float v)) 0 snp_likelihoods / lx
-            qq   = round (unPr odds) `min` max_lk `max` min_lk   - min_lk
-        liftIO $ print (lx, qq)
-        UM.write tbl qq . succ =<< UM.read tbl qq
-        return $ pp * lx
+-- | Likelihood with one parameter, the divergence.  Computes one
+-- part directly, bins the variable part into a mutable table.
+lk1 :: LkTableM -> Prob Double -> Nucleotide -> GenoCallSite -> IO (Prob Double)
+lk1 tbl !pp ref GenoCallSite{..} | U.length snp_likelihoods == 4 = do
+    let lx   = Pr . negate . mini2float $ snp_likelihoods U.! fromEnum ref
+        odds = U.ifoldl' (\a i v -> if i == fromEnum ref then a else a + Pr (- mini2float v)) 0 snp_likelihoods / lx
+        qq   = round (unPr odds) `min` max_lk `max` min_lk   - min_lk
+    UM.write tbl qq . succ =<< UM.read tbl qq
+    return $! pp * lx
 
 -- | Actual log-likelihood.  Gets a table and a divergence value.
 -- Returns likelihoods and first two derivatives with respect to the
 -- divergence value.
-llk :: (Ord a, Floating a) => LkTable -> a -> Prob a -- AD3
-llk tbl d = U.ifoldl' step 1 tbl
+-- llk :: (Ord a, Floating a) => LkTable -> a -> Prob a
+llk1 :: LkTable -> Prob Double -> AD -> Prob AD
+llk1 tbl (Pr p) d = Pr (C p) * U.ifoldl' step 1 tbl
   where
     !d1 = toProb $ 1-d
     !d3 = toProb $ d/3

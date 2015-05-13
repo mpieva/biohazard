@@ -150,18 +150,20 @@ maq_snp_call ploidy theta bases = V.fromList $ map l $ mk_snp_gts ploidy
     -- L(G)
     l gt = l' gt (toProb 1) (0 :: Mat44D) bases'
 
-    l'   _ !acc  _ [     ] = acc
+    l' !_  !acc !_ [     ] = acc
     l' !gt !acc !k (!x:xs) =
         let
             -- P(X|Q,H), a vector of four (x is fixed, h is not)
             -- this is the simple form where we set all w to 1/4
             p_x__q_h_ = Vec.map (\h -> 0.25 * fromQualRaised (theta ** (k ! h :-> db_call x)) (db_qual x)) everynuc
+
+            -- eh, this is cumbersome... what was I thinking?!
             p_x__q_h  = Vec.zipWith (\p h -> if db_call x == h then 1 + p - Vec.sum p_x__q_h_ else p) p_x__q_h_ everynuc
 
             -- P(H|X), again a vector of four
             p_x__q   = dot p_x__q_h dg
             p_h__x   = Vec.zipWith (\p p_h -> p / p_x__q * p_h) p_x__q_h dg
-            dg = (db_dmg x `multmv` gt)
+            dg = db_dmg x `multmv` gt
 
             kk = Vec.getElem (fromIntegral . unN $ db_call x) k + pack p_h__x
             k' = Vec.setElem (fromIntegral . unN $ db_call x) kk k

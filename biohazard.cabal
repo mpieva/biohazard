@@ -142,7 +142,9 @@ Executable gt-scan
                        bytestring,
                        -- containers,
                        iteratee,
+                       nonlinear-optimization == 0.3.*,
                        primitive,
+                       strict == 0.3.*,
                        unordered-containers,
                        text,
                        vector
