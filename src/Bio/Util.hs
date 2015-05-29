@@ -1,12 +1,11 @@
 module Bio.Util (
     wilson, invnormcdf, choose,
     estimateComplexity, showNum, showOOM,
-    log1p, expm1,
-    phredplus, phredminus, phredsum, (<#>), phredconverse
+    log1p, expm1, (<#>),
+    sigmoid2, isigmoid2
                 ) where
 
 import Data.Char ( intToDigit )
-import Data.List ( foldl' )
 
 -- ^ Random useful stuff I didn't know where to put.
 
@@ -141,36 +140,12 @@ estimateComplexity total singles | total   <= singles = Nothing
     m = fromIntegral singles * zz / log zz
 
 
--- | Computes @-10 * log_10 (10 ** (-x\/10) + 10 ** (-y\/10))@ without
--- losing precision.  Used to add numbers on "the Phred scale",
--- otherwise known as (deci-)bans.
-{-# INLINE phredplus #-}
-phredplus :: Double -> Double -> Double
-phredplus x y = if x < y then pp x y else pp y x where
-    pp u v = u - 10 / log 10 * log1p (exp ((u-v) * log 10 / 10))
-
--- | Computes @-10 * log_10 (10 ** (-x\/10) - 10 ** (-y\/10))@ without
--- losing precision.  Used to subtract numbers on "the Phred scale",
--- otherwise known as (deci-)bans.
-{-# INLINE phredminus #-}
-phredminus :: Double -> Double -> Double
-phredminus x y = if x < y then pm x y else pm y x where
-    pm u v = u - 10 / log 10 * log1p (- exp ((u-v) * log 10 / 10))
-
--- | Computes @-10 * log_10 (sum [10 ** (-x\/10) | x <- xs])@ without losing
--- precision.
-{-# INLINE phredsum #-}
-phredsum :: [Double] -> Double
-phredsum = foldl' (<#>) (1/0)
-
-infixl 3 <#>, `phredminus`, `phredplus`
+-- | Computes @log (exp x + exp y)@ without leaving the log domain and
+-- hence without losing precision.
+infixl 5 <#>
 {-# INLINE (<#>) #-}
-(<#>) :: Double -> Double -> Double
-(<#>) = phredplus
-
--- | Computes @1-p@ without leaving the "Phred scale"
-phredconverse :: Double -> Double
-phredconverse v = - 10 / log 10 * log1p (- exp ((-v) * log 10 / 10))
+(<#>) :: (Floating a, Ord a) => a -> a -> a
+x <#> y = if x >= y then x + log1p (exp (y-x)) else y + log1p (exp (x-y))
 
 -- | Computes @log (1+x)@ to a relative precision of @10^-8@ even for
 -- very small @x@.  Stolen from http://www.johndcook.com/cpp_log_one_plus_x.html
@@ -195,5 +170,16 @@ expm1 x | x > -0.00001 && x < 0.00001 = (1 + 0.5 * x) * x       -- Taylor approx
 {-# INLINE choose #-}
 choose :: Integral a => a -> a -> a
 n `choose` k = product [n-k+1 .. n] `div` product [2..k]
+
+
+-- | Kind-of sigmoid function that maps the reals to the interval
+-- @[0,1)@.  Good to compute a probability without introducing boundary
+-- conditions.
+sigmoid2 :: (Num a, Fractional a, Floating a) => a -> a
+sigmoid2 x = y*y where y = (exp x - 1) / (exp x + 1)
+
+-- | Inverse of 'sigmoid2'.
+isigmoid2 :: (Num a, Fractional a, Floating a) => a -> a
+isigmoid2 y = log $ (1 + sqrt y) / (1 - sqrt y)
 
 

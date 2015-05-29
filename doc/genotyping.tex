@@ -365,27 +365,44 @@ contamination rate\todo{Try and confirm}.
 \subsection{Covariance-Matrix as Prior}
 
 When co-calling individuals from multiple populations, the correct prior
-for the genotypes would be based on a covariance matrix.  Estimating
-that matrix allows Treemix, Patterson's~D and Pruefer's Divergence.
+for the genotypes would be based on a covariance matrix\footnote{We
+restrict to site-by-site analysis and a couple more simplifying
+assumptions.}.  Estimating
+that matrix allows Treemix, Patterson's~D and Pruefer's Divergence,
+possibly more.  % And the replacement for TreeMix is "Blandskog" (==
+                % mixed forest)
 
 Conceptually, it's easy:  the covariance matrix serves as prior for the
 allele frequencies in multiple populations, the allele frequency
 (together with a small term for new mutations) serves as prior for the
 genotypes\todo{Equation!}.  Maximizing the covariance matrix is
-straight-forward, but it would require integrating over the space of
+straight forward, but it would require integrating over the space of
 possible combinations of allele frequencies, which sounds impractical,
-and becomes more impractical the more samples are considered.
+and becomes more impractical the more samples are considered.  Even if
+symbolic integration was possible (I don't think it is), the resulting
+term would grow with the number of genotype \emph{combinations}, which
+is still exponential in the number of samples.
 
-Instead, we can estimate the joint probability (genotype(s), allele
-frequency) and maximize that, which is much easier\footnote{Effectively,
-we estimate the allele frequency at every position for every sample.
-Which is impossible, but the aggregate makes sense for populations.}.
-Only summation over the possible genotypes is necesssary, which is just
-10 per individual, and individuals are independent; allele frequencies
-and covariance matrix are co-estimated using something resembling the EM
-algorithm.  (One idea would be to not store the aforementioned 600GB of
-likelihoods, but only 6GB or thereabout of allele frequency data.  The
-likelihoods can be generated from the smaller BAM files on the fly.)
+Instead, we take inspiration from SeqEm\cite{seqem}.  We treat the
+allele frequencies $\mathbb{f}$ as hidden parameters, marginalize over
+the genotypes, and maximize the joint probability $P(\mathbb{D},
+\mathbb{f} | \Sigma)$ with respect to the variance-covariance matrix
+$\Sigma$ using an EM algorithm\footnote{Effectively, we estimate the
+allele frequency at every position for every sample.  This is of course
+impossible, but in aggregate makes sense for populations.}.
+
+The expectation step, which is finding estimates for the allele
+frequencies, is much easier, as it requires only summation over the
+possible genotypes of one individual at a time and optimizes one allele
+frequency at a time, holding the others constant\todo{Is this correct?
+At any rate, multivariate maximization should do it.}.  Maximization is
+finding a covariance matrix from allele frequencies, and this is again
+easy.  The obvious moment based estimator should work.
+
+\idea{The practical implementation should probably not store the
+aforementioned 600GB of likelihoods, but only 6GB or thereabout of
+allele frequency data per sample.  The likelihoods can be generated from
+the smaller BAM files on the fly.}
 
 
 \appendix
@@ -464,6 +481,11 @@ error.
   \emph{mapDamage: testing for damage patterns in ancient DNA sequences}.
   Bioinformatics 27 (15), 2153--2155 (2011).
 
+\bibitem{seqem}
+  E. R. Martin et. al.,
+  \emph{SeqEM: an adaptive genotype-calling approach for next-generation
+  sequencing studies}.
+  Bioinformatics 26 (22), 2803-2810 (2010).
 \end{thebibliography}
 
 \end{document}

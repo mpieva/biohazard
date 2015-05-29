@@ -44,6 +44,7 @@ import Bio.Bam.Rec
 import Bio.Base
 import Bio.Genocall.Adna
 import Bio.Iteratee
+import Bio.Util
 import Control.Concurrent.Async
 import Data.Bits
 import Data.Foldable
@@ -71,10 +72,6 @@ instance Show NP where
         | otherwise = [ "ACGT" !! fromIntegral (w `shiftR` 2)
                       , "ACGT" !! fromIntegral (w .&. 3) ]
 
-
-sigmoid2, isigmoid2 :: (Num a, Fractional a, Floating a) => a -> a
-sigmoid2 x = y*y where y = (exp x - 1) / (exp x + 1)
-isigmoid2 y = log $ (1 + sqrt y) / (1 - sqrt y)
 
 {-# INLINE lk_fun1 #-}
 lk_fun1 :: (Num a, Show a, Fractional a, Floating a, Memorable a) => Int -> [a] -> V.Vector Seq -> a

@@ -1,5 +1,4 @@
-{-# LANGUAGE RecordWildCards, BangPatterns, OverloadedStrings #-}
-{-# LANGUAGE TemplateHaskell, FlexibleContexts #-}
+{-# LANGUAGE RecordWildCards, BangPatterns, OverloadedStrings, FlexibleContexts #-}
 -- Command line driver for simple genotype calling.
 
 import Bio.Base
@@ -177,8 +176,15 @@ calls Nothing pl pile = pile { p_snp_pile = s, p_indel_pile = i }
 
 calls (Just theta) pl pile = pile { p_snp_pile = s, p_indel_pile = i }
   where
-    !s = maq_snp_call pl theta $ uncurry (++) $ p_snp_pile pile -- XXX
     !i = simple_indel_call pl $ p_indel_pile pile
+
+    -- This lumps the two strands together
+    -- !s = maq_snp_call pl theta $ uncurry (++) $ p_snp_pile pile -- XXX
+
+    -- This treats them separately
+    !s = U.zipWith (*) (maq_snp_call pl theta $ fst $ p_snp_pile pile)
+                       (maq_snp_call pl theta $ snd $ p_snp_pile pile)
+
 
 -- | Formatting a SNP call.  If this was a haplopid call (four GL
 -- values), we pick the most likely base and pass it on.  If it was
