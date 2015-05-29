@@ -120,7 +120,7 @@ fromQualRaised k (Q q) = 10 ** (- k * fromIntegral q / 10)
 -- to the familiar \"Phred\" scale used for 'Qual' values.
 newtype Prob a = Pr { unPr :: a } deriving ( Eq, Ord, Storable )
 
-derivingUnbox "Prob" [t| Unbox a => Prob a -> a |] [| unPr |] [| Pr |]
+derivingUnbox "Prob" [t| forall a . Unbox a => Prob a -> a |] [| unPr |] [| Pr |]
 
 instance Show (Prob Double) where
     showsPrec _ (Pr p) = (:) 'q' . showFFloat (Just 1) q
