@@ -1,3 +1,4 @@
+{-# LANGUAGE FlexibleContexts #-}
 module Bio.Glf (
         GlfSeq(..),
         GlfRec(..),

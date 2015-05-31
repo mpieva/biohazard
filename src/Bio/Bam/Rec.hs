@@ -1,4 +1,4 @@
-{-# LANGUAGE OverloadedStrings, PatternGuards, BangPatterns, NoMonomorphismRestriction #-}
+{-# LANGUAGE OverloadedStrings, PatternGuards, BangPatterns, NoMonomorphismRestriction, FlexibleContexts #-}
 
 -- TODO:
 -- - Automatic creation of some kind of index.  If possible, this should

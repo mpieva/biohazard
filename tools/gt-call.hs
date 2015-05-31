@@ -1,5 +1,5 @@
 {-# LANGUAGE RecordWildCards, BangPatterns, OverloadedStrings #-}
-{-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE TemplateHaskell, FlexibleContexts #-}
 -- Command line driver for simple genotype calling.
 
 import Bio.Base

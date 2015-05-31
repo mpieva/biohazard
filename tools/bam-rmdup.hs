@@ -1,4 +1,4 @@
-{-# LANGUAGE RecordWildCards, BangPatterns #-}
+{-# LANGUAGE RecordWildCards, BangPatterns, FlexibleContexts #-}
 import Bio.Bam
 import Bio.Base
 import Bio.Util ( showNum, showOOM, estimateComplexity )

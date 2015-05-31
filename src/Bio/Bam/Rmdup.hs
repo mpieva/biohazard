@@ -1,4 +1,4 @@
-{-# LANGUAGE ExistentialQuantification, RecordWildCards, NamedFieldPuns, BangPatterns #-}
+{-# LANGUAGE ExistentialQuantification, RecordWildCards, NamedFieldPuns, BangPatterns, FlexibleContexts #-}
 module Bio.Bam.Rmdup(
             rmdup, Collapse, cons_collapse, cheap_collapse,
             cons_collapse_keep, cheap_collapse_keep,

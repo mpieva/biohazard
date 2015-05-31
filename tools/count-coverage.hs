@@ -1,4 +1,4 @@
-{-# LANGUAGE BangPatterns, NoMonomorphismRestriction #-}
+{-# LANGUAGE BangPatterns, NoMonomorphismRestriction, FlexibleContexts #-}
 import Bio.Bam.Header
 import Bio.Bam.Raw
 import Bio.Base

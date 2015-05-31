@@ -1,4 +1,4 @@
-{-# LANGUAGE BangPatterns, OverloadedStrings #-}
+{-# LANGUAGE BangPatterns, OverloadedStrings, FlexibleContexts #-}
 
 {-
 This is a validator/fixup for paired end BAM files, that is more

@@ -1,5 +1,4 @@
--- | Quality filters adapted from old pipeline.
-
+{-# LANGUAGE FlexibleContexts #-}
 module Bio.Bam.Filter (
     filterPairs, QualFilter,
     complexSimple, complexEntropy,
@@ -16,6 +15,8 @@ import Data.Bits
 import qualified Data.ByteString     as S
 import qualified Data.Iteratee       as I
 import qualified Data.Vector.Generic as V
+
+-- ^ Quality filters adapted from old pipeline.
 
 -- | A filter/transformation applied to pairs of reads.  We supply a
 -- predicate to be applied to single reads and one to be applied to

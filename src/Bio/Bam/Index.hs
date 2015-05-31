@@ -1,4 +1,4 @@
-{-# LANGUAGE BangPatterns, OverloadedStrings, RecordWildCards, PatternGuards #-}
+{-# LANGUAGE BangPatterns, OverloadedStrings, RecordWildCards, PatternGuards, FlexibleContexts #-}
 {-# OPTIONS_GHC -funbox-strict-fields #-}
 module Bio.Bam.Index (
     BamIndex(..),

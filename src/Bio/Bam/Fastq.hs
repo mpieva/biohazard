@@ -1,4 +1,4 @@
-{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE OverloadedStrings, FlexibleContexts #-}
 module Bio.Bam.Fastq (
     parseFastq, parseFastq', parseFastqCassava, removeWarts
                      ) where
@@ -76,7 +76,7 @@ parseFastqCassava = parseFastq' (pdesc . S.split ':' . S.takeWhile (' ' /=))
                                                    , if num == "2" then flagSecondMate .|. flagPaired else 0
                                                    , if flg == "Y" then flagFailsQC else 0
                                                    , b_flag br .&. complement (flagFailsQC .|. flagSecondMate .|. flagPaired) ]
-                                    , b_exts = if S.all (`elem` "ACGTN") idx then M.insert "XI" (Text idx) (b_exts br) else b_exts br }
+                                    , b_exts = if S.all (`S.elem` "ACGTN") idx then M.insert "XI" (Text idx) (b_exts br) else b_exts br }
     pdesc _ br = br
 
 -- | Same as 'parseFastq', but a custom function can be applied to the
