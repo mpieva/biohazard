@@ -1,7 +1,14 @@
 {-# LANGUAGE BangPatterns #-}
-module AD where
+module AD ( AD(..), liftD, sqr, lsum, llerp
+          , paramVector, minimize
+          , module Numeric.Optimization.Algorithms.HagerZhang05
+          ) where
 
+import Bio.Util ( log1p )
+import Data.List ( foldl1' )
+import Numeric.Optimization.Algorithms.HagerZhang05
 import qualified Data.Vector.Unboxed as U
+import qualified Data.Vector.Storable as V
 
 -- Simple forward-mode AD to get a scalar valued function and a
 -- gradient.
@@ -105,9 +112,34 @@ instance Floating AD where
     acosh = undefined -- :: a -> a -}
 
 
+{-# INLINE paramVector #-}
 paramVector :: [Double] -> [AD]
 paramVector xs = [ D x (U.generate l (\j -> if i == j then 1 else 0)) | (i,x) <- zip [0..] xs ]
   where l = length xs
 
+{-# INLINE minimize #-}
+minimize :: Parameters -> Double -> ([AD] -> AD) -> U.Vector Double -> IO (V.Vector Double, Result, Statistics)
+minimize params eps func v0 =
+    optimize params eps v0 (VFunction  $ fst . combofn)
+                           (VGradient  $ snd . combofn)
+                           (Just . VCombined $ combofn)
+  where
+    combofn parms = case func $ paramVector $ U.toList parms of
+                D x g -> ( x, g )
+                C x   -> ( x, U.replicate (U.length parms) 0 )
 
+-- | Computes \( \log ( \sum_i e^{x_i} ) \) sensibly.  The list must be
+-- sorted in descending(!) order.
+{-# INLINE lsum #-}
+lsum :: [AD] -> AD
+lsum xs = foldl1' (\x y -> if x >= y then x + log1p (exp (y-x)) else err) xs
+    where err = error $ "lsum: argument list must be in descending order: " ++ show xs
+
+-- | Computes \( \log \left( c e^x + (1-c) e^y \right) \).
+{-# INLINE llerp #-}
+llerp :: AD -> AD -> AD -> AD
+llerp c x y | c == 0.0  = y
+            | c == 1.0  = x
+            | x >= y    = log     c  + x + log1p ( (1-c)/c * exp (y-x) )
+            | otherwise = log1p (-c) + y + log1p ( c/(1-c) * exp (x-y) )
 
