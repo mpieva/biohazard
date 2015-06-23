@@ -70,7 +70,6 @@ import Control.Concurrent.Async             ( Async, async, wait, cancel )
 import Control.Monad
 import Control.Monad.Catch
 import Control.Monad.IO.Class
-import Control.Monad.Primitive              ( PrimMonad )
 import Control.Monad.Trans.Class
 import Data.Iteratee.Binary     as X
 import Data.Iteratee.Char       as X
@@ -81,6 +80,7 @@ import Data.Monoid
 import Data.Typeable
 import System.IO                            ( stdin, stdout, stderr, hIsTerminalDevice )
 import System.Environment                   ( getArgs )
+import System.Mem                           ( performGC )
 import System.Posix                         ( Fd, openFd, closeFd, OpenMode(..), defaultFileFlags )
 
 import qualified Data.Attoparsec.ByteString     as A
@@ -158,16 +158,20 @@ groupStreamBy cmp inner = eneeCheckIfDonePass (icont . step)
 
 
 -- | Take a prefix of a stream, the equivalent of 'Data.List.take'.
+{-# INLINE takeStream #-}
 takeStream :: (Monad m, Nullable s, ListLike s el) => Int -> Enumeratee s s m a
 takeStream = I.take
 
 -- | Take first element of a stream or fail.
+{-# INLINE headStream #-}
 headStream :: ListLike s el => Iteratee s m el
 headStream = I.head
 
+{-# INLINE peekStream #-}
 peekStream :: ListLike s el => Iteratee s m (Maybe el)
 peekStream = I.peek
 
+{-# INLINE dropStream #-}
 dropStream :: (Nullable s, ListLike s el) => Int -> Iteratee s m ()
 dropStream = I.drop
 
@@ -196,6 +200,7 @@ iGetString n = liftI $ step [] 0
                          | otherwise           = liftI $ step (c:acc) (l + S.length c)
 
 infixl 1 $==
+{-# INLINE ($==) #-}
 -- | Compose an 'Enumerator\'' with an 'Enumeratee', giving a new
 -- 'Enumerator\''.
 ($==) :: Monad m => Enumerator' hdr input m (Iteratee output m result)
@@ -210,6 +215,7 @@ infixl 1 $==
 -- XXX  Something about those headers is unsatisfactory... there should
 --      be an unobtrusive way to combine headers.
 
+{-# INLINE mergeEnums' #-}
 mergeEnums' :: (Nullable s2, Nullable s1, Monad m)
             => Enumerator' hi s1 m a                            -- ^ inner enumerator
             -> Enumerator' ho s2 (Iteratee s1 m) a              -- ^ outer enumerator
@@ -217,9 +223,11 @@ mergeEnums' :: (Nullable s2, Nullable s1, Monad m)
             -> Enumerator' hi s1 m a
 mergeEnums' e1 e2 etee i = e1 $ \hi -> e2 (\ho -> joinI . etee ho $ ilift lift (i hi)) >>= run
 
+{-# INLINE concatMapStream #-}
 concatMapStream :: (Monad m, ListLike s a, NullPoint s, ListLike t b) => (a -> t) -> Enumeratee s t m r
 concatMapStream = mapChunks . LL.concatMap
 
+{-# INLINE mapMaybeStream #-}
 mapMaybeStream :: (Monad m, ListLike s a, NullPoint s, ListLike t b) => (a -> Maybe b) -> Enumeratee s t m r
 mapMaybeStream f = mapChunks mm
   where
@@ -228,10 +236,12 @@ mapMaybeStream f = mapChunks mm
                                  Just b  -> LL.cons b $ mm (LL.tail l)
 
 -- | Apply a filter predicate to an 'Iteratee'.
+{-# INLINE filterStream #-}
 filterStream :: (Monad m, ListLike s a, NullPoint s) => (a -> Bool) -> Enumeratee s s m r
 filterStream = mapChunks . LL.filter
 
 -- | Apply a monadic filter predicate to an 'Iteratee'.
+{-# INLINE filterStreamM #-}
 filterStreamM :: (Monad m, ListLike s a, Nullable s, NullPoint s) => (a -> m Bool) -> Enumeratee s s m r
 filterStreamM k = mapChunksM (go id)
   where
@@ -241,15 +251,18 @@ filterStreamM k = mapChunksM (go id)
                               go acc' (LL.tail s)
 
 -- | Map a monadic function over an 'Iteratee'.
+{-# INLINE mapStreamM #-}
 mapStreamM :: (Monad m, ListLike (s el) el, ListLike (s el') el', NullPoint (s el), Nullable (s el), LooseMap s el el')
            => (el -> m el') -> Enumeratee (s el) (s el') m a
 mapStreamM = mapChunksM . LL.mapM
 
 -- | Map a monadic function over an 'Iteratee', discarding the results.
+{-# INLINE mapStreamM_ #-}
 mapStreamM_ :: (Monad m, Nullable s, ListLike s el) => (el -> m b) -> Iteratee s m ()
 mapStreamM_ = mapChunksM_ . LL.mapM_
 
 -- | Fold a monadic function over an 'Iteratee'.
+{-# INLINE foldStreamM #-}
 foldStreamM :: (Monad m, Nullable s, ListLike s a) => (b -> a -> m b) -> b -> Iteratee s m b
 foldStreamM k = foldChunksM go
   where
@@ -388,32 +401,32 @@ parserToIteratee p = icont (f (A.parse p)) Nothing
 
 -- | Equivalent to @joinI $ takeStream n $ stream2vector@, but more
 -- efficient.
-stream2vectorN :: (PrimMonad m, ListLike s a, Nullable s, VG.Vector v a) => Int -> Iteratee s m (v a)
+stream2vectorN :: (MonadIO m, ListLike s a, Nullable s, VG.Vector v a) => Int -> Iteratee s m (v a)
 stream2vectorN n = do
-    mv <- lift $ VM.new n
+    mv <- liftIO $ VM.new n
     l <- go mv 0
-    lift $ VG.unsafeFreeze $ VM.take l mv
+    liftIO $ VG.unsafeFreeze $ VM.take l mv
   where
     go mv i
         | i == n    = return n
         | otherwise =
             I.tryHead >>= \x -> case x of
                 Nothing -> return i
-                Just  a -> lift (VM.write mv i a) >> go mv (i+1)
+                Just  a -> liftIO (VM.write mv i a) >> go mv (i+1)
 
 -- | Reads the whole stream into a 'VG.Vector'.
-stream2vector :: (PrimMonad m, ListLike s a, Nullable s, VG.Vector v a) => Iteratee s m (v a)
-stream2vector = do
-    mv <- lift $ VM.new 0
-    l <- go mv 0
-    lift $ VG.unsafeFreeze $ VM.take l mv
+stream2vector :: (MonadIO m, ListLike s a, Nullable s, VG.Vector v a) => Iteratee s m (v a)
+stream2vector = liftIO (VM.new 1024) >>= go 0
   where
-    go mv i = I.tryHead >>= \x -> case x of
-                Nothing -> return i
-                Just  a -> lift (VM.grow mv 1 >> VM.write mv i a) >> go mv (i+1)
+    go !i !mv = I.tryHead >>= \x -> case x of
+                  Nothing -> liftIO $ VG.unsafeFreeze $ VM.take i mv
+                  Just  a -> do mv' <- if VM.length mv == i then liftIO (VM.grow mv (VM.length mv)) else return mv
+                                when (i `rem` 0x10000 == 0) $ liftIO performGC
+                                liftIO $ VM.write mv' i a
+                                go (i+1) mv'
 
 withFileFd :: (MonadIO m, MonadMask m) => FilePath -> (Fd -> m a) -> m a
-withFileFd filepath iter = bracket -- CIO.bracket
+withFileFd filepath iter = bracket
     (liftIO $ openFd filepath ReadOnly Nothing defaultFileFlags)
     (liftIO . closeFd) iter
 

@@ -116,6 +116,7 @@ Library
 Executable afroengineer
   Main-Is:             afroengineer.hs
   Hs-source-dirs:      tools
+  Ghc-options:         -Wall -auto-all
   Other-Modules:       Align, SimpleSeed
   Build-Depends:       base,
                        biohazard,
@@ -129,6 +130,7 @@ Executable afroengineer
 Executable bam-fixpair
   Main-is:             bam-fixpair.hs
   Hs-Source-Dirs:      tools
+  Ghc-options:         -Wall -auto-all
   Build-depends:       base,
                        binary,
                        biohazard,
@@ -139,6 +141,7 @@ Executable bam-fixpair
 Executable bam-meld
   Main-is:             bam-meld.hs
   Hs-Source-Dirs:      tools
+  Ghc-options:         -Wall -auto-all
   Build-depends:       base,
                        biohazard,
                        bytestring,
@@ -147,6 +150,7 @@ Executable bam-meld
 Executable bam-resample
   Main-is:             bam-resample.hs
   Hs-Source-Dirs:      tools
+  Ghc-options:         -Wall -auto-all
   Build-depends:       base,
                        biohazard,
                        bytestring,
@@ -155,6 +159,7 @@ Executable bam-resample
 Executable bam-rewrap
   Main-is:             bam-rewrap.hs
   Hs-Source-Dirs:      tools
+  Ghc-options:         -Wall -auto-all
   Build-depends:       base,
                        biohazard,
                        bytestring,
@@ -163,6 +168,7 @@ Executable bam-rewrap
 Executable bam-rmdup
   Main-is:             bam-rmdup.hs
   Hs-Source-Dirs:      tools
+  Ghc-options:         -Wall -auto-all
   Build-depends:       base,
                        biohazard,
                        bytestring,
@@ -175,6 +181,7 @@ Executable bam-rmdup
 Executable bam-trim
   Main-is:             bam-trim.hs
   Hs-Source-Dirs:      tools
+  Ghc-options:         -Wall -auto-all
   Build-depends:       base,
                        biohazard,
                        bytestring
@@ -182,6 +189,7 @@ Executable bam-trim
 Executable count-coverage
   Main-is:             count-coverage.hs
   Hs-Source-Dirs:      tools
+  Ghc-options:         -Wall -auto-all
   Build-depends:       base,
                        biohazard,
                        iteratee
@@ -189,7 +197,7 @@ Executable count-coverage
 Executable dmg-est
   Main-is:             dmg-est.hs
   Hs-Source-Dirs:      tools
-  Ghc-options:         -Wall -threaded -with-rtsopts=-N3
+  Ghc-options:         -Wall -auto-all -threaded -with-rtsopts=-N3
   Other-Modules:       AD
   Build-depends:       async,
                        base,
@@ -200,6 +208,7 @@ Executable dmg-est
 Executable fastq2bam
   Main-is:             fastq2bam.hs
   Hs-Source-Dirs:      tools
+  Ghc-options:         -Wall -auto-all
   Build-depends:       base,
                        biohazard,
                        bytestring,
@@ -210,6 +219,7 @@ Executable fastq2bam
 Executable glf-consensus
   Main-is:             glf-consensus.hs
   Hs-Source-Dirs:      tools
+  Ghc-options:         -Wall -auto-all
   Build-depends:       base,
                        biohazard,
                        bytestring,
@@ -220,6 +230,7 @@ Executable glf-consensus
 Executable gt-call
   Main-is:             gt-call.hs
   Hs-Source-Dirs:      tools
+  Ghc-options:         -Wall -auto-all
   Build-depends:       base,
                        biohazard,
                        bytestring,
@@ -229,9 +240,31 @@ Executable gt-call
                        text,
                        vector
 
+Executable jivebunny
+  Main-is:             jivebunny.hs
+  Hs-Source-Dirs:      tools
+  Ghc-options:         -Wall -auto-all -fllvm
+  Build-depends:       aeson,
+                       base,
+                       biohazard,
+                       bytestring,
+                       -- containers,
+                       -- deepseq,
+                       directory,
+                       -- iteratee,
+                       old-time,
+                       random,
+                       text,
+                       text-format,
+                       unordered-containers,
+                       vector,
+                       vector-algorithms,
+                       vector-th-unbox
+
 Executable mt-anno
   Main-Is:             mt-anno.hs
   Hs-Source-Dirs:      tools
+  Ghc-options:         -Wall -auto-all
   Other-Modules:       Anno, Seqs, Xlate
   Build-Depends:       base,
                        bytestring,
@@ -241,6 +274,7 @@ Executable mt-anno
 Executable mt-ccheck
   Main-Is:             mt-ccheck.hs
   Hs-Source-Dirs:      tools
+  Ghc-options:         -Wall -auto-all
   Build-Depends:       base,
                        bytestring,
                        biohazard,
@@ -250,6 +284,7 @@ Executable mt-ccheck
 executable wiggle-coverage
   Main-is:             wiggle-coverage.hs
   Hs-Source-Dirs:      tools
+  Ghc-options:         -Wall -auto-all
   Build-depends:       base,
                        biohazard
 
