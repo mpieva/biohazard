@@ -243,7 +243,9 @@ Executable gt-call
 Executable jivebunny
   Main-is:             jivebunny.hs
   Hs-Source-Dirs:      tools
-  Ghc-options:         -Wall -auto-all -fllvm
+  C-sources:           src/cbits/jive.c
+  CC-options:          -std=c99 -mavx -O3 -ffast-math -ftree-vectorizer-verbose=1
+  Ghc-options:         -Wall -auto-all
   Build-depends:       aeson,
                        base,
                        biohazard,
@@ -256,6 +258,7 @@ Executable jivebunny
                        random,
                        text,
                        text-format,
+                       transformers,
                        unordered-containers,
                        vector,
                        vector-algorithms,
