@@ -63,7 +63,8 @@ Library
                        Bio.PriorityQueue,
                        Bio.TwoBit,
                        Bio.Util,
-                       Data.Avro
+                       Data.Avro,
+                       Paths_biohazard
   
   -- Packages needed in order to build this package.
   Build-depends:       aeson >= 0.7 && < 0.9,
@@ -250,7 +251,7 @@ Executable jivebunny
                        base,
                        biohazard,
                        bytestring,
-                       -- containers,
+                       containers,
                        -- deepseq,
                        directory,
                        -- iteratee,

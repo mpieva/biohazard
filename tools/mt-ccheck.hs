@@ -46,8 +46,7 @@
 
 
 import Bio.Base
-import Bio.Bam
-import Bio.Iteratee
+import Bio.Bam hiding ( Unknown )
 import Control.Applicative
 import Control.Monad
 import Data.Bits
@@ -61,7 +60,6 @@ import System.IO
 
 import qualified Data.HashMap.Strict        as HM
 import qualified Data.IntMap                as IM
-import qualified Data.ByteString.Char8      as S
 
 data Conf = Conf {
         conf_adna :: Adna,
@@ -134,8 +132,8 @@ void usage( const char* pname )
 -- of the reference.  Therefore, a diagnostic position is defined by
 -- position, allele in the clean sample and allele in the contaminant.
 
-data Dp = Dp { dp_clean_allele :: !Nucleotide
-             , dp_dirty_allere :: !Nucleotide }
+data Dp = Dp { _dp_clean_allele :: !Nucleotide
+             , _dp_dirty_allele :: !Nucleotide }
   deriving Show
 
 type DpList = IM.IntMap Dp

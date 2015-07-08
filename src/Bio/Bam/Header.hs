@@ -114,9 +114,9 @@ data BamHeader = BamHeader {
     } deriving Show
 
 instance Monoid BamHeader where
-    mempty = BamHeader (1,0) Unsorted []
+    mempty = BamHeader (1,0) Unknown []
     a `mappend` b = BamHeader { hdr_version = hdr_version a `min` hdr_version b
-                              , hdr_sorting = let u = hdr_sorting a ; v = hdr_sorting b in if u == v then u else Unsorted
+                              , hdr_sorting = let u = hdr_sorting a ; v = hdr_sorting b in if u == v then u else Unknown
                               , hdr_other_shit = hdr_other_shit a ++ hdr_other_shit b }
 
 data BamSQ = BamSQ {
@@ -128,7 +128,10 @@ data BamSQ = BamSQ {
 bad_seq :: BamSQ
 bad_seq = BamSQ (error "no SN field") (error "no LN field") []
 
-data BamSorting = Unsorted | Grouped | Queryname | Coordinate | GroupSorted
+-- | Possible sorting orders from bam header.  Thanks to samtools, which
+-- doesn't declare sorted files properly, we have to have the stupid
+-- 'Unknown' state, too.
+data BamSorting = Unknown | Unsorted | Grouped | Queryname | Coordinate | GroupSorted
     deriving (Show, Eq)
 
 type BamOtherShit = [(Char, Char, S.ByteString)]
@@ -159,11 +162,12 @@ parseBamMetaLine = P.char '@' >> P.choice [hdLine, sqLine, coLine, otherLine]
 
     hdso = P.string "SO:" >>
            (\s hdr -> hdr { hdr_sorting = s })
-             <$> P.choice [ Grouped  <$ P.string "grouped"
-                          , Queryname <$ P.string "queryname"
-                          , Coordinate <$ P.string "coordinate"
+             <$> P.choice [ Grouped     <$ P.string "grouped"
+                          , Queryname   <$ P.string "queryname"
+                          , Coordinate  <$ P.string "coordinate"
                           , GroupSorted <$ P.string "groupsort"
-                          , Unsorted <$ P.skipWhile (\c -> c/='\t' && c/='\n') ]
+                          , Unsorted    <$ P.string "unsorted"
+                          , Unknown     <$ P.skipWhile (\c -> c/='\t' && c/='\n') ]
 
     sqnm = P.string "SN:" >> (\s sq -> sq { sq_name = s }) <$> pall
     sqln = P.string "LN:" >> (\i sq -> sq { sq_length = i }) <$> P.decimal
@@ -196,11 +200,12 @@ showBamMeta (BamMeta h ss os cs) =
     show_bam_meta_hdr (BamHeader (major,minor) so os') =
         fromByteString "@HD\tVN:" <>
         fromShow major <> char7 '.' <> fromShow minor <>
-        fromByteString (case so of Unsorted -> B.empty
-                                   Grouped  -> "\tSO:grouped"
-                                   Queryname  -> "\tSO:queryname"
+        fromByteString (case so of Unknown     -> B.empty
+                                   Unsorted    -> "\tSO:unsorted"
+                                   Grouped     -> "\tSO:grouped"
+                                   Queryname   -> "\tSO:queryname"
                                    Coordinate  -> "\tSO:coordinate"
-                                   GroupSorted  -> "\tSO:groupsort") <>
+                                   GroupSorted -> "\tSO:groupsort") <>
         show_bam_others os'
 
     show_bam_meta_seq (BamSQ  _  _ []) = mempty
