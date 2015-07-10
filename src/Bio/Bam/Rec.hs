@@ -75,10 +75,10 @@ import Data.Binary.Put
 import Data.Bits                    ( testBit, shiftL, shiftR, (.&.), (.|.), complement )
 import Data.ByteString              ( ByteString )
 import Data.Char                    ( ord, digitToInt )
-import Data.Int                     ( Int32 )
+import Data.Int                     ( Int32, Int16, Int8 )
 import Data.Monoid                  ( mempty )
 import Data.Vector.Unboxed          ( (!?) )
-import Data.Word                    ( Word32 )
+import Data.Word                    ( Word32, Word16 )
 import Foreign.Marshal.Alloc        ( alloca )
 import Foreign.Ptr                  ( castPtr )
 import Foreign.Storable             ( peek, poke )
@@ -277,13 +277,13 @@ getExtensions m = getExt <|> return m
                     poke (castPtr buf) word >> peek buf
 
     get_some_int :: M.Map Char (Get Int)
-    get_some_int = M.fromList $ zip "cCsSiI" [
-                        fromIntegral <$> getWord8,
-                        fromIntegral <$> getWord8,
-                        fromIntegral <$> getWord16le,
-                        fromIntegral <$> getWord16le,
-                        fromIntegral <$> getWord32le,
-                        fromIntegral <$> getWord32le ]
+    get_some_int = M.fromList $ zip "CcSsIi" [
+                        fromIntegral                                     <$> getWord8,
+                        fromIntegral . (fromIntegral ::  Word8 ->  Int8) <$> getWord8,
+                        fromIntegral                                     <$> getWord16le,
+                        fromIntegral . (fromIntegral :: Word16 -> Int16) <$> getWord16le,
+                        fromIntegral                                     <$> getWord32le,
+                        fromIntegral . (fromIntegral :: Word32 -> Int32) <$> getWord32le ]
 
 
 
