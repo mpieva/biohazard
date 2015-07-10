@@ -585,8 +585,8 @@ br_findExtension _ _ = error "illegal key, must be two characters"
 {-# INLINE br_extAsInt #-}
 br_extAsInt :: Int -> String -> BamRaw -> Int
 br_extAsInt d k br@(BamRaw _ r) = case br_findExtension k br of
-        Just (_,o,_) | SC.index r o == 'c' -> fromIntegral               (S.index r (o+1))
-                     | SC.index r o == 'C' -> fromIntegral (fromIntegral (S.index r (o+1)) :: Int8)
+        Just (_,o,_) | SC.index r o == 'c' -> fromIntegral (fromIntegral (S.index r (o+1)) :: Int8)
+                     | SC.index r o == 'C' -> fromIntegral               (S.index r (o+1))
                      | SC.index r o == 's' -> fromIntegral (getInt16 r (o+1) :: Int16)
                      | SC.index r o == 'S' -> fromIntegral (getInt16 r (o+1) :: Word16)
                      | SC.index r o == 'i' -> fromIntegral (getInt   r (o+1) :: Int32)
