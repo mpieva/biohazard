@@ -9,7 +9,7 @@ module Bio.Iteratee.Bgzf (
     Block(..), decompressBgzfBlocks', decompressBgzfBlocks,
     decompressBgzf, decompressPlain,
     maxBlockSize, bgzfEofMarker, liftBlock, getOffset,
-    isBgzf, isGzip, parMapChunksIO,
+    BgzfChunk(..), isBgzf, isGzip, parMapChunksIO,
     compressBgzf, compressBgzfLv, compressBgzf', CompressParams(..)
                      ) where
 
@@ -376,15 +376,27 @@ liftBlock = liftI . step
 -- write out a block.  Then we continue writing until we're below block
 -- size.  On EOF, we flush and write the end marker.
 
-compressBgzf' :: MonadIO m => CompressParams -> Enumeratee S.ByteString S.ByteString m a
+compressBgzf' :: MonadIO m => CompressParams -> Enumeratee BgzfChunk S.ByteString m a
 compressBgzf' (CompressParams lv np) = bgzfBlocks ><> parMapChunksIO np (compress1 lv)
+
+data BgzfChunk = SpecialChunk  !S.ByteString BgzfChunk
+               | RecordChunk   !S.ByteString BgzfChunk
+               | LeftoverChunk !S.ByteString BgzfChunk
+               | NoChunk
+
+instance NullPoint BgzfChunk where empty = NoChunk
+instance Nullable BgzfChunk where
+    nullC NoChunk = True
+    nullC (SpecialChunk  s c) = S.null s && nullC c
+    nullC (RecordChunk   s c) = S.null s && nullC c
+    nullC (LeftoverChunk s c) = S.null s && nullC c
 
 -- | Breaks a stream into chunks suitable to be compressed individually.
 -- Each chunk on output is represented as a list of 'S.ByteString's,
 -- each list must be reversed and concatenated to be compressed.
 -- ('compress1' does that.)
 
-bgzfBlocks :: Monad m => Enumeratee S.ByteString [S.ByteString] m a
+bgzfBlocks :: Monad m => Enumeratee BgzfChunk [S.ByteString] m a
 bgzfBlocks = eneeCheckIfDone (liftI . to_blocks 0 [])
   where
     -- terminate by sending the last block and then an empty block,
@@ -392,24 +404,46 @@ bgzfBlocks = eneeCheckIfDone (liftI . to_blocks 0 [])
     to_blocks _alen acc k (EOF mx) =
         lift (enumPure1Chunk [S.empty] (k $ Chunk acc)) >>= flip idone (EOF mx)
 
-    to_blocks  alen acc k (Chunk c)
-        -- if it it empty, we flush,
-        -- else if it fits, we accumulate,
-        -- else if the accumulator is empty, we break the chunk,
-        -- else we flush the accumulator
-        | S.null c                          = eneeCheckIfDone (liftI . to_blocks 0 []) . k $ Chunk acc
-        | alen + S.length c < maxBlockSize  = liftI $ to_blocks (alen + S.length c) (c:acc) k
+    -- \'Empty list\', in a sense.
+    to_blocks  alen acc k (Chunk NoChunk) = liftI $ to_blocks alen acc k
+
+    to_blocks  alen acc k (Chunk (SpecialChunk c cs))  -- special chunk, encode then flush
+        -- If it fits, flush.
+        | alen + S.length c < maxBlockSize  = eneeCheckIfDone (\k' -> to_blocks 0 [] k' (Chunk cs)) . k $ Chunk (c:acc)
+        -- If nothing is pending, flush the biggest thing that does fit.
         | null acc                       = let (l,r) = S.splitAt maxBlockSize c
-                                           in eneeCheckIfDone (\k' -> to_blocks 0 [] k' (Chunk r)) . k $ Chunk [l]
-        | otherwise                         = eneeCheckIfDone (\k' -> to_blocks 0 [] k' (Chunk c)) . k $ Chunk acc
+                                           in eneeCheckIfDone (\k' -> to_blocks 0 [] k' (Chunk (SpecialChunk r cs))) . k $ Chunk [l]
+        -- Otherwise, flush what's pending and think again.
+        | otherwise                         = eneeCheckIfDone (\k' -> to_blocks 0 [] k' (Chunk (SpecialChunk c cs))) . k $ Chunk acc
 
+    to_blocks  alen acc k (Chunk (RecordChunk c cs))
+        -- if it fits, we accumulate,   (XXX needs to consider the fsck'ing length prefix!)
+        | alen + S.length c + 4 < maxBlockSize  = liftI $ to_blocks (alen + S.length c + 4) (c:encLength c:acc) k
+        -- else if nothing's pending, we break the chunk,   (XXX needs to consider the fsck'ing length prefix!)
+        | null acc                       = let (l,r) = S.splitAt (maxBlockSize-4) c
+                                           in eneeCheckIfDone (\k' -> to_blocks 0 [] k' (Chunk (LeftoverChunk r cs))) . k $ Chunk [l, encLength l]
+        -- else we flush the accumulator and think again.
+        | otherwise                         = eneeCheckIfDone (\k' -> to_blocks 0 [] k' (Chunk (RecordChunk c cs))) . k $ Chunk acc
+      where
+        encLength s = let !l = S.length s in S.pack [ fromIntegral (l `shiftR`  0 .&. 0xff)
+                                                    , fromIntegral (l `shiftR`  8 .&. 0xff)
+                                                    , fromIntegral (l `shiftR` 16 .&. 0xff)
+                                                    , fromIntegral (l `shiftR` 24 .&. 0xff) ]
 
+    to_blocks  alen acc k (Chunk (LeftoverChunk c cs))
+        -- if it fits, we accumulate,
+        | alen + S.length c < maxBlockSize  = to_blocks (alen + S.length c) (c:acc) k (Chunk cs)
+        -- else if nothing's pending, we break the chunk,
+        | null acc                       = let (l,r) = S.splitAt maxBlockSize c
+                                           in eneeCheckIfDone (\k' -> to_blocks 0 [] k' (Chunk (LeftoverChunk r cs))) . k $ Chunk [l]
+        -- else we flush the accumulator and think again.
+        | otherwise                         = eneeCheckIfDone (\k' -> to_blocks 0 [] k' (Chunk (LeftoverChunk c cs))) . k $ Chunk acc
 
 -- | Like 'compressBgzf'', with sensible defaults.
-compressBgzf :: MonadIO m => Enumeratee S.ByteString S.ByteString m a
+compressBgzf :: MonadIO m => Enumeratee BgzfChunk S.ByteString m a
 compressBgzf = compressBgzfLv 6
 
-compressBgzfLv :: MonadIO m => Int -> Enumeratee S.ByteString S.ByteString m a
+compressBgzfLv :: MonadIO m => Int -> Enumeratee BgzfChunk S.ByteString m a
 compressBgzfLv lv out =  do
     np <- liftIO $ getNumCapabilities
     compressBgzf' (CompressParams lv (np+2)) out

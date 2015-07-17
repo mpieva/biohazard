@@ -237,19 +237,11 @@ encodeBamUncompressed = encodeBamWith 0
 encodeBamWith :: Int -> BamMeta -> Enumeratee [BamRaw] S.ByteString IO a
 encodeBamWith lv meta = eneeBam ><> compressBgzfLv lv
   where
-    eneeBam  = eneeCheckIfDone (\k -> eneeBam2 . k $ Chunk header)
-    eneeBam2 = eneeCheckIfDone (\k -> eneeBam3 . k $ Chunk S.empty)
-    eneeBam3 = eneeCheckIfDone (liftI . put)
+    eneeBam  = eneeCheckIfDone (\k -> eneeBam2 . k $ Chunk (SpecialChunk header NoChunk))
+    eneeBam2 = eneeCheckIfDone (liftI . put)
 
-    put k (EOF                mx) = idone (liftI k) $ EOF mx
-    put k (Chunk [             ]) = liftI $ put k
-    put k (Chunk (BamRaw _ r:rs)) = eneeCheckIfDone (\k' -> put k' (Chunk rs)) . k $ Chunk r'
-      where
-        l  = S.length r
-        r' = S.cons (fromIntegral (l `shiftR`  0 .&. 0xff)) $
-             S.cons (fromIntegral (l `shiftR`  8 .&. 0xff)) $
-             S.cons (fromIntegral (l `shiftR` 16 .&. 0xff)) $
-             S.cons (fromIntegral (l `shiftR` 24 .&. 0xff)) r
+    put k (EOF   mx) = idone (liftI k) $ EOF mx
+    put k (Chunk rs) = eneeCheckIfDone (liftI . put) . k . Chunk $ foldr (RecordChunk . raw_data) NoChunk rs
 
     header = S.concat . L.toChunks $ runPut putHeader
 
