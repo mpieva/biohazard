@@ -20,8 +20,8 @@ import qualified Data.Vec               as Vec
 
 -- | Simple indel calling.  We don't bother with it too much, so here's
 -- the gist:  We collect variants (simply different variants, details
--- don't matter), so @n@ variants give rise to (n+1)*n/2 GL values.
--- (That's two out of @(n+1)@, the reference allele, represented here as
+-- don't matter), so \(n\) variants give rise to \((n+1)*n/2\) GL values.
+-- (That's two out of \((n+1)\), the reference allele, represented here as
 -- no deletion and no insertion, is there, too.)  To assign these, we
 -- need a likelihood for an observed variant given an assumed genotype.
 --
@@ -31,35 +31,39 @@ import qualified Data.Vec               as Vec
 -- though the real sequence is a different variant.  For variants of
 -- different length, the likelihood is the map quality.  This
 -- corresponds to the assumption that indel errors in sequencing are
--- much less likely than mapping errors.  Since this hardly our
--- priority, the approximations are declared good enough.
+-- much less likely than mapping errors.  Since this is hardly our
+-- priority, the approximations are hereby declared good enough.
 
 simple_indel_call :: Int -> IndelPile -> (GL, [IndelVariant])
-simple_indel_call _ [ ] = (V.empty, [])
-simple_indel_call _ [_] = (V.empty, [])
-simple_indel_call ploidy vars = (simple_call ploidy mkpls vars, vars')
+simple_indel_call      _  [ ] = ( V.empty, [] )
+simple_indel_call      _  [_] = ( V.empty, [] )
+simple_indel_call ploidy vars = ( simple_call ploidy mkpls vars, vars' )
   where
     vars' = Set.toList $ Set.fromList
-            [ IndelVariant d (V_Nuc $ V.fromList $ map db_call i) | (_q,(d,i)) <- vars ]
+                [ IndelVariant (V_Nucs $ V.fromList d)
+                               (V_Nuc  $ V.fromList $ map db_call i)
+                | (_q,(d,i)) <- vars ]
 
-    match = zipWith $ \(DB b q m) n -> let p  = m ! n :-> b
-                                           p' = fromQual q
-                                       in toProb $ p + p' - p * p'
+    match = zipWith $ \(DB b q _ m) n -> let p  = m ! n :-> b
+                                             p' = fromQual q
+                                         in toProb $ p + p' - p * p'
 
-    mkpls (q,(d,i)) = let !q' = qualToProb q
-                      in [ if d /= dr || length i /= V.length ir
-                           then q' else q' + product (match i $ V.toList ir)
-                         | IndelVariant dr (V_Nuc ir) <- vars' ]
+    mkpls :: (Qual, ([Nucleotides], [DamagedBase])) -> [ Prob Double ]
+    mkpls (q,(d,i)) = [ qualToProb q +
+                        if length d /= V.length dr || length i /= V.length ir
+                        then 0 else product (match i $ V.toList ir)
+                      | IndelVariant (V_Nucs dr) (V_Nuc ir) <- vars' ]
 
 -- | Naive SNP call; essentially the GATK model.  We create a function
 -- that computes a likelihood for a given base, then hand over to simple
 -- call.  Since everything is so straight forward, this works even in
 -- the face of damage.
 
-simple_snp_call :: Int -> BasePile -> GL
-simple_snp_call ploidy vars = simple_call ploidy mkpls vars
+simple_snp_call :: Int -> BasePile -> (GL, Nucleotides)
+simple_snp_call ploidy vars = ( simple_call ploidy mkpls vars, ref )
   where
-    mkpls (q, DB b qq m) = [ toProb $ x + pe*(s-x) | n <- [0..3], let x = m ! N n :-> b ]
+    ref = case vars of (_, DB _ _ r _) : _ -> r ; _ -> nucsN
+    mkpls (q, DB b qq _ m) = [ toProb $ x + pe*(s-x) | n <- [0..3], let x = m ! N n :-> b ]
       where
         !p1 = fromQual q
         !p2 = fromQual qq
@@ -136,13 +140,15 @@ mk_snp_gts ploidy = go ploidy alleles
 -- | SNP call according to maq/samtools/bsnp model.  The matrix k counts
 -- how many errors we made, approximately.
 
-maq_snp_call :: Int -> Double -> BasePile -> GL
-maq_snp_call ploidy theta bases = V.fromList $ map l $ mk_snp_gts ploidy
+maq_snp_call :: Int -> Double -> BasePile -> (GL, Nucleotides)
+maq_snp_call ploidy theta bases = (V.fromList $ map l $ mk_snp_gts ploidy, ref)
   where
     -- Bases with effective qualities in order of decreasing(!) quality.
     -- A vector based algorithm may fit here.
     bases' = sortBy (flip $ comparing db_qual)
              [ db { db_qual = mq `min` db_qual db } | (mq,db) <- bases ]
+
+    ref = case bases of (_, DB _ _ r _) : _ -> r ; _ -> nucsN
 
     everynuc :: Vec.Vec4 Nucleotide
     everynuc = nucA :. nucC :. nucG :. nucT :. ()

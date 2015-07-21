@@ -85,15 +85,15 @@ import Prelude hiding ( foldr, foldr1, concat, mapM_, all )
 -- length of a deleted sequence.  The logic is that we look at a base
 -- followed by some indel, and all those indels are combined into a
 -- single insertion and a single deletion.
-data PrimChunks = Seek !Int !PrimBase                           -- ^ skip to position (at start or after N operation)
-                | Indel !Int [DamagedBase] !PrimBase            -- ^ observed deletion and insertion between two bases
+data PrimChunks = Seek Int PrimBase                             -- ^ skip to position (at start or after N operation)
+                | Indel [Nucleotides] [DamagedBase] PrimBase    -- ^ observed deletion and insertion between two bases
                 | EndOfRead                                     -- ^ nothing anymore
   deriving Show
 
-data PrimBase = Base { _pb_wait   :: !Int                       -- ^ number of bases to wait due to a deletion
-                     , _pb_likes  :: !DamagedBase               -- ^ four likelihoods
-                     , _pb_mapq   :: !Qual                      -- ^ map quality
-                     , _pb_rev    :: !Bool                      -- ^ reverse strand?
+data PrimBase = Base { _pb_wait   :: Int                        -- ^ number of bases to wait due to a deletion
+                     , _pb_likes  :: DamagedBase                -- ^ four likelihoods
+                     , _pb_mapq   :: Qual                       -- ^ map quality
+                     , _pb_rev    :: Bool                       -- ^ reverse strand?
                      , _pb_chunks :: PrimChunks }               -- ^ more chunks
   deriving Show
 
@@ -107,27 +107,25 @@ data PrimBase = Base { _pb_wait   :: !Int                       -- ^ number of b
 -- Unfortunately, none of this can be rolled into something more simple,
 -- because damage and sequencing error behave so differently.
 
-data DamagedBase = DB { db_call :: {-# UNPACK #-} !Nucleotide
-                      , db_qual :: {-# UNPACK #-} !Qual
-                      , db_dmg  :: {-# UNPACK #-} !Mat44D }
+data DamagedBase = DB { db_call :: {-# UNPACK #-} !Nucleotide           -- ^ called base
+                      , db_qual :: {-# UNPACK #-} !Qual                 -- ^ quality of called base
+                      , db_ref  :: {-# UNPACK #-} !Nucleotides          -- ^ reference base from MD field
+                      , db_dmg  :: {-# UNPACK #-} !Mat44D }             -- ^ damage matrix
 
 instance Show DamagedBase where
-    showsPrec _ (DB n q _) = shows n . (:) '@' . shows q
+    showsPrec _ (DB n q _ _) = shows n . (:) '@' . shows q
 
 
 -- | Decomposes a BAM record into chunks suitable for piling up.  We
--- pick apart the CIGAR field, and combine it with sequence and quality
--- as appropriate.  We ignore the @MD@ field, even if it is present.
--- Clipped bases are removed/skipped as appropriate.  We also ignore the
--- reference allele, in fact, we don't even know it, which nicely avoids
--- any possible reference bias by construction.  But we do apply a
--- substitution matrix to each base, which must be supplied along with
--- the read.
+-- pick apart the CIGAR and MD fields, and combine them with sequence
+-- and quality as appropriate.  Clipped bases are removed/skipped as
+-- appropriate.  We also do apply a substitution matrix to each base,
+-- which must be supplied along with the read.
 
 decompose :: BamRaw -> [Mat44D] -> PrimChunks
 decompose br matrices
     | br_isUnmapped br || br_rname br == invalidRefseq = EndOfRead
-    | otherwise = firstBase (br_pos br) 0 0 matrices
+    | otherwise = firstBase (br_pos br) 0 0 (br_get_md br) matrices
   where
     !max_cig = br_n_cigar_op br
     !max_seq = br_l_seq br
@@ -139,7 +137,7 @@ decompose br matrices
     -- and BAQ.  If QUAL is invalid, we replace it (arbitrarily) with
     -- 23 (assuming a rather conservative error rate of ~0.5%), BAQ is
     -- added to QUAL, and MAPQ is an upper limit for effective quality.
-    get_seq :: Int -> Mat44D -> DamagedBase
+    get_seq :: Int -> Nucleotides -> Mat44D -> DamagedBase
     get_seq i = case br_seq_at br i of                              -- nucleotide
             b | b == nucsA -> DB nucA qe
               | b == nucsC -> DB nucC qe
@@ -150,33 +148,61 @@ decompose br matrices
         !q = case br_qual_at br i of Q 0xff -> Q 30 ; x -> x        -- quality; invalid (0xff) becomes 30
         !q' | i >= B.length baq = q                                 -- no BAQ available
             | otherwise = Q (unQ q + (B.index baq i - 64))          -- else correct for BAQ
-        !qe = min q' mapq                                          -- use MAPQ as upper limit
+        !qe = min q' mapq                                           -- use MAPQ as upper limit
+
+    get_seq' :: Int -> Mat44D -> DamagedBase
+    get_seq' i = case br_seq_at br i of                              -- nucleotide
+            b | b == nucsA -> DB nucA qe nucsA
+              | b == nucsC -> DB nucC qe nucsC
+              | b == nucsG -> DB nucG qe nucsG
+              | b == nucsT -> DB nucT qe nucsT
+              | otherwise  -> DB nucA (Q 0) b
+      where
+        !q = case br_qual_at br i of Q 0xff -> Q 30 ; x -> x        -- quality; invalid (0xff) becomes 30
+        !q' | i >= B.length baq = q                                 -- no BAQ available
+            | otherwise = Q (unQ q + (B.index baq i - 64))          -- else correct for BAQ
+        !qe = min q' mapq                                           -- use MAPQ as upper limit
 
     -- Look for first base following the read's start or a gap (CIGAR
     -- code N).  Indels are skipped, since these are either bugs in the
     -- aligner or the aligner getting rid of essentially unalignable
     -- bases.
-    firstBase :: Int -> Int -> Int -> [Mat44D] -> PrimChunks
-    firstBase !_   !_  !_  [        ] = EndOfRead
-    firstBase !pos !is !ic mms@(m:ms)
+    firstBase :: Int -> Int -> Int -> [MdOp] -> [Mat44D] -> PrimChunks
+    firstBase !_   !_  !_    _ [        ] = EndOfRead
+    firstBase !pos !is !ic mds mms@(m:ms)
         | is >= max_seq || ic >= max_cig = EndOfRead
         | otherwise = case br_cigar_at br ic of
-            (Ins,cl) ->            firstBase  pos (cl+is) (ic+1) mms
-            (SMa,cl) ->            firstBase  pos (cl+is) (ic+1) mms
-            (Del,cl) ->            firstBase (pos+cl) is  (ic+1) mms
-            (Nop,cl) ->            firstBase (pos+cl) is  (ic+1) mms
-            (HMa, _) ->            firstBase  pos     is  (ic+1) mms
-            (Pad, _) ->            firstBase  pos     is  (ic+1) mms
-            (Mat, 0) ->            firstBase  pos     is  (ic+1) mms
-            (Mat, _) -> Seek pos $ nextBase 0 pos     is   ic 0 m ms
+            (Ins,cl) ->            firstBase  pos (cl+is) (ic+1) mds mms
+            (SMa,cl) ->            firstBase  pos (cl+is) (ic+1) mds mms
+            (Del,cl) ->            firstBase (pos+cl) is  (ic+1) (drop_del cl mds) mms
+            (Nop,cl) ->            firstBase (pos+cl) is  (ic+1) mds mms
+            (HMa, _) ->            firstBase  pos     is  (ic+1) mds mms
+            (Pad, _) ->            firstBase  pos     is  (ic+1) mds mms
+            (Mat, 0) ->            firstBase  pos     is  (ic+1) mds mms
+            (Mat, _) -> Seek pos $ nextBase 0 pos     is   ic 0  mds m ms
+      where
+        drop_del n (MdDel ns : mds')
+            | n < length ns = MdDel (drop n ns) : mds'
+            | n > length ns = drop_del (n - length ns) mds'
+            | otherwise     = mds'
+        drop_del _ mds'     = mds'
 
 
     -- Generate likelihoods for the next base.  When this gets called,
     -- we are looking at an M CIGAR operation and all the subindices are
     -- valid.
-    nextBase :: Int -> Int -> Int -> Int -> Int -> Mat44D -> [Mat44D] -> PrimBase
-    nextBase !wt !pos !is !ic !io m ms = Base wt (get_seq is m) mapq (br_isReversed br)
-                                       $ nextIndel  [] 0 (pos+1) (is+1) ic (io+1) ms
+    nextBase :: Int -> Int -> Int -> Int -> Int -> [MdOp] -> Mat44D -> [Mat44D] -> PrimBase
+    nextBase !wt !pos !is !ic !io mds m ms = case mds of
+        [              ] -> nextBase' (Just nucsN) [ ]
+        MdRep ref : mds' -> nextBase' (Just ref)   mds'
+        MdNum   1 : mds' -> nextBase'  Nothing     mds'
+        MdNum   n : mds' -> nextBase'  Nothing    (MdNum (n-1) : mds')
+        MdDel   _ : _    -> nextBase' (Just nucsN) mds
+
+      where
+        nextBase' ref mds' =
+            Base wt (maybe (get_seq' is) (get_seq is) ref m) mapq (br_isReversed br) $
+                nextIndel  [] [] (pos+1) (is+1) ic (io+1) mds' ms
 
 
     -- Look for the next indel after a base.  We collect all indels (I
@@ -186,26 +212,32 @@ decompose br matrices
     -- isn't valid in the middle of a read (H and S), but then what
     -- would we do about it anyway?  Just ignoring it is much easier and
     -- arguably at least as correct.
-    nextIndel :: [[DamagedBase]] -> Int -> Int -> Int -> Int -> Int -> [Mat44D] -> PrimChunks
-    nextIndel _   _   !_   !_  !_  !_  [        ] = EndOfRead
-    nextIndel ins del !pos !is !ic !io mms@(m:ms)
+    nextIndel :: [[DamagedBase]] -> [Nucleotides] -> Int -> Int -> Int -> Int -> [MdOp] -> [Mat44D] -> PrimChunks
+    nextIndel _   _   !_   !_  !_  !_   _  [        ] = EndOfRead
+    nextIndel ins del !pos !is !ic !io mds mms@(m:ms)
         | is >= max_seq || ic >= max_cig = EndOfRead
         | otherwise = case br_cigar_at br ic of
-            (Ins,cl) ->             nextIndel (isq cl) del   pos (cl+is) (ic+1) 0 (drop cl mms)
-            (SMa,cl) ->             nextIndel  ins     del   pos (cl+is) (ic+1) 0 (drop cl mms)
-            (Del,cl) ->             nextIndel  ins (cl+del) (pos+cl) is  (ic+1) 0 mms
-            (Pad, _) ->             nextIndel  ins     del   pos     is  (ic+1) 0 mms
-            (HMa, _) ->             nextIndel  ins     del   pos     is  (ic+1) 0 mms
-            (Nop,cl) ->             firstBase               (pos+cl) is  (ic+1)   mms  -- ends up generating a 'Seek'
-            (Mat,cl) | io == cl  -> nextIndel  ins     del   pos     is  (ic+1) 0 mms
-                     | otherwise -> indel del out $ nextBase del pos is   ic  io m ms  -- ends up generating a 'Base'
+            (Ins,cl) ->             nextIndel (isq cl) del   pos (cl+is) (ic+1) 0 mds (drop cl mms)
+            (SMa,cl) ->             nextIndel  ins     del   pos (cl+is) (ic+1) 0 mds (drop cl mms)
+            (Del,cl) ->             nextIndel  ins (dsq++del) (pos+cl) is  (ic+1) 0 mds' mms
+                where (dsq,mds') = split_del cl mds
+            (Pad, _) ->             nextIndel  ins     del   pos     is  (ic+1) 0 mds mms
+            (HMa, _) ->             nextIndel  ins     del   pos     is  (ic+1) 0 mds mms
+            (Nop,cl) ->             firstBase               (pos+cl) is  (ic+1)   mds mms  -- ends up generating a 'Seek'
+            (Mat,cl) | io == cl  -> nextIndel  ins     del   pos     is  (ic+1) 0 mds mms
+                     | otherwise -> indel del out $ nextBase (length del) pos is   ic  io mds m ms  -- ends up generating a 'Base'
       where
         indel d o k = rlist o `seq` Indel d o k
         out    = concat $ reverse ins
-        isq cl = zipWith ($) [ get_seq i | i <- [is..is+cl-1] ] (take cl mms) : ins
+        isq cl = zipWith ($) [ get_seq i gap | i <- [is..is+cl-1] ] (take cl mms) : ins
         rlist [] = ()
         rlist (a:as) = a `seq` rlist as
 
+        split_del n (MdDel ns : mds')
+            | n < length ns = (take n ns, MdDel (drop n ns) : mds')
+            | n > length ns = let (ns', mds'') = split_del (n - length ns) mds' in (ns++ns', mds'')
+            | otherwise     = (ns, mds')
+        split_del n mds'    = (replicate n nucsN, mds')
 
 -- | Statistics about a genotype call.  Probably only useful for
 -- fitlering (so not very useful), but we keep them because it's easy to
@@ -243,16 +275,22 @@ instance Monoid CallStats where
 
 type GL = U.Vector (Prob Double)
 
-newtype V_Nuc = V_Nuc (U.Vector Nucleotide) deriving (Eq, Ord, Show)
+newtype V_Nuc  = V_Nuc  (U.Vector Nucleotide)  deriving (Eq, Ord, Show)
+newtype V_Nucs = V_Nucs (U.Vector Nucleotides) deriving (Eq, Ord, Show)
 
-data IndelVariant = IndelVariant { deleted_bases  :: {-# UNPACK #-} !Int
+data IndelVariant = IndelVariant { deleted_bases  :: {-# UNPACK #-} !V_Nucs
                                  , inserted_bases :: {-# UNPACK #-} !V_Nuc }
   deriving (Eq, Ord, Show)
 
--- Both types of piles carry along the map quality.  We'll only need it
--- in the case of Indels.
-type BasePile  = [( Qual,        DamagedBase   )]   -- a list of encountered bases
-type IndelPile = [( Qual, (Int, [DamagedBase]) )]   -- a list of indel variants
+
+-- | Map quality and a list of encountered bases, with damage
+-- information and reference base if known.
+type BasePile  = [( Qual,                  DamagedBase   )]
+
+-- | Map quality and a list of encountered indel variants.  The deletion
+-- has the reference sequence, if known, an insertion has the inserted
+-- sequence with damage information.
+type IndelPile = [( Qual, ([Nucleotides], [DamagedBase]) )]   -- a list of indel variants
 
 -- | Running pileup results in a series of piles.  A 'Pile' has the
 -- basic statistics of a 'VarCall', but no GL values and a pristine list
@@ -269,7 +307,7 @@ data Pile' a b = Pile { p_refseq     :: {-# UNPACK #-} !Refseq
   deriving Show
 
 type Pile  = Pile' (BasePile, BasePile) IndelPile
-type Calls = Pile' GL (GL, [IndelVariant])
+type Calls = Pile' (GL, Nucleotides) (GL, [IndelVariant])
 
 -- | The pileup enumeratee takes 'BamRaw's, decomposes them, interleaves
 -- the pieces appropriately, and generates 'Pile's.  The output will
@@ -431,7 +469,7 @@ pileup'' = do
     -- because actual indel calling will want to know how many reads /did not/
     -- show the variant.  However, if no reads show any variant, and here is the
     -- first place where we notice that, the pile is useless.
-    let uninteresting (_,(d,i)) = d == 0 && null i
+    let uninteresting (_,(d,i)) = null d && null i
     unless (null fin_bp && all uninteresting fin_ip) . yield $
         Pile rs po fin_bs (partitionPairEithers fin_bp) fin_is fin_ip
 
@@ -473,7 +511,7 @@ p'check_waiting = do
 -- are removed, and everything else is added to the fresh /active/
 -- queue.
 p'scan_active :: PileM m (( CallStats, [( Qual, Either DamagedBase DamagedBase )] ),
-                          ( CallStats, [( Qual, (Int, [DamagedBase]) )] ))
+                          ( CallStats, [( Qual, ([Nucleotides], [DamagedBase]) )] ))
 p'scan_active =
     consume_active (mempty, mempty) $
         \(!bpile, !ipile) (Base wt qs mq str pchunks) ->

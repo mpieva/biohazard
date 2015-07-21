@@ -5,9 +5,10 @@ import Bio.Base
 import Bio.Bam.Pileup
 import Control.Applicative
 import Data.Aeson
-import Data.Avro hiding ((.=))
+import Data.Avro hiding ( (.=) )
 import Data.Binary.Builder
 import Data.Binary.Get
+import Data.List ( intersperse )
 import Data.Monoid
 import Data.MiniFloat
 
@@ -33,6 +34,7 @@ data GenoCallBlock = GenoCallBlock
 data GenoCallSite = GenoCallSite
     { snp_stats         :: {-# UNPACK #-} !CallStats
     , snp_likelihoods   :: {-# UNPACK #-} !(U.Vector Mini) -- B.ByteString?
+    , ref_allele        :: {-# UNPACK #-} !Nucleotides
     , indel_stats       :: {-# UNPACK #-} !CallStats
     , indel_variants    :: [ IndelVariant ]
     , indel_likelihoods :: {-# UNPACK #-} !(U.Vector Mini) } -- B.ByteString?
@@ -49,10 +51,24 @@ compact_likelihoods = U.map $ float2mini . negate . unPr
 deriveAvros [ ''GenoCallBlock, ''GenoCallSite, ''CallStats, ''IndelVariant ]
 
 instance Avro V_Nuc where
-    toSchema        _ = return $ object [ "type" .= String "bytes", "doc" .= String "A,C,G,T" ]
+    toSchema        _ = return $ object [ "type" .= String "bytes", "doc" .= String doc ]
+      where doc = T.pack $ intersperse ',' $ show $ [minBound .. maxBound :: Nucleotide]
     toBin   (V_Nuc v) = encodeIntBase128 (U.length v) <> U.foldr ((<>) . singleton . unN) mempty v
     fromBin           = decodeIntBase128 >>= \l -> V_Nuc . U.fromListN l . map N . B.unpack <$> getByteString l
     toAvron (V_Nuc v) = String . T.pack . map w2c . U.toList $ U.map unN v
+
+instance Avro V_Nucs where
+    toSchema         _ = return $ object [ "type" .= String "bytes", "doc" .= String doc ]
+      where doc = T.pack $ intersperse ',' $ show $ [minBound .. maxBound :: Nucleotides]
+    toBin   (V_Nucs v) = encodeIntBase128 (U.length v) <> U.foldr ((<>) . singleton . unNs) mempty v
+    fromBin            = decodeIntBase128 >>= \l -> V_Nucs . U.fromListN l . map Ns . B.unpack <$> getByteString l
+    toAvron (V_Nucs v) = String . T.pack . map w2c . U.toList $ U.map unNs v
+
+instance Avro Nucleotides where
+    toSchema _ = return $ String "int"
+    toBin      = encodeIntBase128 . unNs
+    fromBin    = Ns <$> decodeIntBase128
+    toAvron    = Number . fromIntegral . unNs
 
 instance Avro Mini where
     toSchema _ = return $ String "int"
