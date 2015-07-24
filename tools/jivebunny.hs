@@ -19,9 +19,9 @@
 --  - Multiple passes of the EM algorithm.  (Done.)
 --  - Start with a naive mix, to avoid arguments.  (Done.)
 --  - Final calling pass from BAM to BAM.  (Done.)
---  - Auxillary statistics:  composition of the mix, false assignment
---    matrix or rates per read group, maximum achievable false
---    assignment rates.
+--  - Auxillary statistics:  composition of the mix (Done.), false
+--    assignment rates per read group, maximum achievable false
+--    assignment rates (Done.)
 
 import Bio.Bam
 import Bio.Util ( showNum )
@@ -30,6 +30,7 @@ import Control.Monad ( when, unless, forM_ )
 import Data.Aeson
 import Data.Bits
 import Data.Char ( chr )
+import Data.Hashable
 import Data.List ( foldl' )
 import Data.Monoid
 import Data.Vector.Unboxed.Deriving
@@ -72,7 +73,11 @@ import qualified Data.Vector.Generic.Mutable    as VGM
 -- the base ("ACGTN" = [0,1,3,2,7]), the lower five bits are the quality,
 -- clamped to 31.
 
-newtype Index = Index Word64 deriving Storable
+newtype Index = Index Word64 deriving (Storable, Eq)
+
+instance Hashable Index where
+    hashWithSalt salt (Index x) = hashWithSalt salt x
+    hash (Index x) = hash x
 
 instance Show Index where
     show (Index x) = [ "ACTGNNNN" !! fromIntegral b | i <- [56,48..0], let b = (x `shiftR` (i+5)) .&. 0x7 ]
@@ -132,10 +137,11 @@ subsam2vector sz = liftIO (VGM.new sz) >>= go 0
                                             when (p < sz) $ VGM.write mv p a
                                 go (i+1) mv
 
-data Both = Both { p7is :: U.Vector Index
-                 , p7ns :: V.Vector T.Text
-                 , p5is :: U.Vector Index
-                 , p5ns :: V.Vector T.Text }
+data IndexTab = IndexTab { unique_indices :: U.Vector Index
+                         , canonical_names :: V.Vector T.Text
+                         , alias_names :: HM.HashMap T.Text Int }
+
+data Both = Both { p7is :: IndexTab, p5is :: IndexTab }
 
 instance FromJSON Both where
     parseJSON = withObject "toplevel object expected" $ \v ->
@@ -145,12 +151,13 @@ instance FromJSON Both where
         parse_assocs = withObject "association list expected" $ \o ->
                             sequence [ (,) k <$> withText "sequence expected" (return . T.encodeUtf8) v | (k,v) <- HM.toList o ]
 
-        both as7 as5 = Both (U.fromList is7') (V.fromList ns7) (U.fromList is5') (V.fromList ns5)
+        both as7 as5 = Both (canonical as7) (canonical as5)
           where
-            (ns7,is7) = unzip as7
-            (ns5,is5) = unzip as5
-            is7' = map fromS is7
-            is5' = map fromS is5
+            canonical pairs =
+                let hm = HM.toList $ HM.fromListWith (++) [ (fromS v,[k]) | (k,v) <- pairs ]
+                in IndexTab (U.fromList $ map fst hm)
+                            (V.fromList $ map (head . snd) hm)
+                            (HM.fromList $ [ (k,i) | (i, ks) <- zip [0..] (map snd hm), k <- ks ])
 
 data RG = RG { rgid :: B.ByteString
              , rgi7 :: Int
@@ -167,13 +174,13 @@ data RG = RG { rgid :: B.ByteString
 -- probably work better, however, absent such a LIMS, tables are easier
 -- to come by.
 
-readRGdefns :: V.Vector T.Text -> V.Vector T.Text -> T.Text -> [ RG ]
-readRGdefns p7ns p5ns = map repack . filter (not . null) . map (T.split (=='\t'))
+readRGdefns :: HM.HashMap T.Text Int -> HM.HashMap T.Text Int -> T.Text -> [ RG ]
+readRGdefns p7is p5is = map repack . filter (not . null) . map (T.split (=='\t'))
                       . dropWhile ("#" `T.isPrefixOf`) . T.lines
   where
-    repack (rg:p7:p5:tags) = case V.elemIndex p7 p7ns of
+    repack (rg:p7:p5:tags) = case HM.lookup p7 p7is of
         Nothing -> error $ "unknown P7 index " ++ show p7
-        Just i7 -> case V.elemIndex p5 p5ns of
+        Just i7 -> case HM.lookup p5 p5is of
             Nothing -> error $ "unknown P5 index " ++ show p5
             Just i5 -> RG (T.encodeUtf8 rg) i7 i5 (map repack1 tags)
     repack ws = error $ "short RG line " ++ show (T.intercalate "\t" ws)
@@ -216,50 +223,71 @@ naiveMix (n7,n5) total = VS.replicate vecsize (fromIntegral total / fromIntegral
 -- likelihoods from the provided prior and accumulates them onto the
 -- posterior.
 unmix1 :: U.Vector Index -> U.Vector Index -> Mix -> MMix -> (Index, Index) -> IO ()
-unmix1 p7 p5 prior acc (x,y) = do
+unmix1 p7 p5 prior acc (x,y) =
     let !m7 = VS.fromListN (U.length p7) . map (phredPow . match x) $ U.toList p7
         !l5 = (U.length p5 + padding) .&. complement padding
         !m5 = VS.fromListN l5 $ map (phredPow . match y) (U.toList p5) ++ repeat 0
 
     -- *sigh*, Vector doesn't fuse well.  Gotta hand it over to gcc.  :-(
-    VSM.unsafeWith acc                  $ \pw ->
-        VS.unsafeWith prior             $ \pv ->
-            VS.unsafeWith m7            $ \q7 ->
-                VS.unsafeWith m5        $ \q5 ->
-                    c_unmix_acc1 pw pv q7 (fromIntegral $ VS.length m7)
-                                       q5 (fromIntegral $ l5 `div` succ padding)
+    in VSM.unsafeWith acc                                           $ \pw ->
+       VS.unsafeWith prior                                          $ \pv ->
+       VS.unsafeWith m7                                             $ \q7 ->
+       VS.unsafeWith m5                                             $ \q5 ->
+       c_unmix_total pv q7 (fromIntegral $ VS.length m7)
+                        q5 (fromIntegral $ l5 `div` succ padding)
+                        nullPtr nullPtr                           >>= \total ->
+       c_unmix_qual pw pv q7 (fromIntegral $ VS.length m7)
+                          q5 (fromIntegral $ l5 `div` succ padding)
+                          total 0 0                               >>= \_qual ->
+       return ()    -- the quality is meaningless here
 
-foreign import ccall unsafe "c_unmix_acc1"
-    c_unmix_acc1 :: Ptr Double ->               -- accumulator (mutable)
-                    Ptr Double ->               -- prior mix
-                    Ptr Double -> CInt ->       -- P7 scores, length
-                    Ptr Double -> CInt -> IO () -- P5 scores, length
+foreign import ccall unsafe "c_unmix_total"
+    c_unmix_total :: Ptr Double                     -- prior mix
+                  -> Ptr Double -> CUInt            -- P7 scores, length
+                  -> Ptr Double -> CUInt            -- P5 scores, length/32
+                  -> Ptr CUInt -> Ptr CUInt         -- out: ML P7 index, P5 index
+                  -> IO Double                      -- total likelihood
+
+foreign import ccall unsafe "c_unmix_qual"
+    c_unmix_qual :: Ptr Double                      -- posterior mix, mutable accumulator
+                 -> Ptr Double                      -- prior mix
+                 -> Ptr Double -> CUInt             -- P7 scores, length
+                 -> Ptr Double -> CUInt             -- P5 scores, length/32
+                 -> Double                          -- total likelihood
+                 -> CUInt -> CUInt                  -- maximizing P7 index, P5 index
+                 -> IO Double                       -- posterior probability for any other assignment
 
 -- | Matches an index against both p7 and p5 lists, computes MAP
 -- assignment and quality score.
-class1 :: U.Vector Index -> U.Vector Index -> Mix -> (Index, Index) -> (Double,Int,Int)
-class1 p7 p5 prior (x,y) =
+class1 :: HM.HashMap (Int,Int) (B.ByteString, VSM.IOVector Double)
+       -> U.Vector Index -> U.Vector Index
+       -> Mix -> (Index, Index) -> IO (Double, Int, Int)
+class1 rgs p7 p5 prior (x,y) =
     let !m7 = VS.fromListN (U.length p7) . map (phredPow . match x) $ U.toList p7
         !l5 = (U.length p5 + padding) .&. complement padding
         !m5 = VS.fromListN l5 $ map (phredPow . match y) (U.toList p5) ++ repeat 0
 
     -- *sigh*, Vector doesn't fuse well.  Gotta hand it over to gcc.  :-(
-    in unsafePerformIO              $
-       alloca                       $ \pi7 ->
-       alloca                       $ \pi5 ->
-       VS.unsafeWith prior          $ \pv ->
-       VS.unsafeWith m7             $ \q7 ->
-       VS.unsafeWith m5             $ \q5 ->
-       (,,) <$> c_class1 pv q7 (fromIntegral $ VS.length m7)
-                            q5 (fromIntegral $ l5 `div` succ padding) pi7 pi5
-            <*> (fromIntegral <$> peek pi7) <*> (fromIntegral <$> peek pi5)
+    in alloca                                                       $ \pi7 ->
+       alloca                                                       $ \pi5 ->
+       VS.unsafeWith prior                                          $ \pv ->
+       VS.unsafeWith m7                                             $ \q7 ->
+       VS.unsafeWith m5                                             $ \q5 ->
+       c_unmix_total pv q7 (fromIntegral $ VS.length m7)
+                        q5 (fromIntegral $ l5 `div` succ padding)
+                        pi7 pi5                                   >>= \total ->
+       peek pi7                                                   >>= \i7 ->
+       peek pi5                                                   >>= \i5 ->
+       withDirt (fromIntegral i7, fromIntegral i5)                  $ \pw ->
+       c_unmix_qual pw pv q7 (fromIntegral $ VS.length m7)
+                          q5 (fromIntegral $ l5 `div` succ padding)
+                          total i7 i5                             >>= \qual ->
+       return ( qual, fromIntegral i7, fromIntegral i5 )
+  where
+    withDirt ix k = case HM.lookup ix rgs of
+            Just (_,dirt) -> VSM.unsafeWith dirt k
+            Nothing       -> k nullPtr
 
-foreign import ccall unsafe "c_class1"
-    c_class1 :: Ptr Double ->               -- prior mix
-                Ptr Double -> CInt ->       -- P7 scores, length
-                Ptr Double -> CInt ->       -- P5 scores, length
-                Ptr CInt -> Ptr CInt ->     -- OUT i7, i5
-                IO Double                   -- posterior prob(?)
 
 phredPow :: Word64 -> Double
 phredPow x = exp $ -0.1 * log 10 * fromIntegral x
@@ -325,28 +353,36 @@ main :: IO ()
 main = do
     (opts, files, errs) <- getOpt Permute options <$> getArgs
     unless (null errs) $ mapM_ (hPutStrLn stderr) errs >> exitFailure
-    when (null files) $ hPutStrLn stderr "no input files." >> exitFailure
     Conf{..} <- foldl (>>=) defaultConf opts
+    when (null files) $ hPutStrLn stderr "no input files." >> exitFailure
     add_pg <- addPG $ Just version
 
     let notice  = case cf_loudness of Quiet -> \_ -> return () ; _ -> hPutStr stderr
         info    = case cf_loudness of Loud  -> hPutStr stderr ;  _ -> \_ -> return ()
 
     Just Both{..} <- fmap decodeStrict' $ B.readFile cf_index_list
-    rgdefs <- concatMap (readRGdefns p7ns p5ns) . (:) default_rgs <$> mapM T.readFile cf_readgroups
-    notice $ "Got " ++ showNum (U.length p7is) ++ " P7 indices and "
-                    ++ showNum (U.length p5is) ++ " P5 indices.\n"
+    rgdefs <- concatMap (readRGdefns (alias_names p7is) (alias_names p5is)) . (:) default_rgs <$> mapM T.readFile cf_readgroups
+    notice $ "Got " ++ showNum (U.length (unique_indices p7is)) ++ " unique P7 indices and "
+                    ++ showNum (U.length (unique_indices p5is)) ++ " unique P5 indices.\n"
     notice $ "Declared " ++ showNum (length rgdefs) ++ " read groups.\n"
 
-    let !rgs     = HM.fromList [ ((i7,i5),rg) | RG !rg !i7 !i5 _ <- rgdefs ]
-        inspect = inspect' rgs p7ns p5ns
+    !rgs <- do let n7    = U.length $ unique_indices p7is
+                   n5    = U.length $ unique_indices p5is
+                   vsize = n7 * ((n5+padding) .&. complement padding)
+                   dup_error x y = error $ "Read groups " ++ show (fst x) ++ " and "
+                                        ++ show (fst y) ++ " have the same indices."
+               HM.fromListWith dup_error <$> sequence
+                    [ VSM.replicate vsize (0::Double) >>= \dirt -> return ((i7,i5),(rg,dirt))
+                    | RG !rg !i7 !i5 _ <- rgdefs ]
+
+    let inspect = inspect' rgs (canonical_names p7is) (canonical_names p5is)
 
     ixvec <- concatInputs files >=> run $ gather 50000 notice info
     notice $ "Got " ++ showNum (U.length ixvec) ++ " index pairs.\n"
 
     notice "decomposing mix "
-    let loop !n v = do v' <- iterEM ixvec p7is p5is v
-                       case cf_loudness of Loud   -> inspect v'
+    let loop !n v = do v' <- iterEM ixvec (unique_indices p7is) (unique_indices p5is) v
+                       case cf_loudness of Loud   -> inspect 20 v'
                                            Normal -> hPutStr stderr "."
                                            Quiet  -> return ()
                        let d = VS.foldl' (\a -> max a . abs) 0 $ VS.zipWith (-) v v'
@@ -356,18 +392,21 @@ main = do
                                                       else "\nmixture ratios converged.\n")
                                     return v'
 
-    mix <- loop (50::Int) $ naiveMix (U.length p7is, U.length p5is) (U.length ixvec)
+    mix <- loop (50::Int) $ naiveMix (U.length $ unique_indices p7is, U.length $ unique_indices p5is) (U.length ixvec)
 
     case cf_loudness of
         Quiet  -> return ()
-        _ -> do inspect mix
+        _ -> do hPutStrLn stderr "\nfinal mixture estimate:"
+                inspect (max 20 $ length rgs * 2) mix
                 hPutStrLn stderr "\nmaximum achievable scores:"
-                forM_ rgdefs $ \RG{..} ->
-                    let (p,_,_) = class1 p7is p5is mix (p7is U.! rgi7, p5is U.! rgi5)
-                        q = negate . round $ 10 / log 10 * log p :: Int
-                    in T.hprint stderr "{}: {}\n"
-                            ( T.left 12 ' ' $ T.decodeUtf8 rgid
-                            , T.left 3 ' ' $ TB.singleton 'Q' <> TB.decimal q )
+                let maxlen = maximum $ map (B.length . rgid) rgdefs
+                forM_ rgdefs $ \RG{..} -> do
+                    (p,_,_) <- class1 HM.empty (unique_indices p7is) (unique_indices p5is) mix
+                                      (unique_indices p7is U.! rgi7, unique_indices p5is U.! rgi5)
+                    let q = negate . round $ 10 / log 10 * log p :: Int
+                    T.hprint stderr "{}: {}\n"
+                            ( T.left maxlen ' ' $ T.decodeUtf8 rgid
+                            , T.left      3 ' ' $ TB.singleton 'Q' <> TB.decimal q )
 
     case cf_output of
         Nothing  -> return ()
@@ -375,35 +414,36 @@ main = do
                         let hdr' = hdr { meta_other_shit =
                                           [ os | os@(x,y,_) <- meta_other_shit hdr, x /= 'R' || y /= 'G' ] ++
                                           HM.elems (HM.fromList [ (rgid, ('R','G', ('I','D',rgid):tags)) | RG{..} <- rgdefs ] ) }
-                        in mapStream (\br ->
+                        in mapStreamM (\br -> do
                                 let x = fromTags "XI" "YI" br
                                     y = fromTags "XJ" "YJ" br
-                                    (p,i7,i5) = class1 p7is p5is mix (x,y)
-                                    q = negate . round $ 10 / log 10 * log p
+                                (p,i7,i5) <- class1 rgs (unique_indices p7is) (unique_indices p5is) mix (x,y)
+                                let q = negate . round $ 10 / log 10 * log p
                                     b = decodeBamEntry br
                                     b' = b { b_exts = M.delete "Z0" . M.delete "Z2" . M.insert "Z1" (Int q)
                                                     $ case HM.lookup (i7,i5) rgs of
-                                                        Nothing -> M.delete "RG" $ b_exts b
-                                                        Just rg -> M.insert "RG" (Text rg) $ b_exts b }
-                                in encodeBamEntry b') =$
+                                                        Nothing     -> M.delete "RG" $ b_exts b
+                                                        Just (rg,_) -> M.insert "RG" (Text rg) $ b_exts b }
+                                return $ encodeBamEntry b') =$
                            progress "writing " info (meta_refs hdr) =$
                            out (add_pg hdr')
 
+    -- XXX need to print top list of pollutants per read group
 
-inspect' :: HM.HashMap (Int,Int) B.ByteString -> V.Vector T.Text -> V.Vector T.Text -> Mix -> IO ()
-inspect' rgs n7 n5 mix = do
+inspect' :: HM.HashMap (Int,Int) (B.ByteString, t) -> V.Vector T.Text -> V.Vector T.Text -> Int -> Mix -> IO ()
+inspect' rgs n7 n5 num mix = do
     hPutStrLn stderr []
     getClockTime >>= hPutStrLn stderr . show
     v <- U.unsafeThaw $ U.fromListN (VS.length mix) $ zip [0..] $ VS.toList mix
-    V.partialSortBy (\(_,a) (_,b) -> compare b a) v 20
+    V.partialSortBy (\(_,a) (_,b) -> compare b a) v num
     v' <- U.unsafeFreeze v
-    U.forM_ (U.take 20 v') $ \(i,n) -> do
+    U.forM_ (U.take num v') $ \(i,n) -> do
        let (i7, i5) = i `quotRem` ((V.length n5 + padding) .&. complement padding)
        T.hprint stderr "{}, {}: {} {} \n"
             ( T.left 7 ' ' $ n7 V.! i7
             , T.left 7 ' ' $ n5 V.! i5
             , T.left 8 ' ' $ T.fixed 2 n
             , case HM.lookup (i7,i5) rgs of
-                Nothing -> ""
-                Just rg -> T.concat [ "(", T.decodeUtf8 rg, ")" ] )
+                Nothing     -> ""
+                Just (rg,_) -> T.concat [ "(", T.decodeUtf8 rg, ")" ] )
 
