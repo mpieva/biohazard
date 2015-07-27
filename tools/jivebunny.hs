@@ -46,7 +46,6 @@ import System.Directory ( getHomeDirectory )
 import System.Environment ( getProgName, getArgs )
 import System.Exit
 import System.IO
-import System.IO.Unsafe ( unsafePerformIO )
 import System.Random ( randomRIO )
 import System.Time ( getClockTime )
 
@@ -406,7 +405,7 @@ main = do
                     let q = negate . round $ 10 / log 10 * log p :: Int
                     T.hprint stderr "{}: {}\n"
                             ( T.left maxlen ' ' $ T.decodeUtf8 rgid
-                            , T.left      3 ' ' $ TB.singleton 'Q' <> TB.decimal q )
+                            , T.left      3 ' ' $ TB.singleton 'Q' <> TB.decimal (max 0 q) )
 
     case cf_output of
         Nothing  -> return ()
@@ -429,6 +428,31 @@ main = do
                            out (add_pg hdr')
 
     -- XXX need to print top list of pollutants per read group
+    hPutStrLn stderr "\ntopmost pollutants:"
+    let maxlen = maximum $ map (B.length . rgid) rgdefs
+        n7 = canonical_names p7is
+        n5 = canonical_names p5is
+
+    forM_ (HM.toList rgs) $ \(ixs, (rgid,dirt_)) -> do
+        dirt <- VS.unsafeFreeze dirt_
+        let num = 7
+            total = VS.sum dirt
+
+        v <- U.unsafeThaw . U.fromListN (VS.length dirt) . zip [0..] . VS.toList $ dirt
+        V.partialSortBy (\(_,a) (_,b) -> compare b a) v num     -- meh.
+        v' <- U.unsafeFreeze v
+        let fmt_one (i,n) =
+               let (i7, i5) = i `quotRem` ((V.length n5 + padding) .&. complement padding)
+                   chunk = T.build "{}% {}/{}{}" ( T.fixed 2 (100*n/total), n7 V.! i7,  n5 V.! i5
+                                                 , case HM.lookup (i7,i5) rgs of
+                                                         Nothing     -> ""
+                                                         Just (rg,_) -> T.concat [ " (", T.decodeUtf8 rg, ")" ] )
+               in if ixs == (i7,i5) then id else (:) chunk
+        when (total >= 1) $ T.hprint stderr "{} ({}): {}\n"
+                ( T.left maxlen ' ' $ T.decodeUtf8 rgid
+                , T.fixed 0 total
+                , foldr1 (\a b -> a <> TB.fromText ", " <> b) $
+                  U.foldr fmt_one [] $ U.take num v' )
 
 inspect' :: HM.HashMap (Int,Int) (B.ByteString, t) -> V.Vector T.Text -> V.Vector T.Text -> Int -> Mix -> IO ()
 inspect' rgs n7 n5 num mix = do
