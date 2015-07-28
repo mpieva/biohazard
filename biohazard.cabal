@@ -245,18 +245,15 @@ Executable jivebunny
   Main-is:             jivebunny.hs
   Hs-Source-Dirs:      tools
   C-sources:           src/cbits/jive.c
-  CC-options:          -std=c99 -mavx -O3 -ffast-math -ftree-vectorizer-verbose=1
+  CC-options:          -std=c99 -O3 -ffast-math
   Ghc-options:         -Wall -auto-all
   Build-depends:       aeson,
                        base,
                        biohazard,
                        bytestring,
                        containers,
-                       -- deepseq,
                        directory,
                        hashable >= 1.0 && < 1.3,
-                       -- iteratee,
-                       old-time,
                        random,
                        text,
                        text-format,

@@ -10,8 +10,6 @@
 -- Posterior call is done.  All kinds of errors can be rolled into one
 -- quality score.
 --
--- TODO
---
 --  - Input layer to gather index sequences.  (Done.)
 --  - Input layer to gather read group defs.  (Done.)
 --  - First pass to gather data.  Any index read shall be represented
@@ -20,7 +18,7 @@
 --  - Start with a naive mix, to avoid arguments.  (Done.)
 --  - Final calling pass from BAM to BAM.  (Done.)
 --  - Auxillary statistics:  composition of the mix (Done.), false
---    assignment rates per read group, maximum achievable false
+--    assignment rates per read group (Done.), maximum achievable false
 --    assignment rates (Done.)
 
 import Bio.Bam
@@ -31,7 +29,7 @@ import Data.Aeson
 import Data.Bits
 import Data.Char ( chr )
 import Data.Hashable
-import Data.List ( foldl' )
+import Data.List ( foldl', sortOn )
 import Data.Monoid
 import Data.Vector.Unboxed.Deriving
 import Data.Version ( showVersion )
@@ -47,7 +45,6 @@ import System.Environment ( getProgName, getArgs )
 import System.Exit
 import System.IO
 import System.Random ( randomRIO )
-import System.Time ( getClockTime )
 
 import qualified Data.ByteString as B
 import qualified Data.HashMap.Strict as HM
@@ -120,7 +117,7 @@ gather num say mumble hdr = case hdr_sorting $ meta_hdr hdr of
                 go subsam2vector
 
     go k = filterStream (\b -> not (br_isPaired b) || br_isFirstMate b) =$
-           progress "reading " mumble (meta_refs hdr) =$
+           progressNum "reading " mumble =$
            mapStream (fromTags "XI" "YI" &&& fromTags "XJ" "YJ") =$ k num
 
 
@@ -210,12 +207,15 @@ type MMix = VSM.IOVector Double
 padding :: Int
 padding = 31
 
+stride' :: Int -> Int
+stride' n5 = (n5 + padding) .&. complement padding
+
 -- | Computing the naively assumed mix when nothing is known:  uniform
 -- distribution.
 naiveMix :: (Int,Int) -> Int -> Mix
 naiveMix (n7,n5) total = VS.replicate vecsize (fromIntegral total / fromIntegral bins)
   where
-    !vecsize = n7 * ((n5+padding) .&. complement padding)
+    !vecsize = n7 * stride' n5
     !bins    = n7 * n5
 
 -- | Matches an index against both p7 and p5 lists, computes posterior
@@ -224,7 +224,7 @@ naiveMix (n7,n5) total = VS.replicate vecsize (fromIntegral total / fromIntegral
 unmix1 :: U.Vector Index -> U.Vector Index -> Mix -> MMix -> (Index, Index) -> IO ()
 unmix1 p7 p5 prior acc (x,y) =
     let !m7 = VS.fromListN (U.length p7) . map (phredPow . match x) $ U.toList p7
-        !l5 = (U.length p5 + padding) .&. complement padding
+        !l5 = stride' (U.length p5)
         !m5 = VS.fromListN l5 $ map (phredPow . match y) (U.toList p5) ++ repeat 0
 
     -- *sigh*, Vector doesn't fuse well.  Gotta hand it over to gcc.  :-(
@@ -263,7 +263,7 @@ class1 :: HM.HashMap (Int,Int) (B.ByteString, VSM.IOVector Double)
        -> Mix -> (Index, Index) -> IO (Double, Int, Int)
 class1 rgs p7 p5 prior (x,y) =
     let !m7 = VS.fromListN (U.length p7) . map (phredPow . match x) $ U.toList p7
-        !l5 = (U.length p5 + padding) .&. complement padding
+        !l5 = stride' (U.length p5)
         !m5 = VS.fromListN l5 $ map (phredPow . match y) (U.toList p5) ++ repeat 0
 
     -- *sigh*, Vector doesn't fuse well.  Gotta hand it over to gcc.  :-(
@@ -302,11 +302,18 @@ iterEM pairs p7 p5 prior = do
 
 data Loudness = Quiet | Normal | Loud
 
+unlessQuiet :: Monad m => Loudness -> m () -> m ()
+unlessQuiet Quiet _ = return ()
+unlessQuiet     _ k = k
+
 data Conf = Conf {
         cf_index_list :: FilePath,
         cf_output     :: Maybe (BamMeta -> Iteratee [BamRaw] IO ()),
+        cf_stats_hdl  :: Handle,
+        cf_num_stats  :: Int -> Int,
         cf_threshold  :: Double,
         cf_loudness   :: Loudness,
+        cf_samplesize :: Int,
         cf_readgroups :: [FilePath] }
 
 defaultConf :: IO Conf
@@ -314,8 +321,11 @@ defaultConf = do home <- getHomeDirectory
                  return $ Conf {
                         cf_index_list = home ++ "/usr/share/lims/global_index_list.json",
                         cf_output     = Nothing,
+                        cf_stats_hdl  = stdout,
+                        cf_num_stats  = \l -> max 20 $ l * 5 `div` 4,
                         cf_threshold  = 0.000005,
                         cf_loudness   = Normal,
+                        cf_samplesize = 50000,
                         cf_readgroups = [] }
 
 options :: [OptDescr (Conf -> IO Conf)]
@@ -324,18 +334,22 @@ options = [
     Option "I" ["index-database"] (ReqArg set_index_db "FILE") "Read index database from FILE",
     Option "r" ["read-groups"]    (ReqArg set_rgs      "FILE") "Read read group definitions from FILE",
     Option [ ] ["threshold"]      (ReqArg set_thresh   "FRAC") "Iterate till uncertainty is below FRAC",
+    Option [ ] ["sample"]         (ReqArg set_sample    "NUM") "Sample NUM reads for mixture estimation",
+    Option [ ] ["components"]     (ReqArg set_compo     "NUM") "Print NUM components of the mixture",
     Option "v" ["verbose"]        (NoArg             set_loud) "Print more diagnostic messages",
     Option "q" ["quiet"]          (NoArg            set_quiet) "Print fewer diagnostic messages",
     Option "h?" ["help", "usage"] (NoArg        (const usage)) "Print this message and exit",
     Option "V"  ["version"]       (NoArg         (const vrsn)) "Display version number and exit" ]
   where
-    set_output  "-" c = return $ c { cf_output = Just $ pipeRawBamOutput }
+    set_output  "-" c = return $ c { cf_output = Just $ pipeRawBamOutput, cf_stats_hdl = stderr }
     set_output   fp c = return $ c { cf_output = Just $ writeRawBamFile fp }
     set_index_db fp c = return $ c { cf_index_list = fp }
     set_rgs      fp c = return $ c { cf_readgroups = fp : cf_readgroups c }
     set_loud        c = return $ c { cf_loudness = Loud }
     set_quiet       c = return $ c { cf_loudness = Quiet }
     set_thresh    a c = readIO a >>= \x -> return $ c { cf_threshold = x }
+    set_sample    a c = readIO a >>= \x -> return $ c { cf_samplesize = x }
+    set_compo     a c = readIO a >>= \x -> return $ c { cf_num_stats = const x }
 
     usage = do pn <- getProgName
                putStrLn $ usageInfo ("Usage: " ++ pn ++ " [options] [bam-files]\n" ++
@@ -365,10 +379,12 @@ main = do
                     ++ showNum (U.length (unique_indices p5is)) ++ " unique P5 indices.\n"
     notice $ "Declared " ++ showNum (length rgdefs) ++ " read groups.\n"
 
-    !rgs <- do let n7    = U.length $ unique_indices p7is
-                   n5    = U.length $ unique_indices p5is
-                   vsize = n7 * ((n5+padding) .&. complement padding)
-                   dup_error x y = error $ "Read groups " ++ show (fst x) ++ " and "
+    let n7     = U.length $ unique_indices p7is
+        n5     = U.length $ unique_indices p5is
+        stride = stride' n5
+        vsize  = n7 * stride
+
+    !rgs <- do let dup_error x y = error $ "Read groups " ++ show (fst x) ++ " and "
                                         ++ show (fst y) ++ " have the same indices."
                HM.fromListWith dup_error <$> sequence
                     [ VSM.replicate vsize (0::Double) >>= \dirt -> return ((i7,i5),(rg,dirt))
@@ -376,12 +392,12 @@ main = do
 
     let inspect = inspect' rgs (canonical_names p7is) (canonical_names p5is)
 
-    ixvec <- concatInputs files >=> run $ gather 50000 notice info
+    ixvec <- concatInputs files >=> run $ gather cf_samplesize notice info
     notice $ "Got " ++ showNum (U.length ixvec) ++ " index pairs.\n"
 
     notice "decomposing mix "
     let loop !n v = do v' <- iterEM ixvec (unique_indices p7is) (unique_indices p5is) v
-                       case cf_loudness of Loud   -> inspect 20 v'
+                       case cf_loudness of Loud   -> hPutStrLn stderr [] >> inspect stderr 20 v'
                                            Normal -> hPutStr stderr "."
                                            Quiet  -> return ()
                        let d = VS.foldl' (\a -> max a . abs) 0 $ VS.zipWith (-) v v'
@@ -393,81 +409,97 @@ main = do
 
     mix <- loop (50::Int) $ naiveMix (U.length $ unique_indices p7is, U.length $ unique_indices p5is) (U.length ixvec)
 
-    case cf_loudness of
-        Quiet  -> return ()
-        _ -> do hPutStrLn stderr "\nfinal mixture estimate:"
-                inspect (max 20 $ length rgs * 2) mix
-                hPutStrLn stderr "\nmaximum achievable scores:"
-                let maxlen = maximum $ map (B.length . rgid) rgdefs
-                forM_ rgdefs $ \RG{..} -> do
-                    (p,_,_) <- class1 HM.empty (unique_indices p7is) (unique_indices p5is) mix
-                                      (unique_indices p7is U.! rgi7, unique_indices p5is U.! rgi5)
-                    let q = negate . round $ 10 / log 10 * log p :: Int
-                    T.hprint stderr "{}: {}\n"
-                            ( T.left maxlen ' ' $ T.decodeUtf8 rgid
-                            , T.left      3 ' ' $ TB.singleton 'Q' <> TB.decimal (max 0 q) )
+    unlessQuiet cf_loudness $ do
+            T.hPutStrLn cf_stats_hdl "\nfinal mixture estimate:"
+            inspect cf_stats_hdl (cf_num_stats $ length rgs) mix
+
+    let maxlen = maximum $ map (B.length . rgid) rgdefs
+        ns7 = canonical_names p7is
+        ns5 = canonical_names p5is
+        num = 7
 
     case cf_output of
-        Nothing  -> return ()
-        Just out -> concatInputs files >=> run $ \hdr ->
-                        let hdr' = hdr { meta_other_shit =
-                                          [ os | os@(x,y,_) <- meta_other_shit hdr, x /= 'R' || y /= 'G' ] ++
-                                          HM.elems (HM.fromList [ (rgid, ('R','G', ('I','D',rgid):tags)) | RG{..} <- rgdefs ] ) }
-                        in mapStreamM (\br -> do
-                                let x = fromTags "XI" "YI" br
-                                    y = fromTags "XJ" "YJ" br
-                                (p,i7,i5) <- class1 rgs (unique_indices p7is) (unique_indices p5is) mix (x,y)
-                                let q = negate . round $ 10 / log 10 * log p
-                                    b = decodeBamEntry br
-                                    b' = b { b_exts = M.delete "Z0" . M.delete "Z2" . M.insert "Z1" (Int q)
-                                                    $ case HM.lookup (i7,i5) rgs of
-                                                        Nothing     -> M.delete "RG" $ b_exts b
-                                                        Just (rg,_) -> M.insert "RG" (Text rg) $ b_exts b }
-                                return $ encodeBamEntry b') =$
-                           progress "writing " info (meta_refs hdr) =$
-                           out (add_pg hdr')
+        Nothing  -> do  unlessQuiet cf_loudness $ do
+                            T.hPutStrLn cf_stats_hdl "\nmaximum achievable quality, top pollutants:"
+                            forM_ (sortOn (fst.snd) $ HM.toList rgs) $ \((i7,i5), (rgid,_)) -> do
+                                (p,_,_) <- class1 HM.empty (unique_indices p7is) (unique_indices p5is) mix
+                                                  (unique_indices p7is U.! i7, unique_indices p5is U.! i5)
 
-    -- XXX need to print top list of pollutants per read group
-    hPutStrLn stderr "\ntopmost pollutants:"
-    let maxlen = maximum $ map (B.length . rgid) rgdefs
-        n7 = canonical_names p7is
-        n5 = canonical_names p5is
+                                let qmax = negate . round $ 10 / log 10 * log p :: Int
+                                T.hprint cf_stats_hdl "{}: {}\n"
+                                        ( T.left maxlen ' ' $ T.decodeUtf8 rgid
+                                        , T.left      4 ' ' $ TB.singleton 'Q' <> TB.decimal (max 0 qmax) )
 
-    forM_ (HM.toList rgs) $ \(ixs, (rgid,dirt_)) -> do
-        dirt <- VS.unsafeFreeze dirt_
-        let num = 7
-            total = VS.sum dirt
+        Just out -> do  concatInputs files >=> run $ \hdr ->
+                            let hdr' = hdr { meta_other_shit =
+                                              [ os | os@(x,y,_) <- meta_other_shit hdr, x /= 'R' || y /= 'G' ] ++
+                                              HM.elems (HM.fromList [ (rgid, ('R','G', ('I','D',rgid):tags)) | RG{..} <- rgdefs ] ) }
+                            in mapStreamM (\br -> do
+                                    let x = fromTags "XI" "YI" br
+                                        y = fromTags "XJ" "YJ" br
+                                    (p,i7,i5) <- class1 rgs (unique_indices p7is) (unique_indices p5is) mix (x,y)
+                                    let q = negate . round $ 10 / log 10 * log p
+                                        b = decodeBamEntry br
+                                        b' = b { b_exts = M.delete "Z0" . M.delete "Z2" . M.insert "Z1" (Int q)
+                                                        $ case HM.lookup (i7,i5) rgs of
+                                                            Nothing     -> M.delete "RG" $ b_exts b
+                                                            Just (rg,_) -> M.insert "RG" (Text rg) $ b_exts b }
+                                    return $ encodeBamEntry b') =$
+                               progressNum "writing " info =$
+                               out (add_pg hdr')
 
-        v <- U.unsafeThaw . U.fromListN (VS.length dirt) . zip [0..] . VS.toList $ dirt
-        V.partialSortBy (\(_,a) (_,b) -> compare b a) v num     -- meh.
-        v' <- U.unsafeFreeze v
-        let fmt_one (i,n) =
-               let (i7, i5) = i `quotRem` ((V.length n5 + padding) .&. complement padding)
-                   chunk = T.build "{}% {}/{}{}" ( T.fixed 2 (100*n/total), n7 V.! i7,  n5 V.! i5
-                                                 , case HM.lookup (i7,i5) rgs of
-                                                         Nothing     -> ""
-                                                         Just (rg,_) -> T.concat [ " (", T.decodeUtf8 rg, ")" ] )
-               in if ixs == (i7,i5) then id else (:) chunk
-        when (total >= 1) $ T.hprint stderr "{} ({}): {}\n"
-                ( T.left maxlen ' ' $ T.decodeUtf8 rgid
-                , T.fixed 0 total
-                , foldr1 (\a b -> a <> TB.fromText ", " <> b) $
-                  U.foldr fmt_one [] $ U.take num v' )
+                        unlessQuiet cf_loudness $ do
+                            T.hPutStrLn cf_stats_hdl "\nmaximum achievable and average quality, top pollutants:"
+                            forM_ (sortOn (fst.snd) $ HM.toList rgs) $ \((i7,i5), (rgid,dirt_)) -> do
+                                dirt <- VS.freeze dirt_
+                                (p,_,_) <- class1 HM.empty (unique_indices p7is) (unique_indices p5is) mix
+                                                  (unique_indices p7is U.! i7, unique_indices p5is U.! i5)
 
-inspect' :: HM.HashMap (Int,Int) (B.ByteString, t) -> V.Vector T.Text -> V.Vector T.Text -> Int -> Mix -> IO ()
-inspect' rgs n7 n5 num mix = do
-    hPutStrLn stderr []
-    getClockTime >>= hPutStrLn stderr . show
+                                let total  = VS.sum dirt
+                                    others = VS.sum $ VS.ifilter (\i _ -> i /= i7 * stride + i5) dirt
+                                    qmax = negate . round $ 10 / log 10 * log p :: Int
+                                    qavg = negate . round $ 10 / log 10 * log (others/total) :: Int
+
+                                v <- U.unsafeThaw . U.fromListN (VS.length dirt) . zip [0..] . VS.toList $ dirt
+                                V.sortBy (\(_,a) (_,b) -> compare b a) v -- meh.
+                                v' <- U.unsafeFreeze v
+
+                                let fmt_one (i,n) =
+                                        let (i7', i5') = i `quotRem` stride
+                                            chunk = T.build "{}% {}/{}{}"
+                                                            ( T.fixed 2 (100*n), ns7 V.! i7', ns5 V.! i5'
+                                                            , case HM.lookup (i7',i5') rgs of
+                                                                Nothing     -> ""
+                                                                Just (rg,_) -> T.concat [ " (", T.decodeUtf8 rg, ")" ] )
+                                        in if (i7 == i7' && i5 == i5') || i5' >= n5 then id else (:) chunk
+
+                                when (total >= 1) $ T.hprint cf_stats_hdl "{}: {}/{} ({}); {}\n"
+                                        ( T.left maxlen ' ' $ T.decodeUtf8 rgid
+                                        , T.left      4 ' ' $ TB.singleton 'Q' <> TB.decimal (max 0 qavg)
+                                        , T.left      4 ' ' $ TB.singleton 'Q' <> TB.decimal (max 0 qmax)
+                                        , showNum (round total :: Int)
+                                        , foldr1 (\a b -> a <> TB.fromText ", " <> b) $
+                                          take num $ U.foldr fmt_one [] v' )
+
+inspect' :: HM.HashMap (Int,Int) (B.ByteString, t) -> V.Vector T.Text -> V.Vector T.Text -> Handle -> Int -> Mix -> IO ()
+inspect' rgs n7 n5 hdl num mix = do
     v <- U.unsafeThaw $ U.fromListN (VS.length mix) $ zip [0..] $ VS.toList mix
-    V.partialSortBy (\(_,a) (_,b) -> compare b a) v num
+    V.partialSortBy (\(_,a) (_,b) -> compare b a) v num         -- meh.
     v' <- U.unsafeFreeze v
+
+    let total  = U.sum . U.map snd $ v'
+        others = U.sum . U.map snd . U.drop num $ v'
+
     U.forM_ (U.take num v') $ \(i,n) -> do
-       let (i7, i5) = i `quotRem` ((V.length n5 + padding) .&. complement padding)
-       T.hprint stderr "{}, {}: {} {} \n"
+       let (i7, i5) = i `quotRem` stride' (V.length n5)
+       T.hprint hdl "{}, {}: {}% {}\n"
             ( T.left 7 ' ' $ n7 V.! i7
             , T.left 7 ' ' $ n5 V.! i5
-            , T.left 8 ' ' $ T.fixed 2 n
+            , T.left 8 ' ' $ T.fixed 3 (100 * n / total)
             , case HM.lookup (i7,i5) rgs of
                 Nothing     -> ""
                 Just (rg,_) -> T.concat [ "(", T.decodeUtf8 rg, ")" ] )
+
+    T.hprint hdl "      all others: {}%\n" $
+        T.Only ( T.left 8 ' ' $ T.fixed 3 (100 * others / total) )
 

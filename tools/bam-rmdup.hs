@@ -205,7 +205,7 @@ main = do
                      filterStream (\br -> (keep_unaligned || is_aligned br) &&
                                           (keep_improper || is_proper br) &&
                                           eff_len br >= min_len) ><>
-                     progress "Rmdup at " debug refs'
+                     progressPos "Rmdup at " debug refs'
 
        let (co, ou) = case output of Nothing -> (cheap_collapse', skipToEof)
                                      Just  o -> (collapse, joinI $ wrapSortWith circtable $

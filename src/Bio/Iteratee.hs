@@ -22,6 +22,7 @@ module Bio.Iteratee (
     concatMapStream,
     mapMaybeStream,
     parMapChunksIO,
+    progressNum,
 
     I.mapStream,
     I.takeWhileE,
@@ -66,6 +67,7 @@ module Bio.Iteratee (
     module X ) where
 
 import Bio.Base                             ( findAuxFile )
+import Bio.Util                             ( showNum )
 import Control.Concurrent.Async             ( Async, async, wait, cancel )
 import Control.Monad
 import Control.Monad.Catch
@@ -349,6 +351,18 @@ protectTerm itr = do
     if t then err else itr
   where
     err = error "cowardly refusing to write binary data to terminal"
+
+-- | A simple progress indicator that prints the number of records.
+progressNum :: (MonadIO m, Nullable s, NullPoint s, ListLike s a)
+            => String -> (String -> IO ()) -> Enumeratee s s m b
+progressNum msg put = eneeCheckIfDonePass (icont . go 0)
+  where
+    go !_ k (EOF   mx) = idone (liftI k) (EOF mx)
+    go !n k (Chunk as) = do let !n' = n + LL.length as
+                            when (n `div` 65536 /= n' `div` 65536) . liftIO .
+                                    put $ "\27[K" ++ msg ++ showNum n ++ "\r"
+                            eneeCheckIfDonePass (icont . go n') . k $ Chunk as
+
 
 -- A very simple queue data type.
 -- Invariants: q = QQ l f b --> l == length f + length b

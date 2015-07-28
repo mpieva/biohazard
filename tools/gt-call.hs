@@ -229,7 +229,7 @@ main = do
         mergeInputs combineCoordinates files >=> run $ \hdr ->
             filterStream (not . br_isUnmapped) =$
             filterStream (isValidRefseq . br_rname) =$
-            progress "GT call at " conf_report (meta_refs hdr) =$
+            progressPos "GT call at " conf_report (meta_refs hdr) =$
             by_groups ((==) `on` br_rname) (\br out -> do
                 let sname = sq_name $ getRef (meta_refs hdr) $ br_rname br
                     pl = conf_ploidy sname

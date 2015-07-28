@@ -15,7 +15,7 @@ module Bio.Bam.Raw (
     getBamRaw,
     decodeAnyBam,
     decodeAnyBamFile,
-    progress,
+    progressPos,
 
     concatInputs,
     concatDefaultInputs,
@@ -610,8 +610,8 @@ appendStringExt [u,v] value = Mut $ \_ l fs -> return (l,f:fs,())
 appendStringExt _ _ = error "illegal key, must be two characters"
 
 -- | A simple progress indicator that prints sequence id and position.
-progress :: MonadIO m => String -> (String -> IO ()) -> Refs -> Enumeratee [BamRaw] [BamRaw] m a
-progress msg put refs = eneeCheckIfDonePass (icont . go 0)
+progressPos :: MonadIO m => String -> (String -> IO ()) -> Refs -> Enumeratee [BamRaw] [BamRaw] m a
+progressPos msg put refs = eneeCheckIfDonePass (icont . go 0)
   where
     go !_ k (EOF         mx) = idone (liftI k) (EOF mx)
     go !n k (Chunk    [   ]) = liftI $ go n k
