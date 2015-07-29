@@ -88,6 +88,6 @@ double c_unmix_qual( double *restrict w_
             if( mi7 != i || mi5 != j ) acc += p ;
         }
     }
-    return acc * total ;
+    return acc ;
 }
 
