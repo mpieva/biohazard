@@ -22,6 +22,7 @@ Extra-Source-Files:  man/man7/biohazard.7
                      man/man1/bam-meld.1
                      man/man1/bam-rewrap.1
                      man/man1/bam-rmdup.1
+                     man/man1/jivebunny.1
                      man/man1/mt-anno.1
                      doc/genotyping.tex
 
