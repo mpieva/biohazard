@@ -38,9 +38,8 @@ import Foreign.C.Types
 import Foreign.Marshal.Alloc
 import Foreign.Ptr
 import Foreign.Storable
-import Paths_biohazard ( version )
+import Paths_biohazard ( version, getDataFileName )
 import System.Console.GetOpt
-import System.Directory ( getHomeDirectory )
 import System.Environment ( getProgName, getArgs )
 import System.Exit
 import System.IO
@@ -317,9 +316,9 @@ data Conf = Conf {
         cf_readgroups :: [FilePath] }
 
 defaultConf :: IO Conf
-defaultConf = do home <- getHomeDirectory
+defaultConf = do ixdb <- getDataFileName "index_db.json"
                  return $ Conf {
-                        cf_index_list = home ++ "/usr/share/lims/global_index_list.json",
+                        cf_index_list = ixdb,
                         cf_output     = Nothing,
                         cf_stats_hdl  = stdout,
                         cf_num_stats  = \l -> max 20 $ l * 5 `div` 4,

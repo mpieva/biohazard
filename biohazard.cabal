@@ -15,7 +15,7 @@ License-File:        LICENSE
 
 Author:              Udo Stenzel
 Maintainer:          udo.stenzel@eva.mpg.de
-Copyright:           (C) 2010-2014 Udo Stenzel
+Copyright:           (C) 2010-2015 Udo Stenzel
 
 -- Extra files to be distributed with the package, such as examples or a README.
 Extra-Source-Files:  man/man7/biohazard.7
@@ -25,6 +25,9 @@ Extra-Source-Files:  man/man7/biohazard.7
                      man/man1/jivebunny.1
                      man/man1/mt-anno.1
                      doc/genotyping.tex
+
+Data-Files:          index_db.json
+Data-Dir:            data
 
 Cabal-version:       >=1.9.2
 Build-type:          Custom
@@ -40,7 +43,6 @@ source-repository this
 
 
 Library
-  -- Modules exported by the library.
   Exposed-modules:     Bio.Base,
                        Bio.Align,
                        Bio.Bam,
@@ -64,8 +66,9 @@ Library
                        Bio.PriorityQueue,
                        Bio.TwoBit,
                        Bio.Util,
-                       Data.Avro,
-                       Paths_biohazard
+                       Data.Avro
+                       
+  Other-modules:       Paths_biohazard
   
   -- Packages needed in order to build this package.
   Build-depends:       aeson >= 0.7 && < 0.9,
