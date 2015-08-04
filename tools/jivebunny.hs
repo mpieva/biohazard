@@ -174,13 +174,14 @@ readRGdefns :: HM.HashMap T.Text Int -> HM.HashMap T.Text Int -> T.Text -> [ RG 
 readRGdefns p7is p5is = map repack . filter (not . null) . map (T.split (=='\t'))
                       . dropWhile ("#" `T.isPrefixOf`) . T.lines
   where
+    repack (rg:_) | T.any (\c -> c == '/' || c == ',') rg = error $ "RG name must not contain ',' or '/': " ++ show rg
     repack (rg:p7:p5:tags) = case HM.lookup p7 p7is of
         Nothing -> error $ "unknown P7 index " ++ show p7
         Just i7 -> case HM.lookup p5 p5is of
             Nothing -> error $ "unknown P5 index " ++ show p5
             Just i5 -> RG (T.encodeUtf8 rg) i7 i5 (map repack1 tags)
     repack ws = error $ "short RG line " ++ show (T.intercalate "\t" ws)
-    repack1 w | T.length w > 3 && T.index w 2 == ':' = (T.index w 1, T.index w 2, T.encodeUtf8 $ T.drop 3 w)
+    repack1 w | T.length w > 3 && T.index w 2 == ':' = (T.index w 0, T.index w 1, T.encodeUtf8 $ T.drop 3 w)
               | otherwise = error $ "illegal tag " ++ show w
 
 default_rgs :: T.Text
@@ -313,6 +314,7 @@ data Conf = Conf {
         cf_num_stats  :: Int -> Int,
         cf_threshold  :: Double,
         cf_loudness   :: Loudness,
+        cf_pedantic   :: Bool,
         cf_samplesize :: Int,
         cf_readgroups :: [FilePath] }
 
@@ -325,6 +327,7 @@ defaultConf = do ixdb <- getDataFileName "index_db.json"
                         cf_num_stats  = \l -> max 20 $ l * 5 `div` 4,
                         cf_threshold  = 0.000005,
                         cf_loudness   = Normal,
+                        cf_pedantic   = False,
                         cf_samplesize = 50000,
                         cf_readgroups = [] }
 
@@ -336,6 +339,7 @@ options = [
     Option [ ] ["threshold"]      (ReqArg set_thresh   "FRAC") "Iterate till uncertainty is below FRAC",
     Option [ ] ["sample"]         (ReqArg set_sample    "NUM") "Sample NUM reads for mixture estimation",
     Option [ ] ["components"]     (ReqArg set_compo     "NUM") "Print NUM components of the mixture",
+    Option [ ] ["pedantic"]       (NoArg         set_pedantic) "Be pedantic about read groups",
     Option "v" ["verbose"]        (NoArg             set_loud) "Print more diagnostic messages",
     Option "q" ["quiet"]          (NoArg            set_quiet) "Print fewer diagnostic messages",
     Option "h?" ["help", "usage"] (NoArg        (const usage)) "Print this message and exit",
@@ -347,6 +351,7 @@ options = [
     set_rgs      fp c = return $ c { cf_readgroups = fp : cf_readgroups c }
     set_loud        c = return $ c { cf_loudness = Loud }
     set_quiet       c = return $ c { cf_loudness = Quiet }
+    set_pedantic    c = return $ c { cf_pedantic = True }
     set_thresh    a c = readIO a >>= \x -> return $ c { cf_threshold = x }
     set_sample    a c = readIO a >>= \x -> return $ c { cf_samplesize = x }
     set_compo     a c = readIO a >>= \x -> return $ c { cf_num_stats = const x }
@@ -441,10 +446,12 @@ main = do
                                     (p,i7,i5) <- class1 rgs (unique_indices p7is) (unique_indices p5is) mix (x,y)
                                     let q = negate . round $ 10 / log 10 * log p
                                         b = decodeBamEntry br
+                                        rg = T.encodeUtf8 $ T.concat [ ns7 V.! i7, ",", ns5 V.! i5 ]
                                         b' = b { b_exts = M.delete "Z0" . M.delete "Z2" . M.insert "Z1" (Int q)
                                                         $ case HM.lookup (i7,i5) rgs of
-                                                            Nothing     -> M.delete "RG" $ b_exts b
-                                                            Just (rg,_) -> M.insert "RG" (Text rg) $ b_exts b }
+                                                            Nothing | cf_pedantic -> M.delete "RG" $ b_exts b
+                                                                    | otherwise   -> M.insert "RG" (Text rg) $ b_exts b
+                                                            Just (rgn,_)          -> M.insert "RG" (Text rgn) $ b_exts b }
                                     return $ encodeBamEntry b') =$
                                progressNum "writing " info =$
                                out (add_pg hdr')
@@ -468,7 +475,7 @@ main = do
                                 let fmt_one (i,n) =
                                         let (i7', i5') = i `quotRem` stride
                                             chunk = T.build "{}% {}/{}{}"
-                                                            ( T.fixed 2 (100*n), ns7 V.! i7', ns5 V.! i5'
+                                                            ( T.fixed 2 (100*n/total), ns7 V.! i7', ns5 V.! i5'
                                                             , case HM.lookup (i7',i5') rgs of
                                                                 Nothing     -> ""
                                                                 Just (rg,_) -> T.concat [ " (", T.decodeUtf8 rg, ")" ] )

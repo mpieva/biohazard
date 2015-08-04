@@ -69,6 +69,21 @@ the number of defined read groups, but at least 20 are printed.  Setting
 this to a higher number may be a good idea if you're trying to reverse
 engineer a pipetting accident.
 
+.IP "--pedantic"
+Be pedantic about read groups.  Normally, 
+.I jivebunny
+will assign reads to undeclared read groups by placing the names of the
+two most likely indices into the 
+.I RG
+field.  However, since it is not feasible to provide a header that
+declares all these potential read groups, the BAM file will technically
+be invalid.  
+.I samtools
+will still happily filter on this field, though.  If the
+.I --pedantic
+switch is set, these reads are not assigned to any read group.
+
+
 .IP "--verbose"
 Print progress reports during computation.  The estimation process can
 be observed and a counter runs while reading or writing BAM files.
