@@ -23,13 +23,14 @@
 
 import Bio.Bam
 import Bio.Util ( showNum )
+import Control.Applicative
 import Control.Arrow ( (&&&) )
 import Control.Monad ( when, unless, forM_ )
 import Data.Aeson
 import Data.Bits
 import Data.Char ( chr )
 import Data.Hashable
-import Data.List ( foldl', sortOn )
+import Data.List ( foldl', sortBy )
 import Data.Monoid
 import Data.Vector.Unboxed.Deriving
 import Data.Version ( showVersion )
@@ -410,12 +411,13 @@ main = do
 
     unlessQuiet cf_loudness $ do
             T.hPutStrLn cf_stats_hdl "\nfinal mixture estimate:"
-            inspect cf_stats_hdl (cf_num_stats $ length rgs) mix
+            inspect cf_stats_hdl (cf_num_stats $ HM.size rgs) mix
 
     let maxlen = maximum $ map (B.length . rgid) rgdefs
         ns7 = canonical_names p7is
         ns5 = canonical_names p5is
         num = 7
+        sortOn f = sortBy (\a b -> compare (f a) (f b))
 
     case cf_output of
         Nothing  -> do  unlessQuiet cf_loudness $ do
@@ -474,8 +476,8 @@ main = do
 
                                 when (total >= 1) $ T.hprint cf_stats_hdl "{}: {}/{} ({}); {}\n"
                                         ( T.left maxlen ' ' $ T.decodeUtf8 rgid
-                                        , T.left      4 ' ' $ TB.singleton 'Q' <> TB.decimal (max 0 qavg)
                                         , T.left      4 ' ' $ TB.singleton 'Q' <> TB.decimal (max 0 qmax)
+                                        , T.left      4 ' ' $ TB.singleton 'Q' <> TB.decimal (max 0 qavg)
                                         , showNum (round total :: Int)
                                         , foldr1 (\a b -> a <> TB.fromText ", " <> b) $
                                           take num $ U.foldr fmt_one [] v' )
