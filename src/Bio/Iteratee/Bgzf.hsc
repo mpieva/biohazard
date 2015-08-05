@@ -325,19 +325,19 @@ c_inflateInit2 z a = withCAString #{const_str ZLIB_VERSION} $ \versionStr ->
 foreign import ccall unsafe "zlib.h inflateInit2_" c_inflateInit2_ ::
     Ptr ZStream -> CInt -> Ptr CChar -> CInt -> IO CInt
 
-foreign import ccall safe "zlib.h deflate" c_deflate ::
+foreign import ccall unsafe "zlib.h deflate" c_deflate ::
     Ptr ZStream -> CInt -> IO CInt
 
-foreign import ccall safe "zlib.h inflate" c_inflate ::
+foreign import ccall unsafe "zlib.h inflate" c_inflate ::
     Ptr ZStream -> CInt -> IO CInt
 
-foreign import ccall safe "zlib.h deflateEnd" c_deflateEnd ::
+foreign import ccall unsafe "zlib.h deflateEnd" c_deflateEnd ::
     Ptr ZStream -> IO CInt
 
-foreign import ccall safe "zlib.h inflateEnd" c_inflateEnd ::
+foreign import ccall unsafe "zlib.h inflateEnd" c_inflateEnd ::
     Ptr ZStream -> IO CInt
 
-foreign import ccall safe "zlib.h crc32" c_crc32 ::
+foreign import ccall unsafe "zlib.h crc32" c_crc32 ::
     CULong -> Ptr CChar -> CUInt -> IO CULong
 
 -- ------------------------------------------------------------------------------------------------- utils
@@ -418,7 +418,7 @@ bgzfBlocks = eneeCheckIfDone (liftI . to_blocks 0 [])
 
     to_blocks  alen acc k (Chunk (RecordChunk c cs))
         -- if it fits, we accumulate,   (XXX needs to consider the fsck'ing length prefix!)
-        | alen + S.length c + 4 < maxBlockSize  = liftI $ to_blocks (alen + S.length c + 4) (c:encLength c:acc) k
+        | alen + S.length c + 4 < maxBlockSize  = to_blocks (alen + S.length c + 4) (c:encLength c:acc) k (Chunk cs)
         -- else if nothing's pending, we break the chunk,   (XXX needs to consider the fsck'ing length prefix!)
         | null acc                       = let (l,r) = S.splitAt (maxBlockSize-4) c
                                            in eneeCheckIfDone (\k' -> to_blocks 0 [] k' (Chunk (LeftoverChunk r cs))) . k $ Chunk [l, encLength l]

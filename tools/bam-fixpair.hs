@@ -12,14 +12,14 @@ they aren't.
 
 In the end, the code will work...
 
- - splendidly if mates are already adjacent, in which case everything is
-   streamed.
- - well if the input is sorted properly, in which case most reads
+ - splendidly, if mates are already adjacent, in which case everything
+   is streamed.
+ - well, if the input is sorted properly, in which case most reads
    stream, but improper pairs need to queue until the mate is reached.
- - reasonably if there are occasional lone mates, which will be queued
+ - reasonably, if there are occasional lone mates, which will be queued
    to the very end and sorted by hashed-qname before they are recognized
    and repaired.
- - awkwardly if sorting is violated, flags are wrong or lone mates are
+ - awkwardly, if sorting is violated, flags are wrong or lone mates are
    the rule, because then it degenerates to a full sort by qname.
 
 TODO:

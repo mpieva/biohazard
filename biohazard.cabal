@@ -1,6 +1,6 @@
 -- vim:tw=132
 Name:                biohazard
-Version:             0.5.15
+Version:             0.5.15.1
 Synopsis:            bioinformatics support library
 Description:         This is a collection of modules I separated from
                      various bioinformatics tools.  The hope is to make
@@ -114,14 +114,14 @@ Library
   
 
 -- Test-Suite test-biohazard
-  -- Ghc-options:         -Wall -auto-all -threaded -rtsopts
+  -- Ghc-options:         -Wall -auto-all -threaded -rtsopts -with-rtsopts=-N
   -- Type:                exitcode-stdio-1.0
   -- Main-is:             test-biohazard.hs
 
 Executable afroengineer
   Main-Is:             afroengineer.hs
   Hs-source-dirs:      tools
-  Ghc-options:         -Wall -auto-all
+  Ghc-options:         -Wall -auto-all -threaded -rtsopts -with-rtsopts=-N
   Other-Modules:       Align, SimpleSeed
   Build-Depends:       base,
                        biohazard,
@@ -135,7 +135,7 @@ Executable afroengineer
 Executable bam-fixpair
   Main-is:             bam-fixpair.hs
   Hs-Source-Dirs:      tools
-  Ghc-options:         -Wall -auto-all
+  Ghc-options:         -Wall -auto-all -threaded -rtsopts -with-rtsopts=-N
   Build-depends:       base,
                        binary,
                        biohazard,
@@ -146,7 +146,7 @@ Executable bam-fixpair
 Executable bam-meld
   Main-is:             bam-meld.hs
   Hs-Source-Dirs:      tools
-  Ghc-options:         -Wall -auto-all
+  Ghc-options:         -Wall -auto-all -threaded -rtsopts -with-rtsopts=-N
   Build-depends:       base,
                        biohazard,
                        bytestring,
@@ -155,7 +155,7 @@ Executable bam-meld
 Executable bam-resample
   Main-is:             bam-resample.hs
   Hs-Source-Dirs:      tools
-  Ghc-options:         -Wall -auto-all
+  Ghc-options:         -Wall -auto-all -threaded -rtsopts -with-rtsopts=-N
   Build-depends:       base,
                        biohazard,
                        bytestring,
@@ -164,7 +164,7 @@ Executable bam-resample
 Executable bam-rewrap
   Main-is:             bam-rewrap.hs
   Hs-Source-Dirs:      tools
-  Ghc-options:         -Wall -auto-all
+  Ghc-options:         -Wall -auto-all -threaded -rtsopts -with-rtsopts=-N
   Build-depends:       base,
                        biohazard,
                        bytestring,
@@ -173,7 +173,7 @@ Executable bam-rewrap
 Executable bam-rmdup
   Main-is:             bam-rmdup.hs
   Hs-Source-Dirs:      tools
-  Ghc-options:         -Wall -auto-all
+  Ghc-options:         -Wall -auto-all -threaded -rtsopts -with-rtsopts=-N
   Build-depends:       base,
                        biohazard,
                        bytestring,
@@ -186,7 +186,7 @@ Executable bam-rmdup
 Executable bam-trim
   Main-is:             bam-trim.hs
   Hs-Source-Dirs:      tools
-  Ghc-options:         -Wall -auto-all
+  Ghc-options:         -Wall -auto-all -threaded -rtsopts -with-rtsopts=-N
   Build-depends:       base,
                        biohazard,
                        bytestring
@@ -194,7 +194,7 @@ Executable bam-trim
 Executable count-coverage
   Main-is:             count-coverage.hs
   Hs-Source-Dirs:      tools
-  Ghc-options:         -Wall -auto-all
+  Ghc-options:         -Wall -auto-all -threaded -rtsopts -with-rtsopts=-N
   Build-depends:       base,
                        biohazard,
                        iteratee
@@ -202,7 +202,7 @@ Executable count-coverage
 Executable dmg-est
   Main-is:             dmg-est.hs
   Hs-Source-Dirs:      tools
-  Ghc-options:         -Wall -auto-all -threaded -with-rtsopts=-N3
+  Ghc-options:         -Wall -auto-all -threaded -rtsopts -with-rtsopts=-N
   Other-Modules:       AD
   Build-depends:       async,
                        base,
@@ -213,7 +213,7 @@ Executable dmg-est
 Executable fastq2bam
   Main-is:             fastq2bam.hs
   Hs-Source-Dirs:      tools
-  Ghc-options:         -Wall -auto-all
+  Ghc-options:         -Wall -auto-all -threaded -rtsopts -with-rtsopts=-N
   Build-depends:       base,
                        biohazard,
                        bytestring,
@@ -224,7 +224,7 @@ Executable fastq2bam
 Executable glf-consensus
   Main-is:             glf-consensus.hs
   Hs-Source-Dirs:      tools
-  Ghc-options:         -Wall -auto-all
+  Ghc-options:         -Wall -auto-all -threaded -rtsopts -with-rtsopts=-N
   Build-depends:       base,
                        biohazard,
                        bytestring,
@@ -235,7 +235,7 @@ Executable glf-consensus
 Executable gt-call
   Main-is:             gt-call.hs
   Hs-Source-Dirs:      tools
-  Ghc-options:         -Wall -auto-all
+  Ghc-options:         -Wall -auto-all -threaded -rtsopts -with-rtsopts=-N
   Build-depends:       base,
                        biohazard,
                        bytestring,
@@ -250,7 +250,7 @@ Executable jivebunny
   Hs-Source-Dirs:      tools
   C-sources:           src/cbits/jive.c
   CC-options:          -std=c99 -O3 -ffast-math
-  Ghc-options:         -Wall -auto-all
+  Ghc-options:         -Wall -auto-all -threaded -rtsopts -with-rtsopts=-N
   Build-depends:       aeson,
                        base,
                        biohazard,
@@ -270,7 +270,7 @@ Executable jivebunny
 Executable mt-anno
   Main-Is:             mt-anno.hs
   Hs-Source-Dirs:      tools
-  Ghc-options:         -Wall -auto-all
+  Ghc-options:         -Wall -auto-all -threaded -rtsopts -with-rtsopts=-N
   Other-Modules:       Anno, Seqs, Xlate
   Build-Depends:       base,
                        bytestring,
@@ -280,7 +280,7 @@ Executable mt-anno
 Executable mt-ccheck
   Main-Is:             mt-ccheck.hs
   Hs-Source-Dirs:      tools
-  Ghc-options:         -Wall -auto-all
+  Ghc-options:         -Wall -auto-all -threaded -rtsopts -with-rtsopts=-N
   Build-Depends:       base,
                        bytestring,
                        biohazard,
@@ -290,7 +290,7 @@ Executable mt-ccheck
 executable wiggle-coverage
   Main-is:             wiggle-coverage.hs
   Hs-Source-Dirs:      tools
-  Ghc-options:         -Wall -auto-all
+  Ghc-options:         -Wall -auto-all -threaded -rtsopts -with-rtsopts=-N
   Build-depends:       base,
                        biohazard
 

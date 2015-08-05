@@ -1,6 +1,6 @@
 {-# LANGUAGE BangPatterns #-}
 import Bio.Base
-import Bio.Bam hiding ( progress )
+import Bio.Bam
 import Bio.Iteratee
 import Bio.Iteratee.ZLib
 import Control.Monad
