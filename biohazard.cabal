@@ -128,8 +128,8 @@ Executable redeye-pileup
   Build-depends:       base,
                        biohazard,
                        bytestring,
-                       -- containers,
                        iteratee,
+                       nonlinear-optimization,
                        text,
                        vector
 

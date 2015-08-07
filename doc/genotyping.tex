@@ -148,11 +148,68 @@ k_{i,X_i,H_i} &= k_{i-1,X_i,H_i} + P(H_i | X_i, Q_i, G) \\
 nonsense, since $X_i$ already happened.  So we must condition on it and
 write $P(H_i|X_i,Q_i,G)$.}
 
+\section{Parameter Fitting for Single Sample}
+
+We seek to fit the Allele Frequency Spectrum to a single sample, or in
+other words, to estimate heterozygosity and divergence.  Let $X,Y$ be
+the genotype at some site and $R$ be the reference allele.  Now set:
+
+\begin{equation*}
+P(X,Y|R) = \left\{ \begin{array}{cl}
+    dh/3 & \mbox{if} \quad x \neq y \wedge (x=r \vee y=r) \\
+    d(h-1)/3 & \mbox{if} \quad x=y \wedge x \neq r \\
+    1 - d & \mbox{if} \quad x=y \wedge x=r \\
+    0 & \mbox{otherwise}
+        \end{array} \right.
+\end{equation*}
+
+Here we assume that all heterozygous mutations happen at the same
+uniform rate, and all homozygous mutations at a different uniform rate.
+We declare heterozygous genotypes with two alternative alleles to be
+impossibru, getting us out of the need to fit a third parameter, which
+would have little impact anyway.  We get a divergence of $d$ and a
+heterozygosity of $dh$.  Labelling the genotype likelihoods as $G_{XY}$
+and assuming the reference allele is $A$ for convenience, we can compute
+the likelihood per site:
+
+\begin{align*}
+L &= G_{AA} \left( 1-d \right) + \frac{d(1-h)}{3} \left( G_{CC} + G_{GG} + G_{TT} \right)
+          + \frac{dh}{3} \left( G_{AC} + G_{AG} + G_{AT} \right) \\
+  &= G_{AA} \left( 1-d + d(1-h) \frac{G_{CC} + G_{GG} + G_{TT}}{3 G_{AA}}
+          + dh \frac{G_{AC} + G_{AG} + G_{AT}}{3 G_{AA}} \right)
+\end{align*}
+
+We now accumulate $G_{AA}$ as it is independent of the
+parameters, then extract two values from the formula that we can
+discretize on a log scale, allowing us to tabulate everything in a
+histogram with just two dimensions:
+
+\begin{equation*}
+D_i := \left[ \ln \frac{G_{CC} + G_{GG} + G_{TT}}{3 G_{AA}} \right], \quad
+H_i := \left[ \ln \frac{G_{AC} + G_{AG} + G_{AT}}{3 G_{AA}} \right]
+\end{equation*}
+
+We further set $\delta = \ln \frac{d}{1-d}$ and $\eta = \ln
+\frac{h}{1-h}$, because the log-odds-ratios pose fewer numerical
+problems and provide cleaner confidence intervals.  Thus we recover the
+log-likelihood as follows:
+
+\begin{align*}
+L_l &= - \sum_{i} \ln G_{AA} - \sum_{i} \ln \left( \frac{1}{1+e^\delta} +
+    \frac{e^\delta}{1+e^\delta} \frac{e^\eta}{1+e^\eta} e^{D_i} +
+    \frac{e^\delta}{1+e^\delta} \frac{1}{1+e^\eta} e^{H_i} \right)
+\end{align*}
+
+\idea{Hand-crafting partial derivatives of this equation doesn't seem to
+yield anything that simplifies, so I'm inclined to apply Automatic
+Differentiation and hand it over to my trusty Conjugate Gradient
+solver.}
+
 \section{Testing Method}
 
 \subsection{Handcrafted Data}
 
-To test for egregious bugs, we can write a couple of SMA or BAM files by
+To test for egregious bugs, we can write a couple of SAM or BAM files by
 hand.  This shouldn't really be called a test; it's ordinary, boring
 debugging.
 
@@ -384,9 +441,9 @@ term would grow with the number of genotype \emph{combinations}, which
 is still exponential in the number of samples.
 
 Instead, we take inspiration from SeqEm\cite{seqem}.  We treat the
-allele frequencies $\mathbb{f}$ as hidden parameters, marginalize over
-the genotypes, and maximize the joint probability $P(\mathbb{D},
-\mathbb{f} | \Sigma)$ with respect to the variance-covariance matrix
+allele frequencies $\mathcal{f}$ as hidden parameters, marginalize over
+the genotypes, and maximize the joint probability $P(\mathcal{D},
+\mathcal{f} | \Sigma)$ with respect to the variance-covariance matrix
 $\Sigma$ using an EM algorithm\footnote{Effectively, we estimate the
 allele frequency at every position for every sample.  This is of course
 impossible, but in aggregate makes sense for populations.}.

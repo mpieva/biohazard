@@ -1,4 +1,4 @@
-{-# LANGUAGE RecordWildCards, BangPatterns, OverloadedStrings, FlexibleContexts #-}
+{-# LANGUAGE RecordWildCards, BangPatterns, OverloadedStrings, FlexibleContexts, RankNTypes #-}
 -- Command line driver for simple genotype calling.  We have three
 -- separate steps:  Pileup from a BAM file (or multiple merged files) to
 -- produce likelihoods (and some auxillary statistics).  These are
@@ -27,12 +27,10 @@
 
 -- Calling is always diploid, for maximum flexibility.  We don't really
 -- support higher ploidies, so the worst damage is that we output an
--- overhead of 150% useless likelihood values for the sex chromosomes.
+-- overhead of 150% useless likelihood values for the sex chromosomes
+-- and maybe estimate heterozygosity where there is none.
 
--- XXX Narf... for the parameter estimate, we need the reference.
--- Either supply it, or derive it from the MD field.  Except pileup
--- doesn't implement that.  :(
-
+import AD
 import Bio.Base
 import Bio.Bam.Header
 import Bio.Bam.Raw
@@ -41,23 +39,26 @@ import Bio.Genocall
 import Bio.Genocall.Adna
 import Bio.Genocall.AvroFile
 import Bio.Iteratee
+import Bio.Util                     ( log1p )
 import Control.Applicative
 import Control.Monad
 import Data.Avro
+import Data.Ix
 import System.Console.GetOpt
 import System.Environment
 import System.Exit
 import System.IO
 
 import qualified Data.ByteString.Char8          as S
-import qualified Data.Iteratee                  as I
 import qualified Data.Text.Encoding             as T
+import qualified Data.Vector.Storable           as VS
 import qualified Data.Vector.Unboxed            as U
+import qualified Data.Vector.Unboxed.Mutable    as M
 
 type OIter = Conf -> Refs -> Iteratee [Calls] IO ()
 
 data Conf = Conf {
-    conf_output      :: (OIter -> IO ()) -> IO (),
+    conf_output      :: forall r . (OIter -> IO r) -> IO r,
     conf_damage      :: Maybe (DamageParameters Double),
     conf_loverhang   :: Maybe Double,
     conf_roverhang   :: Maybe Double,
@@ -123,7 +124,7 @@ main = do
             (_, Nothing, Just pr) -> ss_damage $ DP conf_ss_deam conf_ds_deam pr pr 0 0 0
             (_, Just pl, Just pr) -> ss_damage $ DP conf_ss_deam conf_ds_deam pl pr 0 0 0
 
-    conf_output $ \oiter ->
+    (tab,()) <- conf_output $ \oiter ->
         mergeInputs combineCoordinates files >=> run $ \hdr ->
             filterStream (not . br_isUnmapped)                      =$
             filterStream (isValidRefseq . br_rname)                 =$
@@ -133,7 +134,9 @@ main = do
                 let !sname = sq_name $ getRef (meta_refs hdr) rs
                 liftIO $ conf_report $ S.unpack sname
                 mapStream (calls conf_theta) out)                   =$
-            oiter conf (meta_refs hdr)
+            zipStreams tabulateSingle (oiter conf $ meta_refs hdr)
+
+    uncurry estimateSingle tab
 
 
 -- | Ploidy is hardcoded as two here.  Can be changed if the need
@@ -170,16 +173,8 @@ by_groups f k out = do
         Nothing -> return out
         Just b0 -> takeWhileE ((==) b0 . f) =$ k b0 out >>= by_groups f k
 
-output_avro :: Handle -> Conf -> Refs -> Iteratee [Calls] IO ()
-output_avro hdl _cfg refs = compileBlocks refs =$
-                            writeAvroContainer ContainerOpts{..} =$
-                            mapChunksM_ (S.hPut hdl)
-  where
-    objects_per_block = 16      -- XXX should be more?
-    filetype_label = "Genotype Likelihoods V0.1"
 
-
--- Serialize the results from genotype calling in a sensible way.  We
+-- | Serialize the results from genotype calling in a sensible way.  We
 -- write an Avro file, but we add another blocking layer on top so we
 -- don't need to endlessly repeat coordinates.
 
@@ -211,4 +206,79 @@ compileBlocks refs = convStream $ do
 
         rlist [] = ()
         rlist (x:xs) = x `seq` rlist xs
+
+output_avro :: Handle -> Conf -> Refs -> Iteratee [Calls] IO ()
+output_avro hdl _cfg refs = compileBlocks refs =$
+                            writeAvroContainer ContainerOpts{..} =$
+                            mapChunksM_ (S.hPut hdl)
+  where
+    objects_per_block = 16      -- XXX should be more?
+    filetype_label = "Genotype Likelihoods V0.1"
+
+minD, maxD :: Int
+minD = -128 :: Int
+maxD = 127 :: Int
+
+rangeDs :: ((Int,Int), (Int,Int))
+rangeDs = ((minD,minD),(maxD,maxD))
+
+-- | Parameter estimation for a single sample.  The parameters are
+-- divergence and heterozygosity.  We tabulate the data here and do the
+-- estimation afterwards.  Returns the product of the
+-- parameter-independent parts of the likehoods and the histogram
+-- indexed by D and H (see @genotyping.pdf@ for details).
+tabulateSingle :: MonadIO m => Iteratee [Calls] m (Prob Double, U.Vector Int)
+tabulateSingle = do
+    tab <- liftIO $ M.replicate (rangeSize rangeDs) (0 :: Int)
+    (,) <$> foldStreamM (\acc -> accum tab acc . p_snp_pile) 1
+        <*> liftIO (U.unsafeFreeze tab)
+  where
+    -- Need to collect four different GL values, and which is
+    -- which depends on the reference allele.  There is little
+    -- regularity to it, but only four different cases, so I'll just
+    -- expand them by hand.
+    -- PL ~ AA, AC, CC, AG, CG, GG, AT, CT, GT, TT
+    {-# INLINE accum #-}
+    accum !tab !acc ( !gls, !ref )
+        | U.length gls /= 10 = error "Ten GL values expected for SNP!"      -- should not happen
+        | ref == nucsA       = accum' tab acc gls 0 (1,3,6) (2,5,9)
+        | ref == nucsC       = accum' tab acc gls 2 (1,4,7) (0,5,9)
+        | ref == nucsG       = accum' tab acc gls 5 (3,4,8) (0,2,9)
+        | ref == nucsT       = accum' tab acc gls 9 (6,7,8) (0,2,5)
+        | otherwise          = return acc                                   -- unknown reference
+
+    {-# INLINE accum' #-}
+    accum' !tab !acc !gls refi (heti1,heti2,heti3) (alti1,alti2,alti3) = do
+        let g_RR = 3 * U.unsafeIndex gls refi
+            g_RA = U.unsafeIndex gls heti1 + U.unsafeIndex gls heti2 + U.unsafeIndex gls heti3
+            g_AA = U.unsafeIndex gls alti1 + U.unsafeIndex gls alti2 + U.unsafeIndex gls alti3
+
+            d1 = max minD . min maxD . round . unPr $ g_AA / g_RR
+            d2 = max minD . min maxD . round . unPr $ g_RA / g_RR
+            ix = index rangeDs (d1,d2)
+
+        liftIO $ M.read tab ix >>= M.write tab ix . succ
+        return $! acc * g_RR
+
+estimateSingle :: Prob Double -> U.Vector Int -> IO ()
+estimateSingle lk_rr tab = do
+    (fit, res, stats) <- minimize quietParameters 0.0001 llk (U.fromList [0,0])
+    let [delta, eta] = VS.toList fit
+        div = exp delta / (1 + exp delta)
+        het = exp eta / (1 + exp eta) * div
+        lk  = finalValue stats - unPr lk_rr
+    putStrLn $ show res ++ ", " ++ show stats
+    putStrLn $ "Divergence = " ++ show div
+    putStrLn $ "Heterozygosity = " ++ show het
+    putStrLn $ "Log-Likelihood = " ++ show lk
+  where
+    llk :: [AD] -> AD
+    llk [delta,eta] = - sum [ (* fromIntegral num) . unPr $
+                                (1 + Pr delta / Pr (log1p (exp eta)) * (Pr eta * Pr d + Pr h))
+                                / Pr (log1p (exp delta))
+                            | (di,hi) <- range rangeDs
+                            , let num = tab `U.unsafeIndex` index rangeDs (di,hi)
+                                  d   = fromIntegral di
+                                  h   = fromIntegral hi ]
+
 

@@ -151,9 +151,6 @@ combofn :: Int -> V.Vector Seq -> U.Vector Double -> (Double, U.Vector Double)
 combofn lmax brs parms = (x,g)
   where D x g = lk_fun1 lmax (paramVector $ U.toList parms) brs
 
-params :: Parameters
-params = defaultParameters { printFinal = False, verbose = Quiet, maxItersFac = 20 }
-
 lmin :: Int
 lmin = 25
 
@@ -169,7 +166,7 @@ main = do
 
     let lmax = V.maximum $ V.map (U.length . unSeq) brs
         v0 = crude_estimate brs
-        opt v = optimize params 0.0001 v
+        opt v = optimize quietParameters 0.0001 v
                          (VFunction $ lkfun lmax brs)
                          (VGradient $ snd . combofn lmax brs)
                          (Just . VCombined $ combofn lmax brs)

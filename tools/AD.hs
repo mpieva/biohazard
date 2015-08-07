@@ -1,7 +1,8 @@
 {-# LANGUAGE BangPatterns #-}
-module AD ( AD(..), liftD, sqr, lsum, llerp
+module AD ( AD(..), lsum, llerp
           , paramVector, minimize
           , module Numeric.Optimization.Algorithms.HagerZhang05
+          , debugParameters, quietParameters
           ) where
 
 import Bio.Util ( log1p )
@@ -142,4 +143,11 @@ llerp c x y | c == 0.0  = y
             | c == 1.0  = x
             | x >= y    = log     c  + x + log1p ( (1-c)/c * exp (y-x) )
             | otherwise = log1p (-c) + y + log1p ( c/(1-c) * exp (x-y) )
+
+
+quietParameters :: Parameters
+quietParameters = defaultParameters { printFinal = False, verbose = Quiet, maxItersFac = 20 }
+
+debugParameters :: Parameters
+debugParameters = defaultParameters { verbose = Verbose }
 
