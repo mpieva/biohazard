@@ -117,17 +117,16 @@ getFwdSubseqWith raw ofs n_blocks m_blocks nt start len =
     do_mask (takeOverlap start n_blocks `mergeblocks` takeOverlap start m_blocks) start .
     take len . drop (start .&. 3) .
     B.foldr toDNA [] .
-    B.take (len `div` 4 +1) .
+    B.take (len `shiftR` 2 + 2) .       -- needed?!
     B.drop (fromIntegral $ ofs + (start `shiftR` 2)) $ raw
   where
     toDNA b = (++) [ 3 .&. (b `shiftR` x) | x <- [6,4,2,0] ]
 
     do_mask            _ _ [] = []
     do_mask [          ] _ ws = map (`nt` None) ws
-    do_mask ((s,l,m):is) p ws = let l0 = (p-s) `max` 0 in
-                                map (`nt` None) (take l0 ws) ++
-                                map (`nt`    m) (take l (drop l0 ws)) ++
-                                do_mask is (p+l0+l) (drop (l+l0) ws)
+    do_mask ((s,l,m):is) p ws
+        | p < s     = map (`nt` None) (take  (s-p)  ws) ++ do_mask ((s,l,m):is)  s   (drop  (s-p)  ws)
+        | otherwise = map (`nt`    m) (take (s+l-p) ws) ++ do_mask          is (s+l) (drop (s+l-p) ws)
 
 -- | Merge blocks of Ns and blocks of Ms into single list of blocks with
 -- masking annotation.  Gaps remain.  Used internally only.
@@ -165,17 +164,17 @@ getSubseqWith maskf tbf (Range { r_pos = Pos { p_seq = chr, p_start = start }, r
 
 -- | Extract a subsequence without masking.
 getSubseq :: TwoBitFile -> Range -> [Nucleotide]
-getSubseq = getSubseqWith (\n _ -> n)
+getSubseq = getSubseqWith const
 
 -- | Extract a subsequence with typical masking:  soft masking is
 -- ignored, hard masked regions are replaced with Ns.
 getSubseqMasked :: TwoBitFile -> Range -> [Nucleotides]
 getSubseqMasked = getSubseqWith mymask
   where
-    mymask (N n) None = Ns $ 1 `shiftL` fromIntegral n
-    mymask (N n) Soft = Ns $ 1 `shiftL` fromIntegral n
-    mymask    _  Hard = nucsN
-    mymask    _  Both = nucsN
+    mymask n None = nucToNucs n
+    mymask n Soft = nucToNucs n
+    mymask _ Hard = nucsN
+    mymask _ Both = nucsN
 
 -- | Extract a subsequence with masking for biologists:  soft masking is
 -- done by lowercasing, hard masking by printing an N.
@@ -231,8 +230,8 @@ getRandomSeq tbf len = draw
         (p0, gn) = randomR (0, 2*total-1) g0
         p = p0 `shiftR` 1
         Just ((o,s),_) = I.maxViewWithKey $ fst $ I.split (p+1) frags
-        r' = clampPosition tbf $ Range (Pos s (p-o)) len
-        sq = catMaybes $ getSubseqWith mask2maybe tbf $ if odd p0 then r' else reverseRange r'
+        r' = (if odd p0 then id else reverseRange) $ clampPosition tbf $ Range (Pos s (p-o)) len
+        sq = catMaybes $ getSubseqWith mask2maybe tbf r'
         good = r_length r' == len && length sq == len
 
         mask2maybe n None = Just n
