@@ -1,12 +1,13 @@
 {-# LANGUAGE OverloadedStrings, FlexibleInstances, TemplateHaskell #-}
 {-# LANGUAGE RecordWildCards, BangPatterns, FlexibleContexts #-}
+{-# LANGUAGE PatternGuards #-}
 module Data.Avro where
 
 import Bio.Iteratee
 import Control.Applicative
 import Control.Monad
 import Control.Monad.ST ( runST, ST )
-import Data.Aeson hiding ((.=))
+import Data.Aeson
 import Data.Array.MArray
 import Data.Array.ST ( STUArray )
 import Data.Array.Unsafe ( castSTUArray )
@@ -43,12 +44,6 @@ import qualified Data.Vector.Unboxed        as U
 -- product uses record syntax and the top level is a plain record.
 -- The obvious primitives are supported.
 
-(.=) :: ToJSON a => String -> a -> (T.Text, Value)
-k .= v = (T.pack k, toJSON v)
-
-string :: String -> Value
-string = String . T.pack
-
 -- | This is the class of types we can embed into the Avro
 -- infrastructure.  Right now, we can derive a schema, encode to
 -- the Avro binary format, and encode to the Avro JSON encoding.
@@ -75,6 +70,7 @@ class Avro a where
     toAvron :: a -> Value
 
 
+-- | Making schemas requires a memo table of type definitions.
 newtype MkSchema a = MkSchema
     { mkSchema :: (a -> H.HashMap T.Text Value -> Value) -> H.HashMap T.Text Value -> Value }
 
@@ -93,8 +89,17 @@ memoObject nm ps = MkSchema $ \k h ->
         Just obj' | obj == obj' -> k (String nm') h
                   | otherwise -> error $ "same type name, different schema: " ++ nm
 
-runMkSchema :: MkSchema Value -> Value
-runMkSchema x = mkSchema x postproc H.empty
+getNamedSchema :: String -> MkSchema Value
+getNamedSchema nm = MkSchema $ \k h ->
+    let nm' = T.pack nm
+    in case H.lookup nm' h of
+        Nothing  -> error $ "Schema for " ++ nm ++ " not provided."
+        -- Use the provided schema now, use only the name next time.
+        Just obj -> k obj $! H.insert nm' (String nm') h
+
+
+runMkSchema :: MkSchema Value -> H.HashMap T.Text Value -> Value
+runMkSchema x = mkSchema x postproc
   where
     -- Objects are fine as is.
     postproc (Object  o) _ = Object o
@@ -348,8 +353,8 @@ deriveAvro nm = reify nm >>= case_info
     mk_enum_inst :: [Name] -> Q [Dec]
     mk_enum_inst nms =
         [d| instance Avro $(conT nm) where
-                toSchema _ = return $ object [ "type" .= string "enum"
-                                             , "name" .= string $(tolit nm)
+                toSchema _ = return $ object [ "type" .= String "enum"
+                                             , "name" .= String $(tolit nm)
                                              , "symbols" .= $(tolitlist nms) ]
                 toBin x = $(
                     return $ CaseE (VarE 'x)
@@ -368,7 +373,7 @@ deriveAvro nm = reify nm >>= case_info
                 toAvron x = $(
                     return $ CaseE (VarE 'x)
                         [ Match (ConP nm1 [])
-                                (NormalB (AppE (VarE 'string)
+                                (NormalB (AppE (ConE 'String)
                                                (LitE (StringL (nameBase nm1))))) []
                         | nm1 <- nms ] )
         |]
@@ -415,7 +420,7 @@ deriveAvro nm = reify nm >>= case_info
     mk_product_schema nm1 tps =
         [| $( fieldlist tps ) >>= \flds ->
            memoObject $( tolit nm1 )
-               [ "type" .= string "record"
+               [ "type" .= String "record"
                , "fields" .= Array (V.fromList flds) ] |]
 
     fieldlist = foldr go [| return [] |]
@@ -423,7 +428,7 @@ deriveAvro nm = reify nm >>= case_info
             go (nm1,_,tp) k =
                 [| do sch <- toSchema $(sigE (varE 'undefined) (return tp))
                       obs <- $k
-                      return $ object [ "name" .= string $(tolit nm1)
+                      return $ object [ "name" .= String $(tolit nm1)
                                       , "type" .= sch ]
                              : obs |]
 
@@ -443,7 +448,9 @@ deriveAvro nm = reify nm >>= case_info
 
 
 data ContainerOpts = ContainerOpts { objects_per_block :: Int
-                                   , filetype_label :: B.ByteString }
+                                   , filetype_label :: B.ByteString
+                                   , initial_schemas :: H.HashMap T.Text Value
+                                   , meta_info :: H.HashMap T.Text B.ByteString }
 
 -- Writing a container file.  This is an 'Enumeratee', we read a list of
 -- suitable types, we write a header containing the generated schema,
@@ -454,12 +461,11 @@ writeAvroContainer ContainerOpts{..} out = do
         ma <- peekStream
         sync_marker <- liftIO $ B.pack <$> replicateM 16 randomIO
 
-        let schema = encode . runMkSchema . toSchema . fromJust $ ma
+        let schema = encode $ runMkSchema (toSchema $ fromJust ma) initial_schemas
 
-            meta :: H.HashMap T.Text B.ByteString
-            meta = H.fromList [( "avro.schema", B.concat $ BL.toChunks schema )
-                              ,( "avro.codec", "null" )
-                              ,( "biohazard.filetype", filetype_label )]
+            meta = H.insert "avro.schema" (B.concat $ BL.toChunks schema) $
+                   H.insert "avro.codec" "null" $
+                   H.insert "biohazard.filetype" filetype_label $ meta_info
 
             hdr = fromByteString "Obj\1" <> toBin meta <> fromByteString sync_marker
 
@@ -473,14 +479,16 @@ writeAvroContainer ContainerOpts{..} out = do
 
         lift (enumList (BL.toChunks $ toLazyByteString hdr) out) >>= enc_blocks
 
+-- | Avro Meta Data is currently unprocessed.  Contains the codec, the
+-- schema, a version number.
+type AvroMeta = H.HashMap T.Text B.ByteString
+
 -- | Decodes an AVRO container file into a list.  Meta data is passed
 -- on.  Note that if this blows up, it's usually due to it being applied
 -- at the wrong type.  Be sure to correctly count the brackets...
 --
 -- XXX Possible codecs: null, zlib, snappy, lzma; all missing
 -- XXX Should check schema on reading.
-
-type AvroMeta = H.HashMap T.Text B.ByteString
 
 readAvroContainer :: (Monad m, Avro a) => Enumeratee' AvroMeta B.ByteString [a] m r
 readAvroContainer out = do
@@ -489,7 +497,7 @@ readAvroContainer out = do
         sync_marker <- iGetString 16
 
         flip iterLoop (out meta) $ \o -> do
-                num <- iterGet zagInt
+                _num <- iterGet zagInt
                 sz <- iterGet zagInt
                 -- liftIO $ hPutStrLn stderr $ "got block: " ++ showNum num
                        -- ++ " things in " ++ showNum sz ++ " bytes."
@@ -498,3 +506,34 @@ readAvroContainer out = do
                 16 <- heads sync_marker
                 -- liftIO $ hPutStrLn stderr "got good sync"
                 return o'
+
+-- | Finds a names schema from the meta data of an Avro container.
+findSchema :: T.Text -> AvroMeta -> Value
+findSchema nm meta = maybe Null go $ decodeStrict =<< H.lookup "avro.schema" meta
+  where
+    go :: Value -> Value
+    go (Object obj)
+        | Just (String k) <- H.lookup "name" obj, k == nm   -- found it
+            = Object obj
+        | Just (String "record") <- H.lookup "type" obj     -- record, descend into "fields"
+            = maybe Null go_struct $ H.lookup "fields" obj
+        | Just (String  "array") <- H.lookup "type" obj     -- array, descend into "items"
+            = maybe Null go_union $ H.lookup "items" obj
+        | Just (String  "map") <- H.lookup "type" obj       -- map, descend into "values"
+            = maybe Null go $ H.lookup "values" obj
+
+    go _ = Null
+
+    go_struct (Array arr) = V.foldr (try_next . go') Null arr     -- struct fields, recurse into "type" subfield
+    go_struct _           = Null
+
+    go' (Object o) | Just o' <- H.lookup "type" o = go o'
+    go' _                                         = Null
+
+    go_union (Array arr) = V.foldr (try_next . go) Null arr       -- union arms, recurse
+    go_union _           = Null
+
+    try_next Null b = b
+    try_next a    _ = a
+
+

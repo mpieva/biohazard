@@ -42,6 +42,7 @@ import Bio.Iteratee
 import Bio.Util                     ( log1p )
 import Control.Applicative
 import Control.Monad
+import Data.Aeson
 import Data.Avro
 import Data.Ix
 import System.Console.GetOpt
@@ -50,8 +51,12 @@ import System.Exit
 import System.IO
 
 import qualified Data.ByteString.Char8          as S
+import qualified Data.ByteString.Lazy           as BL
+import qualified Data.Foldable                  as F
+import qualified Data.HashMap.Strict            as H
 import qualified Data.Text.Encoding             as T
 import qualified Data.Vector.Storable           as VS
+import qualified Data.Vector                    as V
 import qualified Data.Vector.Unboxed            as U
 import qualified Data.Vector.Unboxed.Mutable    as M
 
@@ -178,8 +183,8 @@ by_groups f k out = do
 -- write an Avro file, but we add another blocking layer on top so we
 -- don't need to endlessly repeat coordinates.
 
-compileBlocks :: Monad m => Refs -> Enumeratee [Calls] [GenoCallBlock] m a
-compileBlocks refs = convStream $ do
+compileBlocks :: Monad m => Enumeratee [Calls] [GenoCallBlock] m a
+compileBlocks = convStream $ do
         c1 <- headStream
         tailBlock (p_refseq c1) (p_pos c1) (p_pos c1) . (:[]) $! pack c1
   where
@@ -191,7 +196,7 @@ compileBlocks refs = convStream $ do
                     tailBlock rs p0 (po+1) . (:acc) $! pack c1
 
             _ -> return [ GenoCallBlock
-                    { reference_name = T.decodeLatin1 $ sq_name $ getRef refs rs
+                    { reference_name = rs
                     , start_position = p0
                     , called_sites   = reverse acc } ]
 
@@ -208,12 +213,21 @@ compileBlocks refs = convStream $ do
         rlist (x:xs) = x `seq` rlist xs
 
 output_avro :: Handle -> Conf -> Refs -> Iteratee [Calls] IO ()
-output_avro hdl _cfg refs = compileBlocks refs =$
+output_avro hdl _cfg refs = compileBlocks =$
                             writeAvroContainer ContainerOpts{..} =$
                             mapChunksM_ (S.hPut hdl)
   where
     objects_per_block = 16      -- XXX should be more?
     filetype_label = "Genotype Likelihoods V0.1"
+    initial_schemas = H.singleton "Refseq" $
+        object [ "type" .= String "enum"
+               , "name" .= String "Refseq"
+               , "symbols" .= Array
+                    (V.fromList . map (String . T.decodeUtf8 . sq_name) $ F.toList refs) ]
+    meta_info = H.singleton "biohazard.refseq_length" $
+                S.concat $ BL.toChunks $ encode $ Array $ V.fromList
+                [ Number (fromIntegral (sq_length s)) | s <- F.toList refs ]
+
 
 minD, maxD :: Int
 minD = -128 :: Int
@@ -262,6 +276,8 @@ tabulateSingle = do
 
 estimateSingle :: Prob Double -> U.Vector Int -> IO ()
 estimateSingle lk_rr tab = do
+    putStrLn $ "Estimating divergence parameters..."
+    hFlush stdout
     (fit, res, stats) <- minimize quietParameters 0.0001 llk (U.fromList [0,0])
     let [delta, eta] = VS.toList fit
         div = exp delta / (1 + exp delta)

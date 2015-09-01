@@ -68,9 +68,9 @@ Library
                        Bio.Util,
                        Data.MiniFloat,
                        Data.Avro
-                       
+
   Other-modules:       Paths_biohazard
-  
+
   -- Packages needed in order to build this package.
   Build-depends:       aeson >= 0.7 && < 0.9,
                        array >= 0.4 && < 0.6,
@@ -101,7 +101,7 @@ Library
                        vector-algorithms >= 0.3 && < 1,
                        vector-th-unbox == 0.2.*,
                        zlib == 0.5.*
-  
+
   Ghc-options:         -Wall -auto-all
   Hs-source-dirs:      src
   Include-dirs:        src/cbits
@@ -122,25 +122,43 @@ Library
 
 Executable redeye-pileup
   Main-is:             redeye-pileup.hs
-  Ghc-options:         -Wall -auto-all -rtsopts
-  Hs-Source-Dirs:      tools
   Ghc-options:         -Wall -auto-all -threaded -rtsopts -with-rtsopts=-N
-  Build-depends:       base,
+  Hs-Source-Dirs:      tools
+  Build-depends:       aeson,
+                       base,
                        biohazard,
                        bytestring,
+                       containers,
                        iteratee,
                        nonlinear-optimization,
                        text,
+                       unordered-containers,
+                       vector
+
+Executable redeye-single
+  Main-is:             redeye-single.hs
+  Ghc-options:         -Wall -auto-all -rtsopts
+  Hs-Source-Dirs:      tools
+  Build-depends:       aeson,
+                       base,
+                       biohazard,
+                       bytestring,
+                       containers,
+                       iteratee,
+                       nonlinear-optimization,
+                       text,
+                       unordered-containers,
                        vector
 
 Executable gt-scan
   Main-is:             gt-scan.hs
   Ghc-options:         -Wall -auto-all
   Hs-Source-Dirs:      tools
-  Build-depends:       base,
+  Build-depends:       aeson,
+                       base,
                        biohazard,
                        bytestring,
-                       -- containers,
+                       containers,
                        iteratee,
                        nonlinear-optimization == 0.3.*,
                        primitive,
@@ -187,7 +205,7 @@ Executable bam-meld
                        biohazard,
                        bytestring,
                        containers
-  
+
 Executable bam-resample
   Main-is:             bam-resample.hs
   Ghc-options:         -Wall -auto-all

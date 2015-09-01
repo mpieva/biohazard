@@ -8,6 +8,7 @@
 -- Second iteration:  Mitochondrion only, but with a divergence
 -- parameter.  Needs to be scanned in parallel with a TwoBit file.
 
+import Bio.Bam.Header
 import Bio.Genocall.AvroFile
 import Bio.Iteratee
 import Bio.TwoBit
@@ -16,12 +17,11 @@ import Control.Monad.Primitive
 import Data.Avro
 import Data.List ( intercalate )
 import Data.MiniFloat ( mini2float )
-import Data.Text.Encoding ( encodeUtf8 )
-import Data.Strict.Tuple ( Pair((:!:)), (:!:) )
+import Data.Strict.Tuple ( Pair((:!:)) )
 import Numeric ( showFFloat )
 import Numeric.Optimization.Algorithms.HagerZhang05
 
-import qualified Data.Vector.Storable as V
+import qualified Data.Vector.Storable as S
 import qualified Data.Vector.Unboxed as U
 import qualified Data.Vector.Unboxed.Mutable as UM
 
@@ -34,10 +34,10 @@ main = do hg19 <- openTwoBit "/mnt/datengrab/hg19.2bit"
           let all_lk tbl (p1 :!: p2) ref site = (lk0 p1 site :!:) `fmap` lk1 tbl p2 ref site
 
           p0 :!: pe <- enumDefaultInputs >=> run $
-                    joinI $ readAvroContainer $ \_meta -> do
-                        -- liftIO . forM_ (toList meta) $ \(k,v) ->
+                    joinI $ readAvroContainer $ \meta -> do
+                        -- liftIO . F.forM_ (H.toList meta) $ \(k,v) ->
                             -- putStrLn $ unpack k ++ ": " ++ unpack (decodeUtf8 v)
-                        foldStreamM (lk_block (all_lk mtbl) hg19) (1 :!: 1)
+                        foldStreamM (lk_block (getRefseqs meta) (all_lk mtbl) hg19) (1 :!: 1)
 
           tbl  <- U.unsafeFreeze mtbl
 
@@ -58,17 +58,17 @@ main = do hg19 <- openTwoBit "/mnt/datengrab/hg19.2bit"
 
           -- print $ llk1 tbl (C (unPr pe)) (D 0.001 (U.singleton 1))
           putStrLn $ intercalate "\t"
-            [ showNum . round $ unPr p0, showFFloat (Just 5) (sigmoid2 $ x V.! 0) []
-            , show q, showNum . round $ finalValue s, show s ]
-          -- print (map sigmoid2 $ V.toList x, q, s)
+            [ showNum (round $ unPr p0 :: Int), showFFloat (Just 5) (sigmoid2 $ x S.! 0) []
+            , show q, showNum (round $ finalValue s :: Int), show s ]
+          -- print (map sigmoid2 $ S.toList x, q, s)
 
 
 -- | Scans block together with reference sequence.  Folds a monadic
 -- action over the called sites.
-lk_block :: Monad m => (b -> Nucleotide -> GenoCallSite -> m b) -> TwoBitFile -> b -> GenoCallBlock -> m b
-lk_block f tbf b GenoCallBlock{..} = foldM3f b start_position refseq called_sites
+lk_block :: Monad m => Refs -> (b -> Nucleotide -> GenoCallSite -> m b) -> TwoBitFile -> b -> GenoCallBlock -> m b
+lk_block refs f tbf b GenoCallBlock{..} = foldM3f b start_position refseq called_sites
   where
-    refseq = getLazySubseq tbf (Pos (encodeUtf8 reference_name) start_position)
+    refseq = getLazySubseq tbf $ Pos (sq_name $ getRef refs reference_name) start_position
 
     foldM2 acc (x:xs) (y:ys) = do !acc' <- f acc x y ; foldM2 acc' xs ys
     foldM2 acc [    ]      _ = return acc

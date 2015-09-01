@@ -2,19 +2,25 @@
 module Bio.Genocall.AvroFile where
 
 import Bio.Base
+import Bio.Bam.Header
 import Bio.Bam.Pileup
 import Control.Applicative
 import Data.Aeson
-import Data.Avro hiding ( (.=) )
+import Data.Avro
 import Data.Binary.Builder
 import Data.Binary.Get
 import Data.List ( intersperse )
 import Data.Monoid
 import Data.MiniFloat
+import Data.Scientific ( toBoundedInteger )
+import Data.Text.Encoding ( decodeUtf8, encodeUtf8 )
 
 import qualified Data.ByteString                as B
+import qualified Data.HashMap.Strict            as H
 import qualified Data.Text                      as T
+import qualified Data.Vector                    as V
 import qualified Data.Vector.Unboxed            as U
+import qualified Data.Sequence                  as Z
 
 -- ^ File format for genotype calls.
 
@@ -26,7 +32,7 @@ import qualified Data.Vector.Unboxed            as U
 -- the current one is getting too large.
 
 data GenoCallBlock = GenoCallBlock
-    { reference_name :: {-# UNPACK #-} !T.Text
+    { reference_name :: {-# UNPACK #-} !Refseq
     , start_position :: {-# UNPACK #-} !Int
     , called_sites :: [ GenoCallSite ] }
   deriving (Show, Eq)
@@ -75,4 +81,36 @@ instance Avro Mini where
     toBin      = encodeIntBase128 . unMini
     fromBin    = Mini <$> decodeIntBase128
     toAvron    = Number . fromIntegral . unMini
+
+-- | We encode the Refseq as an Avro enum, which serves as a kind of
+-- symbol table.  To make this work, the environment of the 'MkSchema'
+-- monad has to be prepopulated with a suitable schema.
+instance Avro Refseq where
+    toSchema _ = getNamedSchema "Refseq"
+    toBin      = encodeIntBase128 . unRefseq
+    fromBin    = Refseq <$> decodeIntBase128
+
+    -- This is cheating, we should use the enum names, but they are not
+    -- available.  Doesn't matter, this is mostly for debugging anyway.
+    toAvron    = Number . fromIntegral . unRefseq
+
+
+-- | Reconstructs the list of reference sequences from Avro metadata.
+-- If a type named @Refseq@ is defined in the schema and is an enum, it
+-- defines the symbol table, otherwise an empty list is returned.  If
+-- @biohazard.refseq_length@ exists, and is an array, it's elements are
+-- interpreted as the lengths in order, otherwise the lengths are set to
+-- zero.
+getRefseqs :: AvroMeta -> Refs
+getRefseqs meta
+    | Object o <- findSchema "Refseq" meta
+    , Just (String "enum") <- H.lookup "type" o
+    , Just (Array    syms) <- H.lookup "symbols" o
+            = Z.fromList [ BamSQ (encodeUtf8 nm) ln [] | (String nm, ln) <- V.toList syms `zip` lengths ]
+    | otherwise = Z.empty
+  where
+    lengths
+        | Just (Array lns) <- decodeStrict =<< H.lookup "biohazard.refseq_length" meta
+                = [ case l of Number n -> maybe 0 id $ toBoundedInteger n ; _ -> 0 | l <- V.toList lns ]
+        | otherwise = repeat 0
 
