@@ -76,7 +76,7 @@ parseFastqCassava = parseFastq' (pdesc . S.split ':' . S.takeWhile (' ' /=))
                                                    , if num == "2" then flagSecondMate .|. flagPaired else 0
                                                    , if flg == "Y" then flagFailsQC else 0
                                                    , b_flag br .&. complement (flagFailsQC .|. flagSecondMate .|. flagPaired) ]
-                                    , b_exts = if S.all (`S.elem` "ACGTN") idx then M.insert "XI" (Text idx) (b_exts br) else b_exts br }
+                                    , b_exts = if S.all (`S.elem` "ACGTN") idx then ( "XI", Text idx ) : (b_exts br) else b_exts br }
     pdesc _ br = br
 
 -- | Same as 'parseFastq', but a custom function can be applied to the
@@ -129,7 +129,7 @@ removeWarts br = br { b_qname = name, b_flag = flags, b_exts = tags }
                     | "/2" `S.isSuffixOf` n =        ( rdrop 2 n, f .|. flagSecondMate .|. flagPaired, t)
                     | otherwise             =        (         n, f,                                   t)
 
-    checkC (n,f,t) | "C_" `S.isPrefixOf` n  = (S.drop 2 n, f, M.insert "XP" (Int (-1)) t)
+    checkC (n,f,t) | "C_" `S.isPrefixOf` n  = (S.drop 2 n, f, ( "XP", Int (-1)) : t)
                    | otherwise              = (         n, f,                          t)
 
     rdrop n s = S.take (S.length s - n) s
@@ -137,8 +137,8 @@ removeWarts br = br { b_qname = name, b_flag = flags, b_exts = tags }
     checkSharp (n,f,t) = case S.split '#' n of [n',ts] -> (n', f, insertTags ts t)
                                                _       -> ( n, f,               t)
 
-    insertTags ts t | S.null y  = M.insert "XI" (Text ts) t
-                    | otherwise = M.insert "XI" (Text  x) $ M.insert "XJ" (Text $ S.tail y) t
+    insertTags ts t | S.null y  = ( "XI", Text ts) : t
+                    | otherwise = ( "XI", Text  x) : ( "XJ", Text $ S.tail y) : t
         where (x,y) = S.break (== ',') ts
 
 ----------------------------------------------------------------------------

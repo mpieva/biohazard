@@ -49,13 +49,13 @@ trim_3 l b | b_flag b `testBit` 4 = trim_rev
                in b { b_seq   = V.take (V.length (b_seq  b) - l) (b_seq  b)
                     , b_qual  = S.take (S.length (b_qual b) - l) (b_qual b)
                     , b_cigar = cigar'
-                    , b_exts  = M.delete "MD" (b_exts b) }
+                    , b_exts  = filter ((/=) "MD" . fst) (b_exts b) }
 
     trim_rev = let (off, cigar') = trim_fwd_cigar (b_cigar b) l
                in b { b_seq   = V.drop l (b_seq  b)
                     , b_qual  = S.drop l (b_qual b)
                     , b_cigar = cigar'
-                    , b_exts  = M.delete "MD" (b_exts b)
+                    , b_exts  = filter ((/=) "MD" . fst) (b_exts b)
                     , b_pos   = b_pos b + off
                     }
 

@@ -54,7 +54,7 @@ Library
                        Bio.Bam.Raw,
                        Bio.Bam.Regions,
                        Bio.Bam.Rec,
-                       Bio.Bam.Rmdup,
+                       -- Bio.Bam.Rmdup,
                        Bio.Bam.Trim,
                        Bio.Genocall,
                        Bio.Genocall.Adna,
@@ -118,6 +118,15 @@ Library
   -- Type:                exitcode-stdio-1.0
   -- Main-is:             test-biohazard.hs
 
+Executable bam-cat
+  Main-is:             bam-cat.hs
+  Hs-Source-Dirs:      tools
+  -- Ghc-options:         -Wall -auto-all -threaded -rtsopts -with-rtsopts=-N
+  Ghc-options:         -Wall -auto-all -rtsopts
+  Build-depends:       base,
+                       biohazard
+
+
 Executable afroengineer
   Main-Is:             afroengineer.hs
   Hs-source-dirs:      tools
@@ -161,27 +170,27 @@ Executable bam-resample
                        bytestring,
                        random
 
-Executable bam-rewrap
-  Main-is:             bam-rewrap.hs
-  Hs-Source-Dirs:      tools
-  Ghc-options:         -Wall -auto-all -threaded -rtsopts -with-rtsopts=-N
-  Build-depends:       base,
-                       biohazard,
-                       bytestring,
-                       containers
+-- Executable bam-rewrap
+  -- Main-is:             bam-rewrap.hs
+  -- Hs-Source-Dirs:      tools
+  -- Ghc-options:         -Wall -auto-all -threaded -rtsopts -with-rtsopts=-N
+  -- Build-depends:       base,
+                       -- biohazard,
+                       -- bytestring,
+                       -- containers
 
-Executable bam-rmdup
-  Main-is:             bam-rmdup.hs
-  Hs-Source-Dirs:      tools
-  Ghc-options:         -Wall -auto-all -threaded -rtsopts -with-rtsopts=-N
-  Build-depends:       base,
-                       biohazard,
-                       bytestring,
-                       containers,
-                       iteratee,
-                       unordered-containers,
-                       vector,
-                       vector-algorithms
+-- Executable bam-rmdup
+  -- Main-is:             bam-rmdup.hs
+  -- Hs-Source-Dirs:      tools
+  -- Ghc-options:         -Wall -auto-all -threaded -rtsopts -with-rtsopts=-N
+  -- Build-depends:       base,
+                       -- biohazard,
+                       -- bytestring,
+                       -- containers,
+                       -- iteratee,
+                       -- unordered-containers,
+                       -- vector,
+                       -- vector-algorithms
 
 Executable bam-trim
   Main-is:             bam-trim.hs
@@ -245,27 +254,27 @@ Executable gt-call
                        text,
                        vector
 
-Executable jivebunny
-  Main-is:             jivebunny.hs
-  Hs-Source-Dirs:      tools
-  C-sources:           src/cbits/jive.c
-  CC-options:          -std=c99 -O3 -ffast-math
-  Ghc-options:         -Wall -auto-all -threaded -rtsopts -with-rtsopts=-N
-  Build-depends:       aeson,
-                       base,
-                       biohazard,
-                       bytestring,
-                       containers,
-                       directory,
-                       hashable >= 1.0 && < 1.3,
-                       random,
-                       text,
-                       text-format,
-                       transformers,
-                       unordered-containers,
-                       vector,
-                       vector-algorithms,
-                       vector-th-unbox
+-- Executable jivebunny
+  -- Main-is:             jivebunny.hs
+  -- Hs-Source-Dirs:      tools
+  -- C-sources:           src/cbits/jive.c
+  -- CC-options:          -std=c99 -O3 -ffast-math
+  -- Ghc-options:         -Wall -auto-all -threaded -rtsopts -with-rtsopts=-N
+  -- Build-depends:       aeson,
+                       -- base,
+                       -- biohazard,
+                       -- bytestring,
+                       -- containers,
+                       -- directory,
+                       -- hashable >= 1.0 && < 1.3,
+                       -- random,
+                       -- text,
+                       -- text-format,
+                       -- transformers,
+                       -- unordered-containers,
+                       -- vector,
+                       -- vector-algorithms,
+                       -- vector-th-unbox
 
 Executable mt-anno
   Main-Is:             mt-anno.hs

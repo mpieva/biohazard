@@ -449,9 +449,9 @@ main = do
                                         rg = T.encodeUtf8 $ T.concat [ ns7 V.! i7, ",", ns5 V.! i5 ]
                                         b' = b { b_exts = M.delete "Z0" . M.delete "Z2" . M.insert "Z1" (Int q)
                                                         $ case HM.lookup (i7,i5) rgs of
-                                                            Nothing | cf_pedantic -> M.delete "RG" $ b_exts b
-                                                                    | otherwise   -> M.insert "RG" (Text rg) $ b_exts b
-                                                            Just (rgn,_)          -> M.insert "RG" (Text rgn) $ b_exts b }
+                                                            Nothing | cf_pedantic -> filter ((/=) "RG" . fst) $ b_exts b
+                                                                    | otherwise   -> (:) ( "RG",Text rg) $ b_exts b
+                                                            Just (rgn,_)          -> (:) ( "RG",Text rgn) $ b_exts b }
                                     return $ encodeBamEntry b') =$
                                progressNum "writing " info =$
                                out (add_pg hdr')

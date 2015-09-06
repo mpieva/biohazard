@@ -467,14 +467,14 @@ do_collapse maxq  brs = ( Consensus b0 { b_exts  = modify_extensions $ b_exts b0
 
     modify_extensions es = foldr ($!) es $
         [ let vs = [ v | Just v <- map (M.lookup k . b_exts) brs ]
-          in if null vs then id else M.insert k $! maj vs | k <- do_maj ] ++
-        [ let vs = [ v | Just (Int v) <- map (M.lookup k . b_exts) brs ]
-          in if null vs then id else M.insert k $! Int (rmsq vs) | k <- do_rmsq ] ++
+          in if null vs then id else (:) (k, maj vs) | k <- do_maj ] ++
+        [ let vs = [ v | Just (Int v) <- map (lookup k . b_exts) brs ]
+          in if null vs then id else (:) (k, Int (rmsq vs)) | k <- do_rmsq ] ++
         [ M.delete k | k <- useless ] ++
-        [ M.insert "NM" $! Int nm'
-        , M.insert "XP" $! Int (foldl' (\a b -> a `oplus` extAsInt 1 "XP" b) 0 brs)
-        , if null xa' then id else M.insert "XA" $! (Text $ T.intercalate (T.singleton ';') xa')
-        , if null md' then id else M.insert "MD" $! (Text $ showMd md')
+        [ (:) ("NM", Int nm')
+        , (:) ("XP", Int (foldl' (\a b -> a `oplus` extAsInt 1 "XP" b) 0 brs))
+        , if null xa' then id else (:) ("XA", Text $ T.intercalate (T.singleton ';') xa')
+        , if null md' then id else (:) ("MD", Text $ showMd md')
         , add_index "XI" "YI"
         , add_index "XJ" "YJ" ]
 
@@ -735,8 +735,8 @@ toCigar = Cigar . go
 -- an MD field.
 setMD :: BamRec -> ECig -> BamRec
 setMD b ec = case go ec of
-    Just md -> b { b_exts = M.insert "MD" (Text $ showMd md) (b_exts b) }
-    Nothing -> b { b_exts = M.delete "MD"                    (b_exts b) }
+    Just md -> b { b_exts = ( "MD", Text $ showMd md ) :  (b_exts b) }
+    Nothing -> b { b_exts = filter ((/=) "MD" . fst) (b_exts b) }
   where
     go  WithMD      = Just []
     go  WithoutMD   = Nothing

@@ -229,7 +229,7 @@ write_iter_bam fp hdr = mapStream conv =$ writeBamFile fp hdr
             , b_seq             = qseqToBamSeq qr_seq
             , b_qual            = qseqToBamQual qr_seq
             , b_virtual_offset  = 0
-            , b_exts            = M.empty }
+            , b_exts            = [] }
       where
         qname = qr_name `S.append` S.pack ("  " ++ showFFloat (Just 1) viterbi_score [])
         reversed (BW x) = x < 0

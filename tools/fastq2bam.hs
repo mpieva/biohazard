@@ -125,8 +125,8 @@ withIndex (Just fp) tagi tagq enum = mergeEnums enum (fromFastq fp) (convStream 
                  let idxseq  = S.pack $ map showNucleotides $ V.toList $ b_seq idxrec
                      idxqual = B.map (+33) $ b_qual idxrec
                  return [ flip mapU2 seqrecs $
-                        \r -> r { b_exts = (if B.null idxqual then id else M.insert tagq (Text idxqual))
-                                         $ M.insert tagi (Text idxseq) $ b_exts r } ]
+                        \r -> r { b_exts = (if B.null idxqual then id else (:) (tagq, Text idxqual))
+                                         $ (:) (tagi, Text idxseq) $ b_exts r } ]
 
 -- Enumerate dual files.  We read two FastQ files and match them up.  We
 -- must make sure the names match, and we will flag everything as
@@ -143,7 +143,7 @@ enumDual f1 f2 = mergeEnums (fromFastq f1 $= mapStream one) (fromFastq f2) (conv
                         "read names do not match: " ++ shows (b_qname firstMate) " & " ++ show (b_qname secondMate)
 
                  let qc = (b_flag firstMate .|. b_flag secondMate) .&. flagFailsQC
-                     addx k = maybe id (M.insert k) $ maybe (M.lookup k (b_exts secondMate)) Just $ M.lookup k (b_exts firstMate)
+                     addx k = maybe id (\v -> (:) (k,v)) $ maybe (lookup k (b_exts secondMate)) Just $ lookup k (b_exts firstMate)
                      add_indexes = addx "XI" . addx "XJ" . addx "YI" . addx "YJ"
 
                  return [ two (firstMate  { b_flag = qc .|.  flagFirstMate .|. flagPaired .|. b_flag firstMate .&. complement flagSecondMate

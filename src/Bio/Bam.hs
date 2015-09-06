@@ -6,7 +6,7 @@ import Bio.Bam.Header   as X
 import Bio.Bam.Index    as X
 import Bio.Bam.Raw      as X
 import Bio.Bam.Rec      as X
-import Bio.Bam.Rmdup    as X
+-- import Bio.Bam.Rmdup    as X
 import Bio.Bam.Trim     as X
 import Bio.Iteratee     as X
 
