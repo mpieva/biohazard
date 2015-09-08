@@ -51,10 +51,12 @@ import qualified Data.HashMap.Strict as HM
 import qualified Data.Map as M
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as T
-import qualified Data.Text.Format as T
 import qualified Data.Text.IO as T
-import qualified Data.Text.Lazy.Builder as TB
-import qualified Data.Text.Lazy.Builder.Int as TB
+import qualified Data.Text.Lazy as L hiding ( singleton )
+import qualified Data.Text.Lazy.IO as L
+import qualified Data.Text.Lazy.Builder as L
+import qualified Data.Text.Lazy.Builder.Int as L
+import qualified Data.Text.Lazy.Builder.RealFloat as L
 import qualified Data.Vector as V
 import qualified Data.Vector.Algorithms.Intro as V
 import qualified Data.Vector.Unboxed as U
@@ -366,6 +368,12 @@ options = [
               exitSuccess
 
 
+adj_left :: Int -> Char -> L.Builder -> L.Builder
+adj_left n c b = mconcat (replicate (n - fromIntegral (L.length t)) (L.singleton c)) <> L.fromLazyText t
+  where t = L.toLazyText b
+
+adj_left_text :: Int -> Char -> T.Text -> L.Builder
+adj_left_text n c t = mconcat (replicate (n - T.length t) (L.singleton c)) <> L.fromText t
 
 main :: IO ()
 main = do
@@ -432,9 +440,10 @@ main = do
                                                   (unique_indices p7is U.! i7, unique_indices p5is U.! i5)
 
                                 let qmax = negate . round $ 10 / log 10 * log p :: Int
-                                T.hprint cf_stats_hdl "{}: {}\n"
-                                        ( T.left maxlen ' ' $ T.decodeUtf8 rgid
-                                        , T.left      4 ' ' $ TB.singleton 'Q' <> TB.decimal (max 0 qmax) )
+                                L.hPutStrLn cf_stats_hdl . L.toLazyText $
+                                        adj_left_text maxlen ' ' (T.decodeUtf8 rgid) <>
+                                        L.fromText ": " <>
+                                        adj_left 4 ' ' (L.singleton 'Q' <> L.decimal (max 0 qmax))
 
         Just out -> do  concatInputs files >=> run $ \hdr ->
                             let hdr' = hdr { meta_other_shit =
@@ -474,20 +483,23 @@ main = do
 
                                 let fmt_one (i,n) =
                                         let (i7', i5') = i `quotRem` stride
-                                            chunk = T.build "{}% {}/{}{}"
-                                                            ( T.fixed 2 (100*n/total), ns7 V.! i7', ns5 V.! i5'
-                                                            , case HM.lookup (i7',i5') rgs of
-                                                                Nothing     -> ""
-                                                                Just (rg,_) -> T.concat [ " (", T.decodeUtf8 rg, ")" ] )
+                                            chunk = L.formatRealFloat L.Fixed (Just 2) (100*n/total) <> L.singleton '%' <>
+                                                    L.singleton ' ' <> L.fromText (ns7 V.! i7') <>
+                                                    L.singleton '/' <> L.fromText (ns5 V.! i5') <>
+                                                    case HM.lookup (i7',i5') rgs of
+                                                        Nothing     -> mempty
+                                                        Just (rg,_) -> L.singleton ' ' <> L.singleton '(' <>
+                                                                       L.fromText (T.decodeUtf8 rg) <> L.singleton ')'
                                         in if (i7 == i7' && i5 == i5') || i5' >= n5 then id else (:) chunk
 
-                                when (total >= 1) $ T.hprint cf_stats_hdl "{}: {}/{} ({}); {}\n"
-                                        ( T.left maxlen ' ' $ T.decodeUtf8 rgid
-                                        , T.left      4 ' ' $ TB.singleton 'Q' <> TB.decimal (max 0 qmax)
-                                        , T.left      4 ' ' $ TB.singleton 'Q' <> TB.decimal (max 0 qavg)
-                                        , showNum (round total :: Int)
-                                        , foldr1 (\a b -> a <> TB.fromText ", " <> b) $
-                                          take num $ U.foldr fmt_one [] v' )
+                                when (total >= 1) . L.hPutStrLn cf_stats_hdl . L.toLazyText $
+                                        adj_left_text maxlen ' ' (T.decodeUtf8 rgid) <>
+                                        L.singleton ':' <> L.singleton ' ' <>
+                                        adj_left 4 ' ' (L.singleton 'Q' <> L.decimal (max 0 qmax)) <>
+                                        adj_left 4 ' ' (L.singleton 'Q' <> L.decimal (max 0 qavg)) <>
+                                        L.fromString (showNum (round total :: Int)) <>
+                                        foldr1 (\a b -> a <> L.singleton ',' <> L.singleton ' ' <> b)
+                                            (take num $ U.foldr fmt_one [] v')
 
 inspect' :: HM.HashMap (Int,Int) (B.ByteString, t) -> V.Vector T.Text -> V.Vector T.Text -> Handle -> Int -> Mix -> IO ()
 inspect' rgs n7 n5 hdl num mix = do
@@ -500,14 +512,16 @@ inspect' rgs n7 n5 hdl num mix = do
 
     U.forM_ (U.take num v') $ \(i,n) -> do
        let (i7, i5) = i `quotRem` stride' (V.length n5)
-       T.hprint hdl "{}, {}: {}% {}\n"
-            ( T.left 7 ' ' $ n7 V.! i7
-            , T.left 7 ' ' $ n5 V.! i5
-            , T.left 8 ' ' $ T.fixed 3 (100 * n / total)
-            , case HM.lookup (i7,i5) rgs of
-                Nothing     -> ""
-                Just (rg,_) -> T.concat [ "(", T.decodeUtf8 rg, ")" ] )
+       L.hPutStrLn hdl . L.toLazyText $
+            adj_left_text 7 ' ' (n7 V.! i7) <> L.singleton ',' <> L.singleton ' ' <>
+            adj_left_text 7 ' ' (n5 V.! i5) <> L.singleton ':' <> L.singleton ' ' <>
+            adj_left 8 ' ' (L.formatRealFloat L.Fixed (Just 3) (100 * n / total)) <> L.singleton '%' <> L.singleton ' ' <>
+            case HM.lookup (i7,i5) rgs of
+                Nothing     -> mempty
+                Just (rg,_) -> L.singleton '(' <> L.fromText (T.decodeUtf8 rg) <> L.singleton ')'
 
-    T.hprint hdl "      all others: {}%\n" $
-        T.Only ( T.left 8 ' ' $ T.fixed 3 (100 * others / total) )
+    L.hPutStrLn hdl . L.toLazyText $
+        L.fromLazyText "      all others: " <>
+        adj_left 8 ' ' (L.formatRealFloat L.Fixed (Just 3) (100 * others / total)) <>
+        L.singleton '%'
 

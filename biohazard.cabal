@@ -260,7 +260,6 @@ Executable jivebunny
                        hashable >= 1.0 && < 1.3,
                        random,
                        text,
-                       text-format,
                        transformers,
                        unordered-containers,
                        vector,
