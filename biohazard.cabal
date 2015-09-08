@@ -118,6 +118,15 @@ Library
   -- Type:                exitcode-stdio-1.0
   -- Main-is:             test-biohazard.hs
 
+Executable bam-cat
+  Main-is:             bam-cat.hs
+  Hs-Source-Dirs:      tools
+  -- Ghc-options:         -Wall -auto-all -threaded -rtsopts -with-rtsopts=-N
+  Ghc-options:         -Wall -auto-all -rtsopts
+  Build-depends:       base,
+                       biohazard
+
+
 Executable afroengineer
   Main-Is:             afroengineer.hs
   Hs-source-dirs:      tools

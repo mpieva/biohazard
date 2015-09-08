@@ -48,7 +48,6 @@ import System.Random ( randomRIO )
 
 import qualified Data.ByteString as B
 import qualified Data.HashMap.Strict as HM
-import qualified Data.Map as M
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as T
 import qualified Data.Text.Format as T
@@ -447,11 +446,11 @@ main = do
                                     let q = negate . round $ 10 / log 10 * log p
                                         b = decodeBamEntry br
                                         rg = T.encodeUtf8 $ T.concat [ ns7 V.! i7, ",", ns5 V.! i5 ]
-                                        b' = b { b_exts = M.delete "Z0" . M.delete "Z2" . M.insert "Z1" (Int q)
+                                        b' = b { b_exts = deleteE "Z0" . deleteE "Z2" . updateE "Z1" (Int q)
                                                         $ case HM.lookup (i7,i5) rgs of
-                                                            Nothing | cf_pedantic -> M.delete "RG" $ b_exts b
-                                                                    | otherwise   -> M.insert "RG" (Text rg) $ b_exts b
-                                                            Just (rgn,_)          -> M.insert "RG" (Text rgn) $ b_exts b }
+                                                            Nothing | cf_pedantic -> deleteE "RG" $ b_exts b
+                                                                    | otherwise   -> updateE "RG" (Text rg) $ b_exts b
+                                                            Just (rgn,_)          -> updateE "RG" (Text rgn) $ b_exts b }
                                     return $ encodeBamEntry b') =$
                                progressNum "writing " info =$
                                out (add_pg hdr')

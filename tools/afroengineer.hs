@@ -36,7 +36,6 @@ import qualified Data.ByteString.Char8      as S
 import qualified Data.ByteString.Lazy.Char8 as L
 import qualified Data.Foldable              as F
 import qualified Data.Iteratee              as I
-import qualified Data.Map                   as M
 import qualified Data.Sequence              as Z
 import qualified Data.Vector.Unboxed        as U
 
@@ -229,7 +228,7 @@ write_iter_bam fp hdr = mapStream conv =$ writeBamFile fp hdr
             , b_seq             = qseqToBamSeq qr_seq
             , b_qual            = qseqToBamQual qr_seq
             , b_virtual_offset  = 0
-            , b_exts            = M.empty }
+            , b_exts            = [] }
       where
         qname = qr_name `S.append` S.pack ("  " ++ showFFloat (Just 1) viterbi_score [])
         reversed (BW x) = x < 0

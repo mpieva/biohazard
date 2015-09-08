@@ -1,4 +1,6 @@
-{-# LANGUAGE OverloadedStrings, PatternGuards, BangPatterns, NoMonomorphismRestriction, FlexibleContexts #-}
+{-# LANGUAGE OverloadedStrings, PatternGuards, BangPatterns #-}
+{-# LANGUAGE NoMonomorphismRestriction, FlexibleContexts #-}
+{-#LANGUAGE RecordWildCards #-}
 
 -- TODO:
 -- - Automatic creation of some kind of index.  If possible, this should
@@ -19,6 +21,7 @@ module Bio.Bam.Rec (
     BamEnumeratee,
     isBamOrSam,
 
+    unpackBam,
     decodeBamEntry,
     encodeBamEntry,
     encodeSamEntry,
@@ -42,6 +45,7 @@ module Bio.Bam.Rec (
     Nucleotides(..),
     Extensions, Ext(..),
     extAsInt, extAsString, setQualFlag,
+    deleteE, insertE, updateE,
 
     isPaired,
     isProperlyPaired,
@@ -130,12 +134,12 @@ nullBamRec = BamRec {
         b_isize = 0,
         b_seq   = U.empty,
         b_qual  = S.empty,
-        b_exts  = M.empty,
+        b_exts  = [],
         b_virtual_offset = 0
     }
 
 getMd :: BamRec -> Maybe [MdOp]
-getMd r = case M.lookup "MD" $ b_exts r of
+getMd r = case lookup "MD" $ b_exts r of
     Just (Text mdfield) -> readMd mdfield
     Just (Char mdfield) -> readMd $ B.singleton mdfield
     _                   -> Nothing
@@ -161,6 +165,28 @@ decodeAnyBamOrSamFile :: (MonadIO m, MonadMask m)
 decodeAnyBamOrSamFile fn k = enumFileRandom defaultBufSize fn (decodeAnyBamOrSam k) >>= run
 
 
+{-# INLINE unpackBam #-}
+unpackBam :: BamRaw -> BamRec
+unpackBam br = BamRec{..}
+  where
+        b_qname = br_qname br
+        b_flag  = br_flag br
+        b_rname = br_rname br
+        b_pos   = br_pos br
+        b_mapq  = br_mapq br
+        b_cigar = Cigar [br_cigar_at br i | i <- [0..br_n_cigar_op br-1]]
+        b_mrnm  = br_mrnm br
+        b_mpos  = br_mpos br
+        b_isize = br_isize br
+        b_seq = U.fromListN (br_l_seq br) [ br_seq_at br i | i <- [0..br_l_seq br-1]]
+        b_qual  = S.take (br_l_seq br) $ S.drop off_q $ raw_data br
+        b_exts  = unpackExtensions $ S.drop off_e $ raw_data br
+        b_virtual_offset = virt_offset br
+
+        off_s = sum [ 33, br_l_read_name br, 4 * br_n_cigar_op br ]
+        off_q = off_s + (br_l_seq br + 1) `div` 2
+        off_e = off_q +  br_l_seq br
+
 -- | Decodes a raw block into a @BamRec@.
 decodeBamEntry :: BamRaw -> BamRec
 decodeBamEntry br = case pushEndOfInput $ runGetIncremental go `pushChunk` raw_data br of
@@ -183,7 +209,7 @@ decodeBamEntry br = case pushEndOfInput $ runGetIncremental go `pushChunk` raw_d
             !cigar     <- Cigar . map decodeCigar <$> replicateM cigar_len getWord32le
             !qry_seq   <- getByteString $ (read_len+1) `div` 2
             !qual <- (\qs -> if B.all (0xff ==) qs then B.empty else qs) <$> getByteString read_len
-            !exts <- getExtensions M.empty
+            !exts <- getExtensions []
 
             return $ BamRec read_name flag rid start mapq cigar
                             mate_rid mate_pos ins_size
@@ -229,10 +255,10 @@ fixup_bam_rec b =
         -- remove it.  Else use 0 and leave it alone.  Note that this
         -- solves the collision with BWA, since BWA puts a character
         -- there, not an int.
-        (eflags, cleaned_exts) = case (M.lookup "FF" (b_exts b), M.lookup "XF" (b_exts b)) of
-                ( Just (Int i), _ ) -> (i, M.delete "FF" (b_exts b))
-                ( _, Just (Int i) ) -> (i, M.delete "XF" (b_exts b))
-                (       _,_       ) -> (0,                b_exts b )
+        (eflags, cleaned_exts) = case (lookup "FF" (b_exts b), lookup "XF" (b_exts b)) of
+                ( Just (Int i), _ ) -> (i, deleteE "FF" (b_exts b))
+                ( _, Just (Int i) ) -> (i, deleteE "XF" (b_exts b))
+                (       _,_       ) -> (0,               b_exts b )
 
         -- if either mate is unmapped, remove "properly paired"
         fixPP f | f .&. (flagUnmapped .|. flagMateUnmapped) == 0 = f
@@ -244,11 +270,73 @@ fixup_bam_rec b =
 -- | A collection of extension fields.  The key is actually only two @Char@s, but that proved impractical.
 -- (Hmm... we could introduce a Key type that is a 16 bit int, then give
 -- it an @instance IsString@... practical?)
-type Extensions = M.Map String Ext
+type Extensions = [( String, Ext )]
+
+-- | Deletes all occurences of some extension field.
+deleteE :: String -> Extensions -> Extensions
+deleteE k = filter ((/=) k . fst)
+
+-- | Blindly inserts an extension field.  This can create duplicates
+-- (and there is no telling how other tools react to that).
+insertE :: String -> Ext -> Extensions -> Extensions
+insertE k v = (:) (k,v)
+
+-- | Deletes all occurences of an extension field, then inserts it with
+-- a new value.  This is safer than 'insertE', but also more expensive.
+updateE :: String -> Ext -> Extensions -> Extensions
+updateE k v = insertE k v . deleteE k
+
 
 data Ext = Int Int | Float Float | Text ByteString | Bin ByteString | Char Word8
          | IntArr (U.Vector Int) | FloatArr (U.Vector Float)
     deriving (Show, Eq, Ord)
+
+{-# INLINE unpackExtensions #-}
+unpackExtensions :: ByteString -> Extensions
+unpackExtensions = go
+  where
+    go s | S.length s < 4 = []
+         | otherwise = let key = [ S.index s 0, S.index s 1 ]
+                       in case S.index s 2 of
+                         'Z' -> case S.break (== '\0') (S.drop 3 s) of (l,r) -> (key, Text l) : go (S.drop 1 r)
+                         'H' -> case S.break (== '\0') (S.drop 3 s) of (l,r) -> (key, Bin  l) : go (S.drop 1 r)
+                         'A' -> (key, Char (B.index s 3)) : go (S.drop 4 s)
+                         'B' -> let tp = S.index s 3
+                                    n  = getInt 'I' (S.drop 4 s)
+                                in case tp of
+                                      'f' -> (key, FloatArr (U.fromListN (n+1) [ getFloat (S.drop i s) | i <- [8, 12 ..] ]))
+                                             : go (S.drop (12+4*n) s)
+                                      _   -> (key, IntArr (U.fromListN (n+1) [ getInt tp (S.drop i s) | i <- [8, 8 + size tp ..] ]))
+                                             : go (S.drop (8 + size tp * (n+1)) s)
+                         'f' -> (key, Float (getFloat (S.drop 3 s))) : go (S.drop 7 s)
+                         tp  -> (key, Int  (getInt tp (S.drop 3 s))) : go (S.drop (3 + size tp) s)
+
+    size 'C' = 1
+    size 'c' = 1
+    size 'S' = 2
+    size 's' = 2
+    size 'I' = 4
+    size 'i' = 4
+    size 'f' = 4
+    size  _  = 0
+
+    getInt 'C' s | S.length s >= 1 = fromIntegral (fromIntegral (B.index s 0) :: Word8)
+    getInt 'c' s | S.length s >= 1 = fromIntegral (fromIntegral (B.index s 0) ::  Int8)
+    getInt 'S' s | S.length s >= 2 = fromIntegral                               (i :: Word16)
+        where i = fromIntegral (B.index s 0) .|. fromIntegral (B.index s 1) `shiftL` 8
+    getInt 's' s | S.length s >= 2 = fromIntegral                               (i ::  Int16)
+        where i = fromIntegral (B.index s 0) .|. fromIntegral (B.index s 1) `shiftL` 8
+    getInt 'I' s | S.length s >= 4 = fromIntegral                               (i :: Word32)
+        where i = fromIntegral (B.index s 0)             .|. fromIntegral (B.index s 1) `shiftL`  8 .|.
+                  fromIntegral (B.index s 2) `shiftL` 16 .|. fromIntegral (B.index s 3) `shiftL` 24
+    getInt 'i' s | S.length s >= 4 = fromIntegral                               (i ::  Int32)
+        where i = fromIntegral (B.index s 0)             .|. fromIntegral (B.index s 1) `shiftL`  8 .|.
+                  fromIntegral (B.index s 2) `shiftL` 16 .|. fromIntegral (B.index s 3) `shiftL` 24
+    getInt _ _ = 0
+
+    getFloat s = unsafePerformIO $ alloca $ \buf ->
+                 poke (castPtr buf) (getInt 'I' s :: Word32) >> peek buf
+
 
 getExtensions :: Extensions -> Get Extensions
 getExtensions m = getExt <|> return m
@@ -257,7 +345,7 @@ getExtensions m = getExt <|> return m
     getExt = do
             key <- (\a b -> [w2c a, w2c b]) <$> getWord8 <*> getWord8
             typ <- getWord8
-            let cont v = getExtensions $! M.insert key v m
+            let cont v = getExtensions $ insertE key v m
             case w2c typ of
                     'Z' -> cont . Text =<< getByteStringNul
                     'H' -> cont . Bin  =<< getByteStringNul
@@ -315,14 +403,14 @@ encodeBamEntry = bamRaw 0 . S.concat . L.toChunks . runPut . putEntry
                      putSeq $ b_seq b
                      putByteString $ if not (S.null (b_qual b)) then b_qual b
                                      else B.replicate (U.length $ b_seq b) 0xff
-                     forM_ (M.toList $ more_exts b) $ \(k,v) ->
+                     forM_ (more_exts b) $ \(k,v) ->
                         case k of [c,d] -> putChr c >> putChr d >> putValue v
                                   _     -> error $ "invalid field key " ++ show k
 
     more_exts :: BamRec -> Extensions
     more_exts b = if xf /= 0 then x' else b_exts b
         where xf = b_flag b `shiftR` 16
-              x' = M.insert "FF" (Int xf) $ b_exts b
+              x' = insertE "FF" (Int xf) $ b_exts b
 
     encodeCigar :: (CigOp,Int) -> Int
     encodeCigar (op,l) = fromEnum op .|. l `shiftL` 4
@@ -432,17 +520,17 @@ type_mask = flagFirstMate .|. flagSecondMate .|. flagPaired
 
 
 extAsInt :: Int -> String -> BamRec -> Int
-extAsInt d nm br = case M.lookup nm (b_exts br) of Just (Int i) -> i ; _ -> d
+extAsInt d nm br = case lookup nm (b_exts br) of Just (Int i) -> i ; _ -> d
 
 extAsString :: String -> BamRec -> ByteString
-extAsString nm br = case M.lookup nm (b_exts br) of
+extAsString nm br = case lookup nm (b_exts br) of
     Just (Char c) -> B.singleton c
     Just (Text s) -> s
     _             -> B.empty
 
 
 setQualFlag :: Char -> BamRec -> BamRec
-setQualFlag c br = br { b_exts = M.insert "ZQ" (Text s') $ b_exts br }
+setQualFlag c br = br { b_exts = updateE "ZQ" (Text s') $ b_exts br }
   where
     s  = extAsString "ZQ" br
     s' = if c `S.elem` s then s else c `S.cons` s
@@ -501,7 +589,7 @@ parseSamRec ref = (\nm fl rn po mq cg rn' -> BamRec nm fl rn po mq cg (rn' rn))
                P.manyTill (flip (,) <$> P.decimal <*> cigop) sep
 
     cigop    = P.choice $ zipWith (\c r -> r <$ P.char c) "MIDNSHP" [Mat,Ins,Del,Nop,SMa,HMa,Pad]
-    exts     = M.fromList <$> ext `P.sepBy` sep
+    exts     = ext `P.sepBy` sep
     ext      = (\a b v -> ([a,b],v)) <$> P.anyChar <*> P.anyChar <*> (P.char ':' *> value)
 
     value    = P.char 'A' *> P.char ':' *> (Char <$>               anyWord8) <|>
@@ -531,7 +619,7 @@ encodeSamEntry refs b = conjoin '\t' [
     shows (b_isize b + 1),
     shows (U.toList $ b_seq b),
     unpck (B.map (+33) $ b_qual b) ] .
-    M.foldWithKey (\k v f -> (:) '\t' . (++) k . (:) ':' . extToSam v . f) id (b_exts b)
+    foldr (\(k,v) f -> (:) '\t' . (++) k . (:) ':' . extToSam v . f) id (b_exts b)
   where
     unpck = (++) . S.unpack
     conjoin c = foldr1 (\a f -> a . (:) c . f)

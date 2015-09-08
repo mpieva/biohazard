@@ -71,7 +71,7 @@ instance BAMREC BamRec where
     project = encodeBamEntry
     make_singleton b = b { b_flag = b_flag b .&. complement pflags }
     flag_dup       b = b { b_flag = b_flag b .|. flagDuplicate }
-    add_xp_of    w v = v { b_exts = M.insert "XP" (Int $ extAsInt 1 "XP" w `oplus` extAsInt 1 "XP" v) (b_exts v) }
+    add_xp_of    w v = v { b_exts = updateE "XP" (Int $ extAsInt 1 "XP" w `oplus` extAsInt 1 "XP" v) (b_exts v) }
     is_mate_of   a b = b_qname a == b_qname b && isPaired a && isPaired b && isFirstMate a == isSecondMate b
 
 pflags :: Int
@@ -432,14 +432,14 @@ do_collapse maxq  brs = ( Consensus b0 { b_exts  = modify_extensions $ b_exts b0
                     | i <- [0 .. len - 1] ]
         where !len = V.length . b_seq . head $ good brs
 
-    add_index k1 k2 = case [ T.length sq | b <- brs, Text sq <- maybe [] (:[]) $ M.lookup k1 (b_exts b) ] of
+    add_index k1 k2 = case [ T.length sq | b <- brs, Text sq <- maybe [] (:[]) $ lookup k1 (b_exts b) ] of
         [      ] -> id
-        (!len:_) -> M.insert k1 (Text $ T.pack $ show $ map fst conssq) .
-                    M.insert k2 (Text $ B.pack $ map ((+) 33 . unQ . snd) conssq)
+        (!len:_) -> updateE k1 (Text $ T.pack $ show $ map fst conssq) .
+                    updateE k2 (Text $ B.pack $ map ((+) 33 . unQ . snd) conssq)
             where
                 inputs = [ (sq, qs) | es <- map b_exts brs
-                                    , Text sq <- maybe [] (:[]) $ M.lookup k1 es
-                                    , let qs = case M.lookup k2 es of
+                                    , Text sq <- maybe [] (:[]) $ lookup k1 es
+                                    , let qs = case lookup k2 es of
                                             -- Quality if available, else Q23 (~0.5% error rate)
                                             Just (Text t) -> t
                                             _             -> B.replicate len 56 ]
@@ -463,18 +463,18 @@ do_collapse maxq  brs = ( Consensus b0 { b_exts  = modify_extensions $ b_exts b0
 
 
     nm' = sum $ [ n | (Ins,n) <- cigar' ] ++ [ n | (Del,n) <- cigar' ] ++ [ 1 | MdRep _ <- md' ]
-    xa' = nub' [ T.split ';' xas | Just (Text xas) <- map (M.lookup "XA" . b_exts) brs ]
+    xa' = nub' [ T.split ';' xas | Just (Text xas) <- map (lookup "XA" . b_exts) brs ]
 
     modify_extensions es = foldr ($!) es $
-        [ let vs = [ v | Just v <- map (M.lookup k . b_exts) brs ]
-          in if null vs then id else M.insert k $! maj vs | k <- do_maj ] ++
-        [ let vs = [ v | Just (Int v) <- map (M.lookup k . b_exts) brs ]
-          in if null vs then id else M.insert k $! Int (rmsq vs) | k <- do_rmsq ] ++
-        [ M.delete k | k <- useless ] ++
-        [ M.insert "NM" $! Int nm'
-        , M.insert "XP" $! Int (foldl' (\a b -> a `oplus` extAsInt 1 "XP" b) 0 brs)
-        , if null xa' then id else M.insert "XA" $! (Text $ T.intercalate (T.singleton ';') xa')
-        , if null md' then id else M.insert "MD" $! (Text $ showMd md')
+        [ let vs = [ v | Just v <- map (lookup k . b_exts) brs ]
+          in if null vs then id else updateE k $! maj vs | k <- do_maj ] ++
+        [ let vs = [ v | Just (Int v) <- map (lookup k . b_exts) brs ]
+          in if null vs then id else updateE k $! Int (rmsq vs) | k <- do_rmsq ] ++
+        [ deleteE k | k <- useless ] ++
+        [ updateE "NM" $! Int nm'
+        , updateE "XP" $! Int (foldl' (\a b -> a `oplus` extAsInt 1 "XP" b) 0 brs)
+        , if null xa' then id else updateE "XA" $! (Text $ T.intercalate (T.singleton ';') xa')
+        , if null md' then id else updateE "MD" $! (Text $ showMd md')
         , add_index "XI" "YI"
         , add_index "XJ" "YJ" ]
 
@@ -735,8 +735,8 @@ toCigar = Cigar . go
 -- an MD field.
 setMD :: BamRec -> ECig -> BamRec
 setMD b ec = case go ec of
-    Just md -> b { b_exts = M.insert "MD" (Text $ showMd md) (b_exts b) }
-    Nothing -> b { b_exts = M.delete "MD"                    (b_exts b) }
+    Just md -> b { b_exts = updateE "MD" (Text $ showMd md) (b_exts b) }
+    Nothing -> b { b_exts = deleteE "MD"                    (b_exts b) }
   where
     go  WithMD      = Just []
     go  WithoutMD   = Nothing
