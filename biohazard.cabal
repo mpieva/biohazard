@@ -1,6 +1,6 @@
 -- vim:tw=132
 Name:                biohazard
-Version:             0.5.15.1
+Version:             0.5.15.2
 Synopsis:            bioinformatics support library
 Description:         This is a collection of modules I separated from
                      various bioinformatics tools.  The hope is to make
@@ -39,7 +39,7 @@ source-repository head
 source-repository this
   type:     git
   location: git://github.com/udo-stenzel/biohazard.git
-  tag:      0.5.15
+  tag:      0.5.15.2
 
 
 Library
