@@ -1,6 +1,5 @@
-{-# LANGUAGE TemplateHaskell, OverloadedStrings, BangPatterns     #-}
-{-# LANGUAGE MultiParamTypeClasses, TypeFamilies, RecordWildCards #-}
-{-# LANGUAGE ForeignFunctionInterface, GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE OverloadedStrings, BangPatterns, ForeignFunctionInterface #-}
+{-# LANGUAGE RecordWildCards, MultiParamTypeClasses, TypeFamilies #-}
 
 -- Two-stage demultiplexing.
 --
@@ -28,11 +27,8 @@ import Control.Arrow ( (&&&) )
 import Control.Monad ( when, unless, forM_ )
 import Data.Aeson
 import Data.Bits
-import Data.Char ( chr )
-import Data.Hashable
 import Data.List ( foldl', sortBy )
 import Data.Monoid
-import Data.Vector.Unboxed.Deriving
 import Data.Version ( showVersion )
 import Data.Word ( Word64 )
 import Foreign.C.Types
@@ -65,23 +61,7 @@ import qualified Data.Vector.Storable.Mutable as VSM
 import qualified Data.Vector.Generic            as VG
 import qualified Data.Vector.Generic.Mutable    as VGM
 
-
--- | An index sequence must have at most eight bases.  We represent a
--- base and its quality score in a single byte:  the top three bits are
--- the base ("ACGTN" = [0,1,3,2,7]), the lower five bits are the quality,
--- clamped to 31.
-
-newtype Index = Index Word64 deriving (Storable, Eq)
-
-instance Hashable Index where
-    hashWithSalt salt (Index x) = hashWithSalt salt x
-    hash (Index x) = hash x
-
-instance Show Index where
-    show (Index x) = [ "ACTGNNNN" !! fromIntegral b | i <- [56,48..0], let b = (x `shiftR` (i+5)) .&. 0x7 ]
-            ++ 'q' : [ chr (fromIntegral q+33)      | i <- [56,48..0], let q = (x `shiftR` i) .&. 0x1F ]
-
-derivingUnbox "Index" [t| Index -> Word64 |] [| \ (Index i) -> i |] [| Index |]
+import Index
 
 fromS :: B.ByteString -> Index
 fromS sq = fromSQ sq (B.replicate (B.length sq) 64)

@@ -251,6 +251,7 @@ Executable jivebunny
   C-sources:           src/cbits/jive.c
   CC-options:          -std=c99 -O3 -ffast-math
   Ghc-options:         -Wall -auto-all -threaded -rtsopts -with-rtsopts=-N
+  Other-modules:       Index
   Build-depends:       aeson,
                        base,
                        biohazard,
