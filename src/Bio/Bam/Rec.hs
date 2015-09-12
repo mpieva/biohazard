@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings, PatternGuards, BangPatterns #-}
-{-# LANGUAGE NoMonomorphismRestriction, FlexibleContexts #-}
-{-#LANGUAGE RecordWildCards #-}
+{-# LANGUAGE NoMonomorphismRestriction, FlexibleContexts, FlexibleInstances #-}
+{-# LANGUAGE RecordWildCards, TypeFamilies, MultiParamTypeClasses #-}
 
 -- TODO:
 -- - Automatic creation of some kind of index.  If possible, this should
@@ -71,6 +71,7 @@ import Bio.Bam.Raw
 import Bio.Iteratee
 
 import Control.Monad
+import Control.Monad.Primitive      ( unsafePrimToPrim )
 import Control.Applicative
 import Data.Attoparsec.ByteString   ( anyWord8 )
 import Data.Binary.Builder          ( toLazyByteString )
@@ -78,24 +79,29 @@ import Data.Binary.Get
 import Data.Binary.Put
 import Data.Bits                    ( testBit, shiftL, shiftR, (.&.), (.|.), complement )
 import Data.ByteString              ( ByteString )
+import Data.ByteString.Internal     ( inlinePerformIO )
 import Data.Char                    ( ord, digitToInt )
 import Data.Int                     ( Int32, Int16, Int8 )
 import Data.Monoid                  ( mempty )
 import Data.Vector.Unboxed          ( (!?) )
 import Data.Word                    ( Word32, Word16 )
+import Foreign.ForeignPtr
 import Foreign.Marshal.Alloc        ( alloca )
 import Foreign.Ptr                  ( castPtr )
-import Foreign.Storable             ( peek, poke )
+import Foreign.Storable             ( peek, poke, peekByteOff, pokeByteOff )
 import System.IO
 import System.IO.Unsafe             ( unsafePerformIO )
 
 import qualified Data.Attoparsec.ByteString.Char8   as P
 import qualified Data.ByteString                    as B
 import qualified Data.ByteString.Char8              as S
+import qualified Data.ByteString.Internal           as B
 import qualified Data.ByteString.Lazy.Char8         as L
 import qualified Data.Foldable                      as F
 import qualified Data.Iteratee                      as I
 import qualified Data.Map                           as M
+import qualified Data.Vector.Generic                as V
+import qualified Data.Vector.Generic.Mutable        as VM
 import qualified Data.Vector.Unboxed                as U
 
 -- ^ Parsers and Printers for BAM and SAM.  We employ an @Iteratee@
@@ -115,7 +121,8 @@ data BamRec = BamRec {
         b_mrnm  :: {-# UNPACK #-} !Refseq,
         b_mpos  :: {-# UNPACK #-} !Int,
         b_isize :: {-# UNPACK #-} !Int,
-        b_seq   :: !(U.Vector Nucleotides),
+        b_seq   :: !(Vector_Nucs_half Nucleotides),
+        -- b_seq   :: !(U.Vector Nucleotides),
         b_qual  :: !ByteString,         -- ^ quality, may be empty
         b_exts  :: Extensions,
         b_virtual_offset :: {-# UNPACK #-} !FileOffset -- ^ virtual offset for indexing purposes
@@ -132,7 +139,7 @@ nullBamRec = BamRec {
         b_mrnm  = invalidRefseq,
         b_mpos  = invalidPos,
         b_isize = 0,
-        b_seq   = U.empty,
+        b_seq   = V.empty,
         b_qual  = S.empty,
         b_exts  = [],
         b_virtual_offset = 0
@@ -164,6 +171,48 @@ decodeAnyBamOrSamFile :: (MonadIO m, MonadMask m)
                       => FilePath -> (BamMeta -> Iteratee [BamRec] m a) -> m (Iteratee [BamRec] m a)
 decodeAnyBamOrSamFile fn k = enumFileRandom defaultBufSize fn (decodeAnyBamOrSam k) >>= run
 
+-- | A vector that packs two 'Nucleotides' into one byte, just like Bam does.
+data Vector_Nucs_half a = Vector_Nucs_half !Int !Int !(ForeignPtr Word8)
+
+-- | A mutable vector that packs two 'Nucleotides' into one byte, just like Bam does.
+data MVector_Nucs_half s a = MVector_Nucs_half !Int !Int !(ForeignPtr Word8)
+
+type instance V.Mutable Vector_Nucs_half = MVector_Nucs_half
+
+instance V.Vector Vector_Nucs_half Nucleotides where
+    basicUnsafeFreeze (MVector_Nucs_half o l fp) = return $  Vector_Nucs_half o l fp
+    basicUnsafeThaw    (Vector_Nucs_half o l fp) = return $ MVector_Nucs_half o l fp
+
+    basicLength          (Vector_Nucs_half _ l  _) = l
+    basicUnsafeSlice s l (Vector_Nucs_half o _ fp) = Vector_Nucs_half (o + s) l fp
+
+    basicUnsafeIndexM (Vector_Nucs_half o _ fp) i
+        | even (o+i) = return . Ns $ (b `shiftR` 4) .&. 0xF
+        | otherwise  = return . Ns $  b             .&. 0xF
+      where b = inlinePerformIO $ withForeignPtr fp $ \p -> peekByteOff p ((o+i) `shiftR` 1)
+
+instance VM.MVector MVector_Nucs_half Nucleotides where
+    basicLength          (MVector_Nucs_half _ l  _) = l
+    basicUnsafeSlice s l (MVector_Nucs_half o _ fp) = MVector_Nucs_half (o + s) l fp
+
+    basicOverlaps _ _ = False -- XXX
+    basicUnsafeNew l = unsafePrimToPrim $ MVector_Nucs_half 0 l <$> mallocForeignPtrBytes ((l+1) `shiftR` 1)
+    -- basicInitialize (MVector_Nucs_half o l fp) = return () -- XXX
+
+    basicUnsafeRead (MVector_Nucs_half o _ fp) i
+        | even (o+i) = Ns . (.&.) 0xF . (`shiftR` 4) <$> b
+        | otherwise  = Ns . (.&.) 0xF                <$> b
+      where b = unsafePrimToPrim $ withForeignPtr fp $ \p -> peekByteOff p ((o+i) `shiftR` 1)
+
+    basicUnsafeWrite (MVector_Nucs_half o _ fp) i (Ns x) =
+        unsafePrimToPrim $ withForeignPtr fp $ \p -> do
+            y <- peekByteOff p ((o+i) `shiftR` 1)
+            let y' | even (o+i) = x `shiftL` 4 .|. y .&. 0x0F
+                   | otherwise  = x            .|. y .&. 0xF0
+            pokeByteOff p ((o+i) `shiftR` 1) y'
+
+instance Show (Vector_Nucs_half Nucleotides) where
+    show = show . V.toList
 
 {-# INLINE unpackBam #-}
 unpackBam :: BamRaw -> BamRec
@@ -178,7 +227,8 @@ unpackBam br = BamRec{..}
         b_mrnm  = br_mrnm br
         b_mpos  = br_mpos br
         b_isize = br_isize br
-        b_seq = U.fromListN (br_l_seq br) [ br_seq_at br i | i <- [0..br_l_seq br-1]]
+        b_seq   = Vector_Nucs_half (2 * (off_s+off0)) (br_l_seq br) fp
+        -- b_seq   = U.fromListN (br_l_seq br) [ br_seq_at br i | i <- [0..br_l_seq br-1]]
         b_qual  = S.take (br_l_seq br) $ S.drop off_q $ raw_data br
         b_exts  = unpackExtensions $ S.drop off_e $ raw_data br
         b_virtual_offset = virt_offset br
@@ -186,6 +236,8 @@ unpackBam br = BamRec{..}
         off_s = sum [ 33, br_l_read_name br, 4 * br_n_cigar_op br ]
         off_q = off_s + (br_l_seq br + 1) `div` 2
         off_e = off_q +  br_l_seq br
+
+        (fp, off0, len0) = B.toForeignPtr (raw_data br)
 
 -- | Decodes a raw block into a @BamRec@.
 decodeBamEntry :: BamRaw -> BamRec
@@ -213,7 +265,7 @@ decodeBamEntry br = case pushEndOfInput $ runGetIncremental go `pushChunk` raw_d
 
             return $ BamRec read_name flag rid start mapq cigar
                             mate_rid mate_pos ins_size
-                            (U.fromListN read_len $ expand qry_seq)
+                            (V.fromListN read_len $ expand qry_seq)
                             qual exts (virt_offset br)
 
     expand t = if S.null t then [] else let x = B.head t in Ns (x `shiftR` 4) : Ns (x .&. 0xf) : expand (B.tail t)
@@ -393,7 +445,7 @@ encodeBamEntry = bamRaw 0 . S.concat . L.toChunks . runPut . putEntry
                      put_int_16    $ distinctBin (b_pos b) (cigarToAlnLen (b_cigar b))
                      put_int_16    $ length $ unCigar $ b_cigar b
                      put_int_16    $ b_flag b
-                     put_int_32    $ U.length $ b_seq b
+                     put_int_32    $ V.length $ b_seq b
                      putWord32le   $ unRefseq $ b_mrnm b
                      put_int_32    $ b_mpos b
                      put_int_32    $ b_isize b
@@ -402,7 +454,7 @@ encodeBamEntry = bamRaw 0 . S.concat . L.toChunks . runPut . putEntry
                      mapM_ (put_int_32 . encodeCigar) $ unCigar $ b_cigar b
                      putSeq $ b_seq b
                      putByteString $ if not (S.null (b_qual b)) then b_qual b
-                                     else B.replicate (U.length $ b_seq b) 0xff
+                                     else B.replicate (V.length $ b_seq b) 0xff
                      forM_ (more_exts b) $ \(k,v) ->
                         case k of [c,d] -> putChr c >> putChr d >> putValue v
                                   _     -> error $ "invalid field key " ++ show k
@@ -415,13 +467,13 @@ encodeBamEntry = bamRaw 0 . S.concat . L.toChunks . runPut . putEntry
     encodeCigar :: (CigOp,Int) -> Int
     encodeCigar (op,l) = fromEnum op .|. l `shiftL` 4
 
-    putSeq :: U.Vector Nucleotides -> Put
-    putSeq v = case v !? 0 of
+    -- putSeq :: U.Vector Nucleotides -> Put
+    putSeq v = case v V.!? 0 of
                  Nothing -> return ()
-                 Just a  -> case v !? 1 of
+                 Just a  -> case v V.!? 1 of
                     Nothing -> putWord8 (unNs a `shiftL` 4)
                     Just b  -> do putWord8 (unNs a `shiftL` 4 .|. unNs b)
-                                  putSeq (U.drop 2 v)
+                                  putSeq (V.drop 2 v)
 
 -- | writes BAM encoded stuff to a @Handle@
 -- We generate BAM with dynamic blocks, then stream them out to the file.
@@ -580,8 +632,8 @@ parseSamRec ref = (\nm fl rn po mq cg rn' -> BamRec nm fl rn po mq cg (rn' rn))
 
     rnext    = id <$ P.char '=' <* sep <|> const . ref <$> word
     sequ     = {-# SCC "parseSamRec/sequ" #-}
-               (U.empty <$ P.char '*' <|>
-               U.fromList . map toNucleotides . S.unpack <$> P.takeWhile (P.inClass "acgtnACGTN")) <* sep
+               (V.empty <$ P.char '*' <|>
+               V.fromList . map toNucleotides . S.unpack <$> P.takeWhile (P.inClass "acgtnACGTN")) <* sep
 
     quals    = {-# SCC "parseSamRec/quals" #-} B.empty <$ P.char '*' <* sep <|> B.map (subtract 33) <$> word
 
@@ -617,7 +669,7 @@ encodeSamEntry refs b = conjoin '\t' [
     unpck (sq_name $ getRef refs $ b_mrnm b),
     shows (b_mpos b + 1),
     shows (b_isize b + 1),
-    shows (U.toList $ b_seq b),
+    shows (V.toList $ b_seq b),
     unpck (B.map (+33) $ b_qual b) ] .
     foldr (\(k,v) f -> (:) '\t' . (++) k . (:) ':' . extToSam v . f) id (b_exts b)
   where
