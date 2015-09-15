@@ -59,8 +59,8 @@ simple_indel_call ploidy vars = ( simple_call ploidy mkpls vars, vars' )
 -- call.  Since everything is so straight forward, this works even in
 -- the face of damage.
 
-simple_snp_call :: Int -> BasePile -> (GL, Nucleotides)
-simple_snp_call ploidy vars = ( simple_call ploidy mkpls vars, ref )
+simple_snp_call :: Int -> BasePile -> Snp_GLs
+simple_snp_call ploidy vars = snp_gls (simple_call ploidy mkpls vars) ref
   where
     ref = case vars of (_, DB _ _ r _) : _ -> r ; _ -> nucsN
     mkpls (q, DB b qq _ m) = [ toProb $ x + pe*(s-x) | n <- [0..3], let x = m ! N n :-> b ]
@@ -140,8 +140,8 @@ mk_snp_gts ploidy = go ploidy alleles
 -- | SNP call according to maq/samtools/bsnp model.  The matrix k counts
 -- how many errors we made, approximately.
 
-maq_snp_call :: Int -> Double -> BasePile -> (GL, Nucleotides)
-maq_snp_call ploidy theta bases = (V.fromList $ map l $ mk_snp_gts ploidy, ref)
+maq_snp_call :: Int -> Double -> BasePile -> Snp_GLs
+maq_snp_call ploidy theta bases = snp_gls (V.fromList $ map l $ mk_snp_gts ploidy) ref
   where
     -- Bases with effective qualities in order of decreasing(!) quality.
     -- A vector based algorithm may fit here.
@@ -226,7 +226,20 @@ showCall f vc = shows (vc_refseq vc) . (:) ':' .
     mapq = vc_sum_mapq vc `div` vc_depth vc -}
 
 
--- | Error model with dependency parameter.  Since both strands are
+--  Error model with dependency parameter.  Since both strands are
 -- supposed to still be independent, we feed in only one pile, and
 -- later combine both calls.  XXX What's that doing HERE?!
+
+type Calls = Pile' Snp_GLs (GL, [IndelVariant])
+
+-- | This pairs up GL values and the reference allele.  When
+-- constructing it, we make sure the GL values are in the correct order
+-- if the reference allele is listed first.
+data Snp_GLs = Snp_GLs !GL !Nucleotides
+
+snp_gls :: GL -> Nucleotides -> Snp_GLs
+snp_gls pls ref | ref == nucsT = Snp_GLs (pls `V.backpermute` V.fromList [9,6,0,7,1,2,8,3,4,5]) ref
+                | ref == nucsG = Snp_GLs (pls `V.backpermute` V.fromList [5,3,0,4,1,2,8,6,7,9]) ref
+                | ref == nucsC = Snp_GLs (pls `V.backpermute` V.fromList [2,1,0,4,3,5,7,6,8,9]) ref
+                | otherwise    = Snp_GLs pls ref
 

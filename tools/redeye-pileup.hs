@@ -165,10 +165,12 @@ calls (Just theta) pile = pile { p_snp_pile = s, p_indel_pile = i }
     -- !s = maq_snp_call 2 theta $ uncurry (++) $ p_snp_pile pile -- XXX
 
     -- This treats them separately
-    !s = (U.zipWith (*) x y, if r == nucsN then r' else r)
-      where
-        (x,r)  = (maq_snp_call 2 theta $ fst $ p_snp_pile pile)
-        (y,r') = (maq_snp_call 2 theta $ snd $ p_snp_pile pile)
+    !s | r == r'    = Snp_GLs (U.zipWith (*) x y) r     -- same ref base (normal case): multiply
+       | r == nucsN = Snp_GLs y r'                      -- forward ref is N, use backward call
+       | otherwise  = Snp_GLs x r                       -- else use forward call (even if this is incorrect,
+      where                                             -- there is nothing else we can do here)
+        Snp_GLs x r  = maq_snp_call 2 theta $ fst $ p_snp_pile pile
+        Snp_GLs y r' = maq_snp_call 2 theta $ snd $ p_snp_pile pile
 
 
 by_groups :: ( Monad m, ListLike s a, Nullable s, Eq b ) => (a -> b) -> (b -> Enumeratee s t m r) -> Enumeratee s t m r
@@ -202,15 +204,17 @@ compileBlocks = convStream $ do
 
     pack c1 = rlist indel_variants `seq` GenoCallSite{..}
       where
+        Snp_GLs snp_pls !ref_allele = p_snp_pile c1
+
         !snp_stats         = p_snp_stat c1
         !indel_stats       = p_indel_stat c1
-        !snp_likelihoods   = compact_likelihoods $ fst $ p_snp_pile c1
+        !snp_likelihoods   = compact_likelihoods snp_pls
         !indel_likelihoods = compact_likelihoods $ fst $ p_indel_pile c1
-        !ref_allele        = snd $ p_snp_pile c1
         !indel_variants    = snd $ p_indel_pile c1
 
         rlist [] = ()
         rlist (x:xs) = x `seq` rlist xs
+
 
 output_avro :: Handle -> Conf -> Refs -> Iteratee [Calls] IO ()
 output_avro hdl _cfg refs = compileBlocks =$
@@ -251,21 +255,18 @@ tabulateSingle = do
     -- which depends on the reference allele.  There is little
     -- regularity to it, but only four different cases, so I'll just
     -- expand them by hand.
-    -- PL ~ AA, AC, CC, AG, CG, GG, AT, CT, GT, TT
+    -- Ref ~ A ==> PL ~ AA, AC, CC, AG, CG, GG, AT, CT, GT, TT
     {-# INLINE accum #-}
-    accum !tab !acc ( !gls, !ref )
-        | U.length gls /= 10 = error "Ten GL values expected for SNP!"      -- should not happen
-        | ref == nucsA       = accum' tab acc gls 0 (1,3,6) (2,5,9)
-        | ref == nucsC       = accum' tab acc gls 2 (1,4,7) (0,5,9)
-        | ref == nucsG       = accum' tab acc gls 5 (3,4,8) (0,2,9)
-        | ref == nucsT       = accum' tab acc gls 9 (6,7,8) (0,2,5)
-        | otherwise          = return acc                                   -- unknown reference
+    accum !tab !acc (Snp_GLs !gls !ref)
+        | U.length gls /= 10                   = error "Ten GL values expected for SNP!"      -- should not happen
+        | ref `elem` [nucsA,nucsC,nucsG,nucsT] = accum' tab acc gls
+        | otherwise                            = return acc                                   -- unknown reference
 
     {-# INLINE accum' #-}
-    accum' !tab !acc !gls refi (heti1,heti2,heti3) (alti1,alti2,alti3) = do
-        let g_RR = 3 * U.unsafeIndex gls refi
-            g_RA = U.unsafeIndex gls heti1 + U.unsafeIndex gls heti2 + U.unsafeIndex gls heti3
-            g_AA = U.unsafeIndex gls alti1 + U.unsafeIndex gls alti2 + U.unsafeIndex gls alti3
+    accum' !tab !acc !gls = do
+        let g_RR = 3 * U.unsafeIndex gls 0
+            g_RA = U.unsafeIndex gls 1 + U.unsafeIndex gls 3 + U.unsafeIndex gls 6
+            g_AA = U.unsafeIndex gls 2 + U.unsafeIndex gls 5 + U.unsafeIndex gls 9
 
             d1 = max minD . min maxD . round . unPr $ g_AA / g_RR
             d2 = max minD . min maxD . round . unPr $ g_RA / g_RR

@@ -307,7 +307,6 @@ data Pile' a b = Pile { p_refseq     :: {-# UNPACK #-} !Refseq
   deriving Show
 
 type Pile  = Pile' (BasePile, BasePile) IndelPile
-type Calls = Pile' (GL, Nucleotides) (GL, [IndelVariant])
 
 -- | The pileup enumeratee takes 'BamRaw's, decomposes them, interleaves
 -- the pieces appropriately, and generates 'Pile's.  The output will

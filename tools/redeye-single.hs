@@ -1,4 +1,4 @@
-{-# LANGUAGE BangPatterns, RecordWildCards, OverloadedStrings #-}
+{-# LANGUAGE BangPatterns, RecordWildCards, OverloadedStrings, FlexibleContexts #-}
 -- Genotype calling for a single individual.  The only parameters needed
 -- are the (prior) probabilities for a heterozygous or homozygous variant.
 --
@@ -10,8 +10,8 @@
 -- linear space usind a DP scheme; see Heng Li's paper for details.)
 --
 -- What's the output format?  Fasta or Fastq could be useful in limited
--- circumstances, else VCF or BCF would be canonical.  Or maybe VCF
--- restricted to variant sites.  Or VCF restricted to sites not known to
+-- circumstances, else BCF (not VCF) would be canonical.  Or maybe BCF
+-- restricted to variant sites.  Or BCF restricted to sites not known to
 -- be reference.  People will come up with filters for sure...
 
 import Bio.Base
@@ -21,17 +21,22 @@ import Bio.Genocall.AvroFile
 import Bio.Iteratee
 import Control.Monad
 import Data.Avro
+import Data.Bits
 import Data.Foldable ( toList )
+import Data.MiniFloat
+import Data.Monoid
 import System.Console.GetOpt
 import System.Environment
 import System.Exit
 import System.IO
 
 import qualified Data.ByteString.Char8          as S
+import qualified Data.ByteString.Builder        as LB
+import qualified Data.ByteString.Lazy.Char8     as L
 import qualified Data.Vector.Unboxed            as U
 
 data Conf = Conf {
-    conf_output      :: Maybe (Output ()),
+    conf_output      :: Output (),
     conf_sample      :: S.ByteString,
     conf_ploidy      :: S.ByteString -> Int,
     conf_report      :: String -> IO (),
@@ -40,7 +45,7 @@ data Conf = Conf {
     conf_prior_indel :: Prob Double }
 
 defaultConf :: Conf
-defaultConf = Conf Nothing "John_Doe" (const 2) (\_ -> return ())
+defaultConf = Conf ($ bcf_to_hdl stdout) "John_Doe" (const 2) (\_ -> return ())
                    (qualToProb $ Q 30) (qualToProb $ Q 20) (qualToProb $ Q 45)
 
 options :: [OptDescr (Conf -> IO Conf)]
@@ -62,8 +67,8 @@ options = [ -- Maybe add FastQ output?  Or FastA?  Or padded FastA?  Or Nick Fas
 
     be_verbose       c = return $ c { conf_report = hPutStrLn stderr }
     set_sample     a c = return $ c { conf_sample = S.pack a }
-    set_bcf_out  "-" c = return $ c { conf_output = undefined }
-    set_bcf_out   fn c = return $ c { conf_output = undefined }
+    set_bcf_out  "-" c = return $ c { conf_output = ($ bcf_to_hdl stdout) }
+    set_bcf_out   fn c = return $ c { conf_output = \k -> withFile fn WriteMode (k . bcf_to_hdl) }
 
     set_hap a c = return $ c { conf_ploidy = \chr -> if S.pack a `S.isPrefixOf` chr then 1 else conf_ploidy c chr }
     set_dip a c = return $ c { conf_ploidy = \chr -> if S.pack a `S.isPrefixOf` chr then 2 else conf_ploidy c chr }
@@ -85,41 +90,134 @@ main' :: Conf -> FilePath -> IO ()
 main' Conf{..} infile = do
     -- Pieces of old code were no good at all...  so, reboot.
     -- We read an AVRO container, we apply the priors, we format the
-    -- result as minimal BCF (because VCF is an abomination).
+    -- result as minimal BCF.
     --
-    -- So, generate a header (VCF or BCF) first.  We get the /names/ of
-    -- the reference sequences from the schema and the /lengths/ from
-    -- the biohazard.refseq_length entry.
+    -- So, generate a VCF header first.  We get the /names/ of the
+    -- reference sequences from the schema and the /lengths/ from the
+    -- biohazard.refseq_length entry.
     --
     -- Then app priors to each record, call genotype and format.
     --
     -- Need to write BCF2.  Which is custom binary goop inside a BGZF
-    -- container.  :(
-    enumFile defaultBufSize infile >=> run $
-        joinI $ readAvroContainer $ \av_meta -> do
-            -- needs /names/ and /lengths/ of reference sequences
-            -- names come from the enum definition, need to find the schema
-            -- lengths are stuck in biohazard.reference_lengths
-            liftIO $ S.hPut stdout $
-                vcf_header (getRefseqs av_meta)
-            a <- peekStream
-            return $ const () (a :: Maybe GenoCallBlock)
+    -- container.  :(  First attempt w/o the BGZF layer... let's see
+    -- what bcftools thinks about it.
+    conf_output $ \oiter ->
+        enumFile defaultBufSize infile >=> run $
+            joinI $ readAvroContainer $ \av_meta ->
+                -- needs /names/ and /lengths/ of reference sequences
+                -- names come from the enum definition, need to find the schema
+                -- lengths are stuck in biohazard.reference_lengths
+                -- concatMapStream unpackGenoCallSites =$
+                oiter (getRefseqs av_meta) [conf_sample]
+
+-- unpackGenoCallSites :: GenoCallBlock -> [GenoCallSite]
+
+bcf_to_hdl :: MonadIO m => Handle -> Refs -> [S.ByteString] -> Iteratee [GenoCallBlock] m ()
+bcf_to_hdl hdl refs smps = toBcf refs smps =$ mapChunksM_ (liftIO . L.hPut hdl)
+
+vcf_header :: Refs -> [S.ByteString] -> L.ByteString
+vcf_header refs smps = L.unlines $
+    [ "##fileformat=VCFv4.2"
+    , "##INFO=<ID=MQ,Number=1,Type=Integer,Description=\"RMS mapping quality\">"
+    , "##INFO=<ID=MQ0,Number=1,Type=Integer,Description=\"Number of MAPQ==0 reads covering this record\">"
+    , "##FORMAT=<ID=GT,Number=1,Type=String,Description=\"Genotype\">"
+    , "##FORMAT=<ID=DP,Number=1,Type=Integer,Description=\"read depth\">"
+    , "##FORMAT=<ID=PL,Number=G,Type=Integer,Description=\"genotype likelihoods in deciban\">"
+    , "##FORMAT=<ID=GQ,Number=1,Type=Integer,Description=\"conditional genotype quality in deciban\">" ] ++
+    [ L.fromChunks [ "##contig=<ID=", sq_name s, ",length=", S.pack (show (sq_length s)), ">" ] | s <- toList refs ] ++
+    [ L.intercalate "\t" $ "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT" : map (L.fromChunks . return) smps ]
+
+-- XXX actuall call in missing (have to apply the prior)
+toBcf :: Monad m => Refs -> [S.ByteString] -> Enumeratee [GenoCallBlock] L.ByteString m r
+toBcf refs smps = eneeCheckIfDone go
+  where
+    go  k = concatMapStream encode . k . Chunk . LB.toLazyByteString $
+                LB.byteString "BCF\2\2" <>
+                LB.word32LE (succ . fromIntegral . L.length $ vcf_header refs smps) <>
+                LB.lazyByteString (vcf_header refs smps) <> LB.word8 0
+
+    encode :: GenoCallBlock -> L.ByteString
+    encode GenoCallBlock{..} = L.concat $ zipWith (encode1 reference_name) [start_position..] called_sites
+
+    encode1 ref pos site = LB.toLazyByteString $
+        encodesnp ref pos site <>
+        case indel_variants site of [ ] -> mempty
+                                    [_] -> mempty
+                                    _   -> encodeindel ref pos site
+
+    encodesnp ref pos site = encode' ref pos (map S.singleton alleles) site (snp_stats site)
+      where
+        -- Permuting the reference allele to the front sucks.  Since
+        -- there are only four possibilities, I'm not going to bother
+        -- with an algorithm and just open-code it.
+        alleles | ref_allele site == nucsT = "TACG"
+                | ref_allele site == nucsG = "GACT"
+                | ref_allele site == nucsC = "CAGT"
+                | otherwise                = "ACGT"
+
+    encodeindel ref pos site = encode' ref pos alleles site (indel_stats site)
+      where
+        -- XXX this is f'ed up for more than one variant!
+        alleles = case indel_variants site of { _ : IndelVariant (V_Nucs r) (V_Nuc a) : _ ->
+                        [ S.pack $ show $ U.toList r, S.pack $ show $ U.toList a ] }
+
+    encode' ref pos alleles GenoCallSite{..} CallStats{..} =
+        LB.word32LE (fromIntegral . L.length $ LB.toLazyByteString b_share) <>
+        LB.word32LE (fromIntegral . L.length $ LB.toLazyByteString b_indiv) <>
+        b_share <> b_indiv
+      where
+        b_share = LB.word32LE (unRefseq ref) <>
+                  LB.word32LE (fromIntegral pos) <>
+                  LB.word32LE 0 <>                                -- rlen?!  WTF?!
+                  LB.floatLE gq <>                                -- QUAL
+                  LB.int16LE 2 <>                                 -- ninfo
+                  LB.int16LE (fromIntegral $ length alleles) <>   -- n_allele
+                  LB.word32LE 0x04000001 <>                       -- n_fmt, n_sample
+                  LB.word8 0x07 <>                                -- variant name (empty)
+                  foldMap typed_string alleles <>                 -- alleles
+                  LB.word8 0x01 <>                                -- FILTER (an empty vector)
+
+                  LB.word8 0x11 <> LB.word8 0x01 <>               -- INFO key 0 (MQ)
+                  LB.word8 0x11 <> LB.word8 rms_mapq <>           -- MQ, typed word8
+                  LB.word8 0x11 <> LB.word8 0x02 <>               -- INFO key 0 (MQ0)
+                  LB.word8 0x12 <> LB.word16LE (fromIntegral reads_mapq0)   -- MQ0
+
+        b_indiv = LB.word8 0x01 <> LB.word8 0x03 <>               -- FORMAT key GT
+                  LB.word8 0x21 <>                                -- two uint8s for GT
+                  LB.word8 (2 + 2 * fromIntegral g) <>            -- actual GT
+                  LB.word8 (2 + 2 * fromIntegral h) <>
+
+                  LB.word8 0x01 <> LB.word8 0x04 <>               -- FORMAT key DP
+                  LB.word8 0x12 <>                                -- one uint16 for DP
+                  LB.word16LE (fromIntegral read_depth) <>        -- depth
+
+                  LB.word8 0x01 <> LB.word8 0x05 <>               -- FORMAT key PL
+                  ( let l = U.length lks in if l < 15
+                    then LB.word8 (fromIntegral l `shiftL` 4 .|. 2)
+                    else LB.word16LE 0x03F2 <> LB.word32LE (fromIntegral l) ) <>
+                  pl_vals <>                                      -- vector of uint16s for PLs
+
+                  LB.word8 0x01 <> LB.word8 0x06 <>               -- FORMAT key GQ
+                  LB.word8 0x11 <> LB.word8 gq'                   -- uint8, placeholder
+
+        rms_mapq = round $ sqrt (fromIntegral sum_mapq_squared / fromIntegral read_depth :: Double)
+        typed_string s | S.length s < 15 = LB.word8 (fromIntegral $ (S.length s `shiftL` 4) .|. 0x7) <> LB.byteString s
+                       | otherwise       = LB.word8 0xF7 <> LB.word8 0x03 <> LB.word32LE (fromIntegral $ S.length s) <> LB.byteString s
+
+        -- mini2float gives the natural log of a probability
+        pl_vals = U.foldr ((<>) . LB.word16LE . round . (*) (-10/log 10) . unPr . (/ lks U.! maxidx)) mempty lks
+
+        lks = U.map (Pr . negate . mini2float) snp_likelihoods :: U.Vector (Prob Float)
+        maxidx = U.maxIndex lks
+
+        gq = -10 * unPr (U.sum (U.ifilter (\i _ -> i /= maxidx) lks) / U.sum lks) / log 10
+        gq' = round . max 0 . min 255 $ gq
+
+        h = length $ takeWhile (<= maxidx) $ scanl (+) 1 [2..]
+        g = maxidx - h * (h+1) `div` 2
 
 
-
-vcf_header :: Refs -> S.ByteString
-vcf_header refs = S.unlines . map (S.append "##") $
-    [ "fileformat=VCFv4.2"
-    , "INFO=<ID=MQ,Number=1,Type=Integer,Description=\"RMS mapping quality\">"
-    , "INFO=<ID=MQ0,Number=1,Type=Integer,Description=\"Number of MAPQ==0 reads covering this record\">"
-    , "FORMAT=<ID=GT,Number=1,Type=String,Description=\"Genotype\">"
-    , "FORMAT=<ID=DP,Number=1,Type=Integer,Description=\"read depth\">"
-    , "FORMAT=<ID=PL,Number=G,Type=Integer,Description=\"genotype likelihoods in deciban\">"
-    , "FORMAT=<ID=GQ,Number=1,Type=Integer,Description=\"conditional genotype quality in deciban\">" ] ++
-    [ S.concat [ "contig=<ID=", sq_name s, ",length=", S.pack (show (sq_length s)), ">" ] | s <- toList refs ]
-
-
-type OIter = Conf -> Refs -> Iteratee [Calls] IO ()
+type OIter = Refs -> [S.ByteString] -> Iteratee [GenoCallBlock] IO ()
 type Output a = (OIter -> IO a) -> IO a
 
 {-

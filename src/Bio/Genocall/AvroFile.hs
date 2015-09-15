@@ -39,6 +39,9 @@ data GenoCallBlock = GenoCallBlock
 
 data GenoCallSite = GenoCallSite
     { snp_stats         :: {-# UNPACK #-} !CallStats
+    -- snp likelihoods appear in the same order as in VCF, the reference
+    -- allele goes first if it is A, C, G or T.  Else A goes first---not
+    -- my problem how to express that in VCF.
     , snp_likelihoods   :: {-# UNPACK #-} !(U.Vector Mini) -- B.ByteString?
     , ref_allele        :: {-# UNPACK #-} !Nucleotides
     , indel_stats       :: {-# UNPACK #-} !CallStats
