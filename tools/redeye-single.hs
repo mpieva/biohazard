@@ -19,6 +19,7 @@ import Bio.Bam
 import Bio.Bam.Pileup
 import Bio.Genocall.AvroFile
 import Bio.Iteratee
+import Bio.Iteratee.Bgzf
 import Control.Monad
 import Data.Avro
 import Data.Bits
@@ -113,7 +114,7 @@ main' Conf{..} infile = do
 -- unpackGenoCallSites :: GenoCallBlock -> [GenoCallSite]
 
 bcf_to_hdl :: MonadIO m => Handle -> Refs -> [S.ByteString] -> Iteratee [GenoCallBlock] m ()
-bcf_to_hdl hdl refs smps = toBcf refs smps =$ mapChunksM_ (liftIO . L.hPut hdl)
+bcf_to_hdl hdl refs smps = toBcf refs smps =$ compressBgzf =$ mapChunksM_ (liftIO . S.hPut hdl)
 
 vcf_header :: Refs -> [S.ByteString] -> L.ByteString
 vcf_header refs smps = L.unlines $
@@ -127,19 +128,25 @@ vcf_header refs smps = L.unlines $
     [ L.fromChunks [ "##contig=<ID=", sq_name s, ",length=", S.pack (show (sq_length s)), ">" ] | s <- toList refs ] ++
     [ L.intercalate "\t" $ "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT" : map (L.fromChunks . return) smps ]
 
+-- data BgzfChunk = SpecialChunk  !S.ByteString BgzfChunk
+               -- | RecordChunk   !S.ByteString BgzfChunk
+               -- | LeftoverChunk !S.ByteString BgzfChunk
+               -- | NoChunk
+
 -- XXX actuall call in missing (have to apply the prior)
-toBcf :: Monad m => Refs -> [S.ByteString] -> Enumeratee [GenoCallBlock] L.ByteString m r
+toBcf :: Monad m => Refs -> [S.ByteString] -> Enumeratee [GenoCallBlock] BgzfChunk m r
 toBcf refs smps = eneeCheckIfDone go
   where
-    go  k = concatMapStream encode . k . Chunk . LB.toLazyByteString $
+    go  k = mapChunks (foldr encode NoChunk) . k . Chunk $ SpecialChunk hdr NoChunk
+    hdr   = S.concat . L.toChunks . LB.toLazyByteString $
                 LB.byteString "BCF\2\2" <>
                 LB.word32LE (succ . fromIntegral . L.length $ vcf_header refs smps) <>
                 LB.lazyByteString (vcf_header refs smps) <> LB.word8 0
 
-    encode :: GenoCallBlock -> L.ByteString
-    encode GenoCallBlock{..} = L.concat $ zipWith (encode1 reference_name) [start_position..] called_sites
+    encode :: GenoCallBlock -> BgzfChunk -> BgzfChunk
+    encode GenoCallBlock{..} nil = foldr SpecialChunk nil $ zipWith (encode1 reference_name) [start_position..] called_sites
 
-    encode1 ref pos site = LB.toLazyByteString $
+    encode1 ref pos site = S.concat . L.toChunks . LB.toLazyByteString $
         encodesnp ref pos site <>
         case indel_variants site of [ ] -> mempty
                                     [_] -> mempty
