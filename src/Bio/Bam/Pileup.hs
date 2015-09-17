@@ -113,7 +113,9 @@ data DamagedBase = DB { db_call :: {-# UNPACK #-} !Nucleotide           -- ^ cal
                       , db_dmg  :: {-# UNPACK #-} !Mat44D }             -- ^ damage matrix
 
 instance Show DamagedBase where
-    showsPrec _ (DB n q _ _) = shows n . (:) '@' . shows q
+    showsPrec _ (DB n q r _)
+        | nucToNucs n == r = shows n .                     (:) '@' . shows q
+        | otherwise        = shows n . (:) '/' . shows r . (:) '@' . shows q
 
 
 -- | Decomposes a BAM record into chunks suitable for piling up.  We
@@ -195,6 +197,7 @@ decompose br matrices
     nextBase !wt !pos !is !ic !io mds m ms = case mds of
         [              ] -> nextBase' (Just nucsN) [ ]
         MdRep ref : mds' -> nextBase' (Just ref)   mds'
+        MdNum   0 : mds' -> nextBase wt pos is ic io mds' m ms
         MdNum   1 : mds' -> nextBase'  Nothing     mds'
         MdNum   n : mds' -> nextBase'  Nothing    (MdNum (n-1) : mds')
         MdDel   _ : _    -> nextBase' (Just nucsN) mds
@@ -219,7 +222,7 @@ decompose br matrices
         | otherwise = case br_cigar_at br ic of
             (Ins,cl) ->             nextIndel (isq cl) del   pos (cl+is) (ic+1) 0 mds (drop cl mms)
             (SMa,cl) ->             nextIndel  ins     del   pos (cl+is) (ic+1) 0 mds (drop cl mms)
-            (Del,cl) ->             nextIndel  ins (dsq++del) (pos+cl) is  (ic+1) 0 mds' mms
+            (Del,cl) ->             nextIndel  ins (del++dsq) (pos+cl) is  (ic+1) 0 mds' mms
                 where (dsq,mds') = split_del cl mds
             (Pad, _) ->             nextIndel  ins     del   pos     is  (ic+1) 0 mds mms
             (HMa, _) ->             nextIndel  ins     del   pos     is  (ic+1) 0 mds mms
