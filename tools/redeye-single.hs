@@ -164,9 +164,14 @@ toBcf refs smps = eneeCheckIfDone go
 
     encodeindel ref pos site = encode' ref pos alleles site (indel_stats site)
       where
-        -- XXX this is f'ed up for more than one variant!
-        alleles = case indel_variants site of { _ : IndelVariant (V_Nucs r) (V_Nuc a) : _ ->
-                        [ S.pack $ show $ U.toList r, S.pack $ show $ U.toList a ] }
+        -- We're looking at the indel /after/ the current position.
+        -- That's sweet, because we can just prepend the current reference
+        -- base and make bcftools and friends happy.
+        -- Longest reported deletion becomes the reference allele.
+        -- Others may need padding.
+        rallele = snd $ maximum [ (U.length r, r) | IndelVariant (V_Nucs r) _ <- indel_variants site ]
+        alleles = [ S.pack $ show (ref_allele site) ++ show (U.toList a) ++ show (U.toList $ U.drop (U.length r) rallele)
+                  | IndelVariant (V_Nucs r) (V_Nuc a) <- indel_variants site ]
 
     encode' ref pos alleles GenoCallSite{..} CallStats{..} =
         LB.word32LE (fromIntegral . L.length $ LB.toLazyByteString b_share) <>
