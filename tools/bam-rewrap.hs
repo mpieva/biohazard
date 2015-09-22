@@ -24,7 +24,6 @@
 -- coordinates, we remove XA and set MAPQ to 37.
 
 import Bio.Bam
-import Bio.Base
 import Control.Monad                    ( when )
 import Data.Foldable                    ( toList )
 import Data.Version                     ( showVersion )
