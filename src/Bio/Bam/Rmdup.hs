@@ -381,7 +381,6 @@ accumMap f g = go M.empty
    MAPQ                               rmsq
    CIGAR, SEQ, QUAL, MD, NM, XP       generated
    XA                                 concatenate all
-   XI/YI, XJ/YJ                       compute consensus
 
    BQ, CM, FZ, Q2, R2, XM, XO, XG, YQ, EN
          deleted because they would become wrong
@@ -392,7 +391,7 @@ accumMap f g = go M.empty
    AM, AS, MQ, PQ, SM, UQ
          compute rmsq
 
-   X0, X1, XT, XS, XF, XE, BC, LB, RG
+   X0, X1, XT, XS, XF, XE, BC, LB, RG, XI, YI, XJ, YJ
          majority vote -}
 
 do_collapse :: Qual -> [BamRec] -> (Politics BamRec, [BamRec])
