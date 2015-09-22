@@ -96,7 +96,7 @@ lk_block refs f tbf b GenoCallBlock{..} = foldM3f b start_position refseq called
 
 
 -- | Likelihood with flat prior (no parameters).
-lk0 :: Prob Double -> GenoCallSite -> Prob Double
+lk0 :: Prob -> GenoCallSite -> Prob
 lk0 !pp GenoCallSite{..} | U.length snp_likelihoods == 4 =
     pp * 0.25 * U.sum (U.map (Pr . negate . mini2float) snp_likelihoods)
                          | otherwise = pp
@@ -113,8 +113,8 @@ lk0 !pp GenoCallSite{..} | U.length snp_likelihoods == 4 =
 -- (Maybe add a scaling factor, though the plain natural log seems
 -- pretty good.)
 
-type LkTableM = UM.MVector (PrimState IO) Int
-type LkTable  = U.Vector                  Int
+type LkTableM = UM.IOVector Int
+type LkTable  = U.Vector    Int
 
 min_lk, max_lk :: Int
 min_lk = -256
@@ -122,7 +122,7 @@ max_lk =  255
 
 -- | Likelihood with one parameter, the divergence.  Computes one
 -- part directly, bins the variable part into a mutable table.
-lk1 :: LkTableM -> Prob Double -> Nucleotide -> GenoCallSite -> IO (Prob Double)
+lk1 :: LkTableM -> Prob -> Nucleotide -> GenoCallSite -> IO Prob
 lk1 tbl !pp ref GenoCallSite{..} | U.length snp_likelihoods == 4 = do
     let lx   = Pr . negate . mini2float $ snp_likelihoods U.! fromEnum ref
         odds = U.ifoldl' (\a i v -> if i == fromEnum ref then a else a + Pr (- mini2float v)) 0 snp_likelihoods / lx

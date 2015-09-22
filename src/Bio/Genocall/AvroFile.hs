@@ -1,4 +1,4 @@
-{-# LANGUAGE TemplateHaskell, OverloadedStrings #-}
+{-# LANGUAGE TemplateHaskell, OverloadedStrings, PatternGuards #-}
 module Bio.Genocall.AvroFile where
 
 import Bio.Base
@@ -52,7 +52,7 @@ data GenoCallSite = GenoCallSite
 -- | Storing likelihoods:  we take the natural logarithm (GL values are
 -- already in a log scale) and convert to minifloat 0.4.4
 -- representation.  Range and precision should be plenty.
-compact_likelihoods :: U.Vector (Prob Double) -> U.Vector Mini -- B.ByteString
+compact_likelihoods :: U.Vector Prob -> U.Vector Mini -- B.ByteString
 compact_likelihoods = U.map $ float2mini . negate . unPr
 -- compact_likelihoods = map fromIntegral {- B.pack -} . U.toList . U.map (float2mini . negate . unPr)
 
@@ -112,8 +112,7 @@ getRefseqs meta
             = Z.fromList [ BamSQ (encodeUtf8 nm) ln [] | (String nm, ln) <- V.toList syms `zip` lengths ]
     | otherwise = Z.empty
   where
-    lengths
-        | Just (Array lns) <- decodeStrict =<< H.lookup "biohazard.refseq_length" meta
-                = [ case l of Number n -> maybe 0 id $ toBoundedInteger n ; _ -> 0 | l <- V.toList lns ]
-        | otherwise = repeat 0
+    lengths = case decodeStrict =<< H.lookup "biohazard.refseq_length" meta of
+        Just (Array lns) -> [ case l of Number n -> maybe 0 id $ toBoundedInteger n ; _ -> 0 | l <- V.toList lns ]
+        _                -> repeat 0
 

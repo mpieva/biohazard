@@ -41,9 +41,9 @@ data Conf = Conf {
     conf_sample      :: S.ByteString,
     conf_ploidy      :: S.ByteString -> Int,
     conf_report      :: String -> IO (),
-    conf_prior_div   :: Prob Double,
-    conf_prior_het   :: Prob Double,
-    conf_prior_indel :: Prob Double }
+    conf_prior_div   :: Prob,
+    conf_prior_het   :: Prob,
+    conf_prior_indel :: Prob }
 
 defaultConf :: Conf
 defaultConf = Conf ($ bcf_to_hdl stdout) "John_Doe" (const 2) (\_ -> return ())
@@ -219,7 +219,7 @@ toBcf refs smps = eneeCheckIfDone go
         -- mini2float gives the natural log of a probability
         pl_vals = U.foldr ((<>) . LB.word16LE . round . (*) (-10/log 10) . unPr . (/ lks U.! maxidx)) mempty lks
 
-        lks = U.map (Pr . negate . mini2float) snp_likelihoods :: U.Vector (Prob Float)
+        lks = U.map (Pr . negate . mini2float) snp_likelihoods :: U.Vector (Prob' Float)
         maxidx = U.maxIndex lks
 
         gq = -10 * unPr (U.sum (U.ifilter (\i _ -> i /= maxidx) lks) / U.sum lks) / log 10
@@ -253,7 +253,7 @@ output_fasta fn k = if fn == "-" then k (fa_out stdout)
 -- values), we pick the most likely base and pass it on.  If it was
 -- diploid, we pick the most likely dinucleotide and pass it on.
 {-
-format_snp_call :: Prob Double -> Calls -> S.ByteString
+format_snp_call :: Prob -> Calls -> S.ByteString
 format_snp_call p cs
     | U.length gl ==  4 = S.take 1 $ S.drop (maxQualIndex gl) hapbases
     | U.length gl == 10 = S.take 1 $ S.drop (maxQualIndex $ U.zipWith (*) ps gl) dipbases
@@ -272,7 +272,7 @@ format_snp_call p cs
 -- guaranteeed /in this program/)!
 
 {-
-format_indel_call :: Monad m => Prob Double -> Calls -> Iteratee [Calls] m S.ByteString
+format_indel_call :: Monad m => Prob -> Calls -> Iteratee [Calls] m S.ByteString
 format_indel_call p cs
     | U.length gl0 == nv                  = go gl0
     | U.length gl0 == nv * (nv+1) `div` 2 = go homs
@@ -291,7 +291,7 @@ format_indel_call p cs
         skip ocs  = p_refseq ocs == p_refseq cs && p_pos ocs < p_pos cs + del
 -}
 
-maxQualIndex :: U.Vector (Prob Double) -> Int
+maxQualIndex :: U.Vector Prob -> Int
 maxQualIndex vec = case U.ifoldl' step (0, 0, 0) vec of
     (!i, !m, !m2) -> if m / m2 > 2 then i else 0
   where

@@ -7,7 +7,7 @@
 module Bio.Base(
     Nucleotide(..), Nucleotides(..),
     Qual(..), toQual, fromQual, fromQualRaised, probToQual,
-    Prob(..), toProb, fromProb, qualToProb, pow,
+    Prob'(..), Prob, toProb, fromProb, qualToProb, pow,
 
     Word8,
     nucA, nucC, nucG, nucT,
@@ -118,15 +118,18 @@ fromQualRaised k (Q q) = 10 ** (- k * fromIntegral q / 10)
 -- | A positive floating point value stored in log domain.  We store the
 -- natural logarithm (makes computation easier), but allow conversions
 -- to the familiar \"Phred\" scale used for 'Qual' values.
-newtype Prob a = Pr { unPr :: a } deriving ( Eq, Ord, Storable )
+newtype Prob' a = Pr { unPr :: a } deriving ( Eq, Ord, Storable )
 
-derivingUnbox "Prob" [t| forall a . Unbox a => Prob a -> a |] [| unPr |] [| Pr |]
+-- | Common way of using 'Prob''.
+type Prob = Prob' Double
 
-instance Show (Prob Double) where
+derivingUnbox "Prob'" [t| forall a . Unbox a => Prob' a -> a |] [| unPr |] [| Pr |]
+
+instance RealFloat a => Show (Prob' a) where
     showsPrec _ (Pr p) = (:) 'q' . showFFloat (Just 1) q
       where q = - 10 * p / log 10
 
-instance (Floating a, Ord a) => Num (Prob a) where
+instance (Floating a, Ord a) => Num (Prob' a) where
     fromInteger a = Pr (log (fromInteger a))
     Pr x + Pr y = Pr $ if x >= y then x + log1p (  exp (y-x)) else y + log1p (exp (x-y))
     Pr x - Pr y = Pr $ if x >= y then x + log1p (- exp (y-x)) else error "no negative error probabilities"
@@ -135,26 +138,26 @@ instance (Floating a, Ord a) => Num (Prob a) where
     abs       x = x
     signum    _ = Pr 0
 
-instance (Floating a, Fractional a, Ord a) => Fractional (Prob a) where
+instance (Floating a, Fractional a, Ord a) => Fractional (Prob' a) where
     fromRational a = Pr (log (fromRational a))
     Pr a  /  Pr b = Pr (a - b)
     recip  (Pr a) = Pr (negate a)
 
 infixr 8 `pow`
-pow :: (Num a, Integral b) => Prob a -> b -> Prob a
-pow (Pr a) e = Pr (a * fromIntegral e)
+pow :: Num a => Prob' a -> a -> Prob' a
+pow (Pr a) e = Pr $ a * e
 
 
-toProb :: Floating a => a -> Prob a
+toProb :: Floating a => a -> Prob' a
 toProb p = Pr (log p)
 
-fromProb :: Floating a => Prob a -> a
+fromProb :: Floating a => Prob' a -> a
 fromProb (Pr q) = exp q
 
-qualToProb :: Floating a => Qual -> Prob a
+qualToProb :: Floating a => Qual -> Prob' a
 qualToProb (Q q) = Pr (- log 10 * fromIntegral q / 10)
 
-probToQual :: (Floating a, RealFrac a) => Prob a -> Qual
+probToQual :: (Floating a, RealFrac a) => Prob' a -> Qual
 probToQual (Pr p) = Q (round (- 10 * p / log 10))
 
 nucA, nucC, nucG, nucT :: Nucleotide

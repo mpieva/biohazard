@@ -48,7 +48,7 @@ simple_indel_call ploidy vars = ( simple_call ploidy mkpls vars, vars' )
                                              p' = fromQual q
                                          in toProb $ p + p' - p * p'
 
-    mkpls :: (Qual, ([Nucleotides], [DamagedBase])) -> [ Prob Double ]
+    mkpls :: (Qual, ([Nucleotides], [DamagedBase])) -> [Prob]
     mkpls (q,(d,i)) = [ qualToProb q +
                         if length d /= V.length dr || length i /= V.length ir
                         then 0 else product (match i $ V.toList ir)
@@ -81,7 +81,7 @@ simple_snp_call ploidy vars = snp_gls (simple_call ploidy mkpls vars) ref
 -- NOTE, this may warrant specialization to diploidy and four alleles
 -- (common SNPs) and diploidy and two alleles (common indels).
 
-simple_call :: Int -> (a -> [Prob Double]) -> [a] -> GL
+simple_call :: Int -> (a -> [Prob]) -> [a] -> GL
 simple_call ploidy pls = foldl1' (V.zipWith (*)) . map step
   where
     foldl1' _ [    ] = V.singleton 1

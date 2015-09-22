@@ -245,7 +245,7 @@ rangeDs = ((minD,minD),(maxD,maxD))
 -- estimation afterwards.  Returns the product of the
 -- parameter-independent parts of the likehoods and the histogram
 -- indexed by D and H (see @genotyping.pdf@ for details).
-tabulateSingle :: MonadIO m => Iteratee [Calls] m (Prob Double, U.Vector Int)
+tabulateSingle :: MonadIO m => Iteratee [Calls] m (Prob, U.Vector Int)
 tabulateSingle = do
     tab <- liftIO $ M.replicate (rangeSize rangeDs) (0 :: Int)
     (,) <$> foldStreamM (\acc -> accum tab acc . p_snp_pile) 1
@@ -275,7 +275,7 @@ tabulateSingle = do
         liftIO $ M.read tab ix >>= M.write tab ix . succ
         return $! acc * g_RR
 
-estimateSingle :: Prob Double -> U.Vector Int -> IO ()
+estimateSingle :: Prob -> U.Vector Int -> IO ()
 estimateSingle lk_rr tab = do
     putStrLn $ "Estimating divergence parameters..."
     hFlush stdout
