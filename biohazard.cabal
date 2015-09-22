@@ -46,6 +46,7 @@ Library
   Exposed-modules:     Bio.Base,
                        Bio.Align,
                        Bio.Bam,
+                       Bio.Bam.Evan,
                        Bio.Bam.Fastq,
                        Bio.Bam.Filter,
                        Bio.Bam.Header,

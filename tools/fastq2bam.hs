@@ -12,7 +12,7 @@ import System.IO
 
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Char8 as S
-import qualified Data.Vector.Unboxed as V
+import qualified Data.Vector.Generic as V
 
 -- TODO:
 -- - optional(!) GZip

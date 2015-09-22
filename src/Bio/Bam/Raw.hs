@@ -306,6 +306,7 @@ br_n_cigar_op (BamRaw _ raw) = getInt16 raw 12
 br_flag :: BamRaw -> Int
 br_flag (BamRaw _ raw) = getInt16 raw 14
 
+{-# WARNING br_extflag "This will need to change!" #-}
 {-# INLINE br_extflag #-}
 br_extflag :: BamRaw -> Int
 br_extflag br = shiftL ef 16 .|. ff

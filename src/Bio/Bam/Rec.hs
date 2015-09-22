@@ -42,7 +42,7 @@ module Bio.Bam.Rec (
     nullBamRec,
     getMd,
 
-    Nucleotides(..),
+    Nucleotides(..), Vector_Nucs_half,
     Extensions, Ext(..),
     extAsInt, extAsString, setQualFlag,
     deleteE, insertE, updateE,
@@ -122,7 +122,6 @@ data BamRec = BamRec {
         b_mpos  :: {-# UNPACK #-} !Int,
         b_isize :: {-# UNPACK #-} !Int,
         b_seq   :: !(Vector_Nucs_half Nucleotides),
-        -- b_seq   :: !(U.Vector Nucleotides),
         b_qual  :: !ByteString,         -- ^ quality, may be empty
         b_exts  :: Extensions,
         b_virtual_offset :: {-# UNPACK #-} !FileOffset -- ^ virtual offset for indexing purposes
@@ -244,7 +243,7 @@ decodeBamEntry :: BamRaw -> BamRec
 decodeBamEntry br = case pushEndOfInput $ runGetIncremental go `pushChunk` raw_data br of
         Fail _ _ m -> error m
         Partial  _ -> error "incomplete BAM record"
-        Done _ _ r -> fixup_bam_rec r
+        Done _ _ r -> r
   where
     go = do !rid       <- Refseq       <$> getWord32le
             !start     <- fromIntegral <$> getWord32le
@@ -273,51 +272,6 @@ decodeBamEntry br = case pushEndOfInput $ runGetIncremental go `pushChunk` raw_d
     decodeCigar c | cc <= fromEnum (maxBound :: CigOp) = (toEnum cc, cl)
                   | otherwise = error "unknown Cigar operation"
       where cc = fromIntegral c .&. 0xf; cl = fromIntegral c `shiftR` 4
-
--- | fixes BAM records for changed conventions
-fixup_bam_rec :: BamRec -> BamRec
-fixup_bam_rec b =
-    (if b_flag b .&. flagLowQuality /= 0 then setQualFlag 'Q' else id) $          -- low qual, new convention
-    (if b_flag b .&. flagLowComplexity /= 0 then setQualFlag 'C' else id) $       -- low complexity, new convention
-    b { b_flag = fixPP $ oflags .|. muflag .|. tflags .|. shiftL eflags 16        -- extended flags
-      , b_exts = cleaned_exts }
-  where
-        -- removes old flag abuse
-        flags' = b_flag b .&. complement (flagLowQuality .|. flagLowComplexity)
-        oflags | flags' .&. flagPaired == 0 = flags' .&. complement (flagFirstMate .|. flagSecondMate)
-               | otherwise                  = flags'
-
-        -- set "mate unmapped" if self coordinates and mate coordinates are equal, but self is paired and mapped
-        -- (BWA forgets this flag for invalid mate alignments)
-        muflag = if mu then flagMateUnmapped else 0
-        mu = and [ isPaired b, not (isUnmapped b)
-                 , isReversed b == isMateReversed b
-                 , b_rname b == b_mrnm b, b_pos b == b_mpos b ]
-
-        -- merged & trimmed from old flag abuse
-        is_merged  = flags' .&. (flagPaired .|. flagFirstMate .|. flagSecondMate) == flagFirstMate .|. flagSecondMate
-        is_trimmed = flags' .&. (flagPaired .|. flagFirstMate .|. flagSecondMate) == flagSecondMate
-
-        tflags = (if is_merged  then flagMerged  else 0) .|.
-                 (if is_trimmed then flagTrimmed else 0)
-
-        -- extended flags, renamed to avoid collision with BWA
-        -- Goes like this:  if FF is there, use and remove it.  Else
-        -- check if XF is there _and_is_numeric_.  If so, use it and
-        -- remove it.  Else use 0 and leave it alone.  Note that this
-        -- solves the collision with BWA, since BWA puts a character
-        -- there, not an int.
-        (eflags, cleaned_exts) = case (lookup "FF" (b_exts b), lookup "XF" (b_exts b)) of
-                ( Just (Int i), _ ) -> (i, deleteE "FF" (b_exts b))
-                ( _, Just (Int i) ) -> (i, deleteE "XF" (b_exts b))
-                (       _,_       ) -> (0,               b_exts b )
-
-        -- if either mate is unmapped, remove "properly paired"
-        fixPP f | f .&. (flagUnmapped .|. flagMateUnmapped) == 0 = f
-                | otherwise = f .&. complement flagProperlyPaired
-
-        flagLowQuality    =  0x800
-        flagLowComplexity = 0x1000
 
 -- | A collection of extension fields.  The key is actually only two @Char@s, but that proved impractical.
 -- (Hmm... we could introduce a Key type that is a 16 bit int, then give
@@ -609,7 +563,7 @@ decodeSamLoop refs inner = I.convStream (liftI parse_record) inner
         parse_record (Chunk []) = liftI parse_record
         parse_record (Chunk (l:ls)) | "@" `S.isPrefixOf` l = parse_record (Chunk ls)
         parse_record (Chunk (l:ls)) = case P.parseOnly (parseSamRec ref) l of
-            Right  r -> idone [fixup_bam_rec r] (Chunk ls)
+            Right  r -> idone [r] (Chunk ls)
             Left err -> icont parse_record (Just $ iterStrExc $ err ++ ", " ++ show l)
 
 -- | Parser for SAM that doesn't look for a header.  Has the advantage

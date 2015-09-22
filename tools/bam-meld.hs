@@ -25,7 +25,6 @@ import System.Exit                              ( exitSuccess, exitFailure )
 import System.IO                                ( hPutStrLn )
 
 import qualified Data.ByteString.Char8 as S
-import qualified Data.Map              as M
 import qualified Data.Sequence         as Z
 
 data Conf = Conf {

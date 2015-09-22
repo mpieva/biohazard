@@ -5,7 +5,7 @@ module Bio.Bam.Rmdup(
             check_sort, normalizeTo, wrapTo
     ) where
 
-import Bio.Bam.Fastq                    ( removeWarts )
+import Bio.Bam.Evan                     ( removeWarts )
 import Bio.Bam.Header
 import Bio.Bam.Raw
 import Bio.Bam.Rec

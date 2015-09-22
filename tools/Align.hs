@@ -15,6 +15,7 @@ import Data.Sequence ( (<|), (><), ViewL((:<)) )
 import qualified Data.ByteString             as S
 import qualified Data.Foldable               as F
 import qualified Data.Sequence               as Z
+import qualified Data.Vector.Generic         as V
 import qualified Data.Vector.Unboxed         as U
 import qualified Data.Vector.Unboxed.Mutable as UM
 
@@ -81,8 +82,8 @@ prep_query_rev = revcompl_query . prep_query_fwd
   where
   revcompl_query (QS v) = QS $ U.map (xor 3) $ U.reverse v
 
-qseqToBamSeq :: QuerySeq -> U.Vector Nucleotides
-qseqToBamSeq = U.map (\x -> Ns $ 1 `shiftL` fromIntegral (x .&. 3)) . unQS
+qseqToBamSeq :: QuerySeq -> Vector_Nucs_half Nucleotides
+qseqToBamSeq = V.fromList . U.toList . U.map (\x -> Ns $ 1 `shiftL` fromIntegral (x .&. 3)) . unQS
 
 qseqToBamQual :: QuerySeq -> S.ByteString
 qseqToBamQual = S.pack . U.toList . U.map (`shiftR` 2) . unQS

@@ -305,7 +305,9 @@ flagAuxillary = 0x100
 flagFailsQC = 0x200
 flagDuplicate = 0x400
 
+{-# DEPRECATED flagTrimmed "flagTrimmed will go away, look for it yourself" #-}
 flagTrimmed = 0x10000
+{-# DEPRECATED flagMerged "flagMerged will go away, look for it yourself" #-}
 flagMerged  = 0x20000
 
 
