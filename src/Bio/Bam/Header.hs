@@ -36,8 +36,8 @@ module Bio.Bam.Header (
         flagAuxillary,
         flagFailsQC,
         flagDuplicate,
-        flagTrimmed,
-        flagMerged,
+        eflagTrimmed,
+        eflagMerged,
 
         Cigar(..),
         CigOp(..),
@@ -291,7 +291,7 @@ getRef refs (Refseq i)
 
 
 flagPaired, flagProperlyPaired, flagUnmapped, flagMateUnmapped, flagReversed, flagMateReversed, flagFirstMate, flagSecondMate,
- flagAuxillary, flagFailsQC, flagDuplicate, flagTrimmed, flagMerged :: Int
+ flagAuxillary, flagFailsQC, flagDuplicate :: Int
 
 flagPaired = 0x1
 flagProperlyPaired = 0x2
@@ -305,10 +305,9 @@ flagAuxillary = 0x100
 flagFailsQC = 0x200
 flagDuplicate = 0x400
 
-{-# DEPRECATED flagTrimmed "flagTrimmed will go away, look for it yourself" #-}
-flagTrimmed = 0x10000
-{-# DEPRECATED flagMerged "flagMerged will go away, look for it yourself" #-}
-flagMerged  = 0x20000
+eflagTrimmed, eflagMerged :: Int
+eflagTrimmed       = 0x1
+eflagMerged        = 0x2
 
 
 -- | Compares two sequence names the way samtools does.
@@ -360,6 +359,7 @@ instance Show Cigar where
 -- This gives the length of an alignment as measured on the reference,
 -- which is different from the length on the query or the length of the
 -- alignment.
+{-# INLINE cigarToAlnLen #-}
 cigarToAlnLen :: Cigar -> Int
 cigarToAlnLen (Cigar cig) = sum $ map l cig
   where l (op,n) = if op == Mat || op == Del || op == Nop then n else 0

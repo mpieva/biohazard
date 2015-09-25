@@ -69,7 +69,6 @@ import qualified Data.Vector.Generic                as V
 parseFastq :: Monad m => Enumeratee S.ByteString [ BamRec ] m a
 parseFastq = parseFastq' (const id)
 
-{-# WARNING parseFastqCassava "parseFastqCassava no longer removes syntactic warts!" #-}
 parseFastqCassava :: Monad m => Enumeratee S.ByteString [ BamRec ] m a
 parseFastqCassava = parseFastq' (pdesc . S.split ':' . S.takeWhile (' ' /=))
   where

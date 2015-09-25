@@ -273,14 +273,17 @@ bamRaw o s = if good then r else error $ "broken BAM record " ++ show (S.length 
 
 -- | Accessor for raw bam.
 {-# INLINE br_qname #-}
+{-# DEPRECATED br_qname "use unpackBAM" #-}
 br_qname :: BamRaw -> Seqid
 br_qname r@(BamRaw _ raw) = S.unsafeTake (br_l_read_name r) $ S.unsafeDrop 32 raw
 
 {-# INLINE br_l_read_name #-}
+{-# DEPRECATED br_l_read_name "use unpackBAM" #-}
 br_l_read_name :: BamRaw -> Int
 br_l_read_name (BamRaw _ raw) = fromIntegral $ S.unsafeIndex raw 8 - 1
 
 {-# INLINE br_l_seq #-}
+{-# DEPRECATED br_l_seq "use unpackBAM" #-}
 br_l_seq :: BamRaw -> Int
 br_l_seq (BamRaw _ raw) = getInt raw 16
 
@@ -298,14 +301,16 @@ getInt s o = fromIntegral (S.unsafeIndex s $ o+0)             .|. fromIntegral (
              fromIntegral (S.unsafeIndex s $ o+2) `shiftL` 16 .|. fromIntegral (S.unsafeIndex s $ o+3) `shiftL` 24
 
 {-# INLINE br_n_cigar_op #-}
+{-# DEPRECATED br_n_cigar_op "use unpackBAM" #-}
 br_n_cigar_op :: BamRaw -> Int
 br_n_cigar_op (BamRaw _ raw) = getInt16 raw 12
 
 {-# INLINE br_flag #-}
+{-# DEPRECATED br_flag "use unpackBAM" #-}
 br_flag :: BamRaw -> Int
 br_flag (BamRaw _ raw) = getInt16 raw 14
 
-{-# WARNING br_extflag "This will need to change!" #-}
+{-# DEPRECATED br_extflag "use unpackBAM, be careful!" #-}
 {-# INLINE br_extflag #-}
 br_extflag :: BamRaw -> Int
 br_extflag br = shiftL ef 16 .|. ff
@@ -339,34 +344,42 @@ br_isAuxillary      = flip testBit  8 . br_flag
 br_isFailsQC        = flip testBit  9 . br_flag
 br_isDuplicate      = flip testBit 10 . br_flag
 
-br_isMergeTrimmed br = br_extflag br .&. (flagTrimmed .|. flagMerged) /= 0
+{-# DEPRECATED br_isMergeTrimmed "use unpackBAM" #-}
+br_isMergeTrimmed br = br_extAsInt 0 "FF" br .&. (eflagTrimmed .|. eflagMerged) /= 0
 
 
 {-# INLINE br_rname #-}
+{-# DEPRECATED br_rname "use unpackBAM" #-}
 br_rname :: BamRaw -> Refseq
 br_rname (BamRaw _ raw) = Refseq $ getInt raw 0
 
 {-# INLINE br_bin #-}
+{-# DEPRECATED br_bin "you don't want this" #-}
 br_bin :: BamRaw -> Int
 br_bin (BamRaw _ raw) = getInt16 raw 10
 
 {-# INLINE br_mapq #-}
+{-# DEPRECATED br_mapq "use unpackBAM" #-}
 br_mapq :: BamRaw -> Qual
 br_mapq (BamRaw _ raw) = Q $ S.unsafeIndex raw 9
 
 {-# INLINE br_pos #-}
+{-# DEPRECATED br_pos "use unpackBAM" #-}
 br_pos :: BamRaw -> Int
 br_pos (BamRaw _ raw) = getInt raw 4
 
 {-# INLINE br_mrnm #-}
+{-# DEPRECATED br_mrnm "use unpackBAM" #-}
 br_mrnm :: BamRaw -> Refseq
 br_mrnm (BamRaw _ raw) = Refseq $ getInt raw 20
 
 {-# INLINE br_mpos #-}
+{-# DEPRECATED br_mpos "use unpackBAM" #-}
 br_mpos :: BamRaw -> Int
 br_mpos (BamRaw _ raw) = getInt raw 24
 
 {-# INLINE br_isize #-}
+{-# DEPRECATED br_isize "use unpackBAM" #-}
 br_isize :: BamRaw -> Int
 br_isize (BamRaw _ raw) | i >= 0x80000000 = i - 0x100000000
                         | otherwise       = i
@@ -374,6 +387,7 @@ br_isize (BamRaw _ raw) | i >= 0x80000000 = i - 0x100000000
           i = getInt raw 28
 
 {-# INLINE br_seq_at #-}
+{-# DEPRECATED br_seq_at "use unpackBAM" #-}
 br_seq_at :: BamRaw -> Int -> Nucleotides
 br_seq_at br@(BamRaw _ raw) i
     | even    i = Ns $ (S.unsafeIndex raw (off0 + i `div` 2) `shiftR` 4) .&. 0xF
@@ -382,12 +396,14 @@ br_seq_at br@(BamRaw _ raw) i
     off0 = sum [ 33, br_l_read_name br, 4 * br_n_cigar_op br ]
 
 {-# INLINE br_qual_at #-}
+{-# DEPRECATED br_qual_at "use unpackBAM" #-}
 br_qual_at :: BamRaw -> Int -> Qual
 br_qual_at br@(BamRaw _ raw) i = Q $ S.unsafeIndex raw (off0 + i)
   where
     off0 = sum [ 33, br_l_read_name br, 4 * br_n_cigar_op br, (br_l_seq br + 1) `div` 2]
 
 {-# INLINE br_cigar_at #-}
+{-# DEPRECATED br_cigar_at "use unpackBAM" #-}
 br_cigar_at :: BamRaw -> Int -> (CigOp, Int)
 br_cigar_at br@(BamRaw _ raw) i = (co,cl)
   where
@@ -545,6 +561,7 @@ pokeInt32 p o x = do pokeElemOff p  o    . fromIntegral $        x    .&. 0xff
 
 -- Find an extension field, return offset in BamRaw data.
 {-# INLINE br_findExtension #-}
+{-# DEPRECATED br_findExtension "use unpackBAM/lookup" #-}
 br_findExtension :: String -> BamRaw -> Maybe (Int,Int,Int)
 br_findExtension [u,v] br@(BamRaw _ r) = go off0
   where

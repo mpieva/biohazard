@@ -111,7 +111,7 @@ import qualified Data.Vector.Unboxed                as U
 -- understood.
 
 -- | internal representation of a BAM record
-data BamRec = BamRec {
+{- data BamRec = BamRec {
         b_qname :: {-# UNPACK #-} !Seqid,
         b_flag  :: {-# UNPACK #-} !Int,
         b_rname :: {-# UNPACK #-} !Refseq,
@@ -125,6 +125,23 @@ data BamRec = BamRec {
         b_qual  :: !ByteString,         -- ^ quality, may be empty
         b_exts  :: Extensions,
         b_virtual_offset :: {-# UNPACK #-} !FileOffset -- ^ virtual offset for indexing purposes
+    } deriving Show -}
+
+-- | internal representation of a BAM record
+data BamRec = BamRec {
+        b_qname :: Seqid,
+        b_flag  :: Int,
+        b_rname :: Refseq,
+        b_pos   :: Int,
+        b_mapq  :: Qual,
+        b_cigar :: Cigar,
+        b_mrnm  :: Refseq,
+        b_mpos  :: Int,
+        b_isize :: Int,
+        b_seq   :: Vector_Nucs_half Nucleotides,
+        b_qual  :: ByteString,         -- ^ quality, may be empty
+        b_exts  :: Extensions,
+        b_virtual_offset :: FileOffset -- ^ virtual offset for indexing purposes
     } deriving Show
 
 nullBamRec :: BamRec
@@ -194,9 +211,8 @@ instance VM.MVector MVector_Nucs_half Nucleotides where
     basicLength          (MVector_Nucs_half _ l  _) = l
     basicUnsafeSlice s l (MVector_Nucs_half o _ fp) = MVector_Nucs_half (o + s) l fp
 
-    basicOverlaps _ _ = False -- XXX
+    basicOverlaps (MVector_Nucs_half _ _ fp1) (MVector_Nucs_half _ _ fp2) = fp1 == fp2
     basicUnsafeNew l = unsafePrimToPrim $ MVector_Nucs_half 0 l <$> mallocForeignPtrBytes ((l+1) `shiftR` 1)
-    -- basicInitialize (MVector_Nucs_half o l fp) = return () -- XXX
 
     basicUnsafeRead (MVector_Nucs_half o _ fp) i
         | even (o+i) = Ns . (.&.) 0xF . (`shiftR` 4) <$> b
@@ -215,29 +231,27 @@ instance Show (Vector_Nucs_half Nucleotides) where
 
 {-# INLINE unpackBam #-}
 unpackBam :: BamRaw -> BamRec
-unpackBam br = BamRec{..}
+unpackBam br = BamRec {
+        b_qname = br_qname br,
+        b_flag  = br_flag br,
+        b_rname = br_rname br,
+        b_pos   = br_pos br,
+        b_mapq  = br_mapq br,
+        b_cigar = Cigar [ br_cigar_at br i | i <- [0..br_n_cigar_op br-1] ],
+        b_mrnm  = br_mrnm br,
+        b_mpos  = br_mpos br,
+        b_isize = br_isize br,
+        b_seq   = Vector_Nucs_half (2 * (off_s+off0)) (br_l_seq br) fp,
+        b_qual  = S.take (br_l_seq br) $ S.drop off_q $ raw_data br,
+        b_exts  = unpackExtensions $ S.drop off_e $ raw_data br,
+        b_virtual_offset = virt_offset br }
   where
-        b_qname = br_qname br
-        b_flag  = br_flag br
-        b_rname = br_rname br
-        b_pos   = br_pos br
-        b_mapq  = br_mapq br
-        b_cigar = Cigar [br_cigar_at br i | i <- [0..br_n_cigar_op br-1]]
-        b_mrnm  = br_mrnm br
-        b_mpos  = br_mpos br
-        b_isize = br_isize br
-        b_seq   = Vector_Nucs_half (2 * (off_s+off0)) (br_l_seq br) fp
-        -- b_seq   = U.fromListN (br_l_seq br) [ br_seq_at br i | i <- [0..br_l_seq br-1]]
-        b_qual  = S.take (br_l_seq br) $ S.drop off_q $ raw_data br
-        b_exts  = unpackExtensions $ S.drop off_e $ raw_data br
-        b_virtual_offset = virt_offset br
+        (!fp, !off0, _) = B.toForeignPtr (raw_data br)
+        !off_s = sum [ 33, br_l_read_name br, 4 * br_n_cigar_op br ]
+        !off_q = off_s + (br_l_seq br + 1) `div` 2
+        !off_e = off_q +  br_l_seq br
 
-        off_s = sum [ 33, br_l_read_name br, 4 * br_n_cigar_op br ]
-        off_q = off_s + (br_l_seq br + 1) `div` 2
-        off_e = off_q +  br_l_seq br
-
-        (fp, off0, len0) = B.toForeignPtr (raw_data br)
-
+{-# DEPRECATED decodeBamEntry "Keep BamRaw if you can, use unpackBam if you must." #-}
 -- | Decodes a raw block into a @BamRec@.
 decodeBamEntry :: BamRaw -> BamRec
 decodeBamEntry br = case pushEndOfInput $ runGetIncremental go `pushChunk` raw_data br of
@@ -421,7 +435,6 @@ encodeBamEntry = bamRaw 0 . S.concat . L.toChunks . runPut . putEntry
     encodeCigar :: (CigOp,Int) -> Int
     encodeCigar (op,l) = fromEnum op .|. l `shiftL` 4
 
-    -- putSeq :: U.Vector Nucleotides -> Put
     putSeq v = case v V.!? 0 of
                  Nothing -> return ()
                  Just a  -> case v V.!? 1 of

@@ -1,6 +1,7 @@
 {-# LANGUAGE BangPatterns #-}
 import Bio.Base
 import Bio.Bam
+import Bio.Bam.Evan ( removeWarts )
 import Bio.Iteratee.ZLib
 import Control.Monad
 import Data.Bits
@@ -96,7 +97,7 @@ concatDuals [              ] = []
 
 -- Enumerates a file.  Sequence and quality end up in b_seq and b_qual.
 fromFastq :: (MonadIO m, MonadMask m) => FilePath -> Enumerator [BamRec] m a
-fromFastq fp = enumAny fp $= enumInflateAny $= parseFastqCassava
+fromFastq fp = enumAny fp $= enumInflateAny $= parseFastqCassava $= mapStream removeWarts
   where
     enumAny "-" = enumHandle defaultBufSize stdin
     enumAny  fp = enumFile defaultBufSize fp
