@@ -131,18 +131,19 @@ type BamrawEnumeratee m b = Enumeratee' BamMeta S.ByteString [BamRaw] m b
 
 -- | Tests if a data stream is a Bam file.
 -- Recognizes plain Bam, gzipped Bam and bgzf'd Bam.  If a file is
--- recognized as Bam, a decoder (suitable Enumeratee) for it is returned.
+-- recognized as Bam, a decoder (suitable Enumeratee) for it is
+-- returned.  This uses 'iLookAhead' internally, so it shouldn't consume
+-- anything from the stream.
 isBam, isEmptyBam, isPlainBam, isBgzfBam, isGzipBam :: MonadIO m
     => Iteratee S.ByteString m (Maybe (BamrawEnumeratee m a))
 isBam = firstOf [ isEmptyBam, isPlainBam, isBgzfBam, isGzipBam ]
   where
     firstOf [] = return Nothing
-    firstOf (k:ks) = k >>= maybe (firstOf ks) (return . Just)
+    firstOf (k:ks) = iLookAhead k >>= maybe (firstOf ks) (return . Just)
 
 isEmptyBam = (\e -> if e then Just (\k -> return $ k mempty) else Nothing) `liftM` isFinished
 
-isPlainBam = (\n -> if n == 4 then Just (joinI . decompressPlain . decodeBam) else Nothing)
-             `liftM` iLookAhead (heads "BAM\SOH")
+isPlainBam = (\n -> if n == 4 then Just (joinI . decompressPlain . decodeBam) else Nothing) `liftM` heads "BAM\SOH"
 
 -- Interesting... iLookAhead interacts badly with the parallel
 -- decompression of BGZF.  (The chosen interface doesn't allow the EOF
@@ -153,13 +154,11 @@ isPlainBam = (\n -> if n == 4 then Just (joinI . decompressPlain . decodeBam) el
 -- (A clean workaround would be an @Alternative@ instance for
 -- @Iteratee@.)
 isBgzfBam  = do b <- isBgzf
-                k <- if b then iLookAhead $ joinI $ enumInflate GZip defaultDecompressParams isPlainBam
-                          else return Nothing
+                k <- if b then joinI $ enumInflate GZip defaultDecompressParams isPlainBam else return Nothing
                 return $ (\_ -> (joinI . decompressBgzfBlocks . decodeBam)) `fmap` k
 
 isGzipBam  = do b <- isGzip
-                k <- if b then iLookAhead $ joinI $ enumInflate GZip defaultDecompressParams isPlainBam
-                          else return Nothing
+                k <- if b then joinI $ enumInflate GZip defaultDecompressParams isPlainBam else return Nothing
                 return $ ((joinI . enumInflate GZip defaultDecompressParams) .) `fmap` k
 
 -- | Checks if a file contains BAM in any of the common forms, then

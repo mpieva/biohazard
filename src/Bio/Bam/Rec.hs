@@ -493,7 +493,7 @@ parseSamRec ref = (\nm fl rn po mq cg rn' -> BamRec nm fl rn po mq cg (rn' rn))
     rnext    = id <$ P.char '=' <* sep <|> const . ref <$> word
     sequ     = {-# SCC "parseSamRec/sequ" #-}
                (U.empty <$ P.char '*' <|>
-               U.fromList . map toNucleotides . S.unpack <$> P.takeWhile (P.inClass "acgtnACGTN")) <* sep
+               U.fromList . map toNucleotides . S.unpack <$> P.takeWhile is_nuc) <* sep
 
     quals    = {-# SCC "parseSamRec/quals" #-} B.empty <$ P.char '*' <* sep <|> B.map (subtract 33) <$> word
 
@@ -517,6 +517,7 @@ parseSamRec ref = (\nm fl rn po mq cg rn' -> BamRec nm fl rn po mq cg (rn' rn))
     floatArr fs = FloatArr $ U.fromList $ map realToFrac fs
     hexarray    = B.pack . repack . S.unpack <$> P.takeWhile (P.inClass "0-9A-Fa-f")
     repack (a:b:cs) = fromIntegral (digitToInt a * 16 + digitToInt b) : repack cs ; repack _ = []
+    is_nuc = P.inClass "acgtswkmrybdhvnACGTSWKMRYBDHVN"
 
 encodeSamEntry :: Refs -> BamRec -> String -> String
 encodeSamEntry refs b = conjoin '\t' [
