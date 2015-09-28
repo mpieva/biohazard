@@ -68,9 +68,9 @@ Library
                        Bio.TwoBit,
                        Bio.Util,
                        Data.Avro
-                       
+
   Other-modules:       Paths_biohazard
-  
+
   -- Packages needed in order to build this package.
   Build-depends:       aeson                    >= 0.7 && < 0.9,
                        array                    >= 0.4 && < 0.6,
@@ -100,7 +100,7 @@ Library
                        vector-algorithms        >= 0.3 && < 1.0,
                        vector-th-unbox          == 0.2.*,
                        zlib                     >= 0.5 && < 0.7
-  
+
   Ghc-options:         -Wall -auto-all
   Hs-source-dirs:      src
   Include-dirs:        src/cbits
@@ -109,10 +109,10 @@ Library
 
   -- Modules not exported by this package.
   -- Other-modules:       
-  
+
   -- Extra tools (e.g. alex, hsc2hs, ...) needed to build the source.
-  -- Build-tools:         
-  
+  -- Build-tools:
+
 
 -- Test-Suite test-biohazard
   -- Ghc-options:         -Wall -auto-all -threaded -rtsopts -with-rtsopts=-N
@@ -161,7 +161,7 @@ Executable bam-meld
                        biohazard,
                        bytestring,
                        containers
-  
+
 Executable bam-resample
   Main-is:             bam-resample.hs
   Hs-Source-Dirs:      tools
