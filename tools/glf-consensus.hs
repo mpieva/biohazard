@@ -170,7 +170,7 @@ print_fastq name = eneeCheckIfDone p'header
     p'sep qs k  = lift $ (enumList (map S.unpack qs) >=> run) (toLines 60 . k $ Chunk "+\n")
 
     mkqual = chr . max 33 . min 126 . (+) 33 . fromIntegral
-    coll !acc (EOF x) = lift (print $ length acc) >> idone (reverse acc) (EOF x)
+    coll !acc (EOF x) = lift (putStrLn $ show $ length acc) >> idone (reverse acc) (EOF x)
     coll !acc (Chunk []) = liftI $ coll acc
     coll !acc (Chunk  c) = liftI . coll $! norm (S.pack (map (mkqual . snd) c)) acc
 

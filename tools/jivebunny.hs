@@ -433,7 +433,7 @@ main = do
                                         y = fromTags "XJ" "YJ" br
                                     (p,i7,i5) <- class1 rgs (unique_indices p7is) (unique_indices p5is) mix (x,y)
                                     let q = negate . round $ 10 / log 10 * log p
-                                        b = decodeBamEntry br
+                                        b = unpackBam br
                                         rg = T.encodeUtf8 $ T.concat [ ns7 V.! i7, ",", ns5 V.! i5 ]
                                         b' = b { b_exts = deleteE "Z0" . deleteE "Z2" . updateE "Z1" (Int q)
                                                         $ case HM.lookup (i7,i5) rgs of

@@ -426,6 +426,7 @@ br_aln_length br@(BamRaw _ raw)
 
 -- | Get the MD field from a BAM record.  If MD is absent or a parse
 -- error occurs, the result is empty.
+{-# DEPRECATED br_get_md "use unpackBam/getMd instead" #-}
 br_get_md :: BamRaw -> [MdOp]
 br_get_md r = maybe [] id . readMd $ br_extAsString "MD" r
 
