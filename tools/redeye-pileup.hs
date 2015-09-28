@@ -251,10 +251,9 @@ tabulateSingle = do
     (,) <$> foldStreamM (\acc -> accum tab acc . p_snp_pile) 1
         <*> liftIO (U.unsafeFreeze tab)
   where
-    -- Need to collect four different GL values, and which is
-    -- which depends on the reference allele.  There is little
-    -- regularity to it, but only four different cases, so I'll just
-    -- expand them by hand.
+    -- We need GL values for the invariant, the three homozygous variant
+    -- and the three single-event heterozygous variant cases.  The
+    -- ordering is like in BCF, with the reference first.
     -- Ref ~ A ==> PL ~ AA, AC, CC, AG, CG, GG, AT, CT, GT, TT
     {-# INLINE accum #-}
     accum !tab !acc (Snp_GLs !gls !ref)
@@ -264,13 +263,13 @@ tabulateSingle = do
 
     {-# INLINE accum' #-}
     accum' !tab !acc !gls = do
-        let g_RR = 3 * U.unsafeIndex gls 0
+        let g_RR = U.unsafeIndex gls 0
             g_RA = U.unsafeIndex gls 1 + U.unsafeIndex gls 3 + U.unsafeIndex gls 6
             g_AA = U.unsafeIndex gls 2 + U.unsafeIndex gls 5 + U.unsafeIndex gls 9
 
-            d1 = max minD . min maxD . round . unPr $ g_AA / g_RR
-            d2 = max minD . min maxD . round . unPr $ g_RA / g_RR
-            ix = index rangeDs (d1,d2)
+            dd = max minD . min maxD . round . unPr $   g_AA / g_RR / 3
+            hh = max minD . min maxD . round . unPr $   g_RA / g_RR / 3
+            ix = index rangeDs (dd,hh)
 
         liftIO $ M.read tab ix >>= M.write tab ix . succ
         return $! acc * g_RR
@@ -291,7 +290,7 @@ estimateSingle lk_rr tab = do
   where
     llk :: [AD] -> AD
     llk [delta,eta] = - sum [ (* fromIntegral num) . unPr $
-                                (1 + Pr delta / Pr (log1p (exp eta)) * (Pr eta * Pr d + Pr h))
+                                (1 + Pr delta / Pr (log1p (exp eta)) * (Pr d + Pr eta * Pr h))
                                 / Pr (log1p (exp delta))
                             | (di,hi) <- range rangeDs
                             , let num = tab `U.unsafeIndex` index rangeDs (di,hi)

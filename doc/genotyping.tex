@@ -155,7 +155,7 @@ other words, to estimate heterozygosity and divergence.  Let $X,Y$ be
 the genotype at some site and $R$ be the reference allele.  Now set:
 
 \begin{equation*}
-P(X,Y|R) = \left\{ \begin{array}{cl}
+P(x,y|r) = \left\{ \begin{array}{cl}
     dh/3 & \mbox{if} \quad x \neq y \wedge (x=r \vee y=r) \\
     d(h-1)/3 & \mbox{if} \quad x=y \wedge x \neq r \\
     1 - d & \mbox{if} \quad x=y \wedge x=r \\
@@ -196,8 +196,8 @@ log-likelihood as follows:
 
 \begin{align*}
 L_l &= - \sum_{i} \ln G_{AA} - \sum_{i} \ln \left( \frac{1}{1+e^\delta} +
-    \frac{e^\delta}{1+e^\delta} \frac{e^\eta}{1+e^\eta} e^{D_i} +
-    \frac{e^\delta}{1+e^\delta} \frac{1}{1+e^\eta} e^{H_i} \right)
+    \frac{e^\delta}{1+e^\delta} \frac{1}{1+e^\eta} e^{D_i} +
+    \frac{e^\delta}{1+e^\delta} \frac{e^\eta}{1+e^\eta} e^{H_i} \right)
 \end{align*}
 
 \idea{Hand-crafting partial derivatives of this equation doesn't seem to

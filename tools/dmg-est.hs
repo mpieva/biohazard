@@ -186,7 +186,8 @@ main = do
         dsd_sigma = p_ds * dsd_sigma_
         dsd_delta = p_ds * dsd_delta_
 
-    print DP{..}
+    putStrLn $ "p_{ss} = " ++ show p_ss ++ ", p_{ds} = " ++ show p_ds
+    putStrLn $ show DP{..}
 
 -- We'll require the MD field to be present.  Then we cook each read
 -- into a list of paired bases.  Deleted bases are dropped, inserted
