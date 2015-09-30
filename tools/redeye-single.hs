@@ -216,14 +216,13 @@ toBcf refs smps = eneeCheckIfDone go
         typed_string s | S.length s < 15 = LB.word8 (fromIntegral $ (S.length s `shiftL` 4) .|. 0x7) <> LB.byteString s
                        | otherwise       = LB.word8 0xF7 <> LB.word8 0x03 <> LB.word32LE (fromIntegral $ S.length s) <> LB.byteString s
 
-        -- mini2float gives the natural log of a probability
-        pl_vals = U.foldr ((<>) . LB.word16LE . round . (*) (-10/log 10) . unPr . (/ lks U.! maxidx)) mempty lks
+        pl_vals = U.foldr ((<>) . LB.word16LE . round . max 0 . min 0x7fff . (*) (-10/log 10) . unPr . (/ lks U.! maxidx)) mempty lks
 
         lks = U.map (Pr . negate . mini2float) snp_likelihoods :: U.Vector (Prob' Float)
         maxidx = U.maxIndex lks
 
         gq = -10 * unPr (U.sum (U.ifilter (\i _ -> i /= maxidx) lks) / U.sum lks) / log 10
-        gq' = round . max 0 . min 255 $ gq
+        gq' = round . max 0 . min 127 $ gq
 
         h = length $ takeWhile (<= maxidx) $ scanl (+) 1 [2..]
         g = maxidx - h * (h+1) `div` 2
