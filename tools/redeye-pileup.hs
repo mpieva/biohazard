@@ -237,7 +237,7 @@ maxD :: Int
 maxD = 63
 
 rangeDs :: ((Int,Int,Int), (Int,Int,Int))
-rangeDs = ((0,0,0),(5,maxD,maxD))
+rangeDs = ((0,0,0),(11,maxD,maxD))
 
 -- | Parameter estimation for a single sample.  The parameters are
 -- divergence and heterozygosity.  We tabulate the data here and do the
@@ -257,14 +257,15 @@ tabulateSingle = do
     {-# INLINE accum #-}
     accum !tab !acc (Snp_GLs !gls !ref)
         | U.length gls /= 10                   = error "Ten GL values expected for SNP!"      -- should not happen
-        | ref `elem` [nucsA,nucsC,nucsG,nucsT] = accum' tab acc gls
+        | ref `elem` [nucsC,nucsG]             = accum' 0 tab acc gls
+        | ref `elem` [nucsA,nucsT]             = accum' 6 tab acc gls
         | otherwise                            = return acc                                   -- unknown reference
 
     -- The simple 2D table didn't work, it lacked resolution in some
     -- cases.  We make six separate tables instead so we can store two
     -- differences with good resolution in every case.
     {-# INLINE accum' #-}
-    accum' !tab !acc !gls
+    accum' refix !tab !acc !gls
         | g_RR <= g_RA && g_RA <= g_AA = store 0 g_RR g_RA g_AA
         | g_RR <= g_AA && g_AA <= g_RA = store 1 g_RR g_AA g_RA
         | g_RA <= g_RR && g_RR <= g_AA = store 2 g_RA g_RR g_AA
@@ -279,7 +280,7 @@ tabulateSingle = do
 
         store t a b c = do let d1 = min maxD . round $ b - a
                                d2 = min maxD . round $ c - b
-                               ix = index rangeDs (t,d1,d2)
+                               ix = index rangeDs (t + refix,d1,d2)
                            liftIO $ M.read tab ix >>= M.write tab ix . succ
                            return $! acc + a
 
@@ -287,34 +288,39 @@ estimateSingle :: Double -> U.Vector Int -> IO ()
 estimateSingle llk_rr tab = do
     putStrLn $ "Estimating divergence parameters..."
     hFlush stdout
-    (fit, res, stats) <- minimize quietParameters 0.0001 llk (U.fromList [0,0])
-    let [delta, eta] = VS.toList fit
+    (fit, res, stats) <- minimize quietParameters 0.0001 llk (U.fromList [0,0,0])
+    let [delta, eta, eta2] = VS.toList fit
         dv = exp delta / (1 + exp delta)
         ht = exp eta / (1 + exp eta) -- * dv
+        ht' = exp eta2 / (1 + exp eta2) -- * dv
         lk = finalValue stats - llk_rr
     putStrLn $ show res ++ ", " ++ show stats
-    putStrLn $ "Divergence = " ++ show dv
-    putStrLn $ "Heterozygosity = " ++ show ht
-    putStrLn $ "Log-Likelihood = " ++ show lk
+    putStrLn $ "Divergence      = " ++ show dv
+    putStrLn $ "Heterozygosity  = " ++ show ht
+    putStrLn $ "Heterozygosity' = " ++ show ht'
+    putStrLn $ "Log-Likelihood  = " ++ show lk
   where
     llk :: [AD] -> AD
-    llk [delta,eta] = - sum [ fromIntegral num * unPr (w_RR + w_AA * Pr (fromIntegral (d1+d2)) + w_RA * Pr (fromIntegral d1))
-                            | i@(_,d1,d2) <- range ((0,0,0), (0,maxD,maxD))         -- g_RR g_RA g_AA
+    llk [delta,eta,eta2] = llk' 0 delta eta + llk' 6 delta eta2
+
+    llk' base delta eta =
+                      - sum [ fromIntegral num * unPr (w_RR + w_AA * Pr (fromIntegral (d1+d2)) + w_RA * Pr (fromIntegral d1))
+                            | i@(_,d1,d2) <- range ((base+0,0,0), (base+0,maxD,maxD))         -- g_RR g_RA g_AA
                             , let num = tab `U.unsafeIndex` index rangeDs i ]
                       - sum [ fromIntegral num * unPr (w_RR + w_AA * Pr (fromIntegral d1) + w_RA * Pr (fromIntegral (d1+d2)))
-                            | i@(_,d1,d2) <- range ((1,0,0), (1,maxD,maxD))         -- g_RR g_AA g_RA
+                            | i@(_,d1,d2) <- range ((base+1,0,0), (base+1,maxD,maxD))         -- g_RR g_AA g_RA
                             , let num = tab `U.unsafeIndex` index rangeDs i ]
                       - sum [ fromIntegral num * unPr (w_RR * Pr (fromIntegral d1) + w_AA * Pr (fromIntegral (d1+d2)) + w_RA)
-                            | i@(_,d1,d2) <- range ((2,0,0), (2,maxD,maxD))         --  g_RA g_RR g_AA
+                            | i@(_,d1,d2) <- range ((base+2,0,0), (base+2,maxD,maxD))         --  g_RA g_RR g_AA
                             , let num = tab `U.unsafeIndex` index rangeDs i ]
                       - sum [ fromIntegral num * unPr (w_RR * Pr (fromIntegral (d1+d2)) + w_AA * Pr (fromIntegral d1) + w_RA)
-                            | i@(_,d1,d2) <- range ((3,0,0), (3,maxD,maxD))         --  g_RA g_AA g_RR
+                            | i@(_,d1,d2) <- range ((base+3,0,0), (base+3,maxD,maxD))         --  g_RA g_AA g_RR
                             , let num = tab `U.unsafeIndex` index rangeDs i ]
                       - sum [ fromIntegral num * unPr (w_RR * Pr (fromIntegral d1) + w_AA + w_RA * Pr (fromIntegral (d1+d2)))
-                            | i@(_,d1,d2) <- range ((4,0,0), (4,maxD,maxD))         --  g_AA g_RR g_RA
+                            | i@(_,d1,d2) <- range ((base+4,0,0), (base+4,maxD,maxD))         --  g_AA g_RR g_RA
                             , let num = tab `U.unsafeIndex` index rangeDs i ]
                       - sum [ fromIntegral num * unPr (w_RR * Pr (fromIntegral (d1+d2)) + w_AA + w_RA * Pr (fromIntegral d1))
-                            | i@(_,d1,d2) <- range ((5,0,0), (5,maxD,maxD))         --  g_AA g_RA g_RR
+                            | i@(_,d1,d2) <- range ((base+5,0,0), (base+5,maxD,maxD))         --  g_AA g_RA g_RR
                             , let num = tab `U.unsafeIndex` index rangeDs i ]
       where
         !w_RR =        1 / Pr (log1p (exp delta))
