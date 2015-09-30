@@ -233,19 +233,18 @@ output_avro hdl _cfg refs = compileBlocks =$
                 [ Number (fromIntegral (sq_length s)) | s <- F.toList refs ]
 
 
-minD, maxD :: Int
-minD = -128 :: Int
-maxD = 127 :: Int
+maxD :: Int
+maxD = 63
 
-rangeDs :: ((Int,Int), (Int,Int))
-rangeDs = ((minD,minD),(maxD,maxD))
+rangeDs :: ((Int,Int,Int), (Int,Int,Int))
+rangeDs = ((0,0,0),(5,maxD,maxD))
 
 -- | Parameter estimation for a single sample.  The parameters are
 -- divergence and heterozygosity.  We tabulate the data here and do the
 -- estimation afterwards.  Returns the product of the
 -- parameter-independent parts of the likehoods and the histogram
 -- indexed by D and H (see @genotyping.pdf@ for details).
-tabulateSingle :: MonadIO m => Iteratee [Calls] m (Prob, U.Vector Int)
+tabulateSingle :: MonadIO m => Iteratee [Calls] m (Double, U.Vector Int)
 tabulateSingle = do
     tab <- liftIO $ M.replicate (rangeSize rangeDs) (0 :: Int)
     (,) <$> foldStreamM (\acc -> accum tab acc . p_snp_pile) 1
@@ -261,40 +260,64 @@ tabulateSingle = do
         | ref `elem` [nucsA,nucsC,nucsG,nucsT] = accum' tab acc gls
         | otherwise                            = return acc                                   -- unknown reference
 
+    -- The simple 2D table didn't work, it lacked resolution in some
+    -- cases.  We make six separate tables instead so we can store two
+    -- differences with good resolution in every case.
     {-# INLINE accum' #-}
-    accum' !tab !acc !gls = do
-        let g_RR = U.unsafeIndex gls 0
-            g_RA = U.unsafeIndex gls 1 + U.unsafeIndex gls 3 + U.unsafeIndex gls 6
-            g_AA = U.unsafeIndex gls 2 + U.unsafeIndex gls 5 + U.unsafeIndex gls 9
+    accum' !tab !acc !gls
+        | g_RR <= g_RA && g_RA <= g_AA = store 0 g_RR g_RA g_AA
+        | g_RR <= g_AA && g_AA <= g_RA = store 1 g_RR g_AA g_RA
+        | g_RA <= g_RR && g_RR <= g_AA = store 2 g_RA g_RR g_AA
+        | g_RA <= g_AA && g_AA <= g_RR = store 3 g_RA g_AA g_RR
+        | g_AA <= g_RR && g_RR <= g_RA = store 4 g_AA g_RR g_RA
+        | g_AA <= g_RA && g_RA <= g_RR = store 5 g_AA g_RA g_RR
 
-            dd = max minD . min maxD . round . unPr $   g_AA / g_RR / 3
-            hh = max minD . min maxD . round . unPr $   g_RA / g_RR / 3
-            ix = index rangeDs (dd,hh)
+      where
+        g_RR = unPr $  U.unsafeIndex gls 0
+        g_RA = unPr $ (U.unsafeIndex gls 1 + U.unsafeIndex gls 3 + U.unsafeIndex gls 6) / 3
+        g_AA = unPr $ (U.unsafeIndex gls 2 + U.unsafeIndex gls 5 + U.unsafeIndex gls 9) / 3
 
-        liftIO $ M.read tab ix >>= M.write tab ix . succ
-        return $! acc * g_RR
+        store t a b c = do let d1 = min maxD . round $ b - a
+                               d2 = min maxD . round $ c - b
+                               ix = index rangeDs (t,d1,d2)
+                           liftIO $ M.read tab ix >>= M.write tab ix . succ
+                           return $! acc + a
 
-estimateSingle :: Prob -> U.Vector Int -> IO ()
-estimateSingle lk_rr tab = do
+estimateSingle :: Double -> U.Vector Int -> IO ()
+estimateSingle llk_rr tab = do
     putStrLn $ "Estimating divergence parameters..."
     hFlush stdout
     (fit, res, stats) <- minimize quietParameters 0.0001 llk (U.fromList [0,0])
     let [delta, eta] = VS.toList fit
-        div = exp delta / (1 + exp delta)
-        het = exp eta / (1 + exp eta) * div
-        lk  = finalValue stats - unPr lk_rr
+        dv = exp delta / (1 + exp delta)
+        ht = exp eta / (1 + exp eta) -- * dv
+        lk = finalValue stats - llk_rr
     putStrLn $ show res ++ ", " ++ show stats
-    putStrLn $ "Divergence = " ++ show div
-    putStrLn $ "Heterozygosity = " ++ show het
+    putStrLn $ "Divergence = " ++ show dv
+    putStrLn $ "Heterozygosity = " ++ show ht
     putStrLn $ "Log-Likelihood = " ++ show lk
   where
     llk :: [AD] -> AD
-    llk [delta,eta] = - sum [ (* fromIntegral num) . unPr $
-                                (1 + Pr delta / Pr (log1p (exp eta)) * (Pr d + Pr eta * Pr h))
-                                / Pr (log1p (exp delta))
-                            | (di,hi) <- range rangeDs
-                            , let num = tab `U.unsafeIndex` index rangeDs (di,hi)
-                                  d   = fromIntegral di
-                                  h   = fromIntegral hi ]
-
+    llk [delta,eta] = - sum [ fromIntegral num * unPr (w_RR + w_AA * Pr (fromIntegral (d1+d2)) + w_RA * Pr (fromIntegral d1))
+                            | i@(_,d1,d2) <- range ((0,0,0), (0,maxD,maxD))         -- g_RR g_RA g_AA
+                            , let num = tab `U.unsafeIndex` index rangeDs i ]
+                      - sum [ fromIntegral num * unPr (w_RR + w_AA * Pr (fromIntegral d1) + w_RA * Pr (fromIntegral (d1+d2)))
+                            | i@(_,d1,d2) <- range ((1,0,0), (1,maxD,maxD))         -- g_RR g_AA g_RA
+                            , let num = tab `U.unsafeIndex` index rangeDs i ]
+                      - sum [ fromIntegral num * unPr (w_RR * Pr (fromIntegral d1) + w_AA * Pr (fromIntegral (d1+d2)) + w_RA)
+                            | i@(_,d1,d2) <- range ((2,0,0), (2,maxD,maxD))         --  g_RA g_RR g_AA
+                            , let num = tab `U.unsafeIndex` index rangeDs i ]
+                      - sum [ fromIntegral num * unPr (w_RR * Pr (fromIntegral (d1+d2)) + w_AA * Pr (fromIntegral d1) + w_RA)
+                            | i@(_,d1,d2) <- range ((3,0,0), (3,maxD,maxD))         --  g_RA g_AA g_RR
+                            , let num = tab `U.unsafeIndex` index rangeDs i ]
+                      - sum [ fromIntegral num * unPr (w_RR * Pr (fromIntegral d1) + w_AA + w_RA * Pr (fromIntegral (d1+d2)))
+                            | i@(_,d1,d2) <- range ((4,0,0), (4,maxD,maxD))         --  g_AA g_RR g_RA
+                            , let num = tab `U.unsafeIndex` index rangeDs i ]
+                      - sum [ fromIntegral num * unPr (w_RR * Pr (fromIntegral (d1+d2)) + w_AA + w_RA * Pr (fromIntegral d1))
+                            | i@(_,d1,d2) <- range ((5,0,0), (5,maxD,maxD))         --  g_AA g_RA g_RR
+                            , let num = tab `U.unsafeIndex` index rangeDs i ]
+      where
+        !w_RR =        1 / Pr (log1p (exp delta))
+        !w_AA = Pr delta / Pr (log1p (exp delta)) *      1 / Pr (log1p (exp eta))
+        !w_RA = Pr delta / Pr (log1p (exp delta)) * Pr eta / Pr (log1p (exp eta))
 

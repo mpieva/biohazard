@@ -179,14 +179,14 @@ L &= G_{AA} \left( 1-d \right) + \frac{d(1-h)}{3} \left( G_{CC} + G_{GG} + G_{TT
           + dh \frac{G_{AC} + G_{AG} + G_{AT}}{3 G_{AA}} \right)
 \end{align*}
 
-We now accumulate $G_{AA}$ as it is independent of the
-parameters, then extract two values from the formula that we can
-discretize on a log scale, allowing us to tabulate everything in a
-histogram with just two dimensions:
+We now define three quantities of interest, which we sort by magnitude.
+The smallest one is accumulated directly, the differences to the other
+two are discretized and tabulated.  Just six small tables are needed.
 
 \begin{equation*}
-D_i := \left[ \ln \frac{G_{CC} + G_{GG} + G_{TT}}{3 G_{AA}} \right], \quad
-H_i := \left[ \ln \frac{G_{AC} + G_{AG} + G_{AT}}{3 G_{AA}} \right]
+R_i := \ln 3 G_{AA}, \quad
+D_i := \ln G_{CC} + G_{GG} + G_{TT}, \quad
+H_i := \ln G_{AC} + G_{AG} + G_{AT} 
 \end{equation*}
 
 We further set $\delta = \ln \frac{d}{1-d}$ and $\eta = \ln
@@ -195,15 +195,14 @@ problems and provide cleaner confidence intervals.  Thus we recover the
 log-likelihood as follows:
 
 \begin{align*}
-L_l &= - \sum_{i} \ln G_{AA} - \sum_{i} \ln \left( \frac{1}{1+e^\delta} +
+L_l &= - \sum_{i} R_i - \sum_{i} \ln \left( \frac{1}{1+e^\delta} +
     \frac{e^\delta}{1+e^\delta} \frac{1}{1+e^\eta} e^{D_i} +
     \frac{e^\delta}{1+e^\delta} \frac{e^\eta}{1+e^\eta} e^{H_i} \right)
 \end{align*}
 
-\idea{Hand-crafting partial derivatives of this equation doesn't seem to
-yield anything that simplifies, so I'm inclined to apply Automatic
-Differentiation and hand it over to my trusty Conjugate Gradient
-solver.}
+\result{Hand-crafting partial derivatives of this equation didn't seem to
+yield anything that simplifies, so I applied Automatic
+Differentiation and handed it over to Hager-Zhang.}
 
 \section{Testing Method}
 
@@ -212,6 +211,8 @@ solver.}
 To test for egregious bugs, we can write a couple of SAM or BAM files by
 hand.  This shouldn't really be called a test; it's ordinary, boring
 debugging.
+
+\result{Nothing to see here.  Code runs.}
 
 \subsection{Simulated Data}
 
@@ -250,6 +251,8 @@ coverage.
 Here, we assume the simple model is correct and show that maximum
 likelihood estimation of parameters works in this setting.}
 
+\result{We accidentally skipped this part.}
+
 \paragraph{Simulated Ancient Data}
 
 This is the same idea, this time including damage with known parameters.
@@ -274,6 +277,16 @@ obtained.}
 damage in a separate first pass works and is a lot cheaper,
 both conceptually and operationally, than co-estimating damage with
 heterozygosity.}
+
+\result{Homa simulated two diploid genomes with divergence and aligned,
+damaged reads from these.  I estimated damage from the reads, and the
+estimate is nearly spot on.  On a dataset with 20\% divergence, the
+estimated divergence and heterozygosity are unaffected by damage,
+probably because damage is a minor effect here.  On a 0.1\% divergent
+dataset, naive genotype calling overestimates heterozygosity by a factor
+of 15, but gets homozygous divergence right.  Running with the estimated
+damage parameters gives a practically perfect result.} 
+
 
 \subsection{Real Sequencing Data}
 
