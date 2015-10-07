@@ -84,50 +84,15 @@ data DamageParameters float = DP { ssd_sigma  :: !float         -- deamination r
 -- parameters.  Setting 'p' or 'q' to 0 as appropriate makes this apply
 -- to the single stranded or undamaged case.
 
+{-# INLINE genSubstMat #-}
 genSubstMat :: Fractional a => a -> a -> Mat44 a
 genSubstMat p q = vec4 ( vec4  1   0     q   0 )
                        ( vec4  0 (1-p)   0   0 )
                        ( vec4  0   0   (1-q) 0 )
                        ( vec4  0   p     0   1 )
-
--- Forward strand first, C->T only; reverse strand next, G->A instead
-
-{-
-{-# SPECIALIZE ssDamage :: SsDamageParameters Double -> DamageModel Double #-}
-ssDamage :: Fractional a => SsDamageParameters a -> DamageModel a
-ssDamage SSD{..} r l = V.generate l $ if r then ssd_rev else ssd_fwd
   where
-    ssd_fwd i = genSubstMat p 0
-      where
-        !lam5 = ssd_lambda ^ (1+i)
-        !lam3 = ssd_kappa ^ (l-i)
-        !lam  = lam3 + lam5 - lam3 * lam5
-        !p    = ssd_sigma * lam + ssd_delta * (1-lam)
-
-    ssd_rev i = genSubstMat 0 p
-      where
-        !lam5 = ssd_lambda ^ (l-i)
-        !lam3 = ssd_kappa ^ (1+i)
-        !lam  = lam3 + lam5 - lam3 * lam5
-        !p    = ssd_sigma * lam + ssd_delta * (1-lam)
-
-
-
-{-# SPECIALIZE dsDamage :: DsDamageParameters Double -> DamageModel Double #-}
-dsDamage :: Fractional a => DsDamageParameters a -> DamageModel a
-dsDamage DSD{..} _ l = V.generate l mat
-  where
-    mat i = genSubstMat p q
-      where
-        p    = dsd_sigma * lam5 + dsd_delta * (1-lam5)
-        q    = dsd_sigma * lam3 + dsd_delta * (1-lam3)
-        lam5 = dsd_lambda ^ (1+i)
-        lam3 = dsd_lambda ^ (l-i)
--}
-
-{-# INLINE vec4 #-}
-vec4 :: a -> a -> a -> a -> Vec4 a
-vec4 a b c d = a :. b :. c :. d :. ()
+    vec4 :: a -> a -> a -> a -> Vec4 a
+    vec4 a b c d = a :. b :. c :. d :. ()
 
 memoDamageModel :: DamageModel a -> DamageModel a
 memoDamageModel f = \r l -> if l > 512 || l < 0 then f r l
