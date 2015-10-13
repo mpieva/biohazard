@@ -18,12 +18,12 @@ import Bio.Base
 import Bio.Bam
 import Bio.Bam.Pileup
 import Bio.Genocall.AvroFile
-import Bio.Iteratee
 import Bio.Iteratee.Bgzf
 import Control.Monad
 import Data.Avro
 import Data.Bits
 import Data.Foldable ( toList )
+import Data.List ( scanl' )
 import Data.MiniFloat
 import Data.Monoid
 import System.Console.GetOpt
@@ -41,13 +41,13 @@ data Conf = Conf {
     conf_sample      :: S.ByteString,
     conf_ploidy      :: S.ByteString -> Int,
     conf_report      :: String -> IO (),
-    conf_prior_div   :: Prob,
-    conf_prior_het   :: Prob,
-    conf_prior_indel :: Prob }
+    conf_prior_div   :: Prob' Float,
+    conf_prior_het   :: Prob' Float,
+    conf_prior_indel :: Prob' Float }
 
 defaultConf :: Conf
 defaultConf = Conf ($ bcf_to_hdl stdout) "John_Doe" (const 2) (\_ -> return ())
-                   (qualToProb $ Q 30) (qualToProb $ Q 20) (qualToProb $ Q 45)
+                   (qualToProb $ Q 30) (2/3) (qualToProb $ Q 45)
 
 options :: [OptDescr (Conf -> IO Conf)]
 options = [ -- Maybe add FastQ output?  Or FastA?  Or padded FastA?  Or Nick FastA?
@@ -89,32 +89,27 @@ main = do
 
 main' :: Conf -> FilePath -> IO ()
 main' Conf{..} infile = do
-    -- Pieces of old code were no good at all...  so, reboot.
-    -- We read an AVRO container, we apply the priors, we format the
-    -- result as minimal BCF.
-    --
-    -- So, generate a VCF header first.  We get the /names/ of the
-    -- reference sequences from the schema and the /lengths/ from the
-    -- biohazard.refseq_length entry.
-    --
-    -- Then app priors to each record, call genotype and format.
-    --
-    -- Need to write BCF2.  Which is custom binary goop inside a BGZF
-    -- container.  :(  First attempt w/o the BGZF layer... let's see
-    -- what bcftools thinks about it.
     conf_output $ \oiter ->
         enumFile defaultBufSize infile >=> run $
             joinI $ readAvroContainer $ \av_meta ->
-                -- needs /names/ and /lengths/ of reference sequences
-                -- names come from the enum definition, need to find the schema
-                -- lengths are stuck in biohazard.reference_lengths
-                -- concatMapStream unpackGenoCallSites =$
-                oiter (getRefseqs av_meta) [conf_sample]
+                oiter (getRefseqs av_meta) [conf_sample] (snp_call, indel_call)
+  where
+    snp_call   = call conf_prior_div
+    indel_call = call conf_prior_indel
+    call prior lks = U.maxIndex . U.zipWith (*) lks $
+                     U.replicate (U.length lks) (conf_prior_het * prior / 3)
+                     U.// [(0, 1-prior)]
+                     U.// [ (i, (1-conf_prior_het) * prior / 3)
+                          | i <- takeWhile (< U.length lks) (scanl' (+) 2 [3..]) ]
 
--- unpackGenoCallSites :: GenoCallBlock -> [GenoCallSite]
 
-bcf_to_hdl :: MonadIO m => Handle -> Refs -> [S.ByteString] -> Iteratee [GenoCallBlock] m ()
-bcf_to_hdl hdl refs smps = toBcf refs smps =$ compressBgzf =$ mapChunksM_ (liftIO . S.hPut hdl)
+
+-- | Generates BCF anmd writes it to a 'Handle'.  For the necessary VCF
+-- header, we get the /names/ of the reference sequences from the Avro
+-- schema and the /lengths/ from the biohazard.refseq_length entry in
+-- the meta data.
+bcf_to_hdl :: MonadIO m => Handle -> Refs -> [S.ByteString] -> CallFuncs -> Iteratee [GenoCallBlock] m ()
+bcf_to_hdl hdl refs smps call_fns = toBcf refs smps call_fns =$ compressBgzf =$ mapChunksM_ (liftIO . S.hPut hdl)
 
 vcf_header :: Refs -> [S.ByteString] -> L.ByteString
 vcf_header refs smps = L.unlines $
@@ -128,14 +123,10 @@ vcf_header refs smps = L.unlines $
     [ L.fromChunks [ "##contig=<ID=", sq_name s, ",length=", S.pack (show (sq_length s)), ">" ] | s <- toList refs ] ++
     [ L.intercalate "\t" $ "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT" : map (L.fromChunks . return) smps ]
 
--- data BgzfChunk = SpecialChunk  !S.ByteString BgzfChunk
-               -- | RecordChunk   !S.ByteString BgzfChunk
-               -- | LeftoverChunk !S.ByteString BgzfChunk
-               -- | NoChunk
 
 -- XXX actuall call in missing (have to apply the prior)
-toBcf :: Monad m => Refs -> [S.ByteString] -> Enumeratee [GenoCallBlock] BgzfChunk m r
-toBcf refs smps = eneeCheckIfDone go
+toBcf :: Monad m => Refs -> [S.ByteString] -> CallFuncs -> Enumeratee [GenoCallBlock] BgzfChunk m r
+toBcf refs smps (snp_call, indel_call) = eneeCheckIfDone go
   where
     go  k = mapChunks (foldr encode NoChunk) . k . Chunk $ SpecialChunk hdr NoChunk
     hdr   = S.concat . L.toChunks . LB.toLazyByteString $
@@ -152,7 +143,7 @@ toBcf refs smps = eneeCheckIfDone go
                                     [_] -> mempty
                                     _   -> encodeindel ref pos site
 
-    encodesnp ref pos site = encode' ref pos (map S.singleton alleles) site (snp_stats site)
+    encodesnp ref pos site = encode' ref pos (map S.singleton alleles) site (snp_stats site) snp_call
       where
         -- Permuting the reference allele to the front sucks.  Since
         -- there are only four possibilities, I'm not going to bother
@@ -162,18 +153,18 @@ toBcf refs smps = eneeCheckIfDone go
                 | ref_allele site == nucsC = "CAGT"
                 | otherwise                = "ACGT"
 
-    encodeindel ref pos site = encode' ref pos alleles site (indel_stats site)
+    encodeindel ref pos site = encode' ref pos alleles site (indel_stats site) indel_call
       where
         -- We're looking at the indel /after/ the current position.
-        -- That's sweet, because we can just prepend the current reference
-        -- base and make bcftools and friends happy.
-        -- Longest reported deletion becomes the reference allele.
-        -- Others may need padding.
+        -- That's sweet, because we can just prepend the current
+        -- reference base and make bcftools and friends happy.  Longest
+        -- reported deletion becomes the reference allele.  Others may
+        -- need padding.
         rallele = snd $ maximum [ (U.length r, r) | IndelVariant (V_Nucs r) _ <- indel_variants site ]
         alleles = [ S.pack $ show (ref_allele site) ++ show (U.toList a) ++ show (U.toList $ U.drop (U.length r) rallele)
                   | IndelVariant (V_Nucs r) (V_Nuc a) <- indel_variants site ]
 
-    encode' ref pos alleles GenoCallSite{..} CallStats{..} =
+    encode' ref pos alleles GenoCallSite{..} CallStats{..} do_call =
         LB.word32LE (fromIntegral . L.length $ LB.toLazyByteString b_share) <>
         LB.word32LE (fromIntegral . L.length $ LB.toLazyByteString b_indiv) <>
         b_share <> b_indiv
@@ -224,11 +215,13 @@ toBcf refs smps = eneeCheckIfDone go
         gq = -10 * unPr (U.sum (U.ifilter (\i _ -> i /= maxidx) lks) / U.sum lks) / log 10
         gq' = round . max 0 . min 127 $ gq
 
-        h = length $ takeWhile (<= maxidx) $ scanl (+) 1 [2..]
-        g = maxidx - h * (h+1) `div` 2
+        callidx = do_call lks
+        h = length $ takeWhile (<= callidx) $ scanl (+) 1 [2..]
+        g = callidx - h * (h+1) `div` 2
 
 
-type OIter = Refs -> [S.ByteString] -> Iteratee [GenoCallBlock] IO ()
+type CallFuncs = (U.Vector (Prob' Float) -> Int, U.Vector (Prob' Float) -> Int)
+type OIter = Refs -> [S.ByteString] -> CallFuncs -> Iteratee [GenoCallBlock] IO ()
 type Output a = (OIter -> IO a) -> IO a
 
 {-
@@ -288,7 +281,6 @@ format_indel_call p cs
 
         IndelVariant del (V_Nuc ins) = ( IndelVariant 0 (V_Nuc U.empty) : vars ) !! maxQualIndex eff_gl
         skip ocs  = p_refseq ocs == p_refseq cs && p_pos ocs < p_pos cs + del
--}
 
 maxQualIndex :: U.Vector Prob -> Int
 maxQualIndex vec = case U.ifoldl' step (0, 0, 0) vec of
@@ -296,7 +288,6 @@ maxQualIndex vec = case U.ifoldl' step (0, 0, 0) vec of
   where
     step (!i,!m,!m2) j v = if v >= m then (j+1,v,m) else (i,m,m2)
 
-{-
 collect_lines :: Monad m => Enumeratee S.ByteString [S.ByteString] m r
 collect_lines = eneeCheckIfDone (liftI . go S.empty)
   where
