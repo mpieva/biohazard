@@ -9,7 +9,7 @@
 \newcommandx{\oops}[2][1=]{\todo[nolist,noline,inline,linecolor=yellow,backgroundcolor=yellow!25,bordercolor=yellow,#1]{#2}}
 \newcommandx{\result}[2][1=]{\todo[nolist,noline,inline,linecolor=green,backgroundcolor=green!25,bordercolor=green,#1]{#2}}
 
-\title{Error Models For Genotype Calling}
+\title{Deamination Aware Genotype Calling}
 \author{Udo Stenzel}
 
 \begin{document}
@@ -59,6 +59,93 @@ grabs, since there are two cases of prior art.  We'll go with a simple
 implementation like \texttt{SOAPsnp} (or more recently
 \texttt{BSNP}\cite{bsnp}), which needs to be generalized for ancient
 DNA.
+
+\section{Damage Model}
+
+Ancient DNA is conceptually modelled as double stranded with heavily
+deaminated single stranded ends, whose lengths are distributed
+geometrically.  We apply the same simplification as in \cite{mapdamage},
+in that we don't try to estimate the overhang length for any molecule,
+but compute an effective deamination probability for every position in a
+read.
+
+For classically prepared ``double strand'' libraries, we get C to T
+transitions near the 5' end and G to A transitions near the 3' end, and
+the overhang lengths are equal.  For single strand libraries, we get C
+to T transitions near both ends, and the expected overhang lengths may
+be different.  The same models work for libraries treated with UDG.
+While we cannot see the actual overhangs anymore, the overall damage
+looks the same, but with much shorter overhangs.
+
+We can now construct a universal damage model that applies to every
+library and estimate parameters for it.  Let $\sigma_d$, $\delta_d$,
+$\lambda_d$ be the single stranded deamination rate, the double
+stranded deamination rate and the length parameter at the 5' end,
+respectively, for a double stranded model.  Let $\sigma_s$, $\delta_s$
+and $\lambda_s$ be the corresponding parameters for a single stranded
+model, and $\kappa_s$ be the overhang length parameter at the 3' end in
+a single stranded model.  The probabilities that a position $i$ in a
+read of length $l$ is in an overhang in a single stranded model, in a 5'
+overhang, or in a 3' overhang in a double stranded model, are then:
+
+\begin{align*}
+P_s(i|l) &= \lambda_s^{i+1} + \kappa_s^{l-i} - \lambda_s^{i+1} \kappa_s^{l-i} \\
+P_5(i|l) &= \lambda_d^{i+1} \\
+P_3(i|l) &= \lambda_d^{l-i}
+\end{align*}
+
+From these, we compute the rates of C to T transversions and G to A transversions:
+
+\begin{align*}
+P_{CT}(i|l) &= \sigma_s P_s(i|l) + \delta_s (1-P_s(i|l) + \sigma_d P_5(i|l) + \delta_d (1-P_5(i|l)) \\
+P_{GA}(i|l) &= \sigma_d P_3(i|l) + \delta_d (1-P_3(i|l))
+\end{align*}
+
+This yields the complete damage matrix used in the follwing sections:
+
+\begin{equation}
+D_i = \left( \begin{array}{cccc}
+            1 &      0      &  P_{GA}(i)  & 0 \\
+            0 & 1-P_{CT}(i) &      0      & 0 \\
+            0 &      0      & 1-P_{GA}(i) & 0 \\
+            0 &  P_{CT}(i)  &      0      & 1 
+        \end{array} \right)
+\end{equation}        
+
+To fit parameters to real data, we assume simple errors and no divergence.  We separately fit a pure single stranded model, a pure
+double stranded model, and a model without damage.  At the maximum likelihood parameters, we compute the probabilities of either the
+single stranded or double stranded model being correct.  (For brevity, all parameters not mentioned here are assumed to be zero.)
+
+\begin{align*}
+\hat{\sigma_s}, \hat{\delta_s}, \hat{\lambda_s}, \hat{\kappa_s} &:= \arg \max_{\sigma_s, \delta_s, \lambda_s, \kappa_s}
+    P(D | \sigma_s, \delta_s, \lambda_s, \kappa_s ) \\
+\hat{\sigma_d}, \hat{\delta_d}, \hat{\lambda_d} &:= \arg \max_{\sigma_d, \delta_d, \lambda_d}
+    P(D | \sigma_d, \delta_d, \lambda_d ) \\
+P_s(D) &:= \frac{   
+    P(D | \hat{\sigma_s}, \hat{\delta_s}, \hat{\lambda_s}, \hat{\kappa_s}) }{
+    P(D | \hat{\sigma_s}, \hat{\delta_s}, \hat{\lambda_s}, \hat{\kappa_s}) +
+    P(D | \hat{\sigma_d}, \hat{\delta_d}, \hat{\lambda_d} ) +
+    P(D | \emptyset ) } \\
+P_d(D) &:= \frac{   
+    P(D | \hat{\sigma_d}, \hat{\delta_d}, \hat{\lambda_d} ) }{
+    P(D | \hat{\sigma_s}, \hat{\delta_s}, \hat{\lambda_s}, \hat{\kappa_s}) +
+    P(D | \hat{\sigma_d}, \hat{\delta_d}, \hat{\lambda_d} ) +
+    P(D | \emptyset ) }
+\end{align*}
+
+We might now simply select the most probable model, but this results in erratic behavior if the models cannot be distinguished
+clearly.  Instead, we use all of these models and roll their posterior probabilities into the damage probabilities.  This yields the
+final universal damage parameters
+
+\begin{align*}
+&\sigma_s = P_s(D) \hat{\sigma_s}, \quad 
+\delta_s = P_s(D) \hat{\delta_s}, \quad 
+\lambda_s = \hat{\lambda_s}, \quad
+\kappa_s = \hat{\kappa_s}, \\
+&\sigma_d = P_s(D) \hat{\sigma_d}, \quad 
+\delta_d = P_s(D) \hat{\delta_d}, \quad 
+\lambda_d = \hat{\lambda_d}
+\end{align*}
 
 \section{Genotype Calling with Simple Errors}
 

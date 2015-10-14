@@ -119,12 +119,16 @@ data IndexTab = IndexTab { unique_indices :: U.Vector Index
                          , canonical_names :: V.Vector T.Text
                          , alias_names :: HM.HashMap T.Text Int }
 
+single_placeholder :: IndexTab
+single_placeholder = IndexTab (U.singleton (fromS "")) (V.singleton "is4") $
+                        HM.fromList [ (k,0) | [_,_,k] <- map T.words $ T.lines default_rgs ]
+
 data Both = Both { p7is :: IndexTab, p5is :: IndexTab }
 
 instance FromJSON Both where
     parseJSON = withObject "toplevel object expected" $ \v ->
-                          both <$> ((v .: "p7index") >>= parse_assocs)
-                               <*> ((v .: "p5index") >>= parse_assocs)
+                          both <$>  ((v .: "p7index") >>= parse_assocs)
+                               <*> (((v .: "p5index") >>= parse_assocs) <|> pure [])
       where
         parse_assocs = withObject "association list expected" $ \o ->
                             sequence [ (,) k <$> withText "sequence expected" (return . T.encodeUtf8) v | (k,v) <- HM.toList o ]
@@ -296,6 +300,7 @@ data Conf = Conf {
         cf_num_stats  :: Int -> Int,
         cf_threshold  :: Double,
         cf_loudness   :: Loudness,
+        cf_single     :: Bool,
         cf_pedantic   :: Bool,
         cf_samplesize :: Int,
         cf_readgroups :: [FilePath] }
@@ -309,6 +314,7 @@ defaultConf = do ixdb <- getDataFileName "index_db.json"
                         cf_num_stats  = \l -> max 20 $ l * 5 `div` 4,
                         cf_threshold  = 0.000005,
                         cf_loudness   = Normal,
+                        cf_single     = False,
                         cf_pedantic   = False,
                         cf_samplesize = 50000,
                         cf_readgroups = [] }
@@ -318,6 +324,7 @@ options = [
     Option "o" ["output"]         (ReqArg set_output   "FILE") "Send output to FILE",
     Option "I" ["index-database"] (ReqArg set_index_db "FILE") "Read index database from FILE",
     Option "r" ["read-groups"]    (ReqArg set_rgs      "FILE") "Read read group definitions from FILE",
+    Option "s" ["single-index"]   (NoArg           set_single) "Only consider first index",
     Option [ ] ["threshold"]      (ReqArg set_thresh   "FRAC") "Iterate till uncertainty is below FRAC",
     Option [ ] ["sample"]         (ReqArg set_sample    "NUM") "Sample NUM reads for mixture estimation",
     Option [ ] ["components"]     (ReqArg set_compo     "NUM") "Print NUM components of the mixture",
@@ -333,6 +340,7 @@ options = [
     set_rgs      fp c = return $ c { cf_readgroups = fp : cf_readgroups c }
     set_loud        c = return $ c { cf_loudness = Loud }
     set_quiet       c = return $ c { cf_loudness = Quiet }
+    set_single      c = return $ c { cf_single = True }
     set_pedantic    c = return $ c { cf_pedantic = True }
     set_thresh    a c = readIO a >>= \x -> return $ c { cf_threshold = x }
     set_sample    a c = readIO a >>= \x -> return $ c { cf_samplesize = x }
@@ -366,7 +374,11 @@ main = do
     let notice  = case cf_loudness of Quiet -> \_ -> return () ; _ -> hPutStr stderr
         info    = case cf_loudness of Loud  -> hPutStr stderr ;  _ -> \_ -> return ()
 
-    Just Both{..} <- fmap decodeStrict' $ B.readFile cf_index_list
+    Both{..} <- B.readFile cf_index_list >>= \raw -> case decodeStrict' raw of
+                    Nothing -> hPutStrLn stderr "Couldn't parse index database." >> exitFailure
+                    Just  x | cf_single -> return $ x { p5is = single_placeholder }
+                            | otherwise -> return   x
+
     rgdefs <- concatMap (readRGdefns (alias_names p7is) (alias_names p5is)) . (:) default_rgs <$> mapM T.readFile cf_readgroups
     notice $ "Got " ++ showNum (U.length (unique_indices p7is)) ++ " unique P7 indices and "
                     ++ showNum (U.length (unique_indices p5is)) ++ " unique P5 indices.\n"
@@ -475,10 +487,10 @@ main = do
                                 when (total >= 1) . L.hPutStrLn cf_stats_hdl . L.toLazyText $
                                         adj_left_text maxlen ' ' (T.decodeUtf8 rgid) <>
                                         L.singleton ':' <> L.singleton ' ' <>
-                                        adj_left 4 ' ' (L.singleton 'Q' <> L.decimal (max 0 qmax)) <>
-                                        adj_left 4 ' ' (L.singleton 'Q' <> L.decimal (max 0 qavg)) <>
-                                        L.fromString (showNum (round total :: Int)) <>
-                                        foldr1 (\a b -> a <> L.singleton ',' <> L.singleton ' ' <> b)
+                                        adj_left 4 ' ' (L.singleton 'Q' <> L.decimal (max 0 qmax)) <> L.fromText ", " <>
+                                        adj_left 4 ' ' (L.singleton 'Q' <> L.decimal (max 0 qavg)) <> L.fromText ", " <>
+                                        L.fromString (showNum (round total :: Int)) <> L.fromText "; " <>
+                                        foldr1 (\a b -> a <> L.fromText ", " <> b)
                                             (take num $ U.foldr fmt_one [] v')
 
 inspect' :: HM.HashMap (Int,Int) (B.ByteString, t) -> V.Vector T.Text -> V.Vector T.Text -> Handle -> Int -> Mix -> IO ()
