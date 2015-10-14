@@ -133,12 +133,9 @@ main = do
         mergeInputs combineCoordinates files >=> run $ \hdr ->
             filterStream (not . br_isUnmapped)                      =$
             filterStream (isValidRefseq . br_rname)                 =$
-            progressPos "GT call at " conf_report (meta_refs hdr)      =$
+            progressPos "GT call at " conf_report (meta_refs hdr)   =$
             pileup dmg_model                                        =$
-            by_groups p_refseq (\rs out -> do
-                let !sname = sq_name $ getRef (meta_refs hdr) rs
-                liftIO $ conf_report $ S.unpack sname
-                mapStream (calls conf_theta) out)                   =$
+            mapStream (calls conf_theta)                            =$
             zipStreams tabulateSingle (oiter conf $ meta_refs hdr)
 
     uncurry estimateSingle tab
@@ -171,14 +168,6 @@ calls (Just theta) pile = pile { p_snp_pile = s, p_indel_pile = i }
       where                                             -- there is nothing else we can do here)
         Snp_GLs x r  = maq_snp_call 2 theta $ fst $ p_snp_pile pile
         Snp_GLs y r' = maq_snp_call 2 theta $ snd $ p_snp_pile pile
-
-
-by_groups :: ( Monad m, ListLike s a, Nullable s, Eq b ) => (a -> b) -> (b -> Enumeratee s t m r) -> Enumeratee s t m r
-by_groups f k out = do
-    mhd <- peekStream
-    case fmap f $ mhd of
-        Nothing -> return out
-        Just b0 -> takeWhileE ((==) b0 . f) =$ k b0 out >>= by_groups f k
 
 
 -- | Serialize the results from genotype calling in a sensible way.  We
