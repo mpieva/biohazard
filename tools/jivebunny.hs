@@ -487,10 +487,10 @@ main = do
                                 when (total >= 1) . L.hPutStrLn cf_stats_hdl . L.toLazyText $
                                         adj_left_text maxlen ' ' (T.decodeUtf8 rgid) <>
                                         L.singleton ':' <> L.singleton ' ' <>
-                                        adj_left 4 ' ' (L.singleton 'Q' <> L.decimal (max 0 qmax)) <>
-                                        adj_left 4 ' ' (L.singleton 'Q' <> L.decimal (max 0 qavg)) <>
-                                        L.fromString (showNum (round total :: Int)) <>
-                                        foldr1 (\a b -> a <> L.singleton ',' <> L.singleton ' ' <> b)
+                                        adj_left 4 ' ' (L.singleton 'Q' <> L.decimal (max 0 qmax)) <> L.fromText ", " <>
+                                        adj_left 4 ' ' (L.singleton 'Q' <> L.decimal (max 0 qavg)) <> L.fromText ", " <>
+                                        L.fromString (showNum (round total :: Int)) <> L.fromText "; " <>
+                                        foldr1 (\a b -> a <> L.fromText ", " <> b)
                                             (take num $ U.foldr fmt_one [] v')
 
 inspect' :: HM.HashMap (Int,Int) (B.ByteString, t) -> V.Vector T.Text -> V.Vector T.Text -> Handle -> Int -> Mix -> IO ()
