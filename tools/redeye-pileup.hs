@@ -236,7 +236,7 @@ rangeDs = ((0,0,0),(11,maxD,maxD))
 tabulateSingle :: MonadIO m => Iteratee [Calls] m (Double, U.Vector Int)
 tabulateSingle = do
     tab <- liftIO $ M.replicate (rangeSize rangeDs) (0 :: Int)
-    (,) <$> foldStreamM (\acc -> accum tab acc . p_snp_pile) 1
+    (,) <$> foldStreamM (\acc -> accum tab acc . p_snp_pile) (0 :: Double)
         <*> liftIO (U.unsafeFreeze tab)
   where
     -- We need GL values for the invariant, the three homozygous variant
@@ -255,20 +255,20 @@ tabulateSingle = do
     -- differences with good resolution in every case.
     {-# INLINE accum' #-}
     accum' refix !tab !acc !gls
-        | g_RR <= g_RA && g_RA <= g_AA = store 0 g_RR g_RA g_AA
-        | g_RR <= g_AA && g_AA <= g_RA = store 1 g_RR g_AA g_RA
-        | g_RA <= g_RR && g_RR <= g_AA = store 2 g_RA g_RR g_AA
-        | g_RA <= g_AA && g_AA <= g_RR = store 3 g_RA g_AA g_RR
-        | g_AA <= g_RR && g_RR <= g_RA = store 4 g_AA g_RR g_RA
-        | g_AA <= g_RA && g_RA <= g_RR = store 5 g_AA g_RA g_RR
+        | g_RR >= g_RA && g_RA >= g_AA = store 0 g_RR g_RA g_AA
+        | g_RR >= g_AA && g_AA >= g_RA = store 1 g_RR g_AA g_RA
+        | g_RA >= g_RR && g_RR >= g_AA = store 2 g_RA g_RR g_AA
+        | g_RA >= g_AA && g_AA >= g_RR = store 3 g_RA g_AA g_RR
+        | g_AA >= g_RR && g_RR >= g_RA = store 4 g_AA g_RR g_RA
+        | g_AA >= g_RA && g_RA >= g_RR = store 5 g_AA g_RA g_RR
 
       where
         g_RR = unPr $  U.unsafeIndex gls 0
         g_RA = unPr $ (U.unsafeIndex gls 1 + U.unsafeIndex gls 3 + U.unsafeIndex gls 6) / 3
         g_AA = unPr $ (U.unsafeIndex gls 2 + U.unsafeIndex gls 5 + U.unsafeIndex gls 9) / 3
 
-        store t a b c = do let d1 = min maxD . round $ b - a
-                               d2 = min maxD . round $ c - b
+        store t a b c = do let d1 = min maxD . round $ a - b
+                               d2 = min maxD . round $ b - c
                                ix = index rangeDs (t + refix,d1,d2)
                            liftIO $ M.read tab ix >>= M.write tab ix . succ
                            return $! acc + a
@@ -287,30 +287,30 @@ estimateSingle llk_rr tab = do
     putStrLn $ "Divergence      = " ++ show dv
     putStrLn $ "Heterozygosity  = " ++ show ht
     putStrLn $ "Heterozygosity' = " ++ show ht'
-    putStrLn $ "Log-Likelihood  = " ++ show lk
+    putStrLn $ "Log-Likelihood  = " ++ shows lk " ("
+            ++ shows (finalValue stats) " - " ++ shows llk_rr ")"
   where
     llk :: [AD] -> AD
     llk [delta,eta,eta2] = llk' 0 delta eta + llk' 6 delta eta2
 
-    llk' base delta eta =
-                      - sum [ fromIntegral num * unPr (w_RR + w_AA * Pr (fromIntegral (d1+d2)) + w_RA * Pr (fromIntegral d1))
-                            | i@(_,d1,d2) <- range ((base+0,0,0), (base+0,maxD,maxD))         -- g_RR g_RA g_AA
-                            , let num = tab `U.unsafeIndex` index rangeDs i ]
-                      - sum [ fromIntegral num * unPr (w_RR + w_AA * Pr (fromIntegral d1) + w_RA * Pr (fromIntegral (d1+d2)))
-                            | i@(_,d1,d2) <- range ((base+1,0,0), (base+1,maxD,maxD))         -- g_RR g_AA g_RA
-                            , let num = tab `U.unsafeIndex` index rangeDs i ]
-                      - sum [ fromIntegral num * unPr (w_RR * Pr (fromIntegral d1) + w_AA * Pr (fromIntegral (d1+d2)) + w_RA)
-                            | i@(_,d1,d2) <- range ((base+2,0,0), (base+2,maxD,maxD))         --  g_RA g_RR g_AA
-                            , let num = tab `U.unsafeIndex` index rangeDs i ]
-                      - sum [ fromIntegral num * unPr (w_RR * Pr (fromIntegral (d1+d2)) + w_AA * Pr (fromIntegral d1) + w_RA)
-                            | i@(_,d1,d2) <- range ((base+3,0,0), (base+3,maxD,maxD))         --  g_RA g_AA g_RR
-                            , let num = tab `U.unsafeIndex` index rangeDs i ]
-                      - sum [ fromIntegral num * unPr (w_RR * Pr (fromIntegral d1) + w_AA + w_RA * Pr (fromIntegral (d1+d2)))
-                            | i@(_,d1,d2) <- range ((base+4,0,0), (base+4,maxD,maxD))         --  g_AA g_RR g_RA
-                            , let num = tab `U.unsafeIndex` index rangeDs i ]
-                      - sum [ fromIntegral num * unPr (w_RR * Pr (fromIntegral (d1+d2)) + w_AA + w_RA * Pr (fromIntegral d1))
-                            | i@(_,d1,d2) <- range ((base+5,0,0), (base+5,maxD,maxD))         --  g_AA g_RA g_RR
-                            , let num = tab `U.unsafeIndex` index rangeDs i ]
+    llk' base delta eta = sum [ fromIntegral num * unPr (w_RR + w_AA * Pr (fromIntegral (d1+d2)) + w_RA * Pr (fromIntegral d1))
+                              | i@(_,d1,d2) <- range ((base+0,0,0), (base+0,maxD,maxD))         -- g_RR g_RA g_AA
+                              , let num = tab `U.unsafeIndex` index rangeDs i ]
+                        + sum [ fromIntegral num * unPr (w_RR + w_AA * Pr (fromIntegral d1) + w_RA * Pr (fromIntegral (d1+d2)))
+                              | i@(_,d1,d2) <- range ((base+1,0,0), (base+1,maxD,maxD))         -- g_RR g_AA g_RA
+                              , let num = tab `U.unsafeIndex` index rangeDs i ]
+                        + sum [ fromIntegral num * unPr (w_RR * Pr (fromIntegral d1) + w_AA * Pr (fromIntegral (d1+d2)) + w_RA)
+                              | i@(_,d1,d2) <- range ((base+2,0,0), (base+2,maxD,maxD))         --  g_RA g_RR g_AA
+                              , let num = tab `U.unsafeIndex` index rangeDs i ]
+                        + sum [ fromIntegral num * unPr (w_RR * Pr (fromIntegral (d1+d2)) + w_AA * Pr (fromIntegral d1) + w_RA)
+                              | i@(_,d1,d2) <- range ((base+3,0,0), (base+3,maxD,maxD))         --  g_RA g_AA g_RR
+                              , let num = tab `U.unsafeIndex` index rangeDs i ]
+                        + sum [ fromIntegral num * unPr (w_RR * Pr (fromIntegral d1) + w_AA + w_RA * Pr (fromIntegral (d1+d2)))
+                              | i@(_,d1,d2) <- range ((base+4,0,0), (base+4,maxD,maxD))         --  g_AA g_RR g_RA
+                              , let num = tab `U.unsafeIndex` index rangeDs i ]
+                        + sum [ fromIntegral num * unPr (w_RR * Pr (fromIntegral (d1+d2)) + w_AA + w_RA * Pr (fromIntegral d1))
+                              | i@(_,d1,d2) <- range ((base+5,0,0), (base+5,maxD,maxD))         --  g_AA g_RA g_RR
+                              , let num = tab `U.unsafeIndex` index rangeDs i ]
       where
         !w_RR =        1 / Pr (log1p (exp delta))
         !w_AA = Pr delta / Pr (log1p (exp delta)) *      1 / Pr (log1p (exp eta))

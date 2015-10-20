@@ -19,6 +19,7 @@ import Bio.Bam
 import Bio.Bam.Pileup
 import Bio.Genocall.AvroFile
 import Bio.Iteratee.Bgzf
+import Control.Exception ( bracket )
 import Control.Monad
 import Data.Avro
 import Data.Bits
@@ -26,15 +27,18 @@ import Data.Foldable ( toList )
 import Data.List ( scanl' )
 import Data.MiniFloat
 import Data.Monoid
+import Foreign.Ptr ( castPtr )
 import System.Console.GetOpt
 import System.Environment
 import System.Exit
-import System.IO
+import System.Posix.IO
 
 import qualified Data.ByteString.Char8          as S
+import qualified Data.ByteString.Unsafe         as S
 import qualified Data.ByteString.Builder        as LB
 import qualified Data.ByteString.Lazy.Char8     as L
 import qualified Data.Vector.Unboxed            as U
+import qualified System.IO                      as IO
 
 data Conf = Conf {
     conf_output      :: Output (),
@@ -46,7 +50,7 @@ data Conf = Conf {
     conf_prior_indel :: Prob' Float }
 
 defaultConf :: Conf
-defaultConf = Conf ($ bcf_to_hdl stdout) "John_Doe" (const 2) (\_ -> return ())
+defaultConf = Conf ($ bcf_to_fd stdOutput) "John_Doe" (const 2) (\_ -> return ())
                    (qualToProb $ Q 30) (2/3) (qualToProb $ Q 45)
 
 options :: [OptDescr (Conf -> IO Conf)]
@@ -66,10 +70,10 @@ options = [ -- Maybe add FastQ output?  Or FastA?  Or padded FastA?  Or Nick Fas
                       putStrLn $ usageInfo blah options
                       exitFailure
 
-    be_verbose       c = return $ c { conf_report = hPutStrLn stderr }
+    be_verbose       c = return $ c { conf_report = IO.hPutStrLn stderr }
     set_sample     a c = return $ c { conf_sample = S.pack a }
-    set_bcf_out  "-" c = return $ c { conf_output = ($ bcf_to_hdl stdout) }
-    set_bcf_out   fn c = return $ c { conf_output = \k -> withFile fn WriteMode (k . bcf_to_hdl) }
+    set_bcf_out  "-" c = return $ c { conf_output = ($ bcf_to_fd stdOutput) }
+    set_bcf_out   fn c = return $ c { conf_output = \k -> withFd fn WriteOnly (k . bcf_to_fd) }
 
     set_hap a c = return $ c { conf_ploidy = \chr -> if S.pack a `S.isPrefixOf` chr then 1 else conf_ploidy c chr }
     set_dip a c = return $ c { conf_ploidy = \chr -> if S.pack a `S.isPrefixOf` chr then 2 else conf_ploidy c chr }
@@ -78,14 +82,16 @@ options = [ -- Maybe add FastQ output?  Or FastA?  Or padded FastA?  Or Nick Fas
     set_indel      a c = (\p -> c { conf_prior_indel = toProb p }) <$> readIO a
     set_het        a c = (\p -> c { conf_prior_het   = toProb p }) <$> readIO a
 
+    withFd fp mode = bracket (openFd fp mode (Just 0x666) defaultFileFlags) closeFd
+
 
 main :: IO ()
 main = do
     (opts, files, errs) <- getOpt Permute options <$> getArgs
-    unless (null errs) $ mapM_ (hPutStrLn stderr) errs >> exitFailure
+    unless (null errs) $ mapM_ (IO.hPutStrLn stderr) errs >> exitFailure
     conf <- foldl (>>=) (return defaultConf) opts
     case files of [f] -> main' conf f
-                  _   -> hPutStrLn stderr "expected exactly one input file" >> exitFailure
+                  _   -> IO.hPutStrLn IO.stderr "expected exactly one input file" >> exitFailure
 
 main' :: Conf -> FilePath -> IO ()
 main' Conf{..} infile = do
@@ -108,8 +114,11 @@ main' Conf{..} infile = do
 -- header, we get the /names/ of the reference sequences from the Avro
 -- schema and the /lengths/ from the biohazard.refseq_length entry in
 -- the meta data.
-bcf_to_hdl :: MonadIO m => Handle -> Refs -> [S.ByteString] -> CallFuncs -> Iteratee [GenoCallBlock] m ()
-bcf_to_hdl hdl refs smps call_fns = toBcf refs smps call_fns =$ compressBgzf =$ mapChunksM_ (liftIO . S.hPut hdl)
+bcf_to_fd :: MonadIO m => Fd -> Refs -> [S.ByteString] -> CallFuncs -> Iteratee [GenoCallBlock] m ()
+bcf_to_fd hdl refs smps call_fns = toBcf refs smps call_fns =$ compressBgzf =$ mapChunksM_ (liftIO . put)
+  where
+    put s = S.unsafeUseAsCStringLen s $ \(p,l) ->
+            fdWriteBuf hdl (castPtr p) (fromIntegral l)
 
 vcf_header :: Refs -> [S.ByteString] -> L.ByteString
 vcf_header refs smps = L.unlines $
@@ -124,7 +133,7 @@ vcf_header refs smps = L.unlines $
     [ L.intercalate "\t" $ "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT" : map (L.fromChunks . return) smps ]
 
 
--- XXX actuall call in missing (have to apply the prior)
+-- XXX Ploidy is being ignored.
 toBcf :: Monad m => Refs -> [S.ByteString] -> CallFuncs -> Enumeratee [GenoCallBlock] BgzfChunk m r
 toBcf refs smps (snp_call, indel_call) = eneeCheckIfDone go
   where

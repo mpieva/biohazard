@@ -287,6 +287,8 @@ L_l &= - \sum_{i} R_i - \sum_{i} \ln \left( \frac{1}{1+e^\delta} +
     \frac{e^\delta}{1+e^\delta} \frac{e^\eta}{1+e^\eta} e^{H_i} \right)
 \end{align*}
 
+\idea{Need to do something similar for indels.}
+
 \result{Hand-crafting partial derivatives of this equation didn't seem to
 yield anything that simplifies, so I applied Automatic
 Differentiation and handed it over to Hager-Zhang.}
@@ -535,7 +537,7 @@ allele frequencies in multiple populations, the allele frequency
 genotypes\todo{Equation!}.  Maximizing the covariance matrix is
 straight forward, but it would require integrating over the space of
 possible combinations of allele frequencies, which sounds impractical,
-and becomes more impractical the more samples are considered.  Even if
+and becomes exponentially more impractical the more samples are considered.  Even if
 symbolic integration was possible (I don't think it is), the resulting
 term would grow with the number of genotype \emph{combinations}, which
 is still exponential in the number of samples.
@@ -545,21 +547,30 @@ allele frequencies $\mathcal{f}$ as hidden parameters, marginalize over
 the genotypes, and maximize the joint probability $P(\mathcal{D},
 \mathcal{f} | \Sigma)$ with respect to the variance-covariance matrix
 $\Sigma$ using an EM algorithm\footnote{Effectively, we estimate the
-allele frequency at every position for every sample.  This is of course
+allele frequency at every position for every sample.  Literally, this is of course
 impossible, but in aggregate makes sense for populations.}.
 
 The expectation step, which is finding estimates for the allele
 frequencies, is much easier, as it requires only summation over the
-possible genotypes of one individual at a time and optimizes one allele
-frequency at a time, holding the others constant\todo{Is this correct?
-At any rate, multivariate maximization should do it.}.  Maximization is
-finding a covariance matrix from allele frequencies, and this is again
-easy.  The obvious moment based estimator should work.
+possible genotypes of \emph{one} individual at a time and optimizes
+\emph{one} allele frequency at a time, holding the others
+constant\todo{Is this correct?  At any rate, even if not, multivariate
+maximization should do it.}.  Maximization is finding a covariance
+matrix from allele frequencies, and this is again easy.  The obvious
+moment based estimator should work.
 
 \idea{The practical implementation should probably not store the
 aforementioned 600GB of likelihoods, but only 6GB or thereabout of
 allele frequency data per sample.  The likelihoods can be generated from
-the smaller BAM files on the fly.}
+the smaller BAM files on the fly.  That probably means 'pileup' needs to
+get a lot faster.}
+
+\idea{Dealing with contamination becomes obvious in this framework.  For
+a contaminated sample, every position has two allele frequencies (or two
+sets of three allele frequencies).  We need to assign a contaminant
+probability to each read, which should derive from the alignment score
+given the currently estimated allele frequencies.}
+
 
 
 \appendix

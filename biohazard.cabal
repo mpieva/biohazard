@@ -147,6 +147,7 @@ Executable redeye-single
                        iteratee,
                        nonlinear-optimization,
                        text,
+                       unix,
                        unordered-containers,
                        vector
 
