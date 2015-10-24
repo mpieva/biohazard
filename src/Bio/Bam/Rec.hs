@@ -45,7 +45,7 @@ module Bio.Bam.Rec (
     Nucleotides(..), Vector_Nucs_half,
     Extensions, Ext(..),
     extAsInt, extAsString, setQualFlag,
-    deleteE, insertE, updateE,
+    deleteE, insertE, updateE, adjustE,
 
     isPaired,
     isProperlyPaired,
@@ -305,6 +305,12 @@ insertE k v = (:) (k,v)
 -- a new value.  This is safer than 'insertE', but also more expensive.
 updateE :: String -> Ext -> Extensions -> Extensions
 updateE k v = insertE k v . deleteE k
+
+-- | Adjusts a named extension by applying a function.
+adjustE :: (Ext -> Ext) -> String -> Extensions -> Extensions
+adjustE _ _ [         ]             = []
+adjustE f k ((k',v):es) | k  ==  k' = (k', f v) : es
+                        | otherwise = (k',   v) : adjustE f k es
 
 
 data Ext = Int Int | Float Float | Text ByteString | Bin ByteString | Char Word8

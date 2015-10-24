@@ -20,7 +20,7 @@ import Control.Monad                        ( liftM, forM_, when )
 import Data.Bits                            ( shiftL, shiftR, testBit, (.&.) )
 import Data.Monoid                          ( Monoid(..) )
 import Data.Word                            ( Word32, Word16, Word8 )
-import Foreign.Marshal.Alloc                ( mallocBytes, free )
+import Foreign.Marshal.Alloc                ( mallocBytes, free, allocaBytes )
 import Foreign.Storable                     ( peekByteOff, pokeByteOff )
 import Foreign.C.String                     ( withCAString )
 import Foreign.C.Types                      ( CInt(..), CChar(..), CUInt(..), CULong(..) )
@@ -197,11 +197,10 @@ bgzfEofMarker = "\x1f\x8b\x8\x4\0\0\0\0\0\xff\x6\0\x42\x43\x2\0\x1b\0\x3\0\0\0\0
 
 
 decompress1 :: FileOffset -> [S.ByteString] -> Word32 -> Int -> IO Block
-decompress1 off ss crc usize = do
+decompress1 off ss crc usize =
+    allocaBytes (#{const sizeof(z_stream)}) $ \stream -> do
     buf <- mallocBytes usize
 
-    -- set up ZStream
-    stream <- mallocBytes (#{const sizeof(z_stream)})
     #{poke z_stream, msg}       stream nullPtr
     #{poke z_stream, zalloc}    stream nullPtr
     #{poke z_stream, zfree}     stream nullPtr
@@ -233,6 +232,7 @@ decompress1 off ss crc usize = do
 
     Block off `liftM` S.unsafePackCStringFinalizer (castPtr buf) usize (free buf)
 
+
 -- | Compress a collection of strings into a single BGZF block.
 --
 -- Okay, performance was lacking... let's do it again, in a more direct
@@ -248,7 +248,9 @@ decompress1 off ss crc usize = do
 
 compress1 :: Int -> [S.ByteString] -> IO S.ByteString
 compress1 _lv [] = return bgzfEofMarker
-compress1 lv ss0 = do
+compress1 lv ss0 =
+    allocaBytes (#{const sizeof(z_stream)}) $ \stream -> do
+
     let input_length = sum (map S.length ss0)
     when (input_length > maxBlockSize) $ error "Trying to create too big a BGZF block; this is a bug."
     buf <- mallocBytes 65536
@@ -258,8 +260,6 @@ compress1 lv ss0 = do
         forM_ [0,4..16] $ \o -> do x <- peekByteOff eof o
                                    pokeByteOff buf o (x::Word32)
 
-    -- set up ZStream
-    stream <- mallocBytes (#{const sizeof(z_stream)})
     #{poke z_stream, msg}       stream nullPtr
     #{poke z_stream, zalloc}    stream nullPtr
     #{poke z_stream, zfree}     stream nullPtr
@@ -421,7 +421,8 @@ bgzfBlocks = eneeCheckIfDone (liftI . to_blocks 0 [])
         | alen + S.length c + 4 < maxBlockSize  = to_blocks (alen + S.length c + 4) (c:encLength c:acc) k (Chunk cs)
         -- else if nothing's pending, we break the chunk,   (XXX needs to consider the fsck'ing length prefix!)
         | null acc                       = let (l,r) = S.splitAt (maxBlockSize-4) c
-                                           in eneeCheckIfDone (\k' -> to_blocks 0 [] k' (Chunk (LeftoverChunk r cs))) . k $ Chunk [l, encLength l]
+                                           in eneeCheckIfDone (\k' -> to_blocks 0 [] k' (Chunk (LeftoverChunk r cs))) . k $
+                                                    Chunk [l, encLength l]
         -- else we flush the accumulator and think again.
         | otherwise                         = eneeCheckIfDone (\k' -> to_blocks 0 [] k' (Chunk (RecordChunk c cs))) . k $ Chunk acc
       where

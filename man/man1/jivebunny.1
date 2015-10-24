@@ -69,6 +69,12 @@ the number of defined read groups, but at least 20 are printed.  Setting
 this to a higher number may be a good idea if you're trying to reverse
 engineer a pipetting accident.
 
+.IP "-s, --single-index"
+Pretend there is only one index.  This switch doesn't change the
+program's logic (it still pretends everything is doubly indexed), but it
+helps to make the output more readable if only one index was really
+sequenced.
+
 .IP "--pedantic"
 Be pedantic about read groups.  Normally, 
 .I jivebunny
