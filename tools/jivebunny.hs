@@ -12,10 +12,12 @@
 --  - Input layer to gather index sequences.  (Done.)
 --  - Input layer to gather read group defs.  (Done.)
 --  - First pass to gather data.  Any index read shall be represented
---    in a single Word64.  (Done.  Reading BAM is slow.)
+--    in a single Word64.  (Done.  Reading BAM is slow.  BCL would be
+--    much more suitable here.)
 --  - Multiple passes of the EM algorithm.  (Done.)
 --  - Start with a naive mix, to avoid arguments.  (Done.)
---  - Final calling pass from BAM to BAM.  (Done.)
+--  - Final calling pass from BAM to BAM.  (Done.  BCL to BAM would be
+--    even nicer.)
 --  - Auxillary statistics:  composition of the mix (Done.), false
 --    assignment rates per read group (Done.), maximum achievable false
 --    assignment rates (Done.)
@@ -43,6 +45,7 @@ import System.IO
 import System.Random ( randomRIO )
 
 import qualified Data.ByteString as B
+import qualified Data.ByteString.Char8 as BS
 import qualified Data.HashMap.Strict as HM
 import qualified Data.Map as M
 import qualified Data.Text as T
@@ -441,6 +444,10 @@ main = do
                             let hdr' = hdr { meta_other_shit =
                                               [ os | os@(x,y,_) <- meta_other_shit hdr, x /= 'R' || y /= 'G' ] ++
                                               HM.elems (HM.fromList [ (rgid, ('R','G', ('I','D',rgid):tags)) | RG{..} <- rgdefs ] ) }
+
+                                clean_flags (Text t) = Text $ BS.filter (\c -> c /= 'C' && c /= 'I' && c /= 'W') t
+                                clean_flags        x = x
+
                             in mapStreamM (\br -> do
                                     let x = fromTags "XI" "YI" br
                                         y = fromTags "XJ" "YJ" br
@@ -448,7 +455,8 @@ main = do
                                     let q = negate . round $ 10 / log 10 * log p
                                         b = decodeBamEntry br
                                         rg = T.encodeUtf8 $ T.concat [ ns7 V.! i7, ",", ns5 V.! i5 ]
-                                        b' = b { b_exts = M.delete "Z0" . M.delete "Z2" . M.insert "Z1" (Int q)
+                                        b' = b { b_exts = M.delete "ZR" . M.delete "Z0" . M.delete "Z2"
+                                                        . M.insert "Z1" (Int q) . M.adjust clean_flags "ZQ"
                                                         $ case HM.lookup (i7,i5) rgs of
                                                             Nothing | cf_pedantic -> M.delete "RG" $ b_exts b
                                                                     | otherwise   -> M.insert "RG" (Text rg) $ b_exts b
