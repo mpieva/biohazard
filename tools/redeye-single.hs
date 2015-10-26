@@ -82,7 +82,7 @@ options = [ -- Maybe add FastQ output?  Or FastA?  Or padded FastA?  Or Nick Fas
     set_indel      a c = (\p -> c { conf_prior_indel = toProb p }) <$> readIO a
     set_het        a c = (\p -> c { conf_prior_het   = toProb p }) <$> readIO a
 
-    withFd fp mode = bracket (openFd fp mode (Just 0x666) defaultFileFlags) closeFd
+    withFd fp mode = bracket (openFd fp mode (Just 0o666) defaultFileFlags) closeFd
 
 
 main :: IO ()
@@ -96,7 +96,9 @@ main = do
 main' :: Conf -> FilePath -> IO ()
 main' Conf{..} infile = do
     conf_output $ \oiter ->
-        enumFile defaultBufSize infile >=> run $
+        (if infile == "-"
+         then enumHandle defaultBufSize stdin
+         else enumFile defaultBufSize infile) >=> run $
             joinI $ readAvroContainer $ \av_meta ->
                 oiter (getRefseqs av_meta) [conf_sample] (snp_call, indel_call)
   where
