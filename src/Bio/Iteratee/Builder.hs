@@ -1,4 +1,4 @@
-{-# LANGUAGE UnboxedTuples, RecordWildCards, FlexibleContexts, BangPatterns #-}
+{-# LANGUAGE UnboxedTuples, RecordWildCards, FlexibleContexts, BangPatterns, OverloadedStrings #-}
 -- | Buffer builder to assemble Bgzf blocks.  (This will probably be
 -- renamed.)  The plan is to serialize stuff (BAM and BCF) into a
 -- buffer, then Bgzf chunks from the buffer and reuse it.  This /should/
@@ -24,7 +24,10 @@ import GHC.Word
 
 import qualified Data.Vector.Unboxed as V
 import qualified Data.ByteString as B
+import qualified Data.Binary.Builder as B ( toLazyByteString )
+import qualified Data.ByteString.Lazy as B ( toChunks )
 import qualified Data.ByteString.Unsafe as B
+import qualified Data.Sequence as Z
 
 import Bio.Base
 import Bio.Bam.Header
@@ -105,6 +108,9 @@ unsafePushByteString bs = Push $ \b ->
     case mutableByteArrayContents (buffer b) of
         Addr adr -> copyBytes (Ptr adr `plusPtr` len b) p ln
     return $ b { len = len b + ln }
+
+pushByteString :: B.ByteString -> Push
+pushByteString bs = ensureBuffer (B.length bs) <> unsafePushByteString bs
 
 -- | Sets a mark.  This can later be filled in with a record length
 -- (used to create BAM records).
@@ -234,5 +240,26 @@ encodeBgzfWith lv o = do bb <- liftIO newBuffer
             = error "WTF?!  This wasn't supposed to happen."
 
     finalFlush2 mx k = idone (k $ Chunk bgzfEofMarker) (EOF mx)
+
+encodeBamWith2 :: MonadIO m => Int -> BamMeta -> Enumeratee [BamRec] B.ByteString m a
+encodeBamWith2 lv meta = eneeBam ><> encodeBgzfWith lv
+  where
+    eneeBam  = eneeCheckIfDone (\k -> mapChunks (foldMap pushBam) . k $ Chunk pushHeader)
+
+    pushHeader = pushByteString "BAM\1"
+              <> setMark                        -- the length byte
+              <> pushBuilder (showBamMeta meta)
+              <> endRecord                      -- fills the length in
+              <> pushWord32 (fromIntegral . Z.length $ meta_refs meta)
+              <> foldMap pushRef (meta_refs meta)
+
+    pushBuilder = foldMap pushByteString . B.toChunks . B.toLazyByteString
+
+    pushRef bs = ensureBuffer     (fromIntegral $ B.length (sq_name bs) + 9)
+              <> unsafePushWord32 (fromIntegral $ B.length (sq_name bs) + 1)
+              <> unsafePushByteString (sq_name bs)
+              <> unsafePushByte 0
+              <> unsafePushWord32 (fromIntegral $ sq_length bs)
+
 
 
