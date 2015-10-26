@@ -41,6 +41,7 @@ import Foreign.Storable
 import Foreign.Ptr
 import Data.Char ( ord )
 import System.IO.Unsafe ( unsafePerformIO )
+import System.IO
 
 -- | The 'MutableByteArray' should be garbage collected, so we don't
 -- get leaks.  Once it has grown to a practical size (and the initial
@@ -54,14 +55,12 @@ data BB = BB { buffer :: {-# UNPACK #-} !(MutableByteArray RealWorld)
 newtype Push = Push (BB -> IO BB)
 
 instance Monoid Push where
-    mempty  = Push return
+    mempty                  = Push return
     Push a `mappend` Push b = Push (a >=> b)
 
 instance NullPoint Push where
     empty = Push return
 
-instance Nullable Push where
-    nullC _ = False -- fake :)
 
 -- | Creates a buffer with initial capacity of ~128k.
 newBuffer :: IO BB
@@ -70,9 +69,9 @@ newBuffer = newPinnedByteArray 128000 >>= \arr -> return $ BB arr 0 0
 -- | Ensures a given free space in the buffer by doubling its capacity
 -- if necessary.
 ensureBuffer :: Int -> Push
-ensureBuffer n = Push $ \b ->
+ensureBuffer n = Push $ \b -> do
     let sz = sizeofMutableByteArray (buffer b)
-    in if len b + n < sz
+    if len b + n < sz
        then return b
        else do arr1 <- newPinnedByteArray (sz+sz)
                copyMutableByteArray arr1 0 (buffer b) 0 (len b)
@@ -139,7 +138,7 @@ pushBam BamRec{..} = mconcat
     , unsafeSetMark
     , unsafePushWord32 (unRefseq b_rname)
     , unsafePushWord32 (fromIntegral b_pos)
-    , unsafePushByte (fromIntegral $ B.length b_qname)
+    , unsafePushByte (fromIntegral $ B.length b_qname +1)
     , unsafePushByte (unQ b_mapq)
     , unsafePushWord16 (fromIntegral bin)
     , unsafePushWord16 (fromIntegral $ length $ unCigar b_cigar)
@@ -214,32 +213,32 @@ pushBam BamRec{..} = mconcat
 
 {-# INLINE encodeBgzfWith #-}
 encodeBgzfWith :: MonadIO m => Int -> Enumeratee Push B.ByteString m b
-encodeBgzfWith lv o = do bb <- liftIO newBuffer
-                         eneeCheckIfDone (liftI . step bb) o
+encodeBgzfWith lv o = newBuffer `ioBind` \bb -> eneeCheckIfDone (liftI . step bb) o
   where
     step bb k (EOF  mx) = finalFlush bb k mx
-    step bb k (Chunk (Push p)) = liftIO (p bb) >>= \bb' -> tryFlush bb' 0 k
+    step bb k (Chunk (Push p)) = p bb `ioBind` \bb' -> tryFlush bb' 0 k
 
     tryFlush bb off k
         | len bb - off < maxBlockSize
-            = do liftIO $ copyMutableByteArray (buffer bb) 0 (buffer bb) off (len bb - off)
-                 liftI $ step (bb { len = len bb - off }) k
+            = copyMutableByteArray (buffer bb) 0 (buffer bb) off (len bb - off)
+              `ioBind_` liftI (step (bb { len = len bb - off }) k)
 
         | otherwise
-            = do out <- liftIO $ case mutableByteArrayContents (buffer bb) of
-                            Addr adr -> compressChunk lv (Ptr adr `plusPtr` off) (fromIntegral maxBlockSize)
-                 eneeCheckIfDone (tryFlush bb (off+maxBlockSize)) $ k $ Chunk out
+            = (case mutableByteArrayContents (buffer bb) of
+                            Addr adr -> compressChunk lv (Ptr adr `plusPtr` off) (fromIntegral maxBlockSize))
+              `ioBind` eneeCheckIfDone (tryFlush bb (off+maxBlockSize)) . k . Chunk
 
     finalFlush bb k mx
         | len bb < maxBlockSize
-            = do out <- liftIO $ case mutableByteArrayContents (buffer bb) of
-                            Addr adr -> compressChunk lv (Ptr adr) (fromIntegral $ len bb)
-                 eneeCheckIfDone (finalFlush2 mx) $ k $ Chunk out
+            = (case mutableByteArrayContents (buffer bb) of
+                            Addr adr -> compressChunk lv (Ptr adr) (fromIntegral $ len bb))
+              `ioBind` eneeCheckIfDone (finalFlush2 mx) . k . Chunk
 
         | otherwise
             = error "WTF?!  This wasn't supposed to happen."
 
     finalFlush2 mx k = idone (k $ Chunk bgzfEofMarker) (EOF mx)
+
 
 encodeBamWith2 :: MonadIO m => Int -> BamMeta -> Enumeratee [BamRec] B.ByteString m a
 encodeBamWith2 lv meta = eneeBam ><> encodeBgzfWith lv

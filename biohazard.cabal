@@ -134,6 +134,15 @@ Executable afroengineer
                        unordered-containers,
                        vector
 
+Executable bam-cat
+  Main-is:             bam-cat.hs
+  Hs-Source-Dirs:      tools
+  Ghc-options:         -Wall -auto-all -threaded -rtsopts -with-rtsopts=-N
+  Build-depends:       base,
+                       biohazard,
+                       bytestring,
+                       containers
+  
 Executable bam-fixpair
   Main-is:             bam-fixpair.hs
   Hs-Source-Dirs:      tools
