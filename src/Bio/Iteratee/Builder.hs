@@ -5,49 +5,36 @@
 -- avoid redundant copying and relieve some pressure from the garbage
 -- collector.  And I hope to plug a mysterious memory leak that doesn't
 -- show up in the profiler.
+--
+-- Exported functions with @unsafe@ in the name resulting in a type of
+-- 'Push' omit the bounds checking.  To use them safely, an appropriate
+-- 'ensureBuffer' has to precede them.
 
 module Bio.Iteratee.Builder where
 
 import Control.Monad
 import Control.Monad.IO.Class
-import Control.Monad.Primitive ( RealWorld )
 import Data.Bits
-import Data.Map.Strict ( foldrWithKey )
 import Data.Monoid
 import Data.Primitive.Addr
 import Data.Primitive.ByteArray
 import GHC.Exts
--- import GHC.Int
--- import GHC.IO     ( IO(..) )
--- import GHC.Prim
-import GHC.Word
+import GHC.Word ( Word8, Word16, Word32 )
 
-import qualified Data.Vector.Unboxed as V
 import qualified Data.ByteString as B
-import qualified Data.Binary.Builder as B ( toLazyByteString )
-import qualified Data.ByteString.Lazy as B ( toChunks )
 import qualified Data.ByteString.Unsafe as B
-import qualified Data.Sequence as Z
 
-import Bio.Base
-import Bio.Bam.Header
-import Bio.Bam.Rec
 import Bio.Iteratee
 import Bio.Iteratee.Bgzf
 
-import Foreign.Marshal.Alloc
 import Foreign.Marshal.Utils
-import Foreign.Storable
 import Foreign.Ptr
-import Data.Char ( ord )
-import System.IO.Unsafe ( unsafePerformIO )
-import System.IO
 
--- | The 'MutableByteArray' should be garbage collected, so we don't
--- get leaks.  Once it has grown to a practical size (and the initial
--- 128k should be very practical), we don't get fragmentation either.
--- We also avoid copies for the most part, since no intermediate
--- 'ByteString's have to be allocated.
+-- | The 'MutableByteArray' is garbage collected, so we don't get leaks.
+-- Once it has grown to a practical size (and the initial 128k should be
+-- very practical), we don't get fragmentation either.  We also avoid
+-- copies for the most part, since no intermediate 'ByteString's, either
+-- lazy or strict have to be allocated.
 data BB = BB { buffer :: {-# UNPACK #-} !(MutableByteArray RealWorld)
              , len    :: {-# UNPACK #-} !Int
              , mark   :: {-# UNPACK #-} !Int }
@@ -68,39 +55,51 @@ newBuffer = newPinnedByteArray 128000 >>= \arr -> return $ BB arr 0 0
 
 -- | Ensures a given free space in the buffer by doubling its capacity
 -- if necessary.
+{-# INLINE ensureBuffer #-}
 ensureBuffer :: Int -> Push
 ensureBuffer n = Push $ \b -> do
     let sz = sizeofMutableByteArray (buffer b)
     if len b + n < sz
        then return b
-       else do arr1 <- newPinnedByteArray (sz+sz)
-               copyMutableByteArray arr1 0 (buffer b) 0 (len b)
-               return $ b { buffer = arr1 }
+       else expandBuffer b
 
+expandBuffer :: BB -> IO BB
+expandBuffer b = do let sz = sizeofMutableByteArray (buffer b)
+                    arr1 <- newPinnedByteArray (sz+sz)
+                    copyMutableByteArray arr1 0 (buffer b) 0 (len b)
+                    return $ b { buffer = arr1 }
+
+{-# INLINE unsafePushByte #-}
 unsafePushByte :: Word8 -> Push
 unsafePushByte w = Push $ \b -> do
     writeByteArray (buffer b) (len b) w
     return $ b { len = len b + 1 }
 
+{-# INLINE pushByte #-}
 pushByte :: Word8 -> Push
 pushByte b = ensureBuffer 1 <> unsafePushByte b
 
+{-# INLINE unsafePushWord32 #-}
 unsafePushWord32 :: Word32 -> Push
 unsafePushWord32 w = unsafePushByte (fromIntegral $ w `shiftR`  0)
                   <> unsafePushByte (fromIntegral $ w `shiftR`  8)
                   <> unsafePushByte (fromIntegral $ w `shiftR` 16)
                   <> unsafePushByte (fromIntegral $ w `shiftR` 24)
 
+{-# INLINE unsafePushWord16 #-}
 unsafePushWord16 :: Word16 -> Push
 unsafePushWord16 w = unsafePushByte (fromIntegral $ w `shiftR`  0)
                   <> unsafePushByte (fromIntegral $ w `shiftR`  8)
 
+{-# INLINE pushWord32 #-}
 pushWord32 :: Word32 -> Push
 pushWord32 w = ensureBuffer 4 <> unsafePushWord32 w
 
+{-# INLINE pushWord16 #-}
 pushWord16 :: Word16 -> Push
 pushWord16 w = ensureBuffer 2 <> unsafePushWord16 w
 
+{-# INLINE unsafePushByteString #-}
 unsafePushByteString :: B.ByteString -> Push
 unsafePushByteString bs = Push $ \b ->
     B.unsafeUseAsCStringLen bs $ \(p,ln) -> do
@@ -108,20 +107,24 @@ unsafePushByteString bs = Push $ \b ->
         Addr adr -> copyBytes (Ptr adr `plusPtr` len b) p ln
     return $ b { len = len b + ln }
 
+{-# INLINE pushByteString #-}
 pushByteString :: B.ByteString -> Push
 pushByteString bs = ensureBuffer (B.length bs) <> unsafePushByteString bs
 
 -- | Sets a mark.  This can later be filled in with a record length
 -- (used to create BAM records).
+{-# INLINE unsafeSetMark #-}
 unsafeSetMark :: Push
 unsafeSetMark = Push $ \b -> return $ b { len = len b + 4, mark = len b }
 
+{-# INLINE setMark #-}
 setMark :: Push
 setMark = ensureBuffer 4 <> unsafeSetMark
 
 -- | Ends a record by filling the length into the field that was
 -- previously marked.  Terrible things will happen if this wasn't
 -- preceded by a corresponding 'setMark'.
+{-# INLINE endRecord #-}
 endRecord :: Push
 endRecord = Push $ \b -> do
     let !l = len b - mark b - 4
@@ -131,85 +134,6 @@ endRecord = Push $ \b -> do
     writeByteArray (buffer b) (mark b + 3) (fromIntegral $ shiftR l 24 :: Word8)
     return b
 
-
-pushBam :: BamRec -> Push
-pushBam BamRec{..} = mconcat
-    [ ensureBuffer minlength
-    , unsafeSetMark
-    , unsafePushWord32 (unRefseq b_rname)
-    , unsafePushWord32 (fromIntegral b_pos)
-    , unsafePushByte (fromIntegral $ B.length b_qname +1)
-    , unsafePushByte (unQ b_mapq)
-    , unsafePushWord16 (fromIntegral bin)
-    , unsafePushWord16 (fromIntegral $ length $ unCigar b_cigar)
-    , unsafePushWord16 (fromIntegral b_flag)
-    , unsafePushWord32 (fromIntegral $ V.length b_seq)
-    , unsafePushWord32 (unRefseq b_mrnm)
-    , unsafePushWord32 (fromIntegral b_mpos)
-    , unsafePushWord32 (fromIntegral b_isize)
-    , unsafePushByteString b_qname
-    , unsafePushByte 0
-    , foldMap (unsafePushWord32 . encodeCigar) (unCigar b_cigar)
-    , pushSeq b_seq
-    , unsafePushByteString b_qual
-    , foldrWithKey pushExt mempty b_exts
-    , endRecord ]
-  where
-    bin = distinctBin b_pos (cigarToAlnLen b_cigar)
-    minlength = 37 + B.length b_qname + 4 * length (unCigar b_cigar) + B.length b_qual + (V.length b_seq + 1) `shiftR` 1
-    encodeCigar (op,l) = fromIntegral $ fromEnum op .|. l `shiftL` 4
-
-    pushSeq :: V.Vector Nucleotides -> Push
-    pushSeq v = case v V.!? 0 of
-                    Nothing -> mempty
-                    Just a  -> case v V.!? 1 of
-                        Nothing -> unsafePushByte (unNs a `shiftL` 4)
-                        Just b  -> unsafePushByte (unNs a `shiftL` 4 .|. unNs b)
-                                   <> pushSeq (V.drop 2 v)
-
-    pushExt :: String -> Ext -> Push -> Push
-    pushExt [c,d] e k = case e of
-        Text t -> common (4 + B.length t) 'Z' $
-                  unsafePushByteString t <> unsafePushByte 0
-
-        Bin  t -> common (4 + B.length t) 'H' $
-                  unsafePushByteString t <> unsafePushByte 0
-
-        Char c -> common 4 'A' $ unsafePushByte c
-
-        Float f -> common 7 'f' $ unsafePushWord32 (fromIntegral $ fromFloat f)
-
-        Int i   -> case put_some_int (V.singleton i) of
-                        (c,op) -> common 7 c (op i)
-
-        IntArr  ia -> case put_some_int ia of
-                        (c,op) -> common (4 * V.length ia) 'B' $ unsafePushByte (fromIntegral $ ord c)
-                                  <> unsafePushWord32 (fromIntegral $ V.length ia-1)
-                                  <> V.foldr ((<>) . op) mempty ia
-
-        FloatArr fa -> common (4 * V.length fa) 'B' $ unsafePushByte (fromIntegral $ ord 'f')
-                       <> unsafePushWord32 (fromIntegral $ V.length fa-1)
-                       <> V.foldr ((<>) . unsafePushWord32 . fromFloat) mempty fa
-      where
-        common l z b = ensureBuffer l <> unsafePushByte (fromIntegral $ ord c)
-                   <> unsafePushByte (fromIntegral $ ord d)
-                   <> unsafePushByte (fromIntegral $ ord z) <> b <> k
-
-        put_some_int :: V.Vector Int -> (Char, Int -> Push)
-        put_some_int is
-            | V.all (between        0    0xff) is = ('C', unsafePushByte . fromIntegral)
-            | V.all (between   (-0x80)   0x7f) is = ('c', unsafePushByte . fromIntegral)
-            | V.all (between        0  0xffff) is = ('S', unsafePushWord16 . fromIntegral)
-            | V.all (between (-0x8000) 0x7fff) is = ('s', unsafePushWord16 . fromIntegral)
-            | V.all                      (> 0) is = ('I', unsafePushWord32 . fromIntegral)
-            | otherwise                           = ('i', unsafePushWord32 . fromIntegral)
-
-        between :: Int -> Int -> Int -> Bool
-        between l r x = l <= x && x <= r
-
-        fromFloat :: Float -> Word32
-        fromFloat float = unsafePerformIO $ alloca $ \buf ->
-                          poke (castPtr buf) float >> peek buf
 
 {-# INLINE encodeBgzfWith #-}
 encodeBgzfWith :: MonadIO m => Int -> Enumeratee Push B.ByteString m b
@@ -221,7 +145,8 @@ encodeBgzfWith lv o = newBuffer `ioBind` \bb -> eneeCheckIfDone (liftI . step bb
     tryFlush bb off k
         | len bb - off < maxBlockSize
             = copyMutableByteArray (buffer bb) 0 (buffer bb) off (len bb - off)
-              `ioBind_` liftI (step (bb { len = len bb - off }) k)
+              `ioBind_` liftI (step (bb { len = len bb - off
+                                        , mark = mark bb - off `max` 0 }) k)
 
         | otherwise
             = (case mutableByteArrayContents (buffer bb) of
@@ -238,27 +163,6 @@ encodeBgzfWith lv o = newBuffer `ioBind` \bb -> eneeCheckIfDone (liftI . step bb
             = error "WTF?!  This wasn't supposed to happen."
 
     finalFlush2 mx k = idone (k $ Chunk bgzfEofMarker) (EOF mx)
-
-
-encodeBamWith2 :: MonadIO m => Int -> BamMeta -> Enumeratee [BamRec] B.ByteString m a
-encodeBamWith2 lv meta = eneeBam ><> encodeBgzfWith lv
-  where
-    eneeBam  = eneeCheckIfDone (\k -> mapChunks (foldMap pushBam) . k $ Chunk pushHeader)
-
-    pushHeader = pushByteString "BAM\1"
-              <> setMark                        -- the length byte
-              <> pushBuilder (showBamMeta meta)
-              <> endRecord                      -- fills the length in
-              <> pushWord32 (fromIntegral . Z.length $ meta_refs meta)
-              <> foldMap pushRef (meta_refs meta)
-
-    pushBuilder = foldMap pushByteString . B.toChunks . B.toLazyByteString
-
-    pushRef bs = ensureBuffer     (fromIntegral $ B.length (sq_name bs) + 9)
-              <> unsafePushWord32 (fromIntegral $ B.length (sq_name bs) + 1)
-              <> unsafePushByteString (sq_name bs)
-              <> unsafePushByte 0
-              <> unsafePushWord32 (fromIntegral $ sq_length bs)
 
 
 
