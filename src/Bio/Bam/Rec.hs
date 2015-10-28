@@ -2,6 +2,12 @@
 {-# LANGUAGE NoMonomorphismRestriction, FlexibleContexts, FlexibleInstances #-}
 {-# LANGUAGE RecordWildCards, TypeFamilies, MultiParamTypeClasses #-}
 
+-- | Parsers and Printers for BAM and SAM.  We employ an @Iteratee@
+-- interface, and we strive to support everything possible in BAM.  So
+-- far, the implementation of the nucleotides is somewhat lacking:  we
+-- do not have support for ambiguity codes, and the "=" symbol is not
+-- understood.
+
 -- TODO:
 -- - Automatic creation of some kind of index.  If possible, this should
 --   be the standard index for sorted BAM and/or the newer CSI format.
@@ -25,6 +31,8 @@ module Bio.Bam.Rec (
     decodeBamEntry,
     encodeBamEntry,
     encodeSamEntry,
+    encodeBamWith2,
+    pushBam,
 
     decodeSam,
     decodeSam',
@@ -69,6 +77,7 @@ import Bio.Base
 import Bio.Bam.Header
 import Bio.Bam.Raw
 import Bio.Iteratee
+import Bio.Iteratee.Builder
 
 import Control.Monad
 import Control.Monad.Primitive      ( unsafePrimToPrim )
@@ -82,7 +91,7 @@ import Data.ByteString              ( ByteString )
 import Data.ByteString.Internal     ( inlinePerformIO )
 import Data.Char                    ( ord, digitToInt )
 import Data.Int                     ( Int32, Int16, Int8 )
-import Data.Monoid                  ( mempty )
+import Data.Monoid
 import Data.Vector.Unboxed          ( (!?) )
 import Data.Word                    ( Word32, Word16 )
 import Foreign.ForeignPtr
@@ -99,33 +108,11 @@ import qualified Data.ByteString.Internal           as B
 import qualified Data.ByteString.Lazy.Char8         as L
 import qualified Data.Foldable                      as F
 import qualified Data.Iteratee                      as I
-import qualified Data.Map                           as M
+import qualified Data.Map.Strict                    as M
 import qualified Data.Vector.Generic                as V
 import qualified Data.Vector.Generic.Mutable        as VM
 import qualified Data.Vector.Unboxed                as U
-
--- ^ Parsers and Printers for BAM and SAM.  We employ an @Iteratee@
--- interface, and we strive to support everything possible in BAM.  So
--- far, the implementation of the nucleotides is somewhat lacking:  we
--- do not have support for ambiguity codes, and the "=" symbol is not
--- understood.
-
--- | internal representation of a BAM record
-{- data BamRec = BamRec {
-        b_qname :: {-# UNPACK #-} !Seqid,
-        b_flag  :: {-# UNPACK #-} !Int,
-        b_rname :: {-# UNPACK #-} !Refseq,
-        b_pos   :: {-# UNPACK #-} !Int,
-        b_mapq  :: {-# UNPACK #-} !Qual,
-        b_cigar :: Cigar,
-        b_mrnm  :: {-# UNPACK #-} !Refseq,
-        b_mpos  :: {-# UNPACK #-} !Int,
-        b_isize :: {-# UNPACK #-} !Int,
-        b_seq   :: !(Vector_Nucs_half Nucleotides),
-        b_qual  :: !ByteString,         -- ^ quality, may be empty
-        b_exts  :: Extensions,
-        b_virtual_offset :: {-# UNPACK #-} !FileOffset -- ^ virtual offset for indexing purposes
-    } deriving Show -}
+import qualified Data.Sequence                      as Z
 
 -- | internal representation of a BAM record
 data BamRec = BamRec {
@@ -381,23 +368,22 @@ getExtensions m = getExt <|> return m
                               n <- fromIntegral <$> getWord32le
                               case w2c tp of
                                  'f' -> cont . FloatArr . U.fromListN (n+1) . map to_float =<< replicateM (n+1) getWord32le
-                                 x | Just get <- M.lookup x get_some_int -> cont . IntArr . U.fromListN (n+1) =<< replicateM (n+1) get
-                                   | otherwise                           -> fail $ "array type code " ++ show x ++ " not recognized"
-                    x | Just get <- M.lookup x get_some_int -> cont . Int =<< get
-                      | otherwise                           -> fail $ "type code " ++ show x ++ " not recognized"
+                                 x   -> get_some_int x (\get ->  cont . IntArr . U.fromListN (n+1) =<< replicateM (n+1) get)
+                                                       (fail $ "array type code " ++ show x ++ " not recognized")
+                    x   -> get_some_int x (cont . Int =<<) (fail $ "type code " ++ show x ++ " not recognized")
 
     to_float :: Word32 -> Float
     to_float word = unsafePerformIO $ alloca $ \buf ->
                     poke (castPtr buf) word >> peek buf
 
-    get_some_int :: M.Map Char (Get Int)
-    get_some_int = M.fromList $ zip "CcSsIi" [
-                        fromIntegral                                     <$> getWord8,
-                        fromIntegral . (fromIntegral ::  Word8 ->  Int8) <$> getWord8,
-                        fromIntegral                                     <$> getWord16le,
-                        fromIntegral . (fromIntegral :: Word16 -> Int16) <$> getWord16le,
-                        fromIntegral                                     <$> getWord32le,
-                        fromIntegral . (fromIntegral :: Word32 -> Int32) <$> getWord32le ]
+    get_some_int :: Char -> (Get Int -> a) -> a -> a
+    get_some_int 'C' k _ = k (fromIntegral                                     <$> getWord8)
+    get_some_int 'c' k _ = k (fromIntegral . (fromIntegral ::  Word8 ->  Int8) <$> getWord8)
+    get_some_int 'S' k _ = k (fromIntegral                                     <$> getWord16le)
+    get_some_int 's' k _ = k (fromIntegral . (fromIntegral :: Word16 -> Int16) <$> getWord16le)
+    get_some_int 'I' k _ = k (fromIntegral                                     <$> getWord32le)
+    get_some_int 'i' k _ = k (fromIntegral . (fromIntegral :: Word32 -> Int32) <$> getWord32le)
+    get_some_int  _  _ f = f
 
 
 
@@ -661,4 +647,105 @@ encodeSamEntry refs b = conjoin '\t' [
     tohex = B.foldr (\c f -> w2d (c `shiftR` 4) . w2d (c .&. 0xf) . f) id
     w2d = (:) . S.index "0123456789ABCDEF" . fromIntegral
     sarr = conjoin ',' . map shows . U.toList
+
+-- | Encodes BAM records straight into a dynamic buffer, the BGZF's it.
+-- Should be fairly direct and perform well.
+encodeBamWith2 :: MonadIO m => Int -> BamMeta -> Enumeratee [BamRec] B.ByteString m a
+encodeBamWith2 lv meta = joinI . eneeBam . encodeBgzfWith lv
+  where
+    eneeBam  = eneeCheckIfDone (\k -> mapChunks (foldMap pushBam) . k $ Chunk pushHeader)
+
+    pushHeader = pushByteString "BAM\1"
+              <> setMark                        -- the length byte
+              <> pushBuilder (showBamMeta meta)
+              <> endRecord                      -- fills the length in
+              <> pushWord32 (fromIntegral . Z.length $ meta_refs meta)
+              <> foldMap pushRef (meta_refs meta)
+
+    pushBuilder = foldMap pushByteString . L.toChunks . toLazyByteString
+
+    pushRef bs = ensureBuffer     (fromIntegral $ B.length (sq_name bs) + 9)
+              <> unsafePushWord32 (fromIntegral $ B.length (sq_name bs) + 1)
+              <> unsafePushByteString (sq_name bs)
+              <> unsafePushByte 0
+              <> unsafePushWord32 (fromIntegral $ sq_length bs)
+
+pushBam :: BamRec -> Push
+pushBam BamRec{..} = mconcat
+    [ ensureBuffer minlength
+    , unsafeSetMark
+    , unsafePushWord32 (unRefseq b_rname)
+    , unsafePushWord32 (fromIntegral b_pos)
+    , unsafePushByte (fromIntegral $ B.length b_qname +1)
+    , unsafePushByte (unQ b_mapq)
+    , unsafePushWord16 (fromIntegral bin)
+    , unsafePushWord16 (fromIntegral $ length $ unCigar b_cigar)
+    , unsafePushWord16 (fromIntegral b_flag)
+    , unsafePushWord32 (fromIntegral $ V.length b_seq)
+    , unsafePushWord32 (unRefseq b_mrnm)
+    , unsafePushWord32 (fromIntegral b_mpos)
+    , unsafePushWord32 (fromIntegral b_isize)
+    , unsafePushByteString b_qname
+    , unsafePushByte 0
+    , foldMap (unsafePushWord32 . encodeCigar) (unCigar b_cigar)
+    , pushSeq b_seq
+    , unsafePushByteString b_qual
+    , foldMap pushExt b_exts
+    , endRecord ]
+  where
+    bin = distinctBin b_pos (cigarToAlnLen b_cigar)
+    minlength = 37 + B.length b_qname + 4 * length (unCigar b_cigar) + B.length b_qual + (V.length b_seq + 1) `shiftR` 1
+    encodeCigar (op,l) = fromIntegral $ fromEnum op .|. l `shiftL` 4
+
+    pushSeq :: V.Vector vec Nucleotides => vec Nucleotides -> Push
+    pushSeq v = case v V.!? 0 of
+                    Nothing -> mempty
+                    Just a  -> case v V.!? 1 of
+                        Nothing -> unsafePushByte (unNs a `shiftL` 4)
+                        Just b  -> unsafePushByte (unNs a `shiftL` 4 .|. unNs b)
+                                   <> pushSeq (V.drop 2 v)
+
+    pushExt :: (String, Ext) -> Push
+    pushExt ([k1,k2], e) = case e of
+        Text t -> common (4 + B.length t) 'Z' $
+                  unsafePushByteString t <> unsafePushByte 0
+
+        Bin  t -> common (4 + B.length t) 'H' $
+                  unsafePushByteString t <> unsafePushByte 0
+
+        Char c -> common 4 'A' $ unsafePushByte c
+
+        Float f -> common 7 'f' $ unsafePushWord32 (fromIntegral $ fromFloat f)
+
+        Int i   -> case put_some_int (U.singleton i) of
+                        (c,op) -> common 7 c (op i)
+
+        IntArr  ia -> case put_some_int ia of
+                        (c,op) -> common (4 * U.length ia) 'B' $ unsafePushByte (fromIntegral $ ord c)
+                                  <> unsafePushWord32 (fromIntegral $ U.length ia-1)
+                                  <> U.foldr ((<>) . op) mempty ia
+
+        FloatArr fa -> common (4 * U.length fa) 'B' $ unsafePushByte (fromIntegral $ ord 'f')
+                       <> unsafePushWord32 (fromIntegral $ U.length fa-1)
+                       <> U.foldr ((<>) . unsafePushWord32 . fromFloat) mempty fa
+      where
+        common l z b = ensureBuffer l <> unsafePushByte (fromIntegral $ ord k1)
+                   <> unsafePushByte (fromIntegral $ ord k2)
+                   <> unsafePushByte (fromIntegral $ ord z) <> b
+
+        put_some_int :: U.Vector Int -> (Char, Int -> Push)
+        put_some_int is
+            | U.all (between        0    0xff) is = ('C', unsafePushByte . fromIntegral)
+            | U.all (between   (-0x80)   0x7f) is = ('c', unsafePushByte . fromIntegral)
+            | U.all (between        0  0xffff) is = ('S', unsafePushWord16 . fromIntegral)
+            | U.all (between (-0x8000) 0x7fff) is = ('s', unsafePushWord16 . fromIntegral)
+            | U.all                      (> 0) is = ('I', unsafePushWord32 . fromIntegral)
+            | otherwise                           = ('i', unsafePushWord32 . fromIntegral)
+
+        between :: Int -> Int -> Int -> Bool
+        between l r x = l <= x && x <= r
+
+        fromFloat :: Float -> Word32
+        fromFloat float = unsafePerformIO $ alloca $ \buf ->
+                          poke (castPtr buf) float >> peek buf
 
