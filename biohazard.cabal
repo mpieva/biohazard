@@ -137,13 +137,12 @@ Executable afroengineer
 Executable bam-cat
   Main-is:             bam-cat.hs
   Hs-Source-Dirs:      tools
-  -- Ghc-options:         -Wall -auto-all -threaded -rtsopts -with-rtsopts=-N
   Ghc-options:         -Wall -auto-all -rtsopts
   Build-depends:       base,
                        biohazard,
                        bytestring,
                        containers
-  
+
 Executable bam-fixpair
   Main-is:             bam-fixpair.hs
   Hs-Source-Dirs:      tools
@@ -251,7 +250,6 @@ Executable gt-call
   Build-depends:       base,
                        biohazard,
                        bytestring,
-                       -- containers,
                        deepseq,
                        iteratee,
                        text,

@@ -21,8 +21,10 @@ import Data.Primitive.ByteArray
 import GHC.Exts
 import GHC.Word ( Word8, Word16, Word32 )
 
-import qualified Data.ByteString as B
+import qualified Data.ByteString        as B
 import qualified Data.ByteString.Unsafe as B
+import qualified Data.Binary.Builder    as B ( Builder, toLazyByteString )
+import qualified Data.ByteString.Lazy   as B ( foldrChunks )
 
 import Bio.Iteratee
 import Bio.Iteratee.Bgzf
@@ -39,10 +41,15 @@ data BB = BB { buffer :: {-# UNPACK #-} !(MutableByteArray RealWorld)
              , len    :: {-# UNPACK #-} !Int
              , mark   :: {-# UNPACK #-} !Int }
 
+-- This still seems to have considerable overhead.  Don't know if this
+-- can be improved by effectively inlining IO and turning the BB into an
+-- unboxed tuple.  XXX
 newtype Push = Push (BB -> IO BB)
 
 instance Monoid Push where
+    {-# INLINE mempty #-}
     mempty                  = Push return
+    {-# INLINE mappend #-}
     Push a `mappend` Push b = Push (a >=> b)
 
 instance NullPoint Push where
@@ -110,6 +117,10 @@ unsafePushByteString bs = Push $ \b ->
 {-# INLINE pushByteString #-}
 pushByteString :: B.ByteString -> Push
 pushByteString bs = ensureBuffer (B.length bs) <> unsafePushByteString bs
+
+{-# INLINE pushBuilder #-}
+pushBuilder :: B.Builder -> Push
+pushBuilder = B.foldrChunks ((<>) . pushByteString) mempty . B.toLazyByteString
 
 -- | Sets a mark.  This can later be filled in with a record length
 -- (used to create BAM records).

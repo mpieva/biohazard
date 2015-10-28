@@ -32,7 +32,9 @@ module Bio.Bam.Rec (
     encodeBamEntry,
     encodeSamEntry,
     encodeBamWith2,
+    encodeBamRawWith2,
     pushBam,
+    pushBamRaw,
 
     decodeSam,
     decodeSam',
@@ -650,6 +652,7 @@ encodeSamEntry refs b = conjoin '\t' [
 
 -- | Encodes BAM records straight into a dynamic buffer, the BGZF's it.
 -- Should be fairly direct and perform well.
+{-# INLINE encodeBamWith2 #-}
 encodeBamWith2 :: MonadIO m => Int -> BamMeta -> Enumeratee [BamRec] B.ByteString m a
 encodeBamWith2 lv meta = joinI . eneeBam . encodeBgzfWith lv
   where
@@ -670,6 +673,36 @@ encodeBamWith2 lv meta = joinI . eneeBam . encodeBgzfWith lv
               <> unsafePushByte 0
               <> unsafePushWord32 (fromIntegral $ sq_length bs)
 
+{-# INLINE encodeBamRawWith2 #-}
+encodeBamRawWith2 :: MonadIO m => Int -> BamMeta -> Enumeratee [BamRaw] B.ByteString m a
+encodeBamRawWith2 lv meta = joinI . eneeBam . encodeBgzfWith lv
+  where
+    eneeBam  = eneeCheckIfDone (\k -> mapChunks (foldMap pushBamRaw) . k $ Chunk pushHeader)
+
+    pushHeader = pushByteString "BAM\1"
+              <> setMark                        -- the length byte
+              <> pushBuilder (showBamMeta meta)
+              <> endRecord                      -- fills the length in
+              <> pushWord32 (fromIntegral . Z.length $ meta_refs meta)
+              <> foldMap pushRef (meta_refs meta)
+
+    pushRef bs = ensureBuffer     (fromIntegral $ B.length (sq_name bs) + 9)
+              <> unsafePushWord32 (fromIntegral $ B.length (sq_name bs) + 1)
+              <> unsafePushByteString (sq_name bs)
+              <> unsafePushByte 0
+              <> unsafePushWord32 (fromIntegral $ sq_length bs)
+
+{-# INLINE pushBamRaw #-}
+pushBamRaw :: BamRaw -> Push
+pushBamRaw br = ensureBuffer (B.length (raw_data br) + 4)
+             <> unsafePushWord32 (fromIntegral $ B.length (raw_data br))
+             <> unsafePushByteString (raw_data br)
+
+{-# RULES
+    "pushBam/unpackBam"     forall b . pushBam (unpackBam b) = pushBamRaw b
+  #-}
+
+{-# INLINE pushBam #-}
 pushBam :: BamRec -> Push
 pushBam BamRec{..} = mconcat
     [ ensureBuffer minlength
