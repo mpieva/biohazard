@@ -18,7 +18,7 @@ import Bio.Base
 import Bio.Bam
 import Bio.Bam.Pileup
 import Bio.Genocall.AvroFile
-import Bio.Iteratee.Bgzf
+import Bio.Iteratee.Builder
 import Control.Exception ( bracket )
 import Control.Monad
 import Data.Avro
@@ -27,17 +27,18 @@ import Data.Foldable ( toList )
 import Data.List ( scanl' )
 import Data.MiniFloat
 import Data.Monoid
+import Foreign.Marshal.Alloc        ( alloca )
 import Foreign.Ptr ( castPtr )
 import System.Console.GetOpt
 import System.Environment
 import System.Exit
+import System.IO.Unsafe             ( unsafePerformIO )
 import System.Posix.IO
 
 import qualified Data.ByteString.Char8          as S
 import qualified Data.ByteString.Unsafe         as S
-import qualified Data.ByteString.Builder        as LB
-import qualified Data.ByteString.Lazy.Char8     as L
 import qualified Data.Vector.Unboxed            as U
+import qualified Foreign.Storable               as FS
 import qualified System.IO                      as IO
 
 data Conf = Conf {
@@ -112,18 +113,18 @@ main' Conf{..} infile = do
 
 
 
--- | Generates BCF anmd writes it to a 'Handle'.  For the necessary VCF
+-- | Generates BCF and writes it to a 'Handle'.  For the necessary VCF
 -- header, we get the /names/ of the reference sequences from the Avro
 -- schema and the /lengths/ from the biohazard.refseq_length entry in
 -- the meta data.
 bcf_to_fd :: MonadIO m => Fd -> Refs -> [S.ByteString] -> CallFuncs -> Iteratee [GenoCallBlock] m ()
-bcf_to_fd hdl refs smps call_fns = toBcf refs smps call_fns =$ compressBgzf =$ mapChunksM_ (liftIO . put)
+bcf_to_fd hdl refs smps call_fns = toBcf refs smps call_fns ><> encodeBgzfWith 9 =$ mapChunksM_ (liftIO . put)
   where
     put s = S.unsafeUseAsCStringLen s $ \(p,l) ->
             fdWriteBuf hdl (castPtr p) (fromIntegral l)
 
-vcf_header :: Refs -> [S.ByteString] -> L.ByteString
-vcf_header refs smps = L.unlines $
+vcf_header :: Refs -> [S.ByteString] -> Push
+vcf_header refs smps = foldr (\a b -> pushByteString a <> pushByte 10 <> b) mempty $
     [ "##fileformat=VCFv4.2"
     , "##INFO=<ID=MQ,Number=1,Type=Integer,Description=\"RMS mapping quality\">"
     , "##INFO=<ID=MQ0,Number=1,Type=Integer,Description=\"Number of MAPQ==0 reads covering this record\">"
@@ -131,24 +132,23 @@ vcf_header refs smps = L.unlines $
     , "##FORMAT=<ID=DP,Number=1,Type=Integer,Description=\"read depth\">"
     , "##FORMAT=<ID=PL,Number=G,Type=Integer,Description=\"genotype likelihoods in deciban\">"
     , "##FORMAT=<ID=GQ,Number=1,Type=Integer,Description=\"conditional genotype quality in deciban\">" ] ++
-    [ L.fromChunks [ "##contig=<ID=", sq_name s, ",length=", S.pack (show (sq_length s)), ">" ] | s <- toList refs ] ++
-    [ L.intercalate "\t" $ "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT" : map (L.fromChunks . return) smps ]
+    [ S.concat [ "##contig=<ID=", sq_name s, ",length=", S.pack (show (sq_length s)), ">" ] | s <- toList refs ] ++
+    [ S.intercalate "\t" $ "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT" : smps ]
 
 
 -- XXX Ploidy is being ignored.
-toBcf :: Monad m => Refs -> [S.ByteString] -> CallFuncs -> Enumeratee [GenoCallBlock] BgzfChunk m r
+toBcf :: Monad m => Refs -> [S.ByteString] -> CallFuncs -> Enumeratee [GenoCallBlock] Push m r
 toBcf refs smps (snp_call, indel_call) = eneeCheckIfDone go
   where
-    go  k = mapChunks (foldr encode NoChunk) . k . Chunk $ SpecialChunk hdr NoChunk
-    hdr   = S.concat . L.toChunks . LB.toLazyByteString $
-                LB.byteString "BCF\2\2" <>
-                LB.word32LE (succ . fromIntegral . L.length $ vcf_header refs smps) <>
-                LB.lazyByteString (vcf_header refs smps) <> LB.word8 0
+    go  k = mapChunks (foldMap encode) . k $ Chunk hdr
 
-    encode :: GenoCallBlock -> BgzfChunk -> BgzfChunk
-    encode GenoCallBlock{..} nil = foldr SpecialChunk nil $ zipWith (encode1 reference_name) [start_position..] called_sites
+    hdr   = pushByteString "BCF\2\2" <> setMark <>
+            vcf_header refs smps <> pushByte 0 <> endRecord
 
-    encode1 ref pos site = S.concat . L.toChunks . LB.toLazyByteString $
+    encode :: GenoCallBlock -> Push
+    encode GenoCallBlock{..} = mconcat $ zipWith (encode1 reference_name) [start_position..] called_sites
+
+    encode1 ref pos site =
         encodesnp ref pos site <>
         case indel_variants site of [ ] -> mempty
                                     [_] -> mempty
@@ -176,49 +176,49 @@ toBcf refs smps (snp_call, indel_call) = eneeCheckIfDone go
                   | IndelVariant (V_Nucs r) (V_Nuc a) <- indel_variants site ]
 
     encode' ref pos alleles GenoCallSite{..} CallStats{..} do_call =
-        LB.word32LE (fromIntegral . L.length $ LB.toLazyByteString b_share) <>
-        LB.word32LE (fromIntegral . L.length $ LB.toLazyByteString b_indiv) <>
-        b_share <> b_indiv
+        setMark <> setMark <>           -- remember space for two marks
+        b_share <> endRecordPart1 <>    -- store 1st length and 2nd mark
+        b_indiv <> endRecordPart2       -- store 2nd length
       where
-        b_share = LB.word32LE (unRefseq ref) <>
-                  LB.word32LE (fromIntegral pos) <>
-                  LB.word32LE 0 <>                                -- rlen?!  WTF?!
-                  LB.floatLE gq <>                                -- QUAL
-                  LB.int16LE 2 <>                                 -- ninfo
-                  LB.int16LE (fromIntegral $ length alleles) <>   -- n_allele
-                  LB.word32LE 0x04000001 <>                       -- n_fmt, n_sample
-                  LB.word8 0x07 <>                                -- variant name (empty)
-                  foldMap typed_string alleles <>                 -- alleles
-                  LB.word8 0x01 <>                                -- FILTER (an empty vector)
+        b_share = pushWord32 (unRefseq ref) <>
+                  pushWord32 (fromIntegral pos) <>
+                  pushWord32 0 <>                                   -- rlen?!  WTF?!
+                  pushFloat gq <>                                   -- QUAL
+                  pushWord16 2 <>                                   -- ninfo
+                  pushWord16 (fromIntegral $ length alleles) <>     -- n_allele
+                  pushWord32 0x04000001 <>                          -- n_fmt, n_sample
+                  pushByte 0x07 <>                                  -- variant name (empty)
+                  foldMap typed_string alleles <>                   -- alleles
+                  pushByte 0x01 <>                                  -- FILTER (an empty vector)
 
-                  LB.word8 0x11 <> LB.word8 0x01 <>               -- INFO key 0 (MQ)
-                  LB.word8 0x11 <> LB.word8 rms_mapq <>           -- MQ, typed word8
-                  LB.word8 0x11 <> LB.word8 0x02 <>               -- INFO key 0 (MQ0)
-                  LB.word8 0x12 <> LB.word16LE (fromIntegral reads_mapq0)   -- MQ0
+                  pushByte 0x11 <> pushByte 0x01 <>                 -- INFO key 0 (MQ)
+                  pushByte 0x11 <> pushByte rms_mapq <>             -- MQ, typed word8
+                  pushByte 0x11 <> pushByte 0x02 <>                 -- INFO key 0 (MQ0)
+                  pushByte 0x12 <> pushWord16 (fromIntegral reads_mapq0)   -- MQ0
 
-        b_indiv = LB.word8 0x01 <> LB.word8 0x03 <>               -- FORMAT key GT
-                  LB.word8 0x21 <>                                -- two uint8s for GT
-                  LB.word8 (2 + 2 * fromIntegral g) <>            -- actual GT
-                  LB.word8 (2 + 2 * fromIntegral h) <>
+        b_indiv = pushByte 0x01 <> pushByte 0x03 <>                 -- FORMAT key GT
+                  pushByte 0x21 <>                                  -- two uint8s for GT
+                  pushByte (2 + 2 * fromIntegral g) <>              -- actual GT
+                  pushByte (2 + 2 * fromIntegral h) <>
 
-                  LB.word8 0x01 <> LB.word8 0x04 <>               -- FORMAT key DP
-                  LB.word8 0x12 <>                                -- one uint16 for DP
-                  LB.word16LE (fromIntegral read_depth) <>        -- depth
+                  pushByte 0x01 <> pushByte 0x04 <>                 -- FORMAT key DP
+                  pushByte 0x12 <>                                  -- one uint16 for DP
+                  pushWord16 (fromIntegral read_depth) <>           -- depth
 
-                  LB.word8 0x01 <> LB.word8 0x05 <>               -- FORMAT key PL
+                  pushByte 0x01 <> pushByte 0x05 <>                 -- FORMAT key PL
                   ( let l = U.length lks in if l < 15
-                    then LB.word8 (fromIntegral l `shiftL` 4 .|. 2)
-                    else LB.word16LE 0x03F2 <> LB.word32LE (fromIntegral l) ) <>
-                  pl_vals <>                                      -- vector of uint16s for PLs
+                    then pushByte (fromIntegral l `shiftL` 4 .|. 2)
+                    else pushWord16 0x03F2 <> pushWord16 (fromIntegral l) ) <>
+                  pl_vals <>                                        -- vector of uint16s for PLs
 
-                  LB.word8 0x01 <> LB.word8 0x06 <>               -- FORMAT key GQ
-                  LB.word8 0x11 <> LB.word8 gq'                   -- uint8, placeholder
+                  pushByte 0x01 <> pushByte 0x06 <>                 -- FORMAT key GQ
+                  pushByte 0x11 <> pushByte gq'                     -- uint8, genotype
 
         rms_mapq = round $ sqrt (fromIntegral sum_mapq_squared / fromIntegral read_depth :: Double)
-        typed_string s | S.length s < 15 = LB.word8 (fromIntegral $ (S.length s `shiftL` 4) .|. 0x7) <> LB.byteString s
-                       | otherwise       = LB.word8 0xF7 <> LB.word8 0x03 <> LB.word32LE (fromIntegral $ S.length s) <> LB.byteString s
+        typed_string s | S.length s < 15 = pushByte (fromIntegral $ (S.length s `shiftL` 4) .|. 0x7) <> pushByteString s
+                       | otherwise       = pushByte 0xF7 <> pushByte 0x03 <> pushWord32 (fromIntegral $ S.length s) <> pushByteString s
 
-        pl_vals = U.foldr ((<>) . LB.word16LE . round . max 0 . min 0x7fff . (*) (-10/log 10) . unPr . (/ lks U.! maxidx)) mempty lks
+        pl_vals = U.foldr ((<>) . pushWord16 . round . max 0 . min 0x7fff . (*) (-10/log 10) . unPr . (/ lks U.! maxidx)) mempty lks
 
         lks = U.map (Pr . negate . mini2float) snp_likelihoods :: U.Vector (Prob' Float)
         maxidx = U.maxIndex lks

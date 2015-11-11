@@ -12,23 +12,24 @@
 
 module Bio.Iteratee.Builder where
 
+import Bio.Iteratee
+import Bio.Iteratee.Bgzf
 import Control.Monad
 import Control.Monad.IO.Class
 import Data.Bits
 import Data.Monoid
 import Data.Primitive.Addr
 import Data.Primitive.ByteArray
+import Data.Word ( Word8, Word16, Word32 )
+import Foreign.Marshal.Alloc
+import Foreign.Marshal.Utils
+import Foreign.Ptr
+import Foreign.Storable ( peek, poke )
 import GHC.Exts
-import GHC.Word ( Word8, Word16, Word32 )
+import System.IO.Unsafe ( unsafePerformIO )
 
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Unsafe as B
-
-import Bio.Iteratee
-import Bio.Iteratee.Bgzf
-
-import Foreign.Marshal.Utils
-import Foreign.Ptr
 
 -- | The 'MutableByteArray' is garbage collected, so we don't get leaks.
 -- Once it has grown to a practical size (and the initial 128k should be
@@ -37,7 +38,8 @@ import Foreign.Ptr
 -- lazy or strict have to be allocated.
 data BB = BB { buffer :: {-# UNPACK #-} !(MutableByteArray RealWorld)
              , len    :: {-# UNPACK #-} !Int
-             , mark   :: {-# UNPACK #-} !Int }
+             , mark   :: {-# UNPACK #-} !Int
+             , mark2  :: {-# UNPACK #-} !Int }
 
 newtype Push = Push (BB -> IO BB)
 
@@ -51,7 +53,7 @@ instance NullPoint Push where
 
 -- | Creates a buffer with initial capacity of ~128k.
 newBuffer :: IO BB
-newBuffer = newPinnedByteArray 128000 >>= \arr -> return $ BB arr 0 0
+newBuffer = newPinnedByteArray 128000 >>= \arr -> return $ BB arr 0 0 0
 
 -- | Ensures a given free space in the buffer by doubling its capacity
 -- if necessary.
@@ -111,6 +113,17 @@ unsafePushByteString bs = Push $ \b ->
 pushByteString :: B.ByteString -> Push
 pushByteString bs = ensureBuffer (B.length bs) <> unsafePushByteString bs
 
+{-# INLINE unsafePushFloat #-}
+unsafePushFloat :: Float -> Push
+unsafePushFloat f = unsafePushWord32 i
+  where
+    i :: Word32
+    i = unsafePerformIO $ alloca $ \b -> poke (castPtr b) f >> peek b
+
+{-# INLINE pushFloat #-}
+pushFloat :: Float -> Push
+pushFloat f = ensureBuffer 4 <> unsafePushFloat f
+
 -- | Sets a mark.  This can later be filled in with a record length
 -- (used to create BAM records).
 {-# INLINE unsafeSetMark #-}
@@ -128,6 +141,36 @@ setMark = ensureBuffer 4 <> unsafeSetMark
 endRecord :: Push
 endRecord = Push $ \b -> do
     let !l = len b - mark b - 4
+    writeByteArray (buffer b) (mark b + 0) (fromIntegral $ shiftR l  0 :: Word8)
+    writeByteArray (buffer b) (mark b + 1) (fromIntegral $ shiftR l  8 :: Word8)
+    writeByteArray (buffer b) (mark b + 2) (fromIntegral $ shiftR l 16 :: Word8)
+    writeByteArray (buffer b) (mark b + 3) (fromIntegral $ shiftR l 24 :: Word8)
+    return b
+
+-- | Ends the first part of a record.  The length is filled in *before*
+-- the mark, which is specifically done to support the *two* length
+-- fields in BCF.  It also remembers the current position.  Horrible
+-- things happen if this isn't preceeded by *two* succesive invocations
+-- of 'setMark'.
+{-# INLINE endRecordPart1 #-}
+endRecordPart1 :: Push
+endRecordPart1 = Push $ \b -> do
+    let !l = len b - mark b - 4
+    writeByteArray (buffer b) (mark b - 4) (fromIntegral $ shiftR l  0 :: Word8)
+    writeByteArray (buffer b) (mark b - 3) (fromIntegral $ shiftR l  8 :: Word8)
+    writeByteArray (buffer b) (mark b - 2) (fromIntegral $ shiftR l 16 :: Word8)
+    writeByteArray (buffer b) (mark b - 1) (fromIntegral $ shiftR l 24 :: Word8)
+    return $ b { mark2 = len b }
+
+-- | Ends the second part of a record.  The length is filled in at the
+-- mark, but computed from the sencond mark only.  This is specifically
+-- done to support the *two* length fields in BCF.  Horrible things
+-- happen if this isn't preceeded by *two* succesive invocations of
+-- 'setMark' and one of 'endRecordPart1'.
+{-# INLINE endRecordPart2 #-}
+endRecordPart2 :: Push
+endRecordPart2 = Push $ \b -> do
+    let !l = len b - mark2 b
     writeByteArray (buffer b) (mark b + 0) (fromIntegral $ shiftR l  0 :: Word8)
     writeByteArray (buffer b) (mark b + 1) (fromIntegral $ shiftR l  8 :: Word8)
     writeByteArray (buffer b) (mark b + 2) (fromIntegral $ shiftR l 16 :: Word8)

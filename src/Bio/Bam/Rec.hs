@@ -621,7 +621,7 @@ pushBam BamRec{..} = mconcat
 
         Char c -> common 4 'A' $ unsafePushByte c
 
-        Float f -> common 7 'f' $ unsafePushWord32 (fromIntegral $ fromFloat f)
+        Float f -> common 7 'f' $ unsafePushFloat f
 
         Int i   -> case put_some_int (U.singleton i) of
                         (c,op) -> common 7 c (op i)
@@ -633,7 +633,7 @@ pushBam BamRec{..} = mconcat
 
         FloatArr fa -> common (4 * U.length fa) 'B' $ unsafePushByte (fromIntegral $ ord 'f')
                        <> unsafePushWord32 (fromIntegral $ U.length fa-1)
-                       <> U.foldr ((<>) . unsafePushWord32 . fromFloat) mempty fa
+                       <> U.foldr ((<>) . unsafePushFloat) mempty fa
       where
         common l z b = ensureBuffer l <> unsafePushByte (fromIntegral $ ord c)
                    <> unsafePushByte (fromIntegral $ ord d)
@@ -650,8 +650,4 @@ pushBam BamRec{..} = mconcat
 
         between :: Int -> Int -> Int -> Bool
         between l r x = l <= x && x <= r
-
-        fromFloat :: Float -> Word32
-        fromFloat float = unsafePerformIO $ alloca $ \buf ->
-                          poke (castPtr buf) float >> peek buf
 
