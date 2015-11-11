@@ -10,7 +10,8 @@ module Bio.Iteratee.Bgzf (
     decompressBgzf, decompressPlain,
     maxBlockSize, bgzfEofMarker, liftBlock, getOffset,
     BgzfChunk(..), isBgzf, isGzip, parMapChunksIO,
-    compressBgzf, compressBgzfLv, compressBgzf', CompressParams(..)
+    compressBgzf, compressBgzfLv, compressBgzf', CompressParams(..),
+    compressChunk
                      ) where
 
 import Bio.Iteratee
@@ -453,4 +454,45 @@ data CompressParams = CompressParams {
         compression_level :: Int,
         queue_depth :: Int }
     deriving Show
+
+compressChunk :: Int -> Ptr CChar -> CUInt -> IO S.ByteString
+compressChunk lv ptr len =
+    allocaBytes (#{const sizeof(z_stream)}) $ \stream -> do
+    buf <- mallocBytes 65536
+
+    -- steal header from the EOF marker (length is wrong for now)
+    S.unsafeUseAsCString bgzfEofMarker $ \eof ->
+        forM_ [0,4..16] $ \o -> do x <- peekByteOff eof o
+                                   pokeByteOff buf o (x::Word32)
+
+    -- set up ZStream
+    #{poke z_stream, msg}       stream nullPtr
+    #{poke z_stream, zalloc}    stream nullPtr
+    #{poke z_stream, zfree}     stream nullPtr
+    #{poke z_stream, opaque}    stream nullPtr
+    #{poke z_stream, next_in}   stream ptr
+    #{poke z_stream, next_out}  stream (buf `plusPtr` 18)
+    #{poke z_stream, avail_in}  stream len
+    #{poke z_stream, avail_out} stream (65536-18-8 :: CUInt)
+
+    z_check "deflateInit2" =<< c_deflateInit2 stream (fromIntegral lv) #{const Z_DEFLATED}
+                                              (-15) 8 #{const Z_DEFAULT_STRATEGY}
+    -- z_check "deflate" =<< c_deflate stream #{const Z_NO_FLUSH}
+    z_check "deflate" =<< c_deflate stream #{const Z_FINISH}
+    z_check "deflateEnd" =<< c_deflateEnd stream
+
+    crc0 <- c_crc32 0 nullPtr 0
+    crc  <- c_crc32 crc0 ptr len
+
+    compressed_length <- (+) (18+8) `fmap` #{peek z_stream, total_out} stream
+    when (compressed_length > 65536) $ error "produced too big a block"
+
+    -- set length in header
+    pokeByteOff buf 16 (fromIntegral $ (compressed_length-1) .&. 0xff :: Word8)
+    pokeByteOff buf 17 (fromIntegral $ (compressed_length-1) `shiftR` 8 :: Word8)
+
+    pokeByteOff buf (compressed_length-8) (fromIntegral crc :: Word32)
+    pokeByteOff buf (compressed_length-4) (fromIntegral len :: Word32)
+
+    S.unsafePackCStringFinalizer buf compressed_length (free buf)
 

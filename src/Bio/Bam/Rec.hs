@@ -1,4 +1,5 @@
-{-# LANGUAGE OverloadedStrings, PatternGuards, BangPatterns, NoMonomorphismRestriction, FlexibleContexts #-}
+{-# LANGUAGE OverloadedStrings, PatternGuards, BangPatterns #-}
+{-# LANGUAGE NoMonomorphismRestriction, FlexibleContexts, RecordWildCards #-}
 
 -- TODO:
 -- - Automatic creation of some kind of index.  If possible, this should
@@ -22,6 +23,8 @@ module Bio.Bam.Rec (
     decodeBamEntry,
     encodeBamEntry,
     encodeSamEntry,
+    encodeBamWith2,
+    pushBam,
 
     decodeSam,
     decodeSam',
@@ -65,6 +68,7 @@ import Bio.Base
 import Bio.Bam.Header
 import Bio.Bam.Raw
 import Bio.Iteratee
+import Bio.Iteratee.Builder
 
 import Control.Monad
 import Control.Applicative
@@ -76,7 +80,7 @@ import Data.Bits                    ( testBit, shiftL, shiftR, (.&.), (.|.), com
 import Data.ByteString              ( ByteString )
 import Data.Char                    ( ord, digitToInt )
 import Data.Int                     ( Int32, Int16, Int8 )
-import Data.Monoid                  ( mempty )
+import Data.Monoid
 import Data.Vector.Unboxed          ( (!?) )
 import Data.Word                    ( Word32, Word16 )
 import Foreign.Marshal.Alloc        ( alloca )
@@ -91,8 +95,9 @@ import qualified Data.ByteString.Char8              as S
 import qualified Data.ByteString.Lazy.Char8         as L
 import qualified Data.Foldable                      as F
 import qualified Data.Iteratee                      as I
-import qualified Data.Map                           as M
+import qualified Data.Map.Strict                    as M
 import qualified Data.Vector.Unboxed                as U
+import qualified Data.Sequence                      as Z
 
 -- ^ Parsers and Printers for BAM and SAM.  We employ an @Iteratee@
 -- interface, and we strive to support everything possible in BAM.  So
@@ -532,7 +537,7 @@ encodeSamEntry refs b = conjoin '\t' [
     shows (b_isize b + 1),
     shows (U.toList $ b_seq b),
     unpck (B.map (+33) $ b_qual b) ] .
-    M.foldWithKey (\k v f -> (:) '\t' . (++) k . (:) ':' . extToSam v . f) id (b_exts b)
+    M.foldrWithKey (\k v f -> (:) '\t' . (++) k . (:) ':' . extToSam v . f) id (b_exts b)
   where
     unpck = (++) . S.unpack
     conjoin c = foldr1 (\a f -> a . (:) c . f)
@@ -548,4 +553,105 @@ encodeSamEntry refs b = conjoin '\t' [
     tohex = B.foldr (\c f -> w2d (c `shiftR` 4) . w2d (c .&. 0xf) . f) id
     w2d = (:) . S.index "0123456789ABCDEF" . fromIntegral
     sarr = conjoin ',' . map shows . U.toList
+
+-- | Encodes BAM records straight into a dynamic buffer, the BGZF's it.
+-- Should be fairly direct and perform well.
+encodeBamWith2 :: MonadIO m => Int -> BamMeta -> Enumeratee [BamRec] B.ByteString m a
+encodeBamWith2 lv meta = eneeBam ><> encodeBgzfWith lv
+  where
+    eneeBam  = eneeCheckIfDone (\k -> mapChunks (foldMap pushBam) . k $ Chunk pushHeader)
+
+    pushHeader = pushByteString "BAM\1"
+              <> setMark                        -- the length byte
+              <> pushBuilder (showBamMeta meta)
+              <> endRecord                      -- fills the length in
+              <> pushWord32 (fromIntegral . Z.length $ meta_refs meta)
+              <> foldMap pushRef (meta_refs meta)
+
+    pushBuilder = foldMap pushByteString . L.toChunks . toLazyByteString
+
+    pushRef bs = ensureBuffer     (fromIntegral $ B.length (sq_name bs) + 9)
+              <> unsafePushWord32 (fromIntegral $ B.length (sq_name bs) + 1)
+              <> unsafePushByteString (sq_name bs)
+              <> unsafePushByte 0
+              <> unsafePushWord32 (fromIntegral $ sq_length bs)
+
+pushBam :: BamRec -> Push
+pushBam BamRec{..} = mconcat
+    [ ensureBuffer minlength
+    , unsafeSetMark
+    , unsafePushWord32 (unRefseq b_rname)
+    , unsafePushWord32 (fromIntegral b_pos)
+    , unsafePushByte (fromIntegral $ B.length b_qname +1)
+    , unsafePushByte (unQ b_mapq)
+    , unsafePushWord16 (fromIntegral bin)
+    , unsafePushWord16 (fromIntegral $ length $ unCigar b_cigar)
+    , unsafePushWord16 (fromIntegral b_flag)
+    , unsafePushWord32 (fromIntegral $ U.length b_seq)
+    , unsafePushWord32 (unRefseq b_mrnm)
+    , unsafePushWord32 (fromIntegral b_mpos)
+    , unsafePushWord32 (fromIntegral b_isize)
+    , unsafePushByteString b_qname
+    , unsafePushByte 0
+    , foldMap (unsafePushWord32 . encodeCigar) (unCigar b_cigar)
+    , pushSeq b_seq
+    , unsafePushByteString b_qual
+    , M.foldrWithKey pushExt mempty b_exts
+    , endRecord ]
+  where
+    bin = distinctBin b_pos (cigarToAlnLen b_cigar)
+    minlength = 37 + B.length b_qname + 4 * length (unCigar b_cigar) + B.length b_qual + (U.length b_seq + 1) `shiftR` 1
+    encodeCigar (op,l) = fromIntegral $ fromEnum op .|. l `shiftL` 4
+
+    pushSeq :: U.Vector Nucleotides -> Push
+    pushSeq v = case v U.!? 0 of
+                    Nothing -> mempty
+                    Just a  -> case v U.!? 1 of
+                        Nothing -> unsafePushByte (unNs a `shiftL` 4)
+                        Just b  -> unsafePushByte (unNs a `shiftL` 4 .|. unNs b)
+                                   <> pushSeq (U.drop 2 v)
+
+    pushExt :: String -> Ext -> Push -> Push
+    pushExt [c,d] e k = case e of
+        Text t -> common (4 + B.length t) 'Z' $
+                  unsafePushByteString t <> unsafePushByte 0
+
+        Bin  t -> common (4 + B.length t) 'H' $
+                  unsafePushByteString t <> unsafePushByte 0
+
+        Char c -> common 4 'A' $ unsafePushByte c
+
+        Float f -> common 7 'f' $ unsafePushWord32 (fromIntegral $ fromFloat f)
+
+        Int i   -> case put_some_int (U.singleton i) of
+                        (c,op) -> common 7 c (op i)
+
+        IntArr  ia -> case put_some_int ia of
+                        (c,op) -> common (4 * U.length ia) 'B' $ unsafePushByte (fromIntegral $ ord c)
+                                  <> unsafePushWord32 (fromIntegral $ U.length ia-1)
+                                  <> U.foldr ((<>) . op) mempty ia
+
+        FloatArr fa -> common (4 * U.length fa) 'B' $ unsafePushByte (fromIntegral $ ord 'f')
+                       <> unsafePushWord32 (fromIntegral $ U.length fa-1)
+                       <> U.foldr ((<>) . unsafePushWord32 . fromFloat) mempty fa
+      where
+        common l z b = ensureBuffer l <> unsafePushByte (fromIntegral $ ord c)
+                   <> unsafePushByte (fromIntegral $ ord d)
+                   <> unsafePushByte (fromIntegral $ ord z) <> b <> k
+
+        put_some_int :: U.Vector Int -> (Char, Int -> Push)
+        put_some_int is
+            | U.all (between        0    0xff) is = ('C', unsafePushByte . fromIntegral)
+            | U.all (between   (-0x80)   0x7f) is = ('c', unsafePushByte . fromIntegral)
+            | U.all (between        0  0xffff) is = ('S', unsafePushWord16 . fromIntegral)
+            | U.all (between (-0x8000) 0x7fff) is = ('s', unsafePushWord16 . fromIntegral)
+            | U.all                      (> 0) is = ('I', unsafePushWord32 . fromIntegral)
+            | otherwise                           = ('i', unsafePushWord32 . fromIntegral)
+
+        between :: Int -> Int -> Int -> Bool
+        between l r x = l <= x && x <= r
+
+        fromFloat :: Float -> Word32
+        fromFloat float = unsafePerformIO $ alloca $ \buf ->
+                          poke (castPtr buf) float >> peek buf
 

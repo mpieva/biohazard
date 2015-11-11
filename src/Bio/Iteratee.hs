@@ -35,6 +35,7 @@ module Bio.Iteratee (
     I.breakE,
 
     ($==),
+    ioBind, ioBind_,
     ListLike,
     MonadIO, MonadMask,
     lift, liftIO,
@@ -230,6 +231,22 @@ iterGet = go . runGetIncremental
             Partial     _ -> throwErr (iterStrExc "<partial>")
             Done rest _ a | S.null rest -> idone a (EOF mx)
                           | otherwise   -> idone a (Chunk rest)
+
+{-# INLINE ioBind #-}
+-- | Lifts an IO action and combines it with a continution.
+-- @ioBind m f@ is the same as @liftIO m >>= f@, but does not create a
+-- 'Nullable' constraint on the stream type.
+infixl 1 `ioBind`
+ioBind :: MonadIO m => IO a -> (a -> Iteratee s m b) -> Iteratee s m b
+ioBind m f = Iteratee $ \onDone onCont -> liftIO m >>= \a -> runIter (f a) onDone onCont
+
+{-# INLINE ioBind_ #-}
+-- | Lifts an IO action, ignores its result, and combines it with a continution.
+-- @ioBind_ m f@ is the same as @liftIO m >> f@, but does not create a
+-- 'Nullable' constraint on the stream type.
+infixl 1 `ioBind_`
+ioBind_ :: MonadIO m => IO a -> Iteratee s m b -> Iteratee s m b
+ioBind_ m f = Iteratee $ \onDone onCont -> liftIO m >> runIter f onDone onCont
 
 infixl 1 $==
 {-# INLINE ($==) #-}

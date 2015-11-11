@@ -1,11 +1,9 @@
 {-# LANGUAGE BangPatterns #-}
 import Bio.Base
 import Bio.Bam
-import Bio.Iteratee
 import Bio.Iteratee.ZLib
 import Control.Monad
 import Data.Bits
-import Data.Monoid
 import System.Console.GetOpt
 import System.Environment
 import System.Exit
@@ -29,7 +27,7 @@ defaultOpts = Opts { output = protectTerm . pipeBamOutput
                    , verbose = False }
 
 data Input = Input { _read1 :: FilePath
-                   , read2  :: Maybe FilePath
+                   ,  read2 :: Maybe FilePath
                    , index1 :: Maybe FilePath
                    , index2 :: Maybe FilePath }
   deriving Show
@@ -101,7 +99,7 @@ fromFastq :: (MonadIO m, MonadMask m) => FilePath -> Enumerator [BamRec] m a
 fromFastq fp = enumAny fp $= enumInflateAny $= parseFastqCassava
   where
     enumAny "-" = enumHandle defaultBufSize stdin
-    enumAny fp' = enumFile defaultBufSize fp'
+    enumAny  f  = enumFile defaultBufSize f
 
 enum_input :: (MonadIO m, MonadMask m) => Input -> Enumerator [UpToTwo BamRec] m a
 enum_input inp@(Input r1 mr2 mi1 mi2) o = do
