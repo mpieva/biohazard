@@ -444,23 +444,25 @@ main = do
                             let hdr' = hdr { meta_other_shit =
                                               [ os | os@(x,y,_) <- meta_other_shit hdr, x /= 'R' || y /= 'G' ] ++
                                               HM.elems (HM.fromList [ (rgid, ('R','G', ('I','D',rgid):tags)) | RG{..} <- rgdefs ] ) }
-
-                                clean_flags (Text t) = Text $ BS.filter (\c -> c /= 'C' && c /= 'I' && c /= 'W') t
-                                clean_flags        x = x
-
                             in mapStreamM (\br -> do
-                                    let x = fromTags "XI" "YI" br
-                                        y = fromTags "XJ" "YJ" br
-                                    (p,i7,i5) <- class1 rgs (unique_indices p7is) (unique_indices p5is) mix (x,y)
+                                    (p,i7,i5) <- class1 rgs (unique_indices p7is) (unique_indices p5is) mix
+                                                            (fromTags "XI" "YI" br, fromTags "XJ" "YJ" br)
                                     let q = negate . round $ 10 / log 10 * log p
                                         b = decodeBamEntry br
                                         rg = T.encodeUtf8 $ T.concat [ ns7 V.! i7, ",", ns5 V.! i5 ]
-                                        b' = b { b_exts = M.delete "ZR" . M.delete "Z0" . M.delete "Z2"
-                                                        . M.insert "Z1" (Int q) . M.adjust clean_flags "ZQ"
-                                                        $ case HM.lookup (i7,i5) rgs of
-                                                            Nothing | cf_pedantic -> M.delete "RG" $ b_exts b
-                                                                    | otherwise   -> M.insert "RG" (Text rg) $ b_exts b
-                                                            Just (rgn,_)          -> M.insert "RG" (Text rgn) $ b_exts b }
+                                        ex = M.delete "ZR" . M.delete "Z0" . M.delete "Z2" . M.insert "Z1" (Int q) $
+                                             case HM.lookup (i7,i5) rgs of
+                                               Nothing | cf_pedantic -> M.delete "RG" $ b_exts b
+                                                       | otherwise   -> M.insert "RG" (Text rg) $ b_exts b
+                                               Just (rgn,_)          -> M.insert "RG" (Text rgn) $ b_exts b
+                                        b' = case M.lookup "ZQ" ex of
+                                                Just (Text t) | BS.null t' -> b { b_exts = M.delete "ZQ" ex
+                                                                                , b_flag = b_flag b .&. complement flagFailsQC }
+                                                              | otherwise  -> b { b_exts = M.insert "ZQ" (Text t') ex }
+                                                  where
+                                                    t' = BS.filter (\c -> c /= 'C' && c /= 'I' && c /= 'W') t
+                                                _                          -> b { b_exts = ex
+                                                                                , b_flag = b_flag b .&. complement flagFailsQC }
                                     return $ encodeBamEntry b') =$
                                progressNum "writing " info =$
                                out (add_pg hdr')
