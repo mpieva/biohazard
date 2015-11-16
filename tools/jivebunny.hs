@@ -26,7 +26,7 @@ import Bio.Bam
 import Bio.Util ( showNum )
 import Control.Applicative
 import Control.Arrow ( (&&&) )
-import Control.Monad ( when, unless, forM_ )
+import Control.Monad ( when, unless, forM_, foldM )
 import Data.Aeson
 import Data.Bits
 import Data.List ( foldl', sortBy )
@@ -304,7 +304,6 @@ data Conf = Conf {
         cf_threshold  :: Double,
         cf_loudness   :: Loudness,
         cf_single     :: Bool,
-        cf_pedantic   :: Bool,
         cf_samplesize :: Int,
         cf_readgroups :: [FilePath] }
 
@@ -318,7 +317,6 @@ defaultConf = do ixdb <- getDataFileName "index_db.json"
                         cf_threshold  = 0.000005,
                         cf_loudness   = Normal,
                         cf_single     = False,
-                        cf_pedantic   = False,
                         cf_samplesize = 50000,
                         cf_readgroups = [] }
 
@@ -331,7 +329,6 @@ options = [
     Option [ ] ["threshold"]      (ReqArg set_thresh   "FRAC") "Iterate till uncertainty is below FRAC",
     Option [ ] ["sample"]         (ReqArg set_sample    "NUM") "Sample NUM reads for mixture estimation",
     Option [ ] ["components"]     (ReqArg set_compo     "NUM") "Print NUM components of the mixture",
-    Option [ ] ["pedantic"]       (NoArg         set_pedantic) "Be pedantic about read groups",
     Option "v" ["verbose"]        (NoArg             set_loud) "Print more diagnostic messages",
     Option "q" ["quiet"]          (NoArg            set_quiet) "Print fewer diagnostic messages",
     Option "h?" ["help", "usage"] (NoArg        (const usage)) "Print this message and exit",
@@ -344,7 +341,6 @@ options = [
     set_loud        c = return $ c { cf_loudness = Loud }
     set_quiet       c = return $ c { cf_loudness = Quiet }
     set_single      c = return $ c { cf_single = True }
-    set_pedantic    c = return $ c { cf_pedantic = True }
     set_thresh    a c = readIO a >>= \x -> return $ c { cf_threshold = x }
     set_sample    a c = readIO a >>= \x -> return $ c { cf_samplesize = x }
     set_compo     a c = readIO a >>= \x -> return $ c { cf_num_stats = const x }
@@ -445,16 +441,18 @@ main = do
                                               [ os | os@(x,y,_) <- meta_other_shit hdr, x /= 'R' || y /= 'G' ] ++
                                               HM.elems (HM.fromList [ (rgid, ('R','G', ('I','D',rgid):tags)) | RG{..} <- rgdefs ] ) }
                             in mapStreamM (\br -> do
-                                    (p,i7,i5) <- class1 rgs (unique_indices p7is) (unique_indices p5is) mix
-                                                            (fromTags "XI" "YI" br, fromTags "XJ" "YJ" br)
+                                    let eff_rgs | not (br_isPaired br) = rgs
+                                                | br_isFirstMate br    = rgs
+                                                | otherwise            = HM.empty
+                                    (p,i7,i5) <- class1 eff_rgs (unique_indices p7is) (unique_indices p5is) mix
+                                                                (fromTags "XI" "YI" br, fromTags "XJ" "YJ" br)
                                     let q = negate . round $ 10 / log 10 * log p
                                         b = decodeBamEntry br
-                                        rg = T.encodeUtf8 $ T.concat [ ns7 V.! i7, ",", ns5 V.! i5 ]
-                                        ex = M.delete "ZR" . M.delete "Z0" . M.delete "Z2" . M.insert "Z1" (Int q) $
+                                        ex = M.delete "ZR" . M.delete "Z0" . M.delete "Z2" . M.insert "Z1" (Int q) .
+                                             M.insert "ZX" (Text $ T.encodeUtf8 $ T.concat [ ns7 V.! i7, ",", ns5 V.! i5 ]) $
                                              case HM.lookup (i7,i5) rgs of
-                                               Nothing | cf_pedantic -> M.delete "RG" $ b_exts b
-                                                       | otherwise   -> M.insert "RG" (Text rg) $ b_exts b
-                                               Just (rgn,_)          -> M.insert "RG" (Text rgn) $ b_exts b
+                                               Nothing      -> M.delete "RG" $ b_exts b
+                                               Just (rgn,_) -> M.insert "RG" (Text rgn) $ b_exts b
                                         b' = case M.lookup "ZQ" ex of
                                                 Just (Text t) | BS.null t' -> b { b_exts = M.delete "ZQ" ex
                                                                                 , b_flag = b_flag b .&. complement flagFailsQC }
@@ -468,6 +466,7 @@ main = do
                                out (add_pg hdr')
 
                         unlessQuiet cf_loudness $ do
+                            grand_total <- foldM (\ !acc (_,dirt) -> VS.freeze dirt >>= return . (+) acc . VS.sum) 0 (HM.elems rgs)
                             T.hPutStrLn cf_stats_hdl "\nmaximum achievable and average quality, top pollutants:"
                             forM_ (sortOn (fst.snd) $ HM.toList rgs) $ \((i7,i5), (rgid,dirt_)) -> do
                                 dirt <- VS.freeze dirt_
@@ -499,7 +498,8 @@ main = do
                                         L.singleton ':' <> L.singleton ' ' <>
                                         adj_left 4 ' ' (L.singleton 'Q' <> L.decimal (max 0 qmax)) <> L.fromText ", " <>
                                         adj_left 4 ' ' (L.singleton 'Q' <> L.decimal (max 0 qavg)) <> L.fromText ", " <>
-                                        L.fromString (showNum (round total :: Int)) <> L.fromText "; " <>
+                                        L.fromString (showNum (round total :: Int)) <> L.fromText " (" <>
+                                        L.formatRealFloat L.Fixed (Just 2) (100*total/grand_total) <> L.fromText "%); " <>
                                         foldr1 (\a b -> a <> L.fromText ", " <> b)
                                             (take num $ U.foldr fmt_one [] v')
 
