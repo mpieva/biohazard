@@ -5,7 +5,7 @@ module Bio.Bam.Rmdup(
             check_sort, normalizeTo, wrapTo
     ) where
 
-import Bio.Bam.Fastq                    ( removeWarts )
+import Bio.Bam.Evan                     ( removeWarts )
 import Bio.Bam.Header
 import Bio.Bam.Raw
 import Bio.Bam.Rec
@@ -71,7 +71,7 @@ instance BAMREC BamRec where
     project = encodeBamEntry
     make_singleton b = b { b_flag = b_flag b .&. complement pflags }
     flag_dup       b = b { b_flag = b_flag b .|. flagDuplicate }
-    add_xp_of    w v = v { b_exts = M.insert "XP" (Int $ extAsInt 1 "XP" w `oplus` extAsInt 1 "XP" v) (b_exts v) }
+    add_xp_of    w v = v { b_exts = updateE "XP" (Int $ extAsInt 1 "XP" w `oplus` extAsInt 1 "XP" v) (b_exts v) }
     is_mate_of   a b = b_qname a == b_qname b && isPaired a && isPaired b && isFirstMate a == isSecondMate b
 
 pflags :: Int
@@ -381,7 +381,6 @@ accumMap f g = go M.empty
    MAPQ                               rmsq
    CIGAR, SEQ, QUAL, MD, NM, XP       generated
    XA                                 concatenate all
-   XI/YI, XJ/YJ                       compute consensus
 
    BQ, CM, FZ, Q2, R2, XM, XO, XG, YQ, EN
          deleted because they would become wrong
@@ -392,7 +391,7 @@ accumMap f g = go M.empty
    AM, AS, MQ, PQ, SM, UQ
          compute rmsq
 
-   X0, X1, XT, XS, XF, XE, BC, LB, RG
+   X0, X1, XT, XS, XF, XE, BC, LB, RG, XI, YI, XJ, YJ
          majority vote -}
 
 do_collapse :: Qual -> [BamRec] -> (Politics BamRec, [BamRec])
@@ -432,22 +431,6 @@ do_collapse maxq  brs = ( Consensus b0 { b_exts  = modify_extensions $ b_exts b0
                     | i <- [0 .. len - 1] ]
         where !len = V.length . b_seq . head $ good brs
 
-    add_index k1 k2 = case [ T.length sq | b <- brs, Text sq <- maybe [] (:[]) $ M.lookup k1 (b_exts b) ] of
-        [      ] -> id
-        (!len:_) -> M.insert k1 (Text $ T.pack $ show $ map fst conssq) .
-                    M.insert k2 (Text $ B.pack $ map ((+) 33 . unQ . snd) conssq)
-            where
-                inputs = [ (sq, qs) | es <- map b_exts brs
-                                    , Text sq <- maybe [] (:[]) $ M.lookup k1 es
-                                    , let qs = case M.lookup k2 es of
-                                            -- Quality if available, else Q23 (~0.5% error rate)
-                                            Just (Text t) -> t
-                                            _             -> B.replicate len 56 ]
-
-                conssq = [ consensus (Q 93) [ (toNucleotides $ T.index ns i, Q $ B.index qs i - 33)
-                                            | (ns,qs) <- inputs ]
-                         | i <- [0 .. len - 1] ]
-
     md' = case [ (b_seq b,md,b) | b <- good brs, Just md <- [ getMd b ] ] of
                 [               ] -> []
                 (seq1, md1,b) : _ -> case mk_new_md cigar' md1 (V.toList seq1) (map fst cons_seq_qual) of
@@ -463,24 +446,22 @@ do_collapse maxq  brs = ( Consensus b0 { b_exts  = modify_extensions $ b_exts b0
 
 
     nm' = sum $ [ n | (Ins,n) <- cigar' ] ++ [ n | (Del,n) <- cigar' ] ++ [ 1 | MdRep _ <- md' ]
-    xa' = nub' [ T.split ';' xas | Just (Text xas) <- map (M.lookup "XA" . b_exts) brs ]
+    xa' = nub' [ T.split ';' xas | Just (Text xas) <- map (lookup "XA" . b_exts) brs ]
 
     modify_extensions es = foldr ($!) es $
-        [ let vs = [ v | Just v <- map (M.lookup k . b_exts) brs ]
-          in if null vs then id else (:) (k, maj vs) | k <- do_maj ] ++
+        [ let vs = [ v | Just v <- map (lookup k . b_exts) brs ]
+          in if null vs then id else updateE k $! maj vs | k <- do_maj ] ++
         [ let vs = [ v | Just (Int v) <- map (lookup k . b_exts) brs ]
-          in if null vs then id else (:) (k, Int (rmsq vs)) | k <- do_rmsq ] ++
-        [ M.delete k | k <- useless ] ++
-        [ (:) ("NM", Int nm')
-        , (:) ("XP", Int (foldl' (\a b -> a `oplus` extAsInt 1 "XP" b) 0 brs))
-        , if null xa' then id else (:) ("XA", Text $ T.intercalate (T.singleton ';') xa')
-        , if null md' then id else (:) ("MD", Text $ showMd md')
-        , add_index "XI" "YI"
-        , add_index "XJ" "YJ" ]
+          in if null vs then id else updateE k $! Int (rmsq vs) | k <- do_rmsq ] ++
+        [ deleteE k | k <- useless ] ++
+        [ updateE "NM" $! Int nm'
+        , updateE "XP" $! Int (foldl' (\a b -> a `oplus` extAsInt 1 "XP" b) 0 brs)
+        , if null xa' then id else updateE "XA" $! (Text $ T.intercalate (T.singleton ';') xa')
+        , if null md' then id else updateE "MD" $! (Text $ showMd md') ]
 
     useless = words "BQ CM FZ Q2 R2 XM XO XG YQ EN CQ CS E2 FS OQ OP OC U2 H0 H1 H2 HI NH IH ZQ"
     do_rmsq = words "AM AS MQ PQ SM UQ"
-    do_maj  = words "X0 X1 XT XS XF XE BC LB RG"
+    do_maj  = words "X0 X1 XT XS XF XE BC LB RG XI XJ YI YJ"
 
 minViewBy :: (a -> a -> Ordering) -> [a] -> (a,[a])
 minViewBy  _  [    ] = error "minViewBy on empty list"
@@ -735,8 +716,8 @@ toCigar = Cigar . go
 -- an MD field.
 setMD :: BamRec -> ECig -> BamRec
 setMD b ec = case go ec of
-    Just md -> b { b_exts = ( "MD", Text $ showMd md ) :  (b_exts b) }
-    Nothing -> b { b_exts = filter ((/=) "MD" . fst) (b_exts b) }
+    Just md -> b { b_exts = updateE "MD" (Text $ showMd md) (b_exts b) }
+    Nothing -> b { b_exts = deleteE "MD"                    (b_exts b) }
   where
     go  WithMD      = Just []
     go  WithoutMD   = Nothing

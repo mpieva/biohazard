@@ -6,11 +6,11 @@ import Distribution.Simple.Program.Db       ( ProgramDb, lookupProgram )
 import Distribution.Simple.Program.Run      ( runProgramInvocation, programInvocation, progInvokeCwd )
 import Distribution.Simple.Program.Types    ( ConfiguredProgram, simpleProgram )
 import Distribution.Simple.Setup            ( copyDest, copyVerbosity, fromFlag, installVerbosity, haddockVerbosity )
-import Distribution.Simple.Utils            ( installOrdinaryFiles  )
+import Distribution.Simple.Utils            ( installOrdinaryFile, installOrdinaryFiles, notice )
 import Distribution.Verbosity               ( Verbosity, moreVerbose )
 import System.Exit                          ( exitSuccess )
 import System.FilePath                      ( splitDirectories, joinPath, takeExtension, replaceExtension, (</>) )
-import System.Directory                     ( getCurrentDirectory, setCurrentDirectory, createDirectoryIfMissing )
+import System.Directory                     ( getCurrentDirectory, setCurrentDirectory, createDirectoryIfMissing, doesFileExist )
 
 main :: IO ()
 main = do
@@ -33,10 +33,17 @@ installManpages pkg lbi verbosity copy = do
     installOrdinaryFiles verbosity (mandir (absoluteInstallDirs pkg lbi copy))
         [ ("man", joinPath mp) | ("man":mp) <- map splitDirectories $ extraSrcFiles pkg ]
 
-    installOrdinaryFiles verbosity (docdir (absoluteInstallDirs pkg lbi copy))
+    installOrdinaryFiles' verbosity (docdir (absoluteInstallDirs pkg lbi copy))
             [ (buildDir lbi </> "latex", replaceExtension (last p) "pdf")
             | ("doc":p@(_:_)) <- map splitDirectories $ extraSrcFiles pkg
             , takeExtension (last p) == ".tex" ]
+
+installOrdinaryFiles' :: Verbosity -> FilePath -> [(FilePath, FilePath)] -> IO ()
+installOrdinaryFiles' verb dest = mapM_ (uncurry go)
+  where
+    go base src = do e <- doesFileExist (base </> src)
+                     if e then installOrdinaryFile verb (base </> src) (dest </> src)
+                          else notice verb $ show (base </> src) ++ " was not built, can't install."
 
 withLatex :: LocalBuildInfo -> (ConfiguredProgram -> IO ()) -> IO ()
 withLatex lbi k = maybe (return ()) k $ lookupProgram (simpleProgram "pdflatex") $ withPrograms lbi

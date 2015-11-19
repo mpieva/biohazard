@@ -131,18 +131,19 @@ type BamrawEnumeratee m b = Enumeratee' BamMeta S.ByteString [BamRaw] m b
 
 -- | Tests if a data stream is a Bam file.
 -- Recognizes plain Bam, gzipped Bam and bgzf'd Bam.  If a file is
--- recognized as Bam, a decoder (suitable Enumeratee) for it is returned.
+-- recognized as Bam, a decoder (suitable Enumeratee) for it is
+-- returned.  This uses 'iLookAhead' internally, so it shouldn't consume
+-- anything from the stream.
 isBam, isEmptyBam, isPlainBam, isBgzfBam, isGzipBam :: MonadIO m
     => Iteratee S.ByteString m (Maybe (BamrawEnumeratee m a))
 isBam = firstOf [ isEmptyBam, isPlainBam, isBgzfBam, isGzipBam ]
   where
     firstOf [] = return Nothing
-    firstOf (k:ks) = k >>= maybe (firstOf ks) (return . Just)
+    firstOf (k:ks) = iLookAhead k >>= maybe (firstOf ks) (return . Just)
 
 isEmptyBam = (\e -> if e then Just (\k -> return $ k mempty) else Nothing) `liftM` isFinished
 
-isPlainBam = (\n -> if n == 4 then Just (joinI . decompressPlain . decodeBam) else Nothing)
-             `liftM` iLookAhead (heads "BAM\SOH")
+isPlainBam = (\n -> if n == 4 then Just (joinI . decompressPlain . decodeBam) else Nothing) `liftM` heads "BAM\SOH"
 
 -- Interesting... iLookAhead interacts badly with the parallel
 -- decompression of BGZF.  (The chosen interface doesn't allow the EOF
@@ -153,13 +154,11 @@ isPlainBam = (\n -> if n == 4 then Just (joinI . decompressPlain . decodeBam) el
 -- (A clean workaround would be an @Alternative@ instance for
 -- @Iteratee@.)
 isBgzfBam  = do b <- isBgzf
-                k <- if b then iLookAhead $ joinI $ enumInflate GZip defaultDecompressParams isPlainBam
-                          else return Nothing
+                k <- if b then joinI $ enumInflate GZip defaultDecompressParams isPlainBam else return Nothing
                 return $ (\_ -> (joinI . decompressBgzfBlocks . decodeBam)) `fmap` k
 
 isGzipBam  = do b <- isGzip
-                k <- if b then iLookAhead $ joinI $ enumInflate GZip defaultDecompressParams isPlainBam
-                          else return Nothing
+                k <- if b then joinI $ enumInflate GZip defaultDecompressParams isPlainBam else return Nothing
                 return $ ((joinI . enumInflate GZip defaultDecompressParams) .) `fmap` k
 
 -- | Checks if a file contains BAM in any of the common forms, then
@@ -274,14 +273,17 @@ bamRaw o s = if good then r else error $ "broken BAM record " ++ show (S.length 
 
 -- | Accessor for raw bam.
 {-# INLINE br_qname #-}
+{-# DEPRECATED br_qname "use unpackBam" #-}
 br_qname :: BamRaw -> Seqid
 br_qname r@(BamRaw _ raw) = S.unsafeTake (br_l_read_name r) $ S.unsafeDrop 32 raw
 
 {-# INLINE br_l_read_name #-}
+{-# DEPRECATED br_l_read_name "use unpackBam" #-}
 br_l_read_name :: BamRaw -> Int
 br_l_read_name (BamRaw _ raw) = fromIntegral $ S.unsafeIndex raw 8 - 1
 
 {-# INLINE br_l_seq #-}
+{-# DEPRECATED br_l_seq "use unpackBam" #-}
 br_l_seq :: BamRaw -> Int
 br_l_seq (BamRaw _ raw) = getInt raw 16
 
@@ -299,13 +301,16 @@ getInt s o = fromIntegral (S.unsafeIndex s $ o+0)             .|. fromIntegral (
              fromIntegral (S.unsafeIndex s $ o+2) `shiftL` 16 .|. fromIntegral (S.unsafeIndex s $ o+3) `shiftL` 24
 
 {-# INLINE br_n_cigar_op #-}
+{-# DEPRECATED br_n_cigar_op "use unpackBam" #-}
 br_n_cigar_op :: BamRaw -> Int
 br_n_cigar_op (BamRaw _ raw) = getInt16 raw 12
 
 {-# INLINE br_flag #-}
+{-# DEPRECATED br_flag "use unpackBam" #-}
 br_flag :: BamRaw -> Int
 br_flag (BamRaw _ raw) = getInt16 raw 14
 
+{-# DEPRECATED br_extflag "use unpackBam, be careful!" #-}
 {-# INLINE br_extflag #-}
 br_extflag :: BamRaw -> Int
 br_extflag br = shiftL ef 16 .|. ff
@@ -339,34 +344,42 @@ br_isAuxillary      = flip testBit  8 . br_flag
 br_isFailsQC        = flip testBit  9 . br_flag
 br_isDuplicate      = flip testBit 10 . br_flag
 
-br_isMergeTrimmed br = br_extflag br .&. (flagTrimmed .|. flagMerged) /= 0
+{-# DEPRECATED br_isMergeTrimmed "use unpackBam" #-}
+br_isMergeTrimmed br = br_extAsInt 0 "FF" br .&. (eflagTrimmed .|. eflagMerged) /= 0
 
 
 {-# INLINE br_rname #-}
+{-# DEPRECATED br_rname "use unpackBam" #-}
 br_rname :: BamRaw -> Refseq
 br_rname (BamRaw _ raw) = Refseq $ getInt raw 0
 
 {-# INLINE br_bin #-}
+{-# DEPRECATED br_bin "you don't want this" #-}
 br_bin :: BamRaw -> Int
 br_bin (BamRaw _ raw) = getInt16 raw 10
 
 {-# INLINE br_mapq #-}
+{-# DEPRECATED br_mapq "use unpackBam" #-}
 br_mapq :: BamRaw -> Qual
 br_mapq (BamRaw _ raw) = Q $ S.unsafeIndex raw 9
 
 {-# INLINE br_pos #-}
+{-# DEPRECATED br_pos "use unpackBam" #-}
 br_pos :: BamRaw -> Int
 br_pos (BamRaw _ raw) = getInt raw 4
 
 {-# INLINE br_mrnm #-}
+{-# DEPRECATED br_mrnm "use unpackBam" #-}
 br_mrnm :: BamRaw -> Refseq
 br_mrnm (BamRaw _ raw) = Refseq $ getInt raw 20
 
 {-# INLINE br_mpos #-}
+{-# DEPRECATED br_mpos "use unpackBam" #-}
 br_mpos :: BamRaw -> Int
 br_mpos (BamRaw _ raw) = getInt raw 24
 
 {-# INLINE br_isize #-}
+{-# DEPRECATED br_isize "use unpackBam" #-}
 br_isize :: BamRaw -> Int
 br_isize (BamRaw _ raw) | i >= 0x80000000 = i - 0x100000000
                         | otherwise       = i
@@ -374,6 +387,7 @@ br_isize (BamRaw _ raw) | i >= 0x80000000 = i - 0x100000000
           i = getInt raw 28
 
 {-# INLINE br_seq_at #-}
+{-# DEPRECATED br_seq_at "use unpackBam" #-}
 br_seq_at :: BamRaw -> Int -> Nucleotides
 br_seq_at br@(BamRaw _ raw) i
     | even    i = Ns $ (S.unsafeIndex raw (off0 + i `div` 2) `shiftR` 4) .&. 0xF
@@ -382,12 +396,14 @@ br_seq_at br@(BamRaw _ raw) i
     off0 = sum [ 33, br_l_read_name br, 4 * br_n_cigar_op br ]
 
 {-# INLINE br_qual_at #-}
+{-# DEPRECATED br_qual_at "use unpackBam" #-}
 br_qual_at :: BamRaw -> Int -> Qual
 br_qual_at br@(BamRaw _ raw) i = Q $ S.unsafeIndex raw (off0 + i)
   where
     off0 = sum [ 33, br_l_read_name br, 4 * br_n_cigar_op br, (br_l_seq br + 1) `div` 2]
 
 {-# INLINE br_cigar_at #-}
+{-# DEPRECATED br_cigar_at "use unpackBam" #-}
 br_cigar_at :: BamRaw -> Int -> (CigOp, Int)
 br_cigar_at br@(BamRaw _ raw) i = (co,cl)
   where
@@ -410,6 +426,7 @@ br_aln_length br@(BamRaw _ raw)
 
 -- | Get the MD field from a BAM record.  If MD is absent or a parse
 -- error occurs, the result is empty.
+{-# DEPRECATED br_get_md "use unpackBam/getMd instead" #-}
 br_get_md :: BamRaw -> [MdOp]
 br_get_md r = maybe [] id . readMd $ br_extAsString "MD" r
 
@@ -545,6 +562,7 @@ pokeInt32 p o x = do pokeElemOff p  o    . fromIntegral $        x    .&. 0xff
 
 -- Find an extension field, return offset in BamRaw data.
 {-# INLINE br_findExtension #-}
+{-# DEPRECATED br_findExtension "use unpackBam/lookup" #-}
 br_findExtension :: String -> BamRaw -> Maybe (Int,Int,Int)
 br_findExtension [u,v] br@(BamRaw _ r) = go off0
   where

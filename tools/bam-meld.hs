@@ -25,7 +25,6 @@ import System.Exit                              ( exitSuccess, exitFailure )
 import System.IO                                ( hPutStrLn )
 
 import qualified Data.ByteString.Char8 as S
-import qualified Data.Map              as M
 import qualified Data.Sequence         as Z
 
 data Conf = Conf {
@@ -123,7 +122,7 @@ meld hdr score rs | all p_is_unmapped rs = head rs
 
     (xas1, xas2) = foldr enc_xas (foldr get_xas ([],[]) (best:rs')) rs'
 
-    add_xas xas b = b { b_exts = ( "XA", Text (S.intercalate (S.singleton ';') xas)) : (b_exts b) }
+    add_xas xas b = b { b_exts = updateE "XA" (Text (S.intercalate (S.singleton ';') xas)) (b_exts b) }
 
     best' = case best of Single a -> Single (add_xas xas1 a)
                          Pair a b -> Pair (add_xas xas1 a) (add_xas xas2 b)

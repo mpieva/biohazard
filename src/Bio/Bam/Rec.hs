@@ -1,4 +1,12 @@
-{-# LANGUAGE OverloadedStrings, PatternGuards, BangPatterns, NoMonomorphismRestriction, FlexibleContexts, RecordWildCards #-}
+{-# LANGUAGE OverloadedStrings, PatternGuards, BangPatterns #-}
+{-# LANGUAGE NoMonomorphismRestriction, FlexibleContexts, FlexibleInstances #-}
+{-# LANGUAGE RecordWildCards, TypeFamilies, MultiParamTypeClasses #-}
+
+-- | Parsers and Printers for BAM and SAM.  We employ an @Iteratee@
+-- interface, and we strive to support everything possible in BAM.  So
+-- far, the implementation of the nucleotides is somewhat lacking:  we
+-- do not have support for ambiguity codes, and the "=" symbol is not
+-- understood.
 
 -- TODO:
 -- - Automatic creation of some kind of index.  If possible, this should
@@ -23,6 +31,10 @@ module Bio.Bam.Rec (
     decodeBamEntry,
     encodeBamEntry,
     encodeSamEntry,
+    encodeBamWith2,
+    encodeBamRawWith2,
+    pushBam,
+    pushBamRaw,
 
     decodeSam,
     decodeSam',
@@ -40,9 +52,10 @@ module Bio.Bam.Rec (
     nullBamRec,
     getMd,
 
-    Nucleotides(..),
+    Nucleotides(..), Vector_Nucs_half,
     Extensions, Ext(..),
     extAsInt, extAsString, setQualFlag,
+    deleteE, insertE, updateE, adjustE,
 
     isPaired,
     isProperlyPaired,
@@ -66,8 +79,10 @@ import Bio.Base
 import Bio.Bam.Header
 import Bio.Bam.Raw
 import Bio.Iteratee
+import Bio.Iteratee.Builder
 
 import Control.Monad
+import Control.Monad.Primitive      ( unsafePrimToPrim )
 import Control.Applicative
 import Data.Attoparsec.ByteString   ( anyWord8 )
 import Data.Binary.Builder          ( toLazyByteString )
@@ -75,48 +90,48 @@ import Data.Binary.Get
 import Data.Binary.Put
 import Data.Bits                    ( testBit, shiftL, shiftR, (.&.), (.|.), complement )
 import Data.ByteString              ( ByteString )
+import Data.ByteString.Internal     ( inlinePerformIO )
 import Data.Char                    ( ord, digitToInt )
+import Data.Foldable                ( foldMap )
 import Data.Int                     ( Int32, Int16, Int8 )
-import Data.List                    ( lookup )
-import Data.Monoid                  ( mempty )
+import Data.Monoid
 import Data.Vector.Unboxed          ( (!?) )
 import Data.Word                    ( Word32, Word16 )
+import Foreign.ForeignPtr
 import Foreign.Marshal.Alloc        ( alloca )
 import Foreign.Ptr                  ( castPtr )
-import Foreign.Storable             ( peek, poke )
+import Foreign.Storable             ( peek, poke, peekByteOff, pokeByteOff )
 import System.IO
 import System.IO.Unsafe             ( unsafePerformIO )
 
 import qualified Data.Attoparsec.ByteString.Char8   as P
 import qualified Data.ByteString                    as B
 import qualified Data.ByteString.Char8              as S
+import qualified Data.ByteString.Internal           as B
 import qualified Data.ByteString.Lazy.Char8         as L
 import qualified Data.Foldable                      as F
 import qualified Data.Iteratee                      as I
-import qualified Data.Map                           as M
+import qualified Data.Map.Strict                    as M
+import qualified Data.Vector.Generic                as V
+import qualified Data.Vector.Generic.Mutable        as VM
 import qualified Data.Vector.Unboxed                as U
-
--- ^ Parsers and Printers for BAM and SAM.  We employ an @Iteratee@
--- interface, and we strive to support everything possible in BAM.  So
--- far, the implementation of the nucleotides is somewhat lacking:  we
--- do not have support for ambiguity codes, and the "=" symbol is not
--- understood.
+import qualified Data.Sequence                      as Z
 
 -- | internal representation of a BAM record
 data BamRec = BamRec {
-        b_qname :: {-# UNPACK #-} !Seqid,
-        b_flag  :: {-# UNPACK #-} !Int,
-        b_rname :: {-# UNPACK #-} !Refseq,
-        b_pos   :: {-# UNPACK #-} !Int,
-        b_mapq  :: {-# UNPACK #-} !Qual,
+        b_qname :: Seqid,
+        b_flag  :: Int,
+        b_rname :: Refseq,
+        b_pos   :: Int,
+        b_mapq  :: Qual,
         b_cigar :: Cigar,
-        b_mrnm  :: {-# UNPACK #-} !Refseq,
-        b_mpos  :: {-# UNPACK #-} !Int,
-        b_isize :: {-# UNPACK #-} !Int,
-        b_seq   :: !(U.Vector Nucleotides),
-        b_qual  :: !ByteString,         -- ^ quality, may be empty
+        b_mrnm  :: Refseq,
+        b_mpos  :: Int,
+        b_isize :: Int,
+        b_seq   :: Vector_Nucs_half Nucleotides,
+        b_qual  :: ByteString,         -- ^ quality, may be empty
         b_exts  :: Extensions,
-        b_virtual_offset :: {-# UNPACK #-} !FileOffset -- ^ virtual offset for indexing purposes
+        b_virtual_offset :: FileOffset -- ^ virtual offset for indexing purposes
     } deriving Show
 
 nullBamRec :: BamRec
@@ -130,9 +145,9 @@ nullBamRec = BamRec {
         b_mrnm  = invalidRefseq,
         b_mpos  = invalidPos,
         b_isize = 0,
-        b_seq   = U.empty,
+        b_seq   = V.empty,
         b_qual  = S.empty,
-        b_exts  = [], -- M.empty,
+        b_exts  = [],
         b_virtual_offset = 0
     }
 
@@ -162,32 +177,77 @@ decodeAnyBamOrSamFile :: (MonadIO m, MonadMask m)
                       => FilePath -> (BamMeta -> Iteratee [BamRec] m a) -> m (Iteratee [BamRec] m a)
 decodeAnyBamOrSamFile fn k = enumFileRandom defaultBufSize fn (decodeAnyBamOrSam k) >>= run
 
--- | internal representation of a BAM record
+-- | A vector that packs two 'Nucleotides' into one byte, just like Bam does.
+data Vector_Nucs_half a = Vector_Nucs_half !Int !Int !(ForeignPtr Word8)
+
+-- | A mutable vector that packs two 'Nucleotides' into one byte, just like Bam does.
+data MVector_Nucs_half s a = MVector_Nucs_half !Int !Int !(ForeignPtr Word8)
+
+type instance V.Mutable Vector_Nucs_half = MVector_Nucs_half
+
+instance V.Vector Vector_Nucs_half Nucleotides where
+    basicUnsafeFreeze (MVector_Nucs_half o l fp) = return $  Vector_Nucs_half o l fp
+    basicUnsafeThaw    (Vector_Nucs_half o l fp) = return $ MVector_Nucs_half o l fp
+
+    basicLength          (Vector_Nucs_half _ l  _) = l
+    basicUnsafeSlice s l (Vector_Nucs_half o _ fp) = Vector_Nucs_half (o + s) l fp
+
+    basicUnsafeIndexM (Vector_Nucs_half o _ fp) i
+        | even (o+i) = return . Ns $ (b `shiftR` 4) .&. 0xF
+        | otherwise  = return . Ns $  b             .&. 0xF
+      where b = inlinePerformIO $ withForeignPtr fp $ \p -> peekByteOff p ((o+i) `shiftR` 1)
+
+instance VM.MVector MVector_Nucs_half Nucleotides where
+    basicLength          (MVector_Nucs_half _ l  _) = l
+    basicUnsafeSlice s l (MVector_Nucs_half o _ fp) = MVector_Nucs_half (o + s) l fp
+
+    basicOverlaps (MVector_Nucs_half _ _ fp1) (MVector_Nucs_half _ _ fp2) = fp1 == fp2
+    basicUnsafeNew l = unsafePrimToPrim $ MVector_Nucs_half 0 l <$> mallocForeignPtrBytes ((l+1) `shiftR` 1)
+
+    basicUnsafeRead (MVector_Nucs_half o _ fp) i
+        | even (o+i) = liftM (Ns . (.&.) 0xF . (`shiftR` 4)) b
+        | otherwise  = liftM (Ns . (.&.) 0xF               ) b
+      where b = unsafePrimToPrim $ withForeignPtr fp $ \p -> peekByteOff p ((o+i) `shiftR` 1)
+
+    basicUnsafeWrite (MVector_Nucs_half o _ fp) i (Ns x) =
+        unsafePrimToPrim $ withForeignPtr fp $ \p -> do
+            y <- peekByteOff p ((o+i) `shiftR` 1)
+            let y' | even (o+i) = x `shiftL` 4 .|. y .&. 0x0F
+                   | otherwise  = x            .|. y .&. 0xF0
+            pokeByteOff p ((o+i) `shiftR` 1) y'
+
+instance Show (Vector_Nucs_half Nucleotides) where
+    show = show . V.toList
+
+{-# INLINE[1] unpackBam #-}
 unpackBam :: BamRaw -> BamRec
-unpackBam br = BamRec{..}
+unpackBam br = BamRec {
+        b_qname = br_qname br,
+        b_flag  = br_flag br,
+        b_rname = br_rname br,
+        b_pos   = br_pos br,
+        b_mapq  = br_mapq br,
+        b_cigar = Cigar [ br_cigar_at br i | i <- [0..br_n_cigar_op br-1] ],
+        b_mrnm  = br_mrnm br,
+        b_mpos  = br_mpos br,
+        b_isize = br_isize br,
+        b_seq   = Vector_Nucs_half (2 * (off_s+off0)) (br_l_seq br) fp,
+        b_qual  = S.take (br_l_seq br) $ S.drop off_q $ raw_data br,
+        b_exts  = unpackExtensions $ S.drop off_e $ raw_data br,
+        b_virtual_offset = virt_offset br }
   where
-        b_qname = br_qname br
-        b_flag  = br_flag br
-        b_rname = br_rname br
-        b_pos   = br_pos br
-        b_mapq  = br_mapq br
-        b_cigar = Cigar [br_cigar_at br i | i <- [0..br_n_cigar_op br-1]]
-        b_mrnm  = br_mrnm br
-        b_mpos  = br_mpos br
-        b_isize = br_isize br
-        b_seq = U.fromListN (br_l_seq br) [ br_seq_at br i | i <- [0..br_l_seq br-1]]
-        b_qual  = S.take (br_l_seq br) $ S.drop off_q $ raw_data br
-        off_q = sum [ 33, br_l_read_name br, 4 * br_n_cigar_op br, (br_l_seq br + 1) `div` 2]
-        b_exts  = [] -- :: Extensions,
-        b_virtual_offset = virt_offset br
+        (!fp, !off0, _) = B.toForeignPtr (raw_data br)
+        !off_s = sum [ 33, br_l_read_name br, 4 * br_n_cigar_op br ]
+        !off_q = off_s + (br_l_seq br + 1) `div` 2
+        !off_e = off_q +  br_l_seq br
 
-
+{-# DEPRECATED decodeBamEntry "Keep BamRaw if you can, use unpackBam if you must." #-}
 -- | Decodes a raw block into a @BamRec@.
 decodeBamEntry :: BamRaw -> BamRec
 decodeBamEntry br = case pushEndOfInput $ runGetIncremental go `pushChunk` raw_data br of
         Fail _ _ m -> error m
         Partial  _ -> error "incomplete BAM record"
-        Done _ _ r -> fixup_bam_rec r
+        Done _ _ r -> r
   where
     go = do !rid       <- Refseq       <$> getWord32le
             !start     <- fromIntegral <$> getWord32le
@@ -204,11 +264,11 @@ decodeBamEntry br = case pushEndOfInput $ runGetIncremental go `pushChunk` raw_d
             !cigar     <- Cigar . map decodeCigar <$> replicateM cigar_len getWord32le
             !qry_seq   <- getByteString $ (read_len+1) `div` 2
             !qual <- (\qs -> if B.all (0xff ==) qs then B.empty else qs) <$> getByteString read_len
-            !exts <- getExtensions [] -- M.empty
+            !exts <- getExtensions []
 
             return $ BamRec read_name flag rid start mapq cigar
                             mate_rid mate_pos ins_size
-                            (U.fromListN read_len $ expand qry_seq)
+                            (V.fromListN read_len $ expand qry_seq)
                             qual exts (virt_offset br)
 
     expand t = if S.null t then [] else let x = B.head t in Ns (x `shiftR` 4) : Ns (x .&. 0xf) : expand (B.tail t)
@@ -217,60 +277,81 @@ decodeBamEntry br = case pushEndOfInput $ runGetIncremental go `pushChunk` raw_d
                   | otherwise = error "unknown Cigar operation"
       where cc = fromIntegral c .&. 0xf; cl = fromIntegral c `shiftR` 4
 
--- | fixes BAM records for changed conventions
-fixup_bam_rec :: BamRec -> BamRec
-fixup_bam_rec b =
-    (if b_flag b .&. flagLowQuality /= 0 then setQualFlag 'Q' else id) $          -- low qual, new convention
-    (if b_flag b .&. flagLowComplexity /= 0 then setQualFlag 'C' else id) $       -- low complexity, new convention
-    b { b_flag = fixPP $ oflags .|. muflag .|. tflags .|. shiftL eflags 16        -- extended flags
-      , b_exts = cleaned_exts }
-  where
-        -- removes old flag abuse
-        flags' = b_flag b .&. complement (flagLowQuality .|. flagLowComplexity)
-        oflags | flags' .&. flagPaired == 0 = flags' .&. complement (flagFirstMate .|. flagSecondMate)
-               | otherwise                  = flags'
-
-        -- set "mate unmapped" if self coordinates and mate coordinates are equal, but self is paired and mapped
-        -- (BWA forgets this flag for invalid mate alignments)
-        muflag = if mu then flagMateUnmapped else 0
-        mu = and [ isPaired b, not (isUnmapped b)
-                 , isReversed b == isMateReversed b
-                 , b_rname b == b_mrnm b, b_pos b == b_mpos b ]
-
-        -- merged & trimmed from old flag abuse
-        is_merged  = flags' .&. (flagPaired .|. flagFirstMate .|. flagSecondMate) == flagFirstMate .|. flagSecondMate
-        is_trimmed = flags' .&. (flagPaired .|. flagFirstMate .|. flagSecondMate) == flagSecondMate
-
-        tflags = (if is_merged  then flagMerged  else 0) .|.
-                 (if is_trimmed then flagTrimmed else 0)
-
-        -- extended flags, renamed to avoid collision with BWA
-        -- Goes like this:  if FF is there, use and remove it.  Else
-        -- check if XF is there _and_is_numeric_.  If so, use it and
-        -- remove it.  Else use 0 and leave it alone.  Note that this
-        -- solves the collision with BWA, since BWA puts a character
-        -- there, not an int.
-        (eflags, cleaned_exts) = case (lookup "FF" (b_exts b), lookup "XF" (b_exts b)) of
-                ( Just (Int i), _ ) -> (i, filter ((/=) "FF".fst) (b_exts b))
-                ( _, Just (Int i) ) -> (i, filter ((/=) "XF".fst) (b_exts b))
-                (       _,_       ) -> (0,                         b_exts b )
-
-        -- if either mate is unmapped, remove "properly paired"
-        fixPP f | f .&. (flagUnmapped .|. flagMateUnmapped) == 0 = f
-                | otherwise = f .&. complement flagProperlyPaired
-
-        flagLowQuality    =  0x800
-        flagLowComplexity = 0x1000
-
 -- | A collection of extension fields.  The key is actually only two @Char@s, but that proved impractical.
 -- (Hmm... we could introduce a Key type that is a 16 bit int, then give
 -- it an @instance IsString@... practical?)
--- type Extensions = M.Map String Ext
 type Extensions = [( String, Ext )]
+
+-- | Deletes all occurences of some extension field.
+deleteE :: String -> Extensions -> Extensions
+deleteE k = filter ((/=) k . fst)
+
+-- | Blindly inserts an extension field.  This can create duplicates
+-- (and there is no telling how other tools react to that).
+insertE :: String -> Ext -> Extensions -> Extensions
+insertE k v = (:) (k,v)
+
+-- | Deletes all occurences of an extension field, then inserts it with
+-- a new value.  This is safer than 'insertE', but also more expensive.
+updateE :: String -> Ext -> Extensions -> Extensions
+updateE k v = insertE k v . deleteE k
+
+-- | Adjusts a named extension by applying a function.
+adjustE :: (Ext -> Ext) -> String -> Extensions -> Extensions
+adjustE _ _ [         ]             = []
+adjustE f k ((k',v):es) | k  ==  k' = (k', f v) : es
+                        | otherwise = (k',   v) : adjustE f k es
 
 data Ext = Int Int | Float Float | Text ByteString | Bin ByteString | Char Word8
          | IntArr (U.Vector Int) | FloatArr (U.Vector Float)
     deriving (Show, Eq, Ord)
+
+{-# INLINE unpackExtensions #-}
+unpackExtensions :: ByteString -> Extensions
+unpackExtensions = go
+  where
+    go s | S.length s < 4 = []
+         | otherwise = let key = [ S.index s 0, S.index s 1 ]
+                       in case S.index s 2 of
+                         'Z' -> case S.break (== '\0') (S.drop 3 s) of (l,r) -> (key, Text l) : go (S.drop 1 r)
+                         'H' -> case S.break (== '\0') (S.drop 3 s) of (l,r) -> (key, Bin  l) : go (S.drop 1 r)
+                         'A' -> (key, Char (B.index s 3)) : go (S.drop 4 s)
+                         'B' -> let tp = S.index s 3
+                                    n  = getInt 'I' (S.drop 4 s)
+                                in case tp of
+                                      'f' -> (key, FloatArr (U.fromListN (n+1) [ getFloat (S.drop i s) | i <- [8, 12 ..] ]))
+                                             : go (S.drop (12+4*n) s)
+                                      _   -> (key, IntArr (U.fromListN (n+1) [ getInt tp (S.drop i s) | i <- [8, 8 + size tp ..] ]))
+                                             : go (S.drop (8 + size tp * (n+1)) s)
+                         'f' -> (key, Float (getFloat (S.drop 3 s))) : go (S.drop 7 s)
+                         tp  -> (key, Int  (getInt tp (S.drop 3 s))) : go (S.drop (3 + size tp) s)
+
+    size 'C' = 1
+    size 'c' = 1
+    size 'S' = 2
+    size 's' = 2
+    size 'I' = 4
+    size 'i' = 4
+    size 'f' = 4
+    size  _  = 0
+
+    getInt 'C' s | S.length s >= 1 = fromIntegral (fromIntegral (B.index s 0) :: Word8)
+    getInt 'c' s | S.length s >= 1 = fromIntegral (fromIntegral (B.index s 0) ::  Int8)
+    getInt 'S' s | S.length s >= 2 = fromIntegral                               (i :: Word16)
+        where i = fromIntegral (B.index s 0) .|. fromIntegral (B.index s 1) `shiftL` 8
+    getInt 's' s | S.length s >= 2 = fromIntegral                               (i ::  Int16)
+        where i = fromIntegral (B.index s 0) .|. fromIntegral (B.index s 1) `shiftL` 8
+    getInt 'I' s | S.length s >= 4 = fromIntegral                               (i :: Word32)
+        where i = fromIntegral (B.index s 0)             .|. fromIntegral (B.index s 1) `shiftL`  8 .|.
+                  fromIntegral (B.index s 2) `shiftL` 16 .|. fromIntegral (B.index s 3) `shiftL` 24
+    getInt 'i' s | S.length s >= 4 = fromIntegral                               (i ::  Int32)
+        where i = fromIntegral (B.index s 0)             .|. fromIntegral (B.index s 1) `shiftL`  8 .|.
+                  fromIntegral (B.index s 2) `shiftL` 16 .|. fromIntegral (B.index s 3) `shiftL` 24
+    getInt _ _ = 0
+
+    getFloat s = unsafePerformIO $ alloca $ \buf ->
+                 poke (castPtr buf) (getInt 'I' s :: Word32) >> peek buf
+
 
 getExtensions :: Extensions -> Get Extensions
 getExtensions m = getExt <|> return m
@@ -279,7 +360,7 @@ getExtensions m = getExt <|> return m
     getExt = do
             key <- (\a b -> [w2c a, w2c b]) <$> getWord8 <*> getWord8
             typ <- getWord8
-            let cont v = getExtensions $! (key, v) : m
+            let cont v = getExtensions $ insertE key v m
             case w2c typ of
                     'Z' -> cont . Text =<< getByteStringNul
                     'H' -> cont . Bin  =<< getByteStringNul
@@ -289,23 +370,22 @@ getExtensions m = getExt <|> return m
                               n <- fromIntegral <$> getWord32le
                               case w2c tp of
                                  'f' -> cont . FloatArr . U.fromListN (n+1) . map to_float =<< replicateM (n+1) getWord32le
-                                 x | Just get <- M.lookup x get_some_int -> cont . IntArr . U.fromListN (n+1) =<< replicateM (n+1) get
-                                   | otherwise                           -> fail $ "array type code " ++ show x ++ " not recognized"
-                    x | Just get <- M.lookup x get_some_int -> cont . Int =<< get
-                      | otherwise                           -> fail $ "type code " ++ show x ++ " not recognized"
+                                 x   -> get_some_int x (\get ->  cont . IntArr . U.fromListN (n+1) =<< replicateM (n+1) get)
+                                                       (fail $ "array type code " ++ show x ++ " not recognized")
+                    x   -> get_some_int x (cont . Int =<<) (fail $ "type code " ++ show x ++ " not recognized")
 
     to_float :: Word32 -> Float
     to_float word = unsafePerformIO $ alloca $ \buf ->
                     poke (castPtr buf) word >> peek buf
 
-    get_some_int :: M.Map Char (Get Int)
-    get_some_int = M.fromList $ zip "CcSsIi" [
-                        fromIntegral                                     <$> getWord8,
-                        fromIntegral . (fromIntegral ::  Word8 ->  Int8) <$> getWord8,
-                        fromIntegral                                     <$> getWord16le,
-                        fromIntegral . (fromIntegral :: Word16 -> Int16) <$> getWord16le,
-                        fromIntegral                                     <$> getWord32le,
-                        fromIntegral . (fromIntegral :: Word32 -> Int32) <$> getWord32le ]
+    get_some_int :: Char -> (Get Int -> a) -> a -> a
+    get_some_int 'C' k _ = k (fromIntegral                                     <$> getWord8)
+    get_some_int 'c' k _ = k (fromIntegral . (fromIntegral ::  Word8 ->  Int8) <$> getWord8)
+    get_some_int 'S' k _ = k (fromIntegral                                     <$> getWord16le)
+    get_some_int 's' k _ = k (fromIntegral . (fromIntegral :: Word16 -> Int16) <$> getWord16le)
+    get_some_int 'I' k _ = k (fromIntegral                                     <$> getWord32le)
+    get_some_int 'i' k _ = k (fromIntegral . (fromIntegral :: Word32 -> Int32) <$> getWord32le)
+    get_some_int  _  _ f = f
 
 
 
@@ -327,7 +407,7 @@ encodeBamEntry = bamRaw 0 . S.concat . L.toChunks . runPut . putEntry
                      put_int_16    $ distinctBin (b_pos b) (cigarToAlnLen (b_cigar b))
                      put_int_16    $ length $ unCigar $ b_cigar b
                      put_int_16    $ b_flag b
-                     put_int_32    $ U.length $ b_seq b
+                     put_int_32    $ V.length $ b_seq b
                      putWord32le   $ unRefseq $ b_mrnm b
                      put_int_32    $ b_mpos b
                      put_int_32    $ b_isize b
@@ -336,7 +416,7 @@ encodeBamEntry = bamRaw 0 . S.concat . L.toChunks . runPut . putEntry
                      mapM_ (put_int_32 . encodeCigar) $ unCigar $ b_cigar b
                      putSeq $ b_seq b
                      putByteString $ if not (S.null (b_qual b)) then b_qual b
-                                     else B.replicate (U.length $ b_seq b) 0xff
+                                     else B.replicate (V.length $ b_seq b) 0xff
                      forM_ (more_exts b) $ \(k,v) ->
                         case k of [c,d] -> putChr c >> putChr d >> putValue v
                                   _     -> error $ "invalid field key " ++ show k
@@ -344,18 +424,17 @@ encodeBamEntry = bamRaw 0 . S.concat . L.toChunks . runPut . putEntry
     more_exts :: BamRec -> Extensions
     more_exts b = if xf /= 0 then x' else b_exts b
         where xf = b_flag b `shiftR` 16
-              x' = ( "FF", Int xf ) : b_exts b
+              x' = insertE "FF" (Int xf) $ b_exts b
 
     encodeCigar :: (CigOp,Int) -> Int
     encodeCigar (op,l) = fromEnum op .|. l `shiftL` 4
 
-    putSeq :: U.Vector Nucleotides -> Put
-    putSeq v = case v !? 0 of
+    putSeq v = case v V.!? 0 of
                  Nothing -> return ()
-                 Just a  -> case v !? 1 of
+                 Just a  -> case v V.!? 1 of
                     Nothing -> putWord8 (unNs a `shiftL` 4)
                     Just b  -> do putWord8 (unNs a `shiftL` 4 .|. unNs b)
-                                  putSeq (U.drop 2 v)
+                                  putSeq (V.drop 2 v)
 
 -- | writes BAM encoded stuff to a @Handle@
 -- We generate BAM with dynamic blocks, then stream them out to the file.
@@ -464,7 +543,7 @@ extAsString nm br = case lookup nm (b_exts br) of
 
 
 setQualFlag :: Char -> BamRec -> BamRec
-setQualFlag c br = br { b_exts = ("ZQ", Text s') : filter ((/=) "ZQ" . fst) (b_exts br) }
+setQualFlag c br = br { b_exts = updateE "ZQ" (Text s') $ b_exts br }
   where
     s  = extAsString "ZQ" br
     s' = if c `S.elem` s then s else c `S.cons` s
@@ -491,7 +570,7 @@ decodeSamLoop refs inner = I.convStream (liftI parse_record) inner
         parse_record (Chunk []) = liftI parse_record
         parse_record (Chunk (l:ls)) | "@" `S.isPrefixOf` l = parse_record (Chunk ls)
         parse_record (Chunk (l:ls)) = case P.parseOnly (parseSamRec ref) l of
-            Right  r -> idone [fixup_bam_rec r] (Chunk ls)
+            Right  r -> idone [r] (Chunk ls)
             Left err -> icont parse_record (Just $ iterStrExc $ err ++ ", " ++ show l)
 
 -- | Parser for SAM that doesn't look for a header.  Has the advantage
@@ -514,8 +593,8 @@ parseSamRec ref = (\nm fl rn po mq cg rn' -> BamRec nm fl rn po mq cg (rn' rn))
 
     rnext    = id <$ P.char '=' <* sep <|> const . ref <$> word
     sequ     = {-# SCC "parseSamRec/sequ" #-}
-               (U.empty <$ P.char '*' <|>
-               U.fromList . map toNucleotides . S.unpack <$> P.takeWhile (P.inClass "acgtnACGTN")) <* sep
+               (V.empty <$ P.char '*' <|>
+               V.fromList . map toNucleotides . S.unpack <$> P.takeWhile is_nuc) <* sep
 
     quals    = {-# SCC "parseSamRec/quals" #-} B.empty <$ P.char '*' <* sep <|> B.map (subtract 33) <$> word
 
@@ -539,6 +618,7 @@ parseSamRec ref = (\nm fl rn po mq cg rn' -> BamRec nm fl rn po mq cg (rn' rn))
     floatArr fs = FloatArr $ U.fromList $ map realToFrac fs
     hexarray    = B.pack . repack . S.unpack <$> P.takeWhile (P.inClass "0-9A-Fa-f")
     repack (a:b:cs) = fromIntegral (digitToInt a * 16 + digitToInt b) : repack cs ; repack _ = []
+    is_nuc = P.inClass "acgtswkmrybdhvnACGTSWKMRYBDHVN"
 
 encodeSamEntry :: Refs -> BamRec -> String -> String
 encodeSamEntry refs b = conjoin '\t' [
@@ -551,7 +631,7 @@ encodeSamEntry refs b = conjoin '\t' [
     unpck (sq_name $ getRef refs $ b_mrnm b),
     shows (b_mpos b + 1),
     shows (b_isize b + 1),
-    shows (U.toList $ b_seq b),
+    shows (V.toList $ b_seq b),
     unpck (B.map (+33) $ b_qual b) ] .
     foldr (\(k,v) f -> (:) '\t' . (++) k . (:) ':' . extToSam v . f) id (b_exts b)
   where
@@ -569,4 +649,134 @@ encodeSamEntry refs b = conjoin '\t' [
     tohex = B.foldr (\c f -> w2d (c `shiftR` 4) . w2d (c .&. 0xf) . f) id
     w2d = (:) . S.index "0123456789ABCDEF" . fromIntegral
     sarr = conjoin ',' . map shows . U.toList
+
+-- | Encodes BAM records straight into a dynamic buffer, the BGZF's it.
+-- Should be fairly direct and perform well.
+{-# INLINE encodeBamWith2 #-}
+encodeBamWith2 :: MonadIO m => Int -> BamMeta -> Enumeratee [BamRec] B.ByteString m a
+encodeBamWith2 lv meta = joinI . eneeBam . encodeBgzfWith lv
+  where
+    eneeBam  = eneeCheckIfDone (\k -> mapChunks (foldMap pushBam) . k $ Chunk pushHeader)
+
+    pushHeader = pushByteString "BAM\1"
+              <> setMark                        -- the length byte
+              <> pushBuilder (showBamMeta meta)
+              <> endRecord                      -- fills the length in
+              <> pushWord32 (fromIntegral . Z.length $ meta_refs meta)
+              <> foldMap pushRef (meta_refs meta)
+
+    pushRef bs = ensureBuffer     (fromIntegral $ B.length (sq_name bs) + 9)
+              <> unsafePushWord32 (fromIntegral $ B.length (sq_name bs) + 1)
+              <> unsafePushByteString (sq_name bs)
+              <> unsafePushByte 0
+              <> unsafePushWord32 (fromIntegral $ sq_length bs)
+
+{-# INLINE encodeBamRawWith2 #-}
+encodeBamRawWith2 :: MonadIO m => Int -> BamMeta -> Enumeratee [BamRaw] B.ByteString m a
+encodeBamRawWith2 lv meta = joinI . eneeBam . encodeBgzfWith lv
+  where
+    eneeBam  = eneeCheckIfDone (\k -> mapChunks (foldMap pushBamRaw) . k $ Chunk pushHeader)
+
+    pushHeader = pushByteString "BAM\1"
+              <> setMark                        -- the length byte
+              <> pushBuilder (showBamMeta meta)
+              <> endRecord                      -- fills the length in
+              <> pushWord32 (fromIntegral . Z.length $ meta_refs meta)
+              <> foldMap pushRef (meta_refs meta)
+
+    pushRef bs = ensureBuffer     (fromIntegral $ B.length (sq_name bs) + 9)
+              <> unsafePushWord32 (fromIntegral $ B.length (sq_name bs) + 1)
+              <> unsafePushByteString (sq_name bs)
+              <> unsafePushByte 0
+              <> unsafePushWord32 (fromIntegral $ sq_length bs)
+
+{-# INLINE pushBamRaw #-}
+pushBamRaw :: BamRaw -> Push
+pushBamRaw br = ensureBuffer (B.length (raw_data br) + 4)
+             <> unsafePushWord32 (fromIntegral $ B.length (raw_data br))
+             <> unsafePushByteString (raw_data br)
+
+{-# RULES
+    "pushBam/unpackBam"     forall b . pushBam (unpackBam b) = pushBamRaw b
+  #-}
+
+{-# INLINE[1] pushBam #-}
+pushBam :: BamRec -> Push
+pushBam BamRec{..} = mconcat
+    [ ensureBuffer minlength
+    , unsafeSetMark
+    , unsafePushWord32 (unRefseq b_rname)
+    , unsafePushWord32 (fromIntegral b_pos)
+    , unsafePushByte (fromIntegral $ B.length b_qname +1)
+    , unsafePushByte (unQ b_mapq)
+    , unsafePushWord16 (fromIntegral bin)
+    , unsafePushWord16 (fromIntegral $ length $ unCigar b_cigar)
+    , unsafePushWord16 (fromIntegral b_flag)
+    , unsafePushWord32 (fromIntegral $ V.length b_seq)
+    , unsafePushWord32 (unRefseq b_mrnm)
+    , unsafePushWord32 (fromIntegral b_mpos)
+    , unsafePushWord32 (fromIntegral b_isize)
+    , unsafePushByteString b_qname
+    , unsafePushByte 0
+    , foldMap (unsafePushWord32 . encodeCigar) (unCigar b_cigar)
+    , pushSeq b_seq
+    , unsafePushByteString b_qual
+    , foldMap pushExt b_exts
+    , endRecord ]
+  where
+    bin = distinctBin b_pos (cigarToAlnLen b_cigar)
+    minlength = 37 + B.length b_qname + 4 * length (unCigar b_cigar) + B.length b_qual + (V.length b_seq + 1) `shiftR` 1
+    encodeCigar (op,l) = fromIntegral $ fromEnum op .|. l `shiftL` 4
+
+    pushSeq :: V.Vector vec Nucleotides => vec Nucleotides -> Push
+    pushSeq v = case v V.!? 0 of
+                    Nothing -> mempty
+                    Just a  -> case v V.!? 1 of
+                        Nothing -> unsafePushByte (unNs a `shiftL` 4)
+                        Just b  -> unsafePushByte (unNs a `shiftL` 4 .|. unNs b)
+                                   <> pushSeq (V.drop 2 v)
+
+    pushExt :: (String, Ext) -> Push
+    pushExt ([k1,k2], e) = case e of
+        Text t -> common (4 + B.length t) 'Z' $
+                  unsafePushByteString t <> unsafePushByte 0
+
+        Bin  t -> common (4 + B.length t) 'H' $
+                  unsafePushByteString t <> unsafePushByte 0
+
+        Char c -> common 4 'A' $ unsafePushByte c
+
+        Float f -> common 7 'f' $ unsafePushWord32 (fromIntegral $ fromFloat f)
+
+        Int i   -> case put_some_int (U.singleton i) of
+                        (c,op) -> common 7 c (op i)
+
+        IntArr  ia -> case put_some_int ia of
+                        (c,op) -> common (4 * U.length ia) 'B' $ unsafePushByte (fromIntegral $ ord c)
+                                  <> unsafePushWord32 (fromIntegral $ U.length ia-1)
+                                  <> U.foldr ((<>) . op) mempty ia
+
+        FloatArr fa -> common (4 * U.length fa) 'B' $ unsafePushByte (fromIntegral $ ord 'f')
+                       <> unsafePushWord32 (fromIntegral $ U.length fa-1)
+                       <> U.foldr ((<>) . unsafePushWord32 . fromFloat) mempty fa
+      where
+        common l z b = ensureBuffer l <> unsafePushByte (fromIntegral $ ord k1)
+                   <> unsafePushByte (fromIntegral $ ord k2)
+                   <> unsafePushByte (fromIntegral $ ord z) <> b
+
+        put_some_int :: U.Vector Int -> (Char, Int -> Push)
+        put_some_int is
+            | U.all (between        0    0xff) is = ('C', unsafePushByte . fromIntegral)
+            | U.all (between   (-0x80)   0x7f) is = ('c', unsafePushByte . fromIntegral)
+            | U.all (between        0  0xffff) is = ('S', unsafePushWord16 . fromIntegral)
+            | U.all (between (-0x8000) 0x7fff) is = ('s', unsafePushWord16 . fromIntegral)
+            | U.all                      (> 0) is = ('I', unsafePushWord32 . fromIntegral)
+            | otherwise                           = ('i', unsafePushWord32 . fromIntegral)
+
+        between :: Int -> Int -> Int -> Bool
+        between l r x = l <= x && x <= r
+
+        fromFloat :: Float -> Word32
+        fromFloat float = unsafePerformIO $ alloca $ \buf ->
+                          poke (castPtr buf) float >> peek buf
 

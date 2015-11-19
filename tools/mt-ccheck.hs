@@ -229,11 +229,12 @@ classify_stream dps adna = foldStreamM classify_read (Summary IM.empty, HM.empty
     classify0 = classify_read_set dps adna
 
     classify_read (summary, iters) rd = do
-        let it = HM.lookupDefault classify0 (br_qname rd) iters
+        let nm = b_qname $ unpackBam rd
+        let it = HM.lookupDefault classify0 nm iters
         (isdone, it') <- enumPure1Chunk [rd] it >>= enumCheckIfDone
         if isdone then do cl <- run it'
-                          return (sum_count cl summary, HM.delete (br_qname rd) iters)
-                  else return (summary, HM.insert (br_qname rd) it' iters)
+                          return (sum_count cl summary, HM.delete nm iters)
+                  else return (summary, HM.insert nm it' iters)
 
     finish (summary, iters) = foldM (\s it -> flip sum_count s `liftM` run it) summary $ HM.elems iters
 

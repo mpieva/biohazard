@@ -36,7 +36,6 @@ import qualified Data.ByteString.Char8      as S
 import qualified Data.ByteString.Lazy.Char8 as L
 import qualified Data.Foldable              as F
 import qualified Data.Iteratee              as I
-import qualified Data.Map                   as M
 import qualified Data.Sequence              as Z
 import qualified Data.Vector.Unboxed        as U
 
@@ -288,6 +287,7 @@ maybe_read_two fp e1 = (\k -> liftIO (check_r2 fp) >>= maybe (rd1 k) (rd2 k)) $=
                               (enumFile defaultBufSize fp' $= e1)
                               (convStream unite_pairs) k
 
+-- No, we don't need to 'removeWarts'.  This input is, of course, a special case.  :-(
 unzipFastq :: (MonadIO m, MonadMask m) => Enumeratee S.ByteString [BamRec] m b
 unzipFastq = ZLib.enumInflateAny ><> parseFastq
 

@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings, FlexibleContexts #-}
 module Bio.Bam.Fastq (
-    parseFastq, parseFastq', parseFastqCassava, removeWarts
+    parseFastq, parseFastq', parseFastqCassava
                      ) where
 
 import Bio.Bam.Header
@@ -15,8 +15,7 @@ import qualified Data.Attoparsec.ByteString.Char8   as P
 import qualified Data.ByteString                    as B
 import qualified Data.ByteString.Char8              as S
 import qualified Data.Iteratee.ListLike             as I
-import qualified Data.Map                           as M
-import qualified Data.Vector.Unboxed                as V
+import qualified Data.Vector.Generic                as V
 
 -- ^ Parser for @FastA/FastQ@, 'Iteratee' style, based on
 -- "Data.Attoparsec", and written such that it is compatible with module
@@ -66,6 +65,7 @@ import qualified Data.Vector.Unboxed                as V
 -- There must be exactly as many Q-scores as there are bases, followed
 -- immediately by a header or end-of-file.  Whitespace is ignored.
 
+{-# WARNING parseFastq "parseFastq no longer removes syntactic warts!" #-}
 parseFastq :: Monad m => Enumeratee S.ByteString [ BamRec ] m a
 parseFastq = parseFastq' (const id)
 
@@ -76,7 +76,7 @@ parseFastqCassava = parseFastq' (pdesc . S.split ':' . S.takeWhile (' ' /=))
                                                    , if num == "2" then flagSecondMate .|. flagPaired else 0
                                                    , if flg == "Y" then flagFailsQC else 0
                                                    , b_flag br .&. complement (flagFailsQC .|. flagSecondMate .|. flagPaired) ]
-                                    , b_exts = if S.all (`S.elem` "ACGTN") idx then ( "XI", Text idx ) : (b_exts br) else b_exts br }
+                                    , b_exts = if S.all (`S.elem` "ACGTN") idx then insertE "XI" (Text idx) (b_exts br) else b_exts br }
     pdesc _ br = br
 
 -- | Same as 'parseFastq', but a custom function can be applied to the
@@ -84,6 +84,7 @@ parseFastqCassava = parseFastq' (pdesc . S.split ':' . S.takeWhile (' ' /=))
 -- which can modify the parsed record.  Note that the quality field can
 -- end up empty.
 
+{-# WARNING parseFastq' "parseFastq' no longer removes syntactic warts!" #-}
 parseFastq' :: Monad m => ( S.ByteString -> BamRec -> BamRec )
                        -> Enumeratee S.ByteString [ BamRec ] m a
 parseFastq' descr it = do skipJunk ; convStream (parserToIteratee $ (:[]) <$> pRec) it
@@ -112,34 +113,8 @@ skipJunk = I.peek >>= check
     bad c = c /= c2w '>' && c /= c2w '@'
 
 makeRecord :: Seqid -> (BamRec->BamRec) -> (String, S.ByteString) -> BamRec
-makeRecord name extra (sq,qual) = extra $ removeWarts $ nullBamRec
+makeRecord name extra (sq,qual) = extra $ nullBamRec
         { b_qname = name, b_seq = V.fromList $ read sq, b_qual = qual }
-
--- | Remove syntactic warts from old read names.
-removeWarts :: BamRec -> BamRec
-removeWarts br = br { b_qname = name, b_flag = flags, b_exts = tags }
-  where
-    (name, flags, tags) = checkFR $ checkC $ checkSharp (b_qname br, b_flag br, b_exts br)
-
-    checkFR (n,f,t) | "F_" `S.isPrefixOf` n = checkC (S.drop 2 n, f .|. flagFirstMate  .|. flagPaired, t)
-                    | "R_" `S.isPrefixOf` n = checkC (S.drop 2 n, f .|. flagSecondMate .|. flagPaired, t)
-                    | "M_" `S.isPrefixOf` n = checkC (S.drop 2 n, f .|. flagMerged,                    t)
-                    | "T_" `S.isPrefixOf` n = checkC (S.drop 2 n, f .|. flagTrimmed,                   t)
-                    | "/1" `S.isSuffixOf` n =        ( rdrop 2 n, f .|. flagFirstMate  .|. flagPaired, t)
-                    | "/2" `S.isSuffixOf` n =        ( rdrop 2 n, f .|. flagSecondMate .|. flagPaired, t)
-                    | otherwise             =        (         n, f,                                   t)
-
-    checkC (n,f,t) | "C_" `S.isPrefixOf` n  = (S.drop 2 n, f, ( "XP", Int (-1)) : t)
-                   | otherwise              = (         n, f,                          t)
-
-    rdrop n s = S.take (S.length s - n) s
-
-    checkSharp (n,f,t) = case S.split '#' n of [n',ts] -> (n', f, insertTags ts t)
-                                               _       -> ( n, f,               t)
-
-    insertTags ts t | S.null y  = ( "XI", Text ts) : t
-                    | otherwise = ( "XI", Text  x) : ( "XJ", Text $ S.tail y) : t
-        where (x,y) = S.break (== ',') ts
 
 ----------------------------------------------------------------------------
 

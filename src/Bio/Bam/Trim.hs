@@ -10,7 +10,6 @@ import Bio.Base
 import Data.Bits ( testBit )
 import Data.List ( inits )
 import qualified Data.ByteString     as S
-import qualified Data.Map            as M
 import qualified Data.Vector.Generic as V
 
 -- | Trims from the 3' end of a sequence.
@@ -49,13 +48,13 @@ trim_3 l b | b_flag b `testBit` 4 = trim_rev
                in b { b_seq   = V.take (V.length (b_seq  b) - l) (b_seq  b)
                     , b_qual  = S.take (S.length (b_qual b) - l) (b_qual b)
                     , b_cigar = cigar'
-                    , b_exts  = filter ((/=) "MD" . fst) (b_exts b) }
+                    , b_exts  = deleteE "MD" (b_exts b) }
 
     trim_rev = let (off, cigar') = trim_fwd_cigar (b_cigar b) l
                in b { b_seq   = V.drop l (b_seq  b)
                     , b_qual  = S.drop l (b_qual b)
                     , b_cigar = cigar'
-                    , b_exts  = filter ((/=) "MD" . fst) (b_exts b)
+                    , b_exts  = deleteE "MD" (b_exts b)
                     , b_pos   = b_pos b + off
                     }
 
