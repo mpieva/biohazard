@@ -443,23 +443,25 @@ main = do
                             let hdr' = hdr { meta_other_shit =
                                               [ os | os@(x,y,_) <- meta_other_shit hdr, x /= 'R' || y /= 'G' ] ++
                                               HM.elems (HM.fromList [ (rgid, ('R','G', ('I','D',rgid):tags)) | RG{..} <- rgdefs ] ) }
-
-                                clean_flags (Text t) = Text $ BS.filter (\c -> c /= 'C' && c /= 'I' && c /= 'W') t
-                                clean_flags        x = x
-
                             in mapStreamM (\br -> do
-                                    let x = fromTags "XI" "YI" br
-                                        y = fromTags "XJ" "YJ" br
-                                    (p,i7,i5) <- class1 rgs (unique_indices p7is) (unique_indices p5is) mix (x,y)
+                                    (p,i7,i5) <- class1 rgs (unique_indices p7is) (unique_indices p5is) mix
+                                                            (fromTags "XI" "YI" br, fromTags "XJ" "YJ" br)
                                     let q = negate . round $ 10 / log 10 * log p
                                         b = unpackBam br
                                         rg = T.encodeUtf8 $ T.concat [ ns7 V.! i7, ",", ns5 V.! i5 ]
-                                        b' = b { b_exts = deleteE "ZR" . deleteE "Z0" . deleteE "Z2"
-                                                        . updateE "Z1" (Int q) . adjustE clean_flags "ZQ"
-                                                        $ case HM.lookup (i7,i5) rgs of
-                                                            Nothing | cf_pedantic -> deleteE "RG" $ b_exts b
-                                                                    | otherwise   -> updateE "RG" (Text rg) $ b_exts b
-                                                            Just (rgn,_)          -> updateE "RG" (Text rgn) $ b_exts b }
+                                        ex = deleteE "ZR" . deleteE "Z0" . deleteE "Z2" . updateE "Z1" (Int q) $
+                                             case HM.lookup (i7,i5) rgs of
+                                               Nothing | cf_pedantic -> deleteE "RG" $ b_exts b
+                                                       | otherwise   -> updateE "RG" (Text rg) $ b_exts b
+                                               Just (rgn,_)          -> updateE "RG" (Text rgn) $ b_exts b
+                                        b' = case lookup "ZQ" ex of
+                                                Just (Text t) | BS.null t' -> b { b_exts = deleteE "ZQ" ex
+                                                                                , b_flag = b_flag b .&. complement flagFailsQC }
+                                                              | otherwise  -> b { b_exts = updateE "ZQ" (Text t') ex }
+                                                  where
+                                                    t' = BS.filter (\c -> c /= 'C' && c /= 'I' && c /= 'W') t
+                                                _                          -> b { b_exts = ex
+                                                                                , b_flag = b_flag b .&. complement flagFailsQC }
                                     return $ encodeBamEntry b') =$
                                progressNum "writing " info =$
                                out (add_pg hdr')

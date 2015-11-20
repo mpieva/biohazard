@@ -1,6 +1,5 @@
--- vim:tw=132
 Name:                biohazard
-Version:             0.5.15.3
+Version:             0.5.15.4
 Synopsis:            bioinformatics support library
 Description:         This is a collection of modules I separated from
                      various bioinformatics tools.  The hope is to make
@@ -17,7 +16,6 @@ Author:              Udo Stenzel
 Maintainer:          udo.stenzel@eva.mpg.de
 Copyright:           (C) 2010-2015 Udo Stenzel
 
--- Extra files to be distributed with the package, such as examples or a README.
 Extra-Source-Files:  man/man7/biohazard.7
                      man/man1/bam-meld.1
                      man/man1/bam-rewrap.1
@@ -39,7 +37,7 @@ source-repository head
 source-repository this
   type:     git
   location: git://github.com/udo-stenzel/biohazard.git
-  tag:      0.5.15.3
+  tag:      0.5.15.4
 
 
 Library
@@ -72,7 +70,6 @@ Library
 
   Other-modules:       Paths_biohazard
 
-  -- Packages needed in order to build this package.
   Build-depends:       aeson                    >= 0.7 && < 0.9,
                        array                    >= 0.4 && < 0.6,
                        async                    == 2.0.*,
@@ -112,8 +109,7 @@ Library
   -- Other-modules:       
 
   -- Extra tools (e.g. alex, hsc2hs, ...) needed to build the source.
-  -- Build-tools:
-
+  -- Build-tools:         
 
 -- Test-Suite test-biohazard
   -- Ghc-options:         -Wall -auto-all -threaded -rtsopts -with-rtsopts=-N
@@ -305,4 +301,4 @@ executable wiggle-coverage
   Build-depends:       base,
                        biohazard
 
--- vim:tw=132
+-- :vim:tw=132:
