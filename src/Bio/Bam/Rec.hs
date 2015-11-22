@@ -95,6 +95,7 @@ import Data.Char                    ( ord, digitToInt )
 import Data.Foldable                ( foldMap )
 import Data.Int                     ( Int32, Int16, Int8 )
 import Data.Monoid
+import Data.String                  ( fromString )
 import Data.Vector.Unboxed          ( (!?) )
 import Data.Word                    ( Word32, Word16 )
 import Foreign.ForeignPtr
@@ -102,7 +103,7 @@ import Foreign.Marshal.Alloc        ( alloca )
 import Foreign.Ptr                  ( castPtr )
 import Foreign.Storable             ( peek, poke, peekByteOff, pokeByteOff )
 import System.IO
-import System.IO.Unsafe             ( unsafePerformIO )
+import System.IO.Unsafe             ( unsafeDupablePerformIO )
 
 import qualified Data.Attoparsec.ByteString.Char8   as P
 import qualified Data.ByteString                    as B
@@ -280,24 +281,24 @@ decodeBamEntry br = case pushEndOfInput $ runGetIncremental go `pushChunk` raw_d
 -- | A collection of extension fields.  The key is actually only two @Char@s, but that proved impractical.
 -- (Hmm... we could introduce a Key type that is a 16 bit int, then give
 -- it an @instance IsString@... practical?)
-type Extensions = [( String, Ext )]
+type Extensions = [( BamKey, Ext )]
 
 -- | Deletes all occurences of some extension field.
-deleteE :: String -> Extensions -> Extensions
+deleteE :: BamKey -> Extensions -> Extensions
 deleteE k = filter ((/=) k . fst)
 
 -- | Blindly inserts an extension field.  This can create duplicates
 -- (and there is no telling how other tools react to that).
-insertE :: String -> Ext -> Extensions -> Extensions
+insertE :: BamKey -> Ext -> Extensions -> Extensions
 insertE k v = (:) (k,v)
 
 -- | Deletes all occurences of an extension field, then inserts it with
 -- a new value.  This is safer than 'insertE', but also more expensive.
-updateE :: String -> Ext -> Extensions -> Extensions
+updateE :: BamKey -> Ext -> Extensions -> Extensions
 updateE k v = insertE k v . deleteE k
 
 -- | Adjusts a named extension by applying a function.
-adjustE :: (Ext -> Ext) -> String -> Extensions -> Extensions
+adjustE :: (Ext -> Ext) -> BamKey -> Extensions -> Extensions
 adjustE _ _ [         ]             = []
 adjustE f k ((k',v):es) | k  ==  k' = (k', f v) : es
                         | otherwise = (k',   v) : adjustE f k es
@@ -311,7 +312,7 @@ unpackExtensions :: ByteString -> Extensions
 unpackExtensions = go
   where
     go s | S.length s < 4 = []
-         | otherwise = let key = [ S.index s 0, S.index s 1 ]
+         | otherwise = let key = fromString [ S.index s 0, S.index s 1 ]
                        in case S.index s 2 of
                          'Z' -> case S.break (== '\0') (S.drop 3 s) of (l,r) -> (key, Text l) : go (S.drop 1 r)
                          'H' -> case S.break (== '\0') (S.drop 3 s) of (l,r) -> (key, Bin  l) : go (S.drop 1 r)
@@ -349,7 +350,7 @@ unpackExtensions = go
                   fromIntegral (B.index s 2) `shiftL` 16 .|. fromIntegral (B.index s 3) `shiftL` 24
     getInt _ _ = 0
 
-    getFloat s = unsafePerformIO $ alloca $ \buf ->
+    getFloat s = unsafeDupablePerformIO $ alloca $ \buf ->
                  poke (castPtr buf) (getInt 'I' s :: Word32) >> peek buf
 
 
@@ -358,7 +359,7 @@ getExtensions m = getExt <|> return m
   where
     getExt :: Get Extensions
     getExt = do
-            key <- (\a b -> [w2c a, w2c b]) <$> getWord8 <*> getWord8
+            key <- BamKey <$> getWord16le
             typ <- getWord8
             let cont v = getExtensions $ insertE key v m
             case w2c typ of
@@ -375,7 +376,7 @@ getExtensions m = getExt <|> return m
                     x   -> get_some_int x (cont . Int =<<) (fail $ "type code " ++ show x ++ " not recognized")
 
     to_float :: Word32 -> Float
-    to_float word = unsafePerformIO $ alloca $ \buf ->
+    to_float word = unsafeDupablePerformIO $ alloca $ \buf ->
                     poke (castPtr buf) word >> peek buf
 
     get_some_int :: Char -> (Get Int -> a) -> a -> a
@@ -417,9 +418,8 @@ encodeBamEntry = bamRaw 0 . S.concat . L.toChunks . runPut . putEntry
                      putSeq $ b_seq b
                      putByteString $ if not (S.null (b_qual b)) then b_qual b
                                      else B.replicate (V.length $ b_seq b) 0xff
-                     forM_ (more_exts b) $ \(k,v) ->
-                        case k of [c,d] -> putChr c >> putChr d >> putValue v
-                                  _     -> error $ "invalid field key " ++ show k
+                     forM_ (more_exts b) $ \(BamKey k,v) ->
+                         putWord16le k >> putValue v
 
     more_exts :: BamRec -> Extensions
     more_exts b = if xf /= 0 then x' else b_exts b
@@ -505,7 +505,7 @@ putValue v = case v of
     between l r x = l <= x && x <= r
 
     fromFloat :: Float -> Int32
-    fromFloat float = unsafePerformIO $ alloca $ \buf ->
+    fromFloat float = unsafeDupablePerformIO $ alloca $ \buf ->
                       poke (castPtr buf) float >> peek buf
 
 
@@ -532,10 +532,10 @@ type_mask :: Int
 type_mask = flagFirstMate .|. flagSecondMate .|. flagPaired
 
 
-extAsInt :: Int -> String -> BamRec -> Int
+extAsInt :: Int -> BamKey -> BamRec -> Int
 extAsInt d nm br = case lookup nm (b_exts br) of Just (Int i) -> i ; _ -> d
 
-extAsString :: String -> BamRec -> ByteString
+extAsString :: BamKey -> BamRec -> ByteString
 extAsString nm br = case lookup nm (b_exts br) of
     Just (Char c) -> B.singleton c
     Just (Text s) -> s
@@ -603,7 +603,7 @@ parseSamRec ref = (\nm fl rn po mq cg rn' -> BamRec nm fl rn po mq cg (rn' rn))
 
     cigop    = P.choice $ zipWith (\c r -> r <$ P.char c) "MIDNSHP" [Mat,Ins,Del,Nop,SMa,HMa,Pad]
     exts     = ext `P.sepBy` sep
-    ext      = (\a b v -> ([a,b],v)) <$> P.anyChar <*> P.anyChar <*> (P.char ':' *> value)
+    ext      = (\a b v -> (fromString [a,b],v)) <$> P.anyChar <*> P.anyChar <*> (P.char ':' *> value)
 
     value    = P.char 'A' *> P.char ':' *> (Char <$>               anyWord8) <|>
                P.char 'i' *> P.char ':' *> (Int  <$>     P.signed P.decimal) <|>
@@ -633,7 +633,7 @@ encodeSamEntry refs b = conjoin '\t' [
     shows (b_isize b + 1),
     shows (V.toList $ b_seq b),
     unpck (B.map (+33) $ b_qual b) ] .
-    foldr (\(k,v) f -> (:) '\t' . (++) k . (:) ':' . extToSam v . f) id (b_exts b)
+    foldr (\(k,v) f -> (:) '\t' . shows k . (:) ':' . extToSam v . f) id (b_exts b)
   where
     unpck = (++) . S.unpack
     conjoin c = foldr1 (\a f -> a . (:) c . f)
@@ -736,8 +736,8 @@ pushBam BamRec{..} = mconcat
                         Just b  -> unsafePushByte (unNs a `shiftL` 4 .|. unNs b)
                                    <> pushSeq (V.drop 2 v)
 
-    pushExt :: (String, Ext) -> Push
-    pushExt ([k1,k2], e) = case e of
+    pushExt :: (BamKey, Ext) -> Push
+    pushExt (BamKey k, e) = case e of
         Text t -> common (4 + B.length t) 'Z' $
                   unsafePushByteString t <> unsafePushByte 0
 
@@ -760,9 +760,8 @@ pushBam BamRec{..} = mconcat
                        <> unsafePushWord32 (fromIntegral $ U.length fa-1)
                        <> U.foldr ((<>) . unsafePushWord32 . fromFloat) mempty fa
       where
-        common l z b = ensureBuffer l <> unsafePushByte (fromIntegral $ ord k1)
-                   <> unsafePushByte (fromIntegral $ ord k2)
-                   <> unsafePushByte (fromIntegral $ ord z) <> b
+        common l z b = ensureBuffer l <> unsafePushWord16 k
+                    <> unsafePushByte (fromIntegral $ ord z) <> b
 
         put_some_int :: U.Vector Int -> (Char, Int -> Push)
         put_some_int is
@@ -777,6 +776,6 @@ pushBam BamRec{..} = mconcat
         between l r x = l <= x && x <= r
 
         fromFloat :: Float -> Word32
-        fromFloat float = unsafePerformIO $ alloca $ \buf ->
+        fromFloat float = unsafeDupablePerformIO $ alloca $ \buf ->
                           poke (castPtr buf) float >> peek buf
 

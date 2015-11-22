@@ -1,4 +1,4 @@
-{-# LANGUAGE BangPatterns #-}
+{-# LANGUAGE BangPatterns, OverloadedStrings #-}
 import Bio.Base
 import Bio.Bam
 import Bio.Bam.Evan ( removeWarts )
@@ -111,7 +111,7 @@ enum_input inp@(Input r1 mr2 mi1 mi2) o = do
 -- Given an enumerator and maybe a filename, read index sequences from
 -- the file and merge them with the numerator.
 withIndex :: (MonadIO m, MonadMask m)
-          => Maybe FilePath -> String -> String
+          => Maybe FilePath -> BamKey -> BamKey
           -> Enumerator [UpToTwo BamRec] m a -> Enumerator [UpToTwo BamRec] m a
 withIndex Nothing      _    _ enum = enum
 withIndex (Just fp) tagi tagq enum = mergeEnums enum (fromFastq fp) (convStream combine)

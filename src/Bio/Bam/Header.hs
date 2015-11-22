@@ -6,6 +6,7 @@ module Bio.Bam.Header (
         showBamMeta,
         addPG,
 
+        BamKey(..),
         BamHeader(..),
         BamSQ(..),
         BamSorting(..),
@@ -51,15 +52,16 @@ module Bio.Bam.Header (
 
 import Bio.Base
 import Control.Applicative
-import Data.Bits                    ( shiftL, shiftR )
-import Data.Char                    ( isDigit )
+import Data.Bits                    ( shiftL, shiftR, (.&.), (.|.) )
+import Data.Char                    ( isDigit, ord, chr )
 import Data.Binary.Builder
 import Data.Ix
 import Data.List                    ( (\\), foldl' )
 import Data.Monoid
 import Data.Sequence                ( (><), (|>) )
+import Data.String
 import Data.Version                 ( Version, showVersion )
-import Data.Word                    ( Word32 )
+import Data.Word                    ( Word16, Word32 )
 import System.Environment           ( getArgs, getProgName )
 
 import qualified Data.Attoparsec.ByteString.Char8   as P
@@ -71,10 +73,25 @@ import qualified Data.Sequence                      as Z
 data BamMeta = BamMeta {
         meta_hdr :: !BamHeader,
         meta_refs :: !Refs,
-        meta_other_shit :: [(Char, Char, BamOtherShit)],
+        meta_other_shit :: [(BamKey, BamOtherShit)],
         meta_comment :: [S.ByteString]
     } deriving Show
 
+-- | Exactly two characters, for the \"named\" fields in bam.
+newtype BamKey = BamKey Word16
+    deriving ( Eq, Ord )
+
+instance IsString BamKey where
+    {-# INLINE fromString #-}
+    fromString [a,b] 
+        | ord a < 256 && ord b < 256
+            = BamKey . fromIntegral $ ord a .|. shiftL (ord b) 8
+
+    fromString s
+            = error $ "Not a legal BAM key: " ++ show s
+
+instance Show BamKey where
+    show (BamKey a) = [ chr (fromIntegral a .&. 0xff), chr (shiftR (fromIntegral a) 8 .&. 0xff) ]
 
 addPG :: Maybe Version -> IO (BamMeta -> BamMeta)
 addPG vn = do
@@ -82,20 +99,20 @@ addPG vn = do
     pn   <- getProgName
     return $ go args pn
   where
-    go args pn bm = bm { meta_other_shit = ('P','G',pg_line) : meta_other_shit bm }
+    go args pn bm = bm { meta_other_shit = ("PG",pg_line) : meta_other_shit bm }
       where
-        pg_line = concat [ [ ('I','D', pg_id) ]
-                         , [ ('P','N', S.pack pn) ]
-                         , [ ('C','L', S.pack $ unwords args) ]
-                         , maybe [] (\v -> [('V','N',S.pack (showVersion v))]) vn
-                         , map (\p -> ('P','P',p)) (take 1 pg_pp)
-                         , map (\p -> ('p','p',p)) (drop 1 pg_pp) ]
+        pg_line = concat [ [ ("ID", pg_id) ]
+                         , [ ("PN", S.pack pn) ]
+                         , [ ("CL", S.pack $ unwords args) ]
+                         , maybe [] (\v -> [("VN",S.pack (showVersion v))]) vn
+                         , map (\p -> ("PP",p)) (take 1 pg_pp)
+                         , map (\p -> ("pp",p)) (drop 1 pg_pp) ]
 
         pg_id : _ = filter (not . flip elem pg_ids) . map S.pack $
                       pn : [ pn ++ '-' : show i | i <- [(1::Int)..] ]
 
-        pg_ids = [ pgid | ('P','G',fs) <- meta_other_shit bm, ('I','D',pgid) <- fs ]
-        pg_pps = [ pgid | ('P','G',fs) <- meta_other_shit bm, ('P','P',pgid) <- fs ]
+        pg_ids = [ pgid | ("PG",fs) <- meta_other_shit bm, ("ID",pgid) <- fs ]
+        pg_pps = [ pgid | ("PG",fs) <- meta_other_shit bm, ("PP",pgid) <- fs ]
 
         pg_pp  = pg_ids \\ pg_pps
 
@@ -134,7 +151,7 @@ bad_seq = BamSQ (error "no SN field") (error "no LN field") []
 data BamSorting = Unknown | Unsorted | Grouped | Queryname | Coordinate | GroupSorted
     deriving (Show, Eq)
 
-type BamOtherShit = [(Char, Char, S.ByteString)]
+type BamOtherShit = [(BamKey, S.ByteString)]
 
 parseBamMeta :: P.Parser BamMeta
 parseBamMeta = fixup . foldl' (flip ($)) mempty <$> P.sepBy parseBamMetaLine (P.skipWhile (=='\t') >> P.char '\n')
@@ -179,16 +196,19 @@ parseBamMetaLine = P.char '@' >> P.choice [hdLine, sqLine, coLine, otherLine]
              (\s meta -> s `seq` meta { meta_comment = s : meta_comment meta })
                <$> P.takeWhile (/= 'n')
 
-    otherLine = (\a b ts meta -> meta { meta_other_shit = (a,b,ts) : meta_other_shit meta })
-                  <$> P.anyChar <*> P.anyChar <*> (tabs >> P.sepBy1 tagother tabs)
+    otherLine = (\k ts meta -> meta { meta_other_shit = (k,ts) : meta_other_shit meta })
+                  <$> bamkey <*> (tabs >> P.sepBy1 tagother tabs)
 
-    tagother :: P.Parser (Char,Char,S.ByteString)
-    tagother = (,,) <$> P.anyChar <*> P.anyChar <*> (P.char ':' >> pall)
+    tagother :: P.Parser (BamKey,S.ByteString)
+    tagother = (,) <$> bamkey <*> (P.char ':' >> pall)
 
     tabs = P.char '\t' >> P.skipWhile (== '\t')
 
     pall :: P.Parser S.ByteString
     pall = P.takeWhile (\c -> c/='\t' && c/='\n')
+
+    bamkey :: P.Parser BamKey
+    bamkey = (\a b -> fromString [a,b]) <$> P.anyChar <*> P.anyChar
 
 showBamMeta :: BamMeta -> Builder
 showBamMeta (BamMeta h ss os cs) =
@@ -215,14 +235,14 @@ showBamMeta (BamMeta h ss os cs) =
 
     show_bam_meta_comment cm = fromByteString "@CO\t" <> fromByteString cm <> char7 '\n'
 
-    show_bam_meta_other (a,b,ts) =
-        char7 '@' <> char7 a <> char7 b <> show_bam_others ts
+    show_bam_meta_other (BamKey k,ts) =
+        char7 '@' <> putWord16le k <> show_bam_others ts
 
     show_bam_others ts =
         F.foldMap show_bam_other ts <> char7 '\n'
 
-    show_bam_other (a,b,v) =
-        char7 '\t' <> char7 a <> char7 b <> char7 ':' <> fromByteString v
+    show_bam_other (BamKey k,v) =
+        char7 '\t' <> putWord16le k <> char7 ':' <> fromByteString v
 
 
     char7 = singleton . c2w
@@ -262,7 +282,7 @@ invalidRefseq = Refseq 0xffffffff
 -- Bam uses this value to encode a missing position.
 {-# INLINE invalidPos #-}
 invalidPos :: Int
-invalidPos = 0xFFFFFFFF
+invalidPos = -1
 
 -- | Tests whether a position is valid.
 -- Returns true unless the the argument equals @invalidPos@.

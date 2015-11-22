@@ -31,6 +31,7 @@ import Data.Aeson
 import Data.Bits
 import Data.List ( foldl', sortBy )
 import Data.Monoid
+import Data.String ( fromString )
 import Data.Version ( showVersion )
 import Data.Word ( Word64 )
 import Foreign.C.Types
@@ -169,7 +170,8 @@ readRGdefns p7is p5is = map repack . filter (not . null) . map (T.split (=='\t')
             Nothing -> error $ "unknown P5 index " ++ show p5
             Just i5 -> RG (T.encodeUtf8 rg) i7 i5 (map repack1 tags)
     repack ws = error $ "short RG line " ++ show (T.intercalate "\t" ws)
-    repack1 w | T.length w > 3 && T.index w 2 == ':' = (T.index w 0, T.index w 1, T.encodeUtf8 $ T.drop 3 w)
+    repack1 w | T.length w > 3 && T.index w 2 == ':'
+                    = (fromString [T.index w 0, T.index w 1], T.encodeUtf8 $ T.drop 3 w)
               | otherwise = error $ "illegal tag " ++ show w
 
 default_rgs :: T.Text
@@ -441,8 +443,8 @@ main = do
 
         Just out -> do  concatInputs files >=> run $ \hdr ->
                             let hdr' = hdr { meta_other_shit =
-                                              [ os | os@(x,y,_) <- meta_other_shit hdr, x /= 'R' || y /= 'G' ] ++
-                                              HM.elems (HM.fromList [ (rgid, ('R','G', ('I','D',rgid):tags)) | RG{..} <- rgdefs ] ) }
+                                              [ os | os@(k,_) <- meta_other_shit hdr, k /= "RG" ] ++
+                                              HM.elems (HM.fromList [ (rgid, ("RG", ("ID",rgid):tags)) | RG{..} <- rgdefs ] ) }
                             in mapStreamM (\br -> do
                                     (p,i7,i5) <- class1 rgs (unique_indices p7is) (unique_indices p5is) mix
                                                             (fromTags "XI" "YI" br, fromTags "XJ" "YJ" br)
