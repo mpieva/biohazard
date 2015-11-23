@@ -262,15 +262,17 @@ class1 rgs p7 p5 prior (x,y) =
        VS.unsafeWith prior                                          $ \pv ->
        VS.unsafeWith m7                                             $ \q7 ->
        VS.unsafeWith m5                                             $ \q5 ->
-       c_unmix_total pv q7 (fromIntegral $ VS.length m7)
-                        q5 (fromIntegral $ l5 `div` succ padding)
-                        pi7 pi5                                   >>= \total ->
+       ( {-# SCC "c_unmix_total" #-}
+         c_unmix_total pv q7 (fromIntegral $ VS.length m7)
+                          q5 (fromIntegral $ l5 `div` succ padding)
+                          pi7 pi5 )                               >>= \total ->
        peek pi7                                                   >>= \i7 ->
        peek pi5                                                   >>= \i5 ->
        withDirt (fromIntegral i7, fromIntegral i5)                  $ \pw ->
-       c_unmix_qual pw pv q7 (fromIntegral $ VS.length m7)
-                          q5 (fromIntegral $ l5 `div` succ padding)
-                          total i7 i5                             >>= \qual ->
+       ( {-# SCC "c_unmix_qual" #-}
+         c_unmix_qual pw pv q7 (fromIntegral $ VS.length m7)
+                            q5 (fromIntegral $ l5 `div` succ padding)
+                            total i7 i5 )                         >>= \qual ->
        return ( qual, fromIntegral i7, fromIntegral i5 )
   where
     withDirt ix k = case HM.lookup ix rgs of
