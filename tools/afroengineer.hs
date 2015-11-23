@@ -32,12 +32,13 @@ import System.Exit
 import System.IO
 
 import qualified Bio.Iteratee.ZLib          as ZLib
+import qualified Data.ByteString            as B
 import qualified Data.ByteString.Char8      as S
 import qualified Data.ByteString.Lazy.Char8 as L
 import qualified Data.Foldable              as F
 import qualified Data.Iteratee              as I
 import qualified Data.Sequence              as Z
-import qualified Data.Vector.Unboxed        as U
+import qualified Data.Vector.Generic        as V
 
 import Debug.Trace
 
@@ -136,17 +137,18 @@ round1 :: MonadIO m
             (RefSeq, [QueryRec])                        -- new reference & queries out
 round1 sm rs out = convStream (headStream >>= seed) =$ roundN rs out
   where
-    seed br = case do_seed (refseq_len rs) sm br of
-        _ | low_qual br        -> return []
-        Nothing                -> return []
-        Just (a,b) | a >= 0    -> return [ QR (br_qname br) (prep_query_fwd br) (RP   a ) (BW   bw ) ]
-                   | otherwise -> return [ QR (br_qname br) (prep_query_rev br) (RP (-b)) (BW (-bw)) ]
-            where bw = b - a - br_l_seq br
-
-    low_qual br = 2 * l1 < l2 where
-        l2 = br_l_seq br
-        l1 = F.foldl' step 0 [0 .. l2-1]
-        step a i = if br_qual_at br i > Q 10 then a+1 else a
+    seed br
+        | low_qual  = return []
+        | otherwise = case do_seed (refseq_len rs) sm br of
+            Nothing                -> return []
+            Just (a,b) | a >= 0    -> return [ QR b_qname (prep_query_fwd br) (RP   a ) (BW   bw ) ]
+                       | otherwise -> return [ QR b_qname (prep_query_rev br) (RP (-b)) (BW (-bw)) ]
+                where bw = b - a - V.length b_seq
+      where
+        BamRec{..} = unpackBam br
+        low_qual = 2 * l1 < l2
+        l2 = V.length b_seq
+        l1 = B.length $ B.filter (> 10) b_qual
 
 roundN :: Monad m
        => RefSeq
@@ -245,15 +247,15 @@ write_ref_fasta fp num rs = writeFile fp $ unlines $
     chunk n s = case splitAt n s of _ | null s -> [] ; (l,r) -> l : chunk n r
 
 ref_to_ascii :: RefSeq -> String
-ref_to_ascii (RS v) = [ base | i <- [0, 5 .. U.length v - 5]
+ref_to_ascii (RS v) = [ base | i <- [0, 5 .. V.length v - 5]
                              , let pgap = indexV "ref_to_ascii/pgap" v (i+4)
                              , pgap > 3
                              , let letters = if pgap <= 6 then "acgtn" else "ACGTN"
                              , let (index, p1, p2) = minmin i 4
                              , let good = p2 - p1 >= 3 -- probably nonsense
-                             , let base = S.index letters $ if good then index else  trace (show (U.slice i 5 v)) 4 ]
+                             , let base = S.index letters $ if good then index else  trace (show (V.slice i 5 v)) 4 ]
   where
-    minmin i0 l = U.ifoldl' step (l, 255, 255) $ U.slice i0 l v
+    minmin i0 l = V.ifoldl' step (l, 255, 255) $ V.slice i0 l v
     step (!i, !m, !n) j x | x <= m    = (j, x, m)
                           | x <= n    = (i, m, x)
                           | otherwise = (i, m, n)

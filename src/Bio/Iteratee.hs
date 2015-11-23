@@ -18,6 +18,7 @@ module Bio.Iteratee (
     filterStreamM,
     foldStream,
     foldStreamM,
+    zipStreams,
     protectTerm,
     concatMapStream,
     mapMaybeStream,
@@ -291,6 +292,11 @@ foldStreamM k = foldChunksM go
 -- | Fold a function over an 'Iteratee'.
 foldStream :: (Monad m, Nullable s, ListLike s a) => (b -> a -> b) -> b -> Iteratee s m b
 foldStream f = foldChunksM (\b s -> return $! LL.foldl' f b s)
+
+
+zipStreams :: (Monad m, Nullable s, ListLike s e)
+           => Iteratee s m a -> Iteratee s m b -> Iteratee s m (a, b)
+zipStreams = I.zip
 
 type Enumerator' h eo m b = (h -> Iteratee eo m b) -> m (Iteratee eo m b)
 type Enumeratee' h ei eo m b = (h -> Iteratee eo m b) -> Iteratee ei m (Iteratee eo m b)
