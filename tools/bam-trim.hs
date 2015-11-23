@@ -45,7 +45,7 @@ main = do
 
     let do_trim r | c_pass_pred c r' = r
                   | otherwise        = encodeBamEntry $ trim_3' (c_trim_pred c) r'
-            where r' = decodeBamEntry r
+            where r' = unpackBam r
 
     add_pg <- addPG (Just version)
     concatDefaultInputs >=> run $

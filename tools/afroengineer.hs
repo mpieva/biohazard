@@ -174,7 +174,7 @@ roundN rs out = do
                 -- get alignment ends from ar, add some buffer
                 -- XXX does this yield invalid coordinates?
                 let !left  = viterbi_position ar - 8
-                    !right = viterbi_position ar + 8 + cigarToAlnLen (viterbi_backtrace ar)
+                    !right = viterbi_position ar + 8 + alignedLength (viterbi_backtrace ar)
                 in (left,right,qr) : l) []
 
     xlate :: XTab -> (Int, Int, QueryRec) -> QueryRec

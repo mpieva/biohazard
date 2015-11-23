@@ -88,15 +88,14 @@ import Data.Attoparsec.ByteString   ( anyWord8 )
 import Data.Binary.Builder          ( toLazyByteString )
 import Data.Binary.Get
 import Data.Binary.Put
-import Data.Bits                    ( testBit, shiftL, shiftR, (.&.), (.|.), complement )
+import Data.Bits                    ( testBit, shiftL, shiftR, (.&.), (.|.) )
 import Data.ByteString              ( ByteString )
-import Data.ByteString.Internal     ( inlinePerformIO )
+import Data.ByteString.Internal     ( accursedUnutterablePerformIO )
 import Data.Char                    ( ord, digitToInt )
 import Data.Foldable                ( foldMap )
 import Data.Int                     ( Int32, Int16, Int8 )
 import Data.Monoid
 import Data.String                  ( fromString )
-import Data.Vector.Unboxed          ( (!?) )
 import Data.Word                    ( Word32, Word16 )
 import Foreign.ForeignPtr
 import Foreign.Marshal.Alloc        ( alloca )
@@ -196,7 +195,8 @@ instance V.Vector Vector_Nucs_half Nucleotides where
     basicUnsafeIndexM (Vector_Nucs_half o _ fp) i
         | even (o+i) = return . Ns $ (b `shiftR` 4) .&. 0xF
         | otherwise  = return . Ns $  b             .&. 0xF
-      where b = inlinePerformIO $ withForeignPtr fp $ \p -> peekByteOff p ((o+i) `shiftR` 1)
+      where !b = accursedUnutterablePerformIO $ withForeignPtr fp $
+                        \p -> peekByteOff p ((o+i) `shiftR` 1)
 
 instance VM.MVector MVector_Nucs_half Nucleotides where
     basicLength          (MVector_Nucs_half _ l  _) = l
@@ -405,7 +405,7 @@ encodeBamEntry = bamRaw 0 . S.concat . L.toChunks . runPut . putEntry
                      put_int_32    $ b_pos b
                      put_int_8     $ S.length (b_qname b) + 1
                      put_int_8     $ unQ (b_mapq b)
-                     put_int_16    $ distinctBin (b_pos b) (cigarToAlnLen (b_cigar b))
+                     put_int_16    $ distinctBin (b_pos b) (alignedLength (b_cigar b))
                      put_int_16    $ length $ unCigar $ b_cigar b
                      put_int_16    $ b_flag b
                      put_int_32    $ V.length $ b_seq b
@@ -724,7 +724,7 @@ pushBam BamRec{..} = mconcat
     , foldMap pushExt b_exts
     , endRecord ]
   where
-    bin = distinctBin b_pos (cigarToAlnLen b_cigar)
+    bin = distinctBin b_pos (alignedLength b_cigar)
     minlength = 37 + B.length b_qname + 4 * length (unCigar b_cigar) + B.length b_qual + (V.length b_seq + 1) `shiftR` 1
     encodeCigar (op,l) = fromIntegral $ fromEnum op .|. l `shiftL` 4
 

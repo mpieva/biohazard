@@ -24,7 +24,7 @@ cov_to_wiggle hdr rname = return $ liftI step
     step' !cov (e:ends) p           str  | e == p        = step' (cov-1) ends p str
 
     step' !cov    ends  p (Chunk [    ])                 = liftI (step' cov ends p)
-    step' !cov    ends  p (Chunk (x:xs)) | b_pos y == p  = let !e' = b_pos y + cigarToAlnLen (b_cigar y)
+    step' !cov    ends  p (Chunk (x:xs)) | b_pos y == p  = let !e' = b_pos y + alignedLength (b_cigar y)
                                                            in step' (cov+1) (ins e' ends) p (Chunk xs)
         where y = unpackBam x
 

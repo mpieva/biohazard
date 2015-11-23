@@ -42,7 +42,7 @@ module Bio.Bam.Header (
 
         Cigar(..),
         CigOp(..),
-        cigarToAlnLen,
+        alignedLength,
         distinctBin,
 
         MdOp(..),
@@ -83,7 +83,7 @@ newtype BamKey = BamKey Word16
 
 instance IsString BamKey where
     {-# INLINE fromString #-}
-    fromString [a,b] 
+    fromString [a,b]
         | ord a < 256 && ord b < 256
             = BamKey . fromIntegral $ ord a .|. shiftL (ord b) 8
 
@@ -379,9 +379,9 @@ instance Show Cigar where
 -- This gives the length of an alignment as measured on the reference,
 -- which is different from the length on the query or the length of the
 -- alignment.
-{-# INLINE cigarToAlnLen #-}
-cigarToAlnLen :: Cigar -> Int
-cigarToAlnLen (Cigar cig) = sum $ map l cig
+{-# INLINE alignedLength #-}
+alignedLength :: Cigar -> Int
+alignedLength (Cigar cig) = sum $ map l cig
   where l (op,n) = if op == Mat || op == Del || op == Nop then n else 0
 
 

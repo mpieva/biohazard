@@ -1,15 +1,17 @@
-{-# LANGUAGE OverloadedStrings, BangPatterns #-}
+{-# LANGUAGE OverloadedStrings, BangPatterns, RecordWildCards #-}
 {-# OPTIONS_GHC -Wall #-}
 module SimpleSeed where
 
 import Bio.Base
 import Bio.Bam.Raw
+import Bio.Bam.Rec
 
 import Data.Bits
 import Data.List
 import Data.Maybe
 
 import qualified Data.IntMap as IM
+import qualified Data.Vector.Generic as V
 import qualified Data.Vector.Unboxed as U
 
 -- | Discontiguous template "12 of 16", stolen from MegaBLAST:
@@ -72,7 +74,7 @@ create_seed_maps = SM . IM.unionsWith const . map (unSM . create_seed_map)
 -- probably discard overly long regions.
 
 do_seed :: Int -> SeedMap -> BamRaw -> Maybe (Int,Int)
-do_seed ln (SM sm) br = -- do S.hPut stdout $ S.concat [ br_qname br, key, ":  ", S.pack (shows br_seq "\n") ]
+do_seed ln (SM sm) br = -- do S.hPut stdout $ S.concat [ b_qname, key, ":  ", S.pack (shows b_seq "\n") ]
                    --    mapM_ (\x -> hPutStrLn stdout $ "  " ++ show x) rgns
                    case rgns of
                            [         ] -> Nothing -- putStrLn "discard"
@@ -84,13 +86,13 @@ do_seed ln (SM sm) br = -- do S.hPut stdout $ S.concat [ br_qname br, key, ":  "
                                     "Resulting regions: ",
                                     show rgns ] -}
                            (a,b,_) : _ -> Just (a,b) -- putStrLn $ "seed to " ++ shows a ".." ++ shows b " ("
-                                                         --     ++ shows (b-a) "/" ++ shows (br_l_seq br) ")"
+                                                         --     ++ shows (b-a) "/" ++ shows (V.length b_seq) ")"
 
   where
-    seeds = filter ((/= 0) . fst) $ filter ((/= template) . fst) $
-            filter ((>= 0) . snd) $ create_seed_words br_seq
+    BamRec{..} = unpackBam br
 
-    br_seq = [ br_seq_at br i | i <- [0..br_l_seq br-1] ]
+    seeds = filter ((/= 0) . fst) $ filter ((/= template) . fst) $
+            filter ((>= 0) . snd) $ create_seed_words $ V.toList b_seq
 
     more x = (x * 9) `div` 8 + 16
 
@@ -100,7 +102,7 @@ do_seed ln (SM sm) br = -- do S.hPut stdout $ S.concat [ br_qname br, key, ":  "
 
     (rgns_fwd, rgns_rev) = let put (f,r) (i,j) | j >= 0    = (rgn:f, r)
                                                | otherwise = (f, rgn:r)
-                                where rgn = (j - more i, j + more (br_l_seq br-i), 1::Int)
+                                where rgn = (j - more i, j + more (V.length b_seq - i), 1::Int)
                            in foldl put ([],[]) [ (i,j) | (k,i) <- seeds, j <- maybeToList $ IM.lookup k sm ]
 
     norm_right (a,b,n) = if a  < 0 then (a+ln, b+ln, n) else (a,b,n)
