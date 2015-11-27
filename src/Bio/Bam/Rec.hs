@@ -28,13 +28,15 @@ module Bio.Bam.Rec (
     isBamOrSam,
 
     unpackBam,
-    decodeBamEntry,
     encodeBamEntry,
     encodeSamEntry,
     encodeBamWith2,
     encodeBamRawWith2,
     pushBam,
     pushBamRaw,
+    writeBamFile2,
+    pipeBamOutput2,
+    writeBamHandle2,
 
     decodeSam,
     decodeSam',
@@ -104,6 +106,7 @@ import Foreign.Storable             ( peek, poke, peekByteOff, pokeByteOff )
 import System.IO
 import System.IO.Unsafe             ( unsafeDupablePerformIO )
 
+import qualified Control.Monad.Catch                as C
 import qualified Data.Attoparsec.ByteString.Char8   as P
 import qualified Data.ByteString                    as B
 import qualified Data.ByteString.Char8              as S
@@ -162,7 +165,7 @@ type BamEnumeratee m b = Enumeratee' BamMeta ByteString [BamRec] m b
 isBamOrSam :: MonadIO m => Iteratee ByteString m (BamEnumeratee m a)
 isBamOrSam = maybe decodeSam wrap `liftM` isBam
   where
-    wrap enee it' = enee (\hdr -> I.mapStream decodeBamEntry (it' hdr)) >>= lift . run
+    wrap enee it' = enee (\hdr -> I.mapStream unpackBam (it' hdr)) >>= lift . run
 
 
 -- | Checks if a file contains BAM in any of the common forms,
@@ -242,42 +245,6 @@ unpackBam br = BamRec {
         !off_q = off_s + (br_l_seq br + 1) `div` 2
         !off_e = off_q +  br_l_seq br
 
-{-# DEPRECATED decodeBamEntry "Keep BamRaw if you can, use unpackBam if you must." #-}
--- | Decodes a raw block into a @BamRec@.
-decodeBamEntry :: BamRaw -> BamRec
-decodeBamEntry br = case pushEndOfInput $ runGetIncremental go `pushChunk` raw_data br of
-        Fail _ _ m -> error m
-        Partial  _ -> error "incomplete BAM record"
-        Done _ _ r -> r
-  where
-    go = do !rid       <- Refseq       <$> getWord32le
-            !start     <- fromIntegral <$> getWord32le
-            !namelen   <- fromIntegral <$> getWord8
-            !mapq      <-            Q <$> getWord8
-            !_bin      <-                  getWord16le
-            !cigar_len <- fromIntegral <$> getWord16le
-            !flag      <- fromIntegral <$> getWord16le
-            !read_len  <- fromIntegral <$> getWord32le
-            !mate_rid  <- Refseq       <$> getWord32le
-            !mate_pos  <- fromIntegral <$> getWord32le
-            !ins_size  <- fromIntegral <$> getWord32le
-            !read_name <- S.init       <$> getByteString namelen
-            !cigar     <- Cigar . map decodeCigar <$> replicateM cigar_len getWord32le
-            !qry_seq   <- getByteString $ (read_len+1) `div` 2
-            !qual <- (\qs -> if B.all (0xff ==) qs then B.empty else qs) <$> getByteString read_len
-            !exts <- getExtensions []
-
-            return $ BamRec read_name flag rid start mapq cigar
-                            mate_rid mate_pos ins_size
-                            (V.fromListN read_len $ expand qry_seq)
-                            qual exts (virt_offset br)
-
-    expand t = if S.null t then [] else let x = B.head t in Ns (x `shiftR` 4) : Ns (x .&. 0xf) : expand (B.tail t)
-
-    decodeCigar c | cc <= fromEnum (maxBound :: CigOp) = (toEnum cc, cl)
-                  | otherwise = error "unknown Cigar operation"
-      where cc = fromIntegral c .&. 0xf; cl = fromIntegral c `shiftR` 4
-
 -- | A collection of extension fields.  The key is actually only two @Char@s, but that proved impractical.
 -- (Hmm... we could introduce a Key type that is a 16 bit int, then give
 -- it an @instance IsString@... practical?)
@@ -354,50 +321,6 @@ unpackExtensions = go
                  poke (castPtr buf) (getInt 'I' s :: Word32) >> peek buf
 
 
-getExtensions :: Extensions -> Get Extensions
-getExtensions m = getExt <|> return m
-  where
-    getExt :: Get Extensions
-    getExt = do
-            key <- BamKey <$> getWord16le
-            typ <- getWord8
-            let cont v = getExtensions $ insertE key v m
-            case w2c typ of
-                    'Z' -> cont . Text =<< getByteStringNul
-                    'H' -> cont . Bin  =<< getByteStringNul
-                    'A' -> cont . Char =<< getWord8
-                    'f' -> cont . Float . to_float =<< getWord32le
-                    'B' -> do tp <- getWord8
-                              n <- fromIntegral <$> getWord32le
-                              case w2c tp of
-                                 'f' -> cont . FloatArr . U.fromListN (n+1) . map to_float =<< replicateM (n+1) getWord32le
-                                 x   -> get_some_int x (\get ->  cont . IntArr . U.fromListN (n+1) =<< replicateM (n+1) get)
-                                                       (fail $ "array type code " ++ show x ++ " not recognized")
-                    x   -> get_some_int x (cont . Int =<<) (fail $ "type code " ++ show x ++ " not recognized")
-
-    to_float :: Word32 -> Float
-    to_float word = unsafeDupablePerformIO $ alloca $ \buf ->
-                    poke (castPtr buf) word >> peek buf
-
-    get_some_int :: Char -> (Get Int -> a) -> a -> a
-    get_some_int 'C' k _ = k (fromIntegral                                     <$> getWord8)
-    get_some_int 'c' k _ = k (fromIntegral . (fromIntegral ::  Word8 ->  Int8) <$> getWord8)
-    get_some_int 'S' k _ = k (fromIntegral                                     <$> getWord16le)
-    get_some_int 's' k _ = k (fromIntegral . (fromIntegral :: Word16 -> Int16) <$> getWord16le)
-    get_some_int 'I' k _ = k (fromIntegral                                     <$> getWord32le)
-    get_some_int 'i' k _ = k (fromIntegral . (fromIntegral :: Word32 -> Int32) <$> getWord32le)
-    get_some_int  _  _ f = f
-
-
-
-getByteStringNul :: Get ByteString
-getByteStringNul = S.init <$> (lookAhead (get_len 1) >>= getByteString)
-  where
-    get_len l = getWord8 >>= \w -> if w == 0 then return l else get_len $! l+1
-
-
-
-
 encodeBamEntry :: BamRec -> BamRaw
 encodeBamEntry = bamRaw 0 . S.concat . L.toChunks . runPut . putEntry
   where
@@ -468,7 +391,7 @@ pipeSamOutput meta = do liftIO . L.putStr . toLazyByteString $ showBamMeta meta
                         mapStreamM_ $ \b -> liftIO . putStr $ encodeSamEntry (meta_refs meta) b "\n"
 
 pipeRawSamOutput :: MonadIO m => BamMeta -> Iteratee [BamRaw] m ()
-pipeRawSamOutput hdr = joinI $ mapStream decodeBamEntry $ pipeSamOutput hdr
+pipeRawSamOutput hdr = joinI $ mapStream unpackBam $ pipeSamOutput hdr
 
 put_int_32, put_int_16, put_int_8 :: Integral a => a -> Put
 put_int_32 = putWord32le . fromIntegral
@@ -695,6 +618,18 @@ pushBamRaw :: BamRaw -> Push
 pushBamRaw br = ensureBuffer (B.length (raw_data br) + 4)
              <> unsafePushWord32 (fromIntegral $ B.length (raw_data br))
              <> unsafePushByteString (raw_data br)
+
+writeBamFile2 :: FilePath -> BamMeta -> Iteratee [BamRec] IO ()
+writeBamFile2 fp meta =
+    C.bracket (liftIO $ openBinaryFile fp WriteMode)
+              (liftIO . hClose)
+              (flip writeBamHandle2 meta)
+
+pipeBamOutput2 :: BamMeta -> Iteratee [BamRec] IO ()
+pipeBamOutput2 meta = encodeBamWith2 0 meta =$ mapChunksM_ (liftIO . S.hPut stdout)
+
+writeBamHandle2 :: MonadIO m => Handle -> BamMeta -> Iteratee [BamRec] m ()
+writeBamHandle2 hdl meta = encodeBamWith2 6 meta =$ mapChunksM_ (liftIO . S.hPut hdl)
 
 {-# RULES
     "pushBam/unpackBam"     forall b . pushBam (unpackBam b) = pushBamRaw b

@@ -1,4 +1,4 @@
-{-# LANGUAGE BangPatterns, Rank2Types, RecordWildCards #-}
+{-# LANGUAGE BangPatterns, Rank2Types, RecordWildCards, OverloadedStrings #-}
 {-# OPTIONS_GHC -funbox-strict-fields #-}
 module Bio.Bam.Pileup where
 
@@ -7,6 +7,7 @@ module Bio.Bam.Pileup where
 import Bio.Base
 import Bio.Bam.Header
 import Bio.Bam.Raw
+import Bio.Bam.Rec
 import Bio.Genocall.Adna
 import Bio.Iteratee
 
@@ -19,7 +20,8 @@ import Data.Ord
 import Data.Vec.Packed ( Mat44D, packMat )
 
 import qualified Data.ByteString        as B
-import qualified Data.Vector.Unboxed    as V
+import qualified Data.Vector.Generic    as V
+import qualified Data.Vector.Unboxed    as U
 
 import Prelude hiding ( foldr, foldr1, concat, mapM_, all )
 
@@ -128,13 +130,15 @@ instance Show DamagedBase where
 
 decompose :: BamRaw -> [Mat44D] -> PrimChunks
 decompose br matrices
-    | br_isUnmapped br || br_rname br == invalidRefseq = EndOfRead
-    | otherwise = firstBase (br_pos br) 0 0 matrices
+    | br_isUnmapped br || b_rname == invalidRefseq = EndOfRead
+    | otherwise = firstBase b_pos 0 0 matrices
   where
-    !max_cig = br_n_cigar_op br
-    !max_seq = br_l_seq br
-    !mapq    = br_mapq br
-    !baq     = br_extAsString "BQ" br
+    b@BamRec{..} = unpackBam br
+
+    !max_cig = length $ unCigar b_cigar
+    !max_seq = V.length b_seq
+    -- !mapq    = br_mapq br
+    !baq     = extAsString "BQ" b
 
     -- This will compute the effective quality.  As far as I can see
     -- from the BAM spec V1.4, the qualities that matter are QUAL, MAPQ,
@@ -142,17 +146,17 @@ decompose br matrices
     -- 23 (assuming a rather conservative error rate of ~0.5%), BAQ is
     -- added to QUAL, and MAPQ is an upper limit for effective quality.
     get_seq :: Int -> Mat44D -> DamagedBase
-    get_seq i = case br_seq_at br i of                              -- nucleotide
+    get_seq i = case b_seq V.! i of                                 -- nucleotide
             b | b == nucsA -> DB nucA qe
               | b == nucsC -> DB nucC qe
               | b == nucsG -> DB nucG qe
               | b == nucsT -> DB nucT qe
               | otherwise  -> DB nucA (Q 0)
       where
-        !q = case br_qual_at br i of Q 0xff -> Q 30 ; x -> x        -- quality; invalid (0xff) becomes 30
+        !q = case b_qual `B.index` i of 0xff -> Q 30 ; x -> Q x     -- quality; invalid (0xff) becomes 30
         !q' | i >= B.length baq = q                                 -- no BAQ available
             | otherwise = Q (unQ q + (B.index baq i - 64))          -- else correct for BAQ
-        !qe = min q' mapq                                          -- use MAPQ as upper limit
+        !qe = min q' b_mapq                                         -- use MAPQ as upper limit
 
     -- Look for first base following the read's start or a gap (CIGAR
     -- code N).  Indels are skipped, since these are either bugs in the
@@ -177,7 +181,7 @@ decompose br matrices
     -- we are looking at an M CIGAR operation and all the subindices are
     -- valid.
     nextBase :: Int -> Int -> Int -> Int -> Int -> Mat44D -> [Mat44D] -> PrimBase
-    nextBase !wt !pos !is !ic !io m ms = Base wt (get_seq is m) mapq (br_isReversed br)
+    nextBase !wt !pos !is !ic !io m ms = Base wt (get_seq is m) b_mapq (br_isReversed br)
                                        $ nextIndel  [] 0 (pos+1) (is+1) ic (io+1) ms
 
 
@@ -240,9 +244,9 @@ instance Monoid CallStats where
 -- ordering is: AA,AB,BB; for triallelic sites the ordering is:
 -- AA,AB,BB,AC,BC,CC, etc.\"
 
-type GL = V.Vector Prob
+type GL = U.Vector Prob
 
-newtype V_Nuc = V_Nuc (V.Vector Nucleotide) deriving (Eq, Ord, Show)
+newtype V_Nuc = V_Nuc (U.Vector Nucleotide) deriving (Eq, Ord, Show)
 data IndelVariant = IndelVariant { deleted_bases  :: !Int
                                  , inserted_bases :: !V_Nuc }
   deriving (Eq, Ord, Show)

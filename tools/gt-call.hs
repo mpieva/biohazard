@@ -5,6 +5,7 @@
 import Bio.Base
 import Bio.Bam.Header
 import Bio.Bam.Raw
+import Bio.Bam.Rec
 import Bio.Bam.Pileup
 import Bio.Genocall
 import Bio.Genocall.Adna
@@ -227,11 +228,10 @@ main = do
 
     maybe (output_fasta "-") id conf_output $ \oiter ->
         mergeInputs combineCoordinates files >=> run $ \hdr ->
-            filterStream (not . br_isUnmapped) =$
-            filterStream (isValidRefseq . br_rname) =$
+            filterStream ((\b -> not (isUnmapped b) && isValidRefseq (b_rname b)) . unpackBam) =$
             progressPos "GT call at " conf_report (meta_refs hdr) =$
-            by_groups ((==) `on` br_rname) (\br out -> do
-                let sname = sq_name $ getRef (meta_refs hdr) $ br_rname br
+            by_groups ((==) `on` b_rname . unpackBam) (\br out -> do
+                let sname = sq_name $ getRef (meta_refs hdr) $ b_rname $ unpackBam br
                     pl = conf_ploidy sname
                 liftIO $ conf_report $ S.unpack sname ++ ["",": haploid call",": diploid call"] !! pl
                 pileup dmg_model =$ mapStream (calls conf_theta pl) out) =$
