@@ -38,54 +38,7 @@ module Bio.Bam.Raw (
     bamRaw,
     virt_offset,
     raw_data,
-    br_qname,
-    br_l_read_name,
-    br_l_seq,
-    br_n_cigar_op,
-    br_aln_length,
-    br_flag,
-    br_extflag,
-    br_get_md,
-
-    br_isPaired,
-    br_isProperlyPaired,
-    br_isUnmapped,
-    br_isMateUnmapped,
-    br_isReversed,
-    br_isMateReversed,
-    br_isFirstMate,
-    br_isSecondMate,
-    br_isAuxillary,
-    br_isFailsQC,
-    br_isDuplicate,
-    br_isMergeTrimmed,
-
-    br_rname,
-    br_pos,
-    br_bin,
-    br_mapq,
-    br_mrnm,
-    br_mpos,
-    br_isize,
-    br_seq_at,
-    br_qual_at,
-    br_cigar_at,
-
-    br_findExtension,
-    br_extAsInt,
-    br_extAsString,
-
-    Mutator,
-    mutateBamRaw,
-    removeExt,
-    appendStringExt,
-    setPos,
-    setBin,
-    setMapq,
-    setFlag,
-    setMrnm,
-    setMpos,
-    setIsize
+    br_cigar_at
 ) where
 
 import Bio.Base
@@ -99,22 +52,14 @@ import Control.Applicative
 import Control.Monad
 import Data.Binary.Builder          ( toLazyByteString )
 import Data.Binary.Put
-import Data.Bits                    ( Bits, shiftL, shiftR, (.&.), (.|.), testBit )
-import Data.Int                     ( Int32, Int16, Int8 )
+import Data.Bits                    ( Bits, shiftL, shiftR, (.&.), (.|.) )
 import Data.Monoid
 import Data.Sequence                ( (|>) )
-import Data.Word                    ( Word32, Word16 )
-import Foreign.C.String             ( CString )
-import Foreign.Ptr                  ( plusPtr )
-import Foreign.Marshal.Utils        ( moveBytes )
-import Foreign.Storable             ( pokeElemOff )
 import System.Environment           ( getArgs )
 import System.IO
-import System.IO.Unsafe
 
 import qualified Control.Monad.Catch            as C
 import qualified Data.ByteString                as S
-import qualified Data.ByteString.Char8          as SC
 import qualified Data.ByteString.Lazy.Char8     as L
 import qualified Data.ByteString.Unsafe         as S
 import qualified Data.Foldable                  as F
@@ -263,13 +208,14 @@ data BamRaw = BamRaw { virt_offset :: {-# UNPACK #-} !FileOffset
 
 -- | Smart constructor.  Makes sure we got a at least a full record.
 bamRaw :: FileOffset -> S.ByteString -> BamRaw
-bamRaw o s = if good then r else error $ "broken BAM record " ++ show (S.length s, m) ++
-    show [ 32, br_l_read_name r, br_l_seq r, (br_l_seq r+1) `div` 2, br_n_cigar_op r * 4 ]
+bamRaw o s = if good then r else error $ "broken BAM record " ++ show (S.length s, m) ++ show m
   where
     r = BamRaw o s
     good | S.length s < 32 = False
-         | otherwise       = S.length s >= m
-    m = sum [ 32, br_l_read_name r, br_l_seq r, (br_l_seq r+1) `div` 2, br_n_cigar_op r * 4 ]
+         | otherwise       = S.length s >= sum m
+    m = [ 32, br_l_read_name r, l_seq, (l_seq+1) `div` 2, n_cigar * 4 ]
+    n_cigar = fromIntegral (S.unsafeIndex s 12) .|. fromIntegral (S.unsafeIndex s 13) `shiftL`  8
+    l_seq = getInt s 16
 
 -- | Accessor for raw bam.
 {-# INLINE br_qname #-}
@@ -282,15 +228,6 @@ br_qname r@(BamRaw _ raw) = S.unsafeTake (br_l_read_name r) $ S.unsafeDrop 32 ra
 br_l_read_name :: BamRaw -> Int
 br_l_read_name (BamRaw _ raw) = fromIntegral $ S.unsafeIndex raw 8 - 1
 
-{-# INLINE br_l_seq #-}
-{-# DEPRECATED br_l_seq "use unpackBam" #-}
-br_l_seq :: BamRaw -> Int
-br_l_seq (BamRaw _ raw) = getInt raw 16
-
-{-# INLINE getInt16 #-}
-getInt16 :: (Num a, Bits a) => S.ByteString -> Int -> a
-getInt16 s o = fromIntegral (S.unsafeIndex s o) .|. fromIntegral (S.unsafeIndex s $ o+1) `shiftL`  8
-
 -- | Load an unaligned, little-endian int.  This is probably quite slow
 -- and unnecessary on some platforms.  On i386, ix86_64 and powerPC, we
 -- could cast the pointer and do a direct load.  Other may have special
@@ -300,107 +237,15 @@ getInt :: (Num a, Bits a) => S.ByteString -> Int -> a
 getInt s o = fromIntegral (S.unsafeIndex s $ o+0)             .|. fromIntegral (S.unsafeIndex s $ o+1) `shiftL`  8 .|.
              fromIntegral (S.unsafeIndex s $ o+2) `shiftL` 16 .|. fromIntegral (S.unsafeIndex s $ o+3) `shiftL` 24
 
-{-# INLINE br_n_cigar_op #-}
-{-# DEPRECATED br_n_cigar_op "use unpackBam" #-}
-br_n_cigar_op :: BamRaw -> Int
-br_n_cigar_op (BamRaw _ raw) = getInt16 raw 12
-
-{-# INLINE br_flag #-}
-{-# DEPRECATED br_flag "use unpackBam" #-}
-br_flag :: BamRaw -> Int
-br_flag (BamRaw _ raw) = getInt16 raw 14
-
-{-# DEPRECATED br_extflag "use unpackBam, be careful!" #-}
-{-# INLINE br_extflag #-}
-br_extflag :: BamRaw -> Int
-br_extflag br = shiftL ef 16 .|. ff
-  where !ff = br_flag br
-        !ef = br_extAsInt (br_extAsInt 0 "XF" br) "FF" br
-
-{-# INLINE br_isPaired         #-}
-{-# INLINE br_isProperlyPaired #-}
-{-# INLINE br_isUnmapped       #-}
-{-# INLINE br_isMateUnmapped   #-}
-{-# INLINE br_isReversed       #-}
-{-# INLINE br_isMateReversed   #-}
-{-# INLINE br_isFirstMate      #-}
-{-# INLINE br_isSecondMate     #-}
-{-# INLINE br_isAuxillary      #-}
-{-# INLINE br_isFailsQC        #-}
-{-# INLINE br_isDuplicate      #-}
-br_isPaired, br_isProperlyPaired, br_isUnmapped, br_isMateUnmapped, br_isReversed,
-    br_isMateReversed, br_isFirstMate, br_isSecondMate, br_isAuxillary, br_isFailsQC,
-    br_isDuplicate, br_isMergeTrimmed :: BamRaw -> Bool
-
-br_isPaired         = flip testBit  0 . br_flag
-br_isProperlyPaired = flip testBit  1 . br_flag
-br_isUnmapped       = flip testBit  2 . br_flag
-br_isMateUnmapped   = flip testBit  3 . br_flag
-br_isReversed       = flip testBit  4 . br_flag
-br_isMateReversed   = flip testBit  5 . br_flag
-br_isFirstMate      = flip testBit  6 . br_flag
-br_isSecondMate     = flip testBit  7 . br_flag
-br_isAuxillary      = flip testBit  8 . br_flag
-br_isFailsQC        = flip testBit  9 . br_flag
-br_isDuplicate      = flip testBit 10 . br_flag
-
-{-# DEPRECATED br_isMergeTrimmed "use unpackBam" #-}
-br_isMergeTrimmed br = br_extAsInt 0 "FF" br .&. (eflagTrimmed .|. eflagMerged) /= 0
-
-
 {-# INLINE br_rname #-}
 {-# DEPRECATED br_rname "use unpackBam" #-}
 br_rname :: BamRaw -> Refseq
 br_rname (BamRaw _ raw) = Refseq $ getInt raw 0
 
-{-# INLINE br_bin #-}
-{-# DEPRECATED br_bin "you don't want this" #-}
-br_bin :: BamRaw -> Int
-br_bin (BamRaw _ raw) = getInt16 raw 10
-
-{-# INLINE br_mapq #-}
-{-# DEPRECATED br_mapq "use unpackBam" #-}
-br_mapq :: BamRaw -> Qual
-br_mapq (BamRaw _ raw) = Q $ S.unsafeIndex raw 9
-
 {-# INLINE br_pos #-}
 {-# DEPRECATED br_pos "use unpackBam" #-}
 br_pos :: BamRaw -> Int
 br_pos (BamRaw _ raw) = getInt raw 4
-
-{-# INLINE br_mrnm #-}
-{-# DEPRECATED br_mrnm "use unpackBam" #-}
-br_mrnm :: BamRaw -> Refseq
-br_mrnm (BamRaw _ raw) = Refseq $ getInt raw 20
-
-{-# INLINE br_mpos #-}
-{-# DEPRECATED br_mpos "use unpackBam" #-}
-br_mpos :: BamRaw -> Int
-br_mpos (BamRaw _ raw) = getInt raw 24
-
-{-# INLINE br_isize #-}
-{-# DEPRECATED br_isize "use unpackBam" #-}
-br_isize :: BamRaw -> Int
-br_isize (BamRaw _ raw) | i >= 0x80000000 = i - 0x100000000
-                        | otherwise       = i
-    where i :: Int
-          i = getInt raw 28
-
-{-# INLINE br_seq_at #-}
-{-# DEPRECATED br_seq_at "use unpackBam" #-}
-br_seq_at :: BamRaw -> Int -> Nucleotides
-br_seq_at br@(BamRaw _ raw) i
-    | even    i = Ns $ (S.unsafeIndex raw (off0 + i `div` 2) `shiftR` 4) .&. 0xF
-    | otherwise = Ns $  S.unsafeIndex raw (off0 + i `div` 2)             .&. 0xF
-  where
-    off0 = sum [ 33, br_l_read_name br, 4 * br_n_cigar_op br ]
-
-{-# INLINE br_qual_at #-}
-{-# DEPRECATED br_qual_at "use unpackBam" #-}
-br_qual_at :: BamRaw -> Int -> Qual
-br_qual_at br@(BamRaw _ raw) i = Q $ S.unsafeIndex raw (off0 + i)
-  where
-    off0 = sum [ 33, br_l_read_name br, 4 * br_n_cigar_op br, (br_l_seq br + 1) `div` 2]
 
 {-# INLINE br_cigar_at #-}
 {-# DEPRECATED br_cigar_at "use unpackBam" #-}
@@ -414,21 +259,6 @@ br_cigar_at br@(BamRaw _ raw) i = (co,cl)
                 1 -> Ins ; 2 -> Del ;
                 3 -> Nop ; 4 -> SMa ; 5 -> HMa ;
                 6 -> Pad ; _ -> Mat }
-
-{-# INLINE br_aln_length #-}
-br_aln_length :: BamRaw -> Int
-br_aln_length br@(BamRaw _ raw)
-    = sum [ x `shiftR` 4 | x <- map (getInt raw) $ take ncig [cig_off, cig_off+4 ..]
-          , x .&. 0xF == 0 || x .&. 0xF == 2 || x .&. 0xF == 3 ]
-  where
-    !ncig    = br_n_cigar_op br
-    !cig_off = 33 + br_l_read_name br
-
--- | Get the MD field from a BAM record.  If MD is absent or a parse
--- error occurs, the result is empty.
-{-# DEPRECATED br_get_md "use unpackBam/getMd instead" #-}
-br_get_md :: BamRaw -> [MdOp]
-br_get_md r = maybe [] id . readMd $ br_extAsString "MD" r
 
 -- | Decode a BAM stream into raw entries.  Note that the entries can be
 -- unpacked using @decodeBamEntry@.  Also note that this is an
@@ -486,146 +316,6 @@ pipeRawBamOutput meta = encodeBamUncompressed meta =$ mapChunksM_ (liftIO . S.hP
 
 writeRawBamHandle :: Handle -> BamMeta -> Iteratee [BamRaw] IO ()
 writeRawBamHandle hdl meta = encodeBam meta =$ mapChunksM_ (liftIO . S.hPut hdl)
-
-
-mutateBamRaw :: BamRaw -> Mutator () -> BamRaw
-mutateBamRaw (BamRaw vo br) mut = unsafePerformIO $ do
-        S.useAsCStringLen br $ \(p,l) -> do
-            (l',frags, ()) <- runMutator mut p l []
-            if l' <= l then do f1 <- S.packCStringLen (p,l')
-                               return $! bamRaw vo $! S.concat (f1 : reverse frags)
-                       else error "broken Mutator: length must never increase"
-
-newtype Mutator a = Mut { runMutator :: CString -> Int -> [S.ByteString] -> IO (Int,[S.ByteString], a) }
-
-instance Functor Mutator where
-    {-# INLINE fmap #-}
-    fmap f m = Mut $ \p l fs -> runMutator m p l fs >>= \(l',fs',a) -> return (l',fs',f a)
-
-instance Applicative Mutator where
-    {-# INLINE pure #-}
-    pure a = Mut $ \_ l fs -> return (l,fs,a)
-    {-# INLINE (<*>) #-}
-    u <*> v = Mut $ \p l fs -> runMutator u p l  fs  >>= \(l',fs',a) ->
-                               runMutator v p l' fs' >>= \(l'',fs'',b) ->
-                               return (l'',fs'',a b)
-
-instance Monad Mutator where
-    {-# INLINE return #-}
-    return a = Mut $ \_ l fs -> return (l,fs,a)
-    {-# INLINE (>>=) #-}
-    m >>= k  = Mut $ \p l fs -> runMutator m p l fs >>= \(l',fs',a) -> runMutator (k a) p l' fs'
-
-{-# INLINE passL #-}
-passL :: IO a -> Int -> [S.ByteString] -> IO (Int,[S.ByteString],a)
-passL io = \l fs -> io >>= \a -> return (l,fs,a)
-
-{-# INLINE setFlag  #-}
-{-# INLINE setPos  #-}
-{-# INLINE setMpos  #-}
-{-# INLINE setIsize #-}
-setPos, setFlag, setMpos, setIsize :: Int -> Mutator ()
-setPos   x = Mut $ \p -> passL $ pokeInt32 p  4 x
-setFlag  f = Mut $ \p -> passL $ pokeInt16 p 14 f
-setMpos  x = Mut $ \p -> passL $ pokeInt32 p 24 x
-setIsize x = Mut $ \p -> passL $ pokeInt32 p 28 x
-
-{-# INLINE setMapq #-}
-setMapq :: Word8 -> Mutator ()
-setMapq q = Mut $ \p -> passL $ pokeInt8 p 9 q
-
-{-# INLINE setBin #-}
-setBin :: Int -> Int -> Mutator ()
-setBin b l = Mut $ \p -> passL $ pokeInt16 p 10 (distinctBin b l)
-
-{-# INLINE setMrnm #-}
-setMrnm :: Refseq -> Mutator ()
-setMrnm r = Mut $ \p -> passL $ pokeInt32 p 20 (unRefseq r)
-
-{-# INLINE pokeInt8 #-}
-pokeInt8 :: Integral a => CString -> Int -> a -> IO ()
-pokeInt8 p o = pokeElemOff p o . fromIntegral
-
-{-# INLINE pokeInt16 #-}
-pokeInt16 :: (Bits a, Integral a) => CString -> Int -> a -> IO ()
-pokeInt16 p o x = do pokeElemOff p  o    . fromIntegral $        x   .&. 0xff
-                     pokeElemOff p (o+1) . fromIntegral $ shiftR x 8 .&. 0xff
-
-{-# INLINE pokeInt32 #-}
-pokeInt32 :: (Bits a, Integral a) => CString -> Int -> a -> IO ()
-pokeInt32 p o x = do pokeElemOff p  o    . fromIntegral $        x    .&. 0xff
-                     pokeElemOff p (o+1) . fromIntegral $ shiftR x  8 .&. 0xff
-                     pokeElemOff p (o+2) . fromIntegral $ shiftR x 16 .&. 0xff
-                     pokeElemOff p (o+3) . fromIntegral $ shiftR x 24 .&. 0xff
-
-
-
--- Find an extension field, return offset in BamRaw data.
-{-# INLINE br_findExtension #-}
-{-# DEPRECATED br_findExtension "use unpackBam/lookup" #-}
-br_findExtension :: String -> BamRaw -> Maybe (Int,Int,Int)
-br_findExtension [u,v] br@(BamRaw _ r) = go off0
-  where
-    off0 = sum [ 33, br_l_read_name br, 4 * br_n_cigar_op br, br_l_seq br, (br_l_seq br +1) `div` 2 ]
-    go !o | o >= S.length r - 3                        = Nothing
-          | SC.index r o == u && SC.index r (o+1) == v = Just (o, o+2, skip o)
-          | otherwise                                  = go (skip o)
-
-    skip !o = case SC.index r (o+2) of
-        'Z' -> skipNul $ o + 3
-        'H' -> skipNul $ o + 3
-        'B' -> o + 7 + sizeof (SC.index r (o+3)) * getInt r (o+4)
-        xxx -> o + 3 + sizeof xxx
-
-    skipNul !o | S.length r  == o = o
-               | S.index r o == 0 = o+1
-               | otherwise        = skipNul (o+1)
-
-    sizeof 'A' = 1
-    sizeof 'c' = 1
-    sizeof 'C' = 1
-    sizeof 's' = 2
-    sizeof 'S' = 2
-    sizeof 'i' = 4
-    sizeof 'I' = 4
-    sizeof 'f' = 4
-    sizeof  x  = error $ "unknown fields type: " ++ show x
-br_findExtension _ _ = error "illegal key, must be two characters"
-
-{-# INLINE br_extAsInt #-}
-br_extAsInt :: Int -> String -> BamRaw -> Int
-br_extAsInt d k br@(BamRaw _ r) = case br_findExtension k br of
-        Just (_,o,_) | SC.index r o == 'c' -> fromIntegral (fromIntegral (S.index r (o+1)) :: Int8)
-                     | SC.index r o == 'C' -> fromIntegral               (S.index r (o+1))
-                     | SC.index r o == 's' -> fromIntegral (getInt16 r (o+1) :: Int16)
-                     | SC.index r o == 'S' -> fromIntegral (getInt16 r (o+1) :: Word16)
-                     | SC.index r o == 'i' -> fromIntegral (getInt   r (o+1) :: Int32)
-                     | SC.index r o == 'I' -> fromIntegral (getInt   r (o+1) :: Word32)
-        _                                  -> d
-
-{-# INLINE br_extAsString #-}
-br_extAsString :: String -> BamRaw -> S.ByteString
-br_extAsString k br@(BamRaw _ r) = case br_findExtension k br of
-        Just (_,o,_) | SC.index r o == 'A' -> S.singleton (S.index r (o+1))
-                     | SC.index r o == 'Z' -> S.takeWhile (/= 0) $ S.drop (o+1) r
-                     | SC.index r o == 'H' -> S.takeWhile (/= 0) $ S.drop (o+1) r
-        _                                  -> S.empty
-
-{-# INLINE removeExt #-}
-removeExt :: String -> Mutator ()
-removeExt key = Mut $ \p l fs -> do
-    r <- S.unsafePackCStringLen (p,l)
-    case br_findExtension key (bamRaw 0 r) of
-        Nothing      -> return (l,fs,())
-        Just (a,_,b) -> do moveBytes (p `plusPtr` a) (p `plusPtr` b) (l-b)
-                           return $ (l-(b-a), fs, ())
-
-{-# INLINE appendStringExt #-}
-appendStringExt :: String -> S.ByteString -> Mutator ()
-appendStringExt [u,v] value = Mut $ \_ l fs -> return (l,f:fs,())
-  where
-    f = S.concat [ SC.singleton u, SC.singleton v, SC.singleton 'Z', value, S.singleton 0 ]
-appendStringExt _ _ = error "illegal key, must be two characters"
 
 -- | A simple progress indicator that prints sequence id and position.
 progressPos :: MonadIO m => String -> (String -> IO ()) -> Refs -> Enumeratee [BamRaw] [BamRaw] m a

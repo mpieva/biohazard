@@ -74,11 +74,11 @@ fromSQ sq qs = Index . foldl' (\a b -> a `shiftL` 8 .|. fromIntegral b) 0 $
                take 8 $ (++ repeat 0) $
                B.zipWith (\b q -> shiftL (b .&. 0xE) 4 .|. (min 31 $ max 33 q - 33)) sq qs
 
-fromTags :: String -> String -> BamRaw -> Index
+fromTags :: BamKey -> BamKey -> BamRaw -> Index
 fromTags itag qtag br = fromSQ sq  (if B.null qs then "@@@@@@@@" else qs)
   where
-    sq = br_extAsString itag br
-    qs = br_extAsString qtag br
+    sq = extAsString itag $ unpackBam br
+    qs = extAsString qtag $ unpackBam br
 
 gather :: MonadIO m => Int -> (String -> IO ()) -> (String -> IO ()) -> BamMeta -> Iteratee [BamRaw] m (U.Vector (Index, Index))
 gather num say mumble hdr = case hdr_sorting $ meta_hdr hdr of
@@ -101,7 +101,7 @@ gather num say mumble hdr = case hdr_sorting $ meta_hdr hdr of
                             ++ showNum num ++ " from whole file.\n"
                 go subsam2vector
 
-    go k = filterStream (\b -> not (br_isPaired b) || br_isFirstMate b) =$
+    go k = filterStream ((\b -> not (isPaired b) || isFirstMate b) . unpackBam) =$
            progressNum "reading " mumble =$
            mapStream (fromTags "XI" "YI" &&& fromTags "XJ" "YJ") =$ k num
 

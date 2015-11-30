@@ -88,9 +88,8 @@ import Control.Monad.Primitive      ( unsafePrimToPrim )
 import Control.Applicative
 import Data.Attoparsec.ByteString   ( anyWord8 )
 import Data.Binary.Builder          ( toLazyByteString )
-import Data.Binary.Get
 import Data.Binary.Put
-import Data.Bits                    ( testBit, shiftL, shiftR, (.&.), (.|.) )
+import Data.Bits                    ( Bits, testBit, shiftL, shiftR, (.&.), (.|.) )
 import Data.ByteString              ( ByteString )
 import Data.ByteString.Internal     ( accursedUnutterablePerformIO )
 import Data.Char                    ( ord, digitToInt )
@@ -112,6 +111,7 @@ import qualified Data.ByteString                    as B
 import qualified Data.ByteString.Char8              as S
 import qualified Data.ByteString.Internal           as B
 import qualified Data.ByteString.Lazy.Char8         as L
+import qualified Data.ByteString.Unsafe             as B
 import qualified Data.Foldable                      as F
 import qualified Data.Iteratee                      as I
 import qualified Data.Map.Strict                    as M
@@ -226,24 +226,50 @@ instance Show (Vector_Nucs_half Nucleotides) where
 {-# INLINE[1] unpackBam #-}
 unpackBam :: BamRaw -> BamRec
 unpackBam br = BamRec {
-        b_qname = br_qname br,
-        b_flag  = br_flag br,
-        b_rname = br_rname br,
-        b_pos   = br_pos br,
-        b_mapq  = br_mapq br,
-        b_cigar = Cigar [ br_cigar_at br i | i <- [0..br_n_cigar_op br-1] ],
-        b_mrnm  = br_mrnm br,
-        b_mpos  = br_mpos br,
-        b_isize = br_isize br,
-        b_seq   = Vector_Nucs_half (2 * (off_s+off0)) (br_l_seq br) fp,
-        b_qual  = S.take (br_l_seq br) $ S.drop off_q $ raw_data br,
+        b_qname = B.unsafeTake l_read_name $ B.unsafeDrop 32 $ raw_data br,
+        b_flag  = getInt16 14,
+        b_rname = Refseq $ getInt32 0,
+        b_pos   = getInt32 4,
+        b_mapq  = Q $ B.unsafeIndex (raw_data br) 9,
+        b_cigar = Cigar $ map cigar_at [0..l_cigar-1],
+        b_mrnm  = Refseq $ getInt32 20,
+        b_mpos  = getInt32 24,
+        b_isize = fromIntegral (getInt32 28 :: Int32),
+        b_seq   = Vector_Nucs_half (2 * (off_s+off0)) l_seq fp,
+        b_qual  = S.take l_seq $ S.drop off_q $ raw_data br,
         b_exts  = unpackExtensions $ S.drop off_e $ raw_data br,
         b_virtual_offset = virt_offset br }
   where
-        (!fp, !off0, _) = B.toForeignPtr (raw_data br)
-        !off_s = sum [ 33, br_l_read_name br, 4 * br_n_cigar_op br ]
-        !off_q = off_s + (br_l_seq br + 1) `div` 2
-        !off_e = off_q +  br_l_seq br
+        (fp, off0, _) = B.toForeignPtr $ raw_data br
+        off_c = 33 + l_read_name
+        off_s = off_c + 4 * l_cigar
+        off_q = off_s + (l_seq + 1) `div` 2
+        off_e = off_q +  l_seq
+
+        l_read_name = fromIntegral $ B.unsafeIndex (raw_data br) 8 - 1
+        l_seq       = getInt32 16
+        l_cigar     = getInt16 12
+
+        getInt16 :: (Num a, Bits a) => Int -> a
+        getInt16 o = fromIntegral (B.unsafeIndex (raw_data br) o) .|.
+                     fromIntegral (B.unsafeIndex (raw_data br) $ o+1) `shiftL`  8
+
+        getInt32 :: (Num a, Bits a) => Int -> a
+        getInt32 o = fromIntegral (B.unsafeIndex (raw_data br) $ o+0)             .|.
+                     fromIntegral (B.unsafeIndex (raw_data br) $ o+1) `shiftL`  8 .|.
+                     fromIntegral (B.unsafeIndex (raw_data br) $ o+2) `shiftL` 16 .|.
+                     fromIntegral (B.unsafeIndex (raw_data br) $ o+3) `shiftL` 24
+
+        -- Hrm.  Ugly.
+        cigar_at i = (co,cl)
+          where
+            cig_val = getInt32 $ off_c + i * 4
+            cl = cig_val `shiftR` 4
+            co = case cig_val .&. 0xf of {
+                        1 -> Ins ; 2 -> Del ;
+                        3 -> Nop ; 4 -> SMa ; 5 -> HMa ;
+                        6 -> Pad ; _ -> Mat }
+
 
 -- | A collection of extension fields.  The key is actually only two @Char@s, but that proved impractical.
 -- (Hmm... we could introduce a Key type that is a 16 bit int, then give

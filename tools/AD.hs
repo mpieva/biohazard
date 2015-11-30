@@ -1,11 +1,7 @@
 {-# LANGUAGE BangPatterns #-}
 module AD where
 
-import Control.Monad.ST
-
-import qualified Data.Vector as V
 import qualified Data.Vector.Unboxed as U
-import qualified Data.Vector.Unboxed.Mutable as M
 
 -- Simple forward-mode AD to get a scalar valued function and a
 -- gradient.

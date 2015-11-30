@@ -11,6 +11,7 @@ import Bio.Bam.Rec
 import Bio.Genocall.Adna
 import Bio.Iteratee
 
+import Control.Arrow ( (&&&) )
 import Control.Applicative
 import Control.Monad hiding ( mapM_ )
 import Control.Monad.Fix ( fix )
@@ -130,7 +131,7 @@ instance Show DamagedBase where
 
 decompose :: BamRaw -> [Mat44D] -> PrimChunks
 decompose br matrices
-    | br_isUnmapped br || b_rname == invalidRefseq = EndOfRead
+    | isUnmapped b || b_rname == invalidRefseq = EndOfRead
     | otherwise = firstBase b_pos 0 0 matrices
   where
     b@BamRec{..} = unpackBam br
@@ -147,10 +148,10 @@ decompose br matrices
     -- added to QUAL, and MAPQ is an upper limit for effective quality.
     get_seq :: Int -> Mat44D -> DamagedBase
     get_seq i = case b_seq V.! i of                                 -- nucleotide
-            b | b == nucsA -> DB nucA qe
-              | b == nucsC -> DB nucC qe
-              | b == nucsG -> DB nucG qe
-              | b == nucsT -> DB nucT qe
+            n | n == nucsA -> DB nucA qe
+              | n == nucsC -> DB nucC qe
+              | n == nucsG -> DB nucG qe
+              | n == nucsT -> DB nucT qe
               | otherwise  -> DB nucA (Q 0)
       where
         !q = case b_qual `B.index` i of 0xff -> Q 30 ; x -> Q x     -- quality; invalid (0xff) becomes 30
@@ -181,7 +182,7 @@ decompose br matrices
     -- we are looking at an M CIGAR operation and all the subindices are
     -- valid.
     nextBase :: Int -> Int -> Int -> Int -> Int -> Mat44D -> [Mat44D] -> PrimBase
-    nextBase !wt !pos !is !ic !io m ms = Base wt (get_seq is m) b_mapq (br_isReversed br)
+    nextBase !wt !pos !is !ic !io m ms = Base wt (get_seq is m) b_mapq (isReversed b)
                                        $ nextIndel  [] 0 (pos+1) (is+1) ic (io+1) ms
 
 
@@ -284,10 +285,10 @@ type Calls = Pile' GL (GL, [IndelVariant])
 -- encountered or a t end of file.
 
 pileup :: Monad m => DamageModel Double -> Enumeratee [BamRaw] [Pile] m a
-pileup dm = takeWhileE (isValidRefseq . br_rname) ><> filterStream useable ><>
+pileup dm = takeWhileE (isValidRefseq . b_rname . unpackBam) ><> filterStream useable ><>
             eneeCheckIfDonePass (icont . runPileM pileup' finish (Refseq 0) 0 [] Empty dm)
   where
-    useable br = not (br_isUnmapped br || br_isDuplicate br)
+    useable = not . (\b -> isUnmapped b || isDuplicate b) . unpackBam
 
     finish () _r _p [] Empty _dm out inp = idone (liftI out) inp
     finish () _ _ _ _ _ _ _ = error "logic error: leftovers after pileup"
@@ -397,7 +398,7 @@ pileup' = do
     refseq       <- get_refseq
     active       <- get_active
     next_waiting <- fmap ((,) refseq) . getMinKey <$> get_waiting
-    next_input   <- fmap (\b -> (br_rname b, br_pos b)) <$> peek
+    next_input   <- fmap ((b_rname &&& b_pos) . unpackBam) <$> peek
 
     -- If /active/ contains something, continue here.  Else find the coordinate
     -- to continue from, which is the minimum of the next /waiting/ coordinate
@@ -424,9 +425,10 @@ pileup'' = do
 
     -- feed in input as long as it starts at the current position
     fix $ \loop -> peek >>= mapM_ (\br ->
-            when (br_rname br == rs && br_pos br == po) $ do
+            let b = unpackBam br
+            in when (b_rname b == rs && b_pos b == po) $ do
                 bump
-                case decompose br $ map packMat $ toList $ dm (br_isReversed br) (br_l_seq br) of
+                case decompose br $ map packMat $ toList $ dm (isReversed b) (V.length (b_seq b)) of
                     Seek    p pb -> upd_waiting (insert p pb)
                     Indel _ _ pb -> upd_active (pb:)
                     EndOfRead    -> return ()

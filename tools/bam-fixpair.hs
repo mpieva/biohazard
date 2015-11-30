@@ -1,4 +1,4 @@
-{-# LANGUAGE BangPatterns, OverloadedStrings, FlexibleContexts #-}
+{-# LANGUAGE BangPatterns, OverloadedStrings, FlexibleContexts, RecordWildCards #-}
 
 {-
 This is a validator/fixup for paired end BAM files, that is more
@@ -35,6 +35,7 @@ import Bio.Bam.Rec
 import Bio.Iteratee
 import Bio.PriorityQueue
 import Bio.Util                                 ( showNum )
+import Control.Arrow                            ( (&&&) )
 import Control.Applicative
 import Control.Monad
 import Control.Monad.Trans.Class
@@ -151,7 +152,7 @@ fixmate r s | isFirstMate (unpackBam r) && isSecondMate (unpackBam s) = sequence
         a = unpackBam p
         b = unpackBam q
 
-        problems = filter (\(p,_,_) -> not p) checks
+        problems = filter (\(x,_,_) -> not x) checks
         checks = [ (b_mrnm a  == b_rname b,     \x -> x { b_mrnm  = b_rname b },     count_mrnm)
                  , (b_mpos a  == b_pos b,       \x -> x { b_mpos  = b_pos b },       count_mpos)
                  , (b_isize a == computedIsize, \x -> x { b_isize = computedIsize }, count_isize)
@@ -313,18 +314,19 @@ report br = do i <- gets total_in
                      os <- getSize in_order
                      ms <- getSize messed_up
                      rr <- getRefseqs
-                     let rs = br_rname br ; p = br_pos br
-                         rn = unpackSeqid . sq_name $ getRef rr rs
-                         at = if rs == invalidRefseq || p == invalidPos
-                              then "" else printf "@%s/%d, " rn p
+                     let BamRec{..} = unpackBam br
+                         rn = unpackSeqid . sq_name $ getRef rr b_rname
+                         at = if b_rname == invalidRefseq || b_pos == invalidPos
+                              then "" else printf "@%s/%d, " rn b_pos
                      note $ printf "%sin: %d, out: %d, here: %d, wait: %d, mess: %d" (at::String) i o hs os ms
 
 no_mate_here :: MonadIO m => String -> BamRaw -> Mating r m ()
-no_mate_here l b = do note $ "[" ++ l ++ "] record "
-                          ++ shows (br_qname b) (if br_isFirstMate b then "/1" else "/2")
-                          ++ " did not have a mate at the right location."
-                      let !b' = force_copy b
-                      enqueue (byQName b') messed_up
+no_mate_here l br = do note $ let b = unpackBam br
+                              in "[" ++ l ++ "] record "
+                                 ++ shows (b_qname b) (if isFirstMate b then "/1" else "/2")
+                                 ++ " did not have a mate at the right location."
+                       let !br' = br_copy br
+                       enqueue (byQName br') messed_up
 
 no_mate_ever :: MonadIO m => BamRaw -> Mating r m ()
 no_mate_ever b = do let b' = unpackBam b
@@ -419,7 +421,7 @@ re_pair qs cf rs = eneeCheckIfDone $ \out -> runMating go finish ms0 out qs cf r
             Just (ByQName _ _ qq) -> case compare (br_self_pos r) (br_self_pos qq) of
                 -- nope, r is out of order and goes to 'messed_up'
                 LT -> do warn $ "record " ++ show (br_qname r) ++ " is out of order."
-                         let !r' = force_copy r
+                         let !r' = br_copy r
                          enqueue (byQName r') messed_up
                          go
 
@@ -434,7 +436,7 @@ re_pair qs cf rs = eneeCheckIfDone $ \out -> runMating go finish ms0 out qs cf r
     -- lonely guy, belongs either here or needs to wait for the mate
     enqueueThis r | br_self_pos r >= br_mate_pos r = enqueue (byQName r) right_here
                   | otherwise             = r' `seq` enqueue (ByMatePos r') in_order
-        where r' = force_copy r
+        where r' = br_copy r
 
     -- Flush the in_order queue to messed_up, since those didn't find
     -- their mate the ordinary way.  Afterwards, flush the messed_up
@@ -496,7 +498,7 @@ data ByQName = ByQName { _bq_hash :: !Int
                        , _bq_rec :: !BamRaw }
 
 byQName :: BamRaw -> ByQName
-byQName b = ByQName (hash $ br_qname b) (br_extAsInt 0 "XI" b) b
+byQName b = ByQName (hash $ br_qname b) (extAsInt 0 "XI" $ unpackBam b) b
 
 instance Eq ByQName where
     ByQName ah ai a == ByQName bh bi b =
@@ -523,13 +525,16 @@ instance Sizeable ByQName where usedBytes = undefined       -- XXX
 instance Sizeable ByMatePos where usedBytes = undefined    -- XXX
 
 br_mate_pos :: BamRaw -> (Refseq, Int)
-br_mate_pos = (\b -> (b_mrnm b, b_mpos b)) . unpackBam
+br_mate_pos = (b_mrnm &&& b_mpos) . unpackBam
 
 br_self_pos :: BamRaw -> (Refseq, Int)
-br_self_pos = (\b -> (b_rname b, b_pos b)) . unpackBam
+br_self_pos = (b_rname &&& b_pos) . unpackBam
 
-force_copy :: BamRaw -> BamRaw
-force_copy br = bamRaw (virt_offset br) $! S.copy (raw_data br)
+br_qname :: BamRaw -> Seqid
+br_qname = b_qname . unpackBam
+
+br_copy :: BamRaw -> BamRaw
+br_copy br = bamRaw (virt_offset br) $! S.copy (raw_data br)
 
 
 
