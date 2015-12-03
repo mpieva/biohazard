@@ -1,10 +1,9 @@
-{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE OverloadedStrings, FlexibleContexts #-}
 -- | Trimming of reads as found in BAM files.  Implements trimming low
 -- quality sequence from the 3' end.
 
 module Bio.Bam.Trim ( trim_3', trim_3, trim_low_quality ) where
 
-import Bio.Bam.Header
 import Bio.Bam.Rec
 import Bio.Base
 
@@ -59,24 +58,24 @@ trim_3 l b | b_flag b `testBit` 4 = trim_rev
                     , b_pos   = b_pos b + off
                     }
 
-trim_back_cigar, trim_fwd_cigar :: Cigar -> Int -> ( Int, Cigar )
-trim_back_cigar (Cigar c) l = (o, Cigar $ reverse c') where (o,c') = sanitize_cigar . trim_cigar l $ reverse c
-trim_fwd_cigar  (Cigar c) l = (o, Cigar           c') where (o,c') = sanitize_cigar $ trim_cigar l c
+trim_back_cigar, trim_fwd_cigar :: V.Vector v Cigar => v Cigar -> Int -> ( Int, v Cigar )
+trim_back_cigar c l = (o, V.fromList $ reverse c') where (o,c') = sanitize_cigar . trim_cigar l $ reverse $ V.toList c
+trim_fwd_cigar  c l = (o, V.fromList           c') where (o,c') = sanitize_cigar $ trim_cigar l $ V.toList c
 
-sanitize_cigar :: (Int, [(CigOp,Int)]) -> (Int, [(CigOp,Int)])
-sanitize_cigar (o, [       ])                          = (o, [])
-sanitize_cigar (o, (op,l):xs) | op == Pad              = sanitize_cigar (o,xs)         -- del P
-                              | op == Del || op == Nop = sanitize_cigar (o + l, xs)    -- adjust D,N
-                              | op == Ins              = (o, (SMa,l) : xs)             -- I --> S
-                              | otherwise              = (o, (op,l):xs)                -- rest is fine
+sanitize_cigar :: (Int, [Cigar]) -> (Int, [Cigar])
+sanitize_cigar (o, [        ])                          = (o, [])
+sanitize_cigar (o, (op:*l):xs) | op == Pad              = sanitize_cigar (o,xs)         -- del P
+                               | op == Del || op == Nop = sanitize_cigar (o + l, xs)    -- adjust D,N
+                               | op == Ins              = (o, (SMa :* l):xs)            -- I --> S
+                               | otherwise              = (o, (op :* l):xs)             -- rest is fine
 
-trim_cigar :: Int -> [(CigOp,Int)] -> (Int, [(CigOp,Int)])
+trim_cigar :: Int -> [Cigar] -> (Int, [Cigar])
 trim_cigar 0 cs = (0, cs)
 trim_cigar _ [] = (0, [])
-trim_cigar l ((op,ll):cs) | bad_op op = let (o,cs') = trim_cigar l cs in (o + reflen op ll, cs')
-                          | otherwise = case l `compare` ll of
-    LT -> (reflen op  l, (op,ll-l):cs)
-    EQ -> (reflen op ll,           cs)
+trim_cigar l ((op:*ll):cs) | bad_op op = let (o,cs') = trim_cigar l cs in (o + reflen op ll, cs')
+                           | otherwise = case l `compare` ll of
+    LT -> (reflen op  l, (op :* (ll-l)):cs)
+    EQ -> (reflen op ll,                cs)
     GT -> let (o,cs') = trim_cigar (l - ll) cs in (o + reflen op ll, cs')
 
   where

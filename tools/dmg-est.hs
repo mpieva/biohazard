@@ -208,7 +208,7 @@ main = do
 pack_record :: BamRaw -> Seq
 pack_record br = if isReversed b then k (revcom u1) else k u1
   where
-    b@BamRec{ b_cigar = Cigar cigar, .. } = unpackBam br
+    b@BamRec{..} = unpackBam br
 
     k | isMerged     b = Merged
       | isTrimmed    b = Merged
@@ -216,24 +216,24 @@ pack_record br = if isReversed b then k (revcom u1) else k u1
       | otherwise      = First
 
     revcom = U.reverse . U.map (\x -> if x > 15 then x else xor x 15)
-    u1 = U.fromList . map unNP $ go cigar (G.toList b_seq) (fromMaybe [] $ getMd b)
+    u1 = U.fromList . map unNP $ go (G.toList b_cigar) (G.toList b_seq) (fromMaybe [] $ getMd b)
 
-    go :: [(CigOp,Int)] -> [Nucleotides] -> [MdOp] -> [NP]
+    go :: [Cigar] -> [Nucleotides] -> [MdOp] -> [NP]
 
-    go ((_,0):cs)   ns mds  = go cs ns mds
+    go (_:*0 :cs)   ns mds  = go cs ns mds
     go cs ns (MdNum  0:mds) = go cs ns mds
     go cs ns (MdDel []:mds) = go cs ns mds
     go  _ []              _ = []
     go []  _              _ = []
 
-    go ((Mat,nm):cs) (n:ns) (MdNum mm:mds) = mk_pair n n  : go ((Mat,nm-1):cs) ns (MdNum (mm-1):mds)
-    go ((Mat,nm):cs) (n:ns) (MdRep n':mds) = mk_pair n n' : go ((Mat,nm-1):cs) ns               mds
-    go ((Mat,nm):cs)    ns  (MdDel _ :mds) =                go ((Mat, nm ):cs) ns               mds
+    go (Mat:*nm :cs) (n:ns) (MdNum mm:mds) = mk_pair n n  : go (Mat:*(nm-1):cs) ns (MdNum (mm-1):mds)
+    go (Mat:*nm :cs) (n:ns) (MdRep n':mds) = mk_pair n n' : go (Mat:*(nm-1):cs) ns               mds
+    go (Mat:*nm :cs)    ns  (MdDel _ :mds) =                go (Mat:* nm   :cs) ns               mds
 
-    go ((Ins,nm):cs) ns mds = replicate nm esc ++ go cs (drop nm ns) mds
-    go ((SMa,nm):cs) ns mds = replicate nm esc ++ go cs (drop nm ns) mds
-    go ((Del,nm):cs) ns (MdDel (_:ds):mds) = go ((Del,nm-1):cs) ns (MdDel ds:mds)
-    go ((Del,nm):cs) ns (           _:mds) = go ((Del, nm ):cs) ns           mds
+    go (Ins:*nm :cs) ns mds = replicate nm esc ++ go cs (drop nm ns) mds
+    go (SMa:*nm :cs) ns mds = replicate nm esc ++ go cs (drop nm ns) mds
+    go (Del:*nm :cs) ns (MdDel (_:ds):mds) = go (Del:*(nm-1):cs) ns (MdDel ds:mds)
+    go (Del:*nm :cs) ns (           _:mds) = go (Del:* nm   :cs) ns           mds
 
     go (_:cs) nd mds = go cs nd mds
 

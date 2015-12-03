@@ -32,13 +32,11 @@ module Bio.Bam.Raw (
     writeRawBamHandle,
     pipeRawBamOutput,
 
-    CigOp(..),
     BamrawEnumeratee,
     BamRaw,
     bamRaw,
     virt_offset,
-    raw_data,
-    br_cigar_at
+    raw_data
 ) where
 
 import Bio.Base
@@ -246,19 +244,6 @@ br_rname (BamRaw _ raw) = Refseq $ getInt raw 0
 {-# DEPRECATED br_pos "use unpackBam" #-}
 br_pos :: BamRaw -> Int
 br_pos (BamRaw _ raw) = getInt raw 4
-
-{-# INLINE br_cigar_at #-}
-{-# DEPRECATED br_cigar_at "use unpackBam" #-}
-br_cigar_at :: BamRaw -> Int -> (CigOp, Int)
-br_cigar_at br@(BamRaw _ raw) i = (co,cl)
-  where
-    !cig_off = 33 + br_l_read_name br
-    !cig_val = getInt raw $ cig_off + i * 4
-    !cl = fromIntegral cig_val `shiftR` 4
-    !co = case cig_val .&. 0xf :: Int of {
-                1 -> Ins ; 2 -> Del ;
-                3 -> Nop ; 4 -> SMa ; 5 -> HMa ;
-                6 -> Pad ; _ -> Mat }
 
 -- | Decode a BAM stream into raw entries.  Note that the entries can be
 -- unpacked using @decodeBamEntry@.  Also note that this is an

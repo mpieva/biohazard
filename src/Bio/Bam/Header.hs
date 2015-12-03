@@ -40,9 +40,6 @@ module Bio.Bam.Header (
         eflagTrimmed,
         eflagMerged,
 
-        Cigar(..),
-        CigOp(..),
-        alignedLength,
         distinctBin,
 
         MdOp(..),
@@ -359,30 +356,6 @@ compareNames n m = case (B.uncons n, B.uncons m) of
                     EQ -> n' `compareNames` m'
   where
     is_digit c = 48 <= c && c < 58
-
-
--- | Cigar line in BAM coding
--- Bam encodes an operation and a length into a single integer, we keep
--- those integers in an array.
-newtype Cigar = Cigar { unCigar :: [(CigOp, Int)] }
-
-data CigOp = Mat | Ins | Del | Nop | SMa | HMa | Pad
-    deriving ( Eq, Ord, Enum, Show, Bounded, Ix )
-
-instance Show Cigar where
-    show (Cigar []) = "*"
-    show (Cigar cs) = concat [ shows l (toChr op) | (op,l) <- cs ]
-      where toChr = (:[]) . S.index "MIDNSHP=X" . fromEnum
-
-
--- | extracts the aligned length from a cigar line
--- This gives the length of an alignment as measured on the reference,
--- which is different from the length on the query or the length of the
--- alignment.
-{-# INLINE alignedLength #-}
-alignedLength :: Cigar -> Int
-alignedLength (Cigar cig) = sum $ map l cig
-  where l (op,n) = if op == Mat || op == Del || op == Nop then n else 0
 
 
 data MdOp = MdNum Int | MdRep Nucleotides | MdDel [Nucleotides] deriving Show

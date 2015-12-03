@@ -15,12 +15,14 @@ import Control.Arrow ( (&&&) )
 import Control.Applicative
 import Control.Monad hiding ( mapM_ )
 import Control.Monad.Fix ( fix )
+import Data.Bits
 import Data.Foldable hiding ( sum, product )
 import Data.Monoid
 import Data.Ord
 import Data.Vec.Packed ( Mat44D, packMat )
 
 import qualified Data.ByteString        as B
+import qualified Data.ByteString.Unsafe        as B
 import qualified Data.Vector.Generic    as V
 import qualified Data.Vector.Unboxed    as U
 
@@ -136,7 +138,7 @@ decompose br matrices
   where
     b@BamRec{..} = unpackBam br
 
-    !max_cig = length $ unCigar b_cigar
+    !max_cig = V.length b_cigar
     !max_seq = V.length b_seq
     -- !mapq    = br_mapq br
     !baq     = extAsString "BQ" b
@@ -167,16 +169,15 @@ decompose br matrices
     firstBase !_   !_  !_  [        ] = EndOfRead
     firstBase !pos !is !ic mms@(m:ms)
         | is >= max_seq || ic >= max_cig = EndOfRead
-        | otherwise = case br_cigar_at br ic of
-            (Ins,cl) ->            firstBase  pos (cl+is) (ic+1) mms
-            (SMa,cl) ->            firstBase  pos (cl+is) (ic+1) mms
-            (Del,cl) ->            firstBase (pos+cl) is  (ic+1) mms
-            (Nop,cl) ->            firstBase (pos+cl) is  (ic+1) mms
-            (HMa, _) ->            firstBase  pos     is  (ic+1) mms
-            (Pad, _) ->            firstBase  pos     is  (ic+1) mms
-            (Mat, 0) ->            firstBase  pos     is  (ic+1) mms
-            (Mat, _) -> Seek pos $ nextBase 0 pos     is   ic 0 m ms
-
+        | otherwise = case b_cigar V.! ic of
+            Ins :* cl ->            firstBase  pos (cl+is) (ic+1) mms
+            SMa :* cl ->            firstBase  pos (cl+is) (ic+1) mms
+            Del :* cl ->            firstBase (pos+cl) is  (ic+1) mms
+            Nop :* cl ->            firstBase (pos+cl) is  (ic+1) mms
+            HMa :*  _ ->            firstBase  pos     is  (ic+1) mms
+            Pad :*  _ ->            firstBase  pos     is  (ic+1) mms
+            Mat :*  0 ->            firstBase  pos     is  (ic+1) mms
+            Mat :*  _ -> Seek pos $ nextBase 0 pos     is   ic 0 m ms
 
     -- Generate likelihoods for the next base.  When this gets called,
     -- we are looking at an M CIGAR operation and all the subindices are
@@ -184,7 +185,6 @@ decompose br matrices
     nextBase :: Int -> Int -> Int -> Int -> Int -> Mat44D -> [Mat44D] -> PrimBase
     nextBase !wt !pos !is !ic !io m ms = Base wt (get_seq is m) b_mapq (isReversed b)
                                        $ nextIndel  [] 0 (pos+1) (is+1) ic (io+1) ms
-
 
     -- Look for the next indel after a base.  We collect all indels (I
     -- and D codes) into one combined operation.  If we hit N or the
@@ -197,15 +197,15 @@ decompose br matrices
     nextIndel _   _   !_   !_  !_  !_  [        ] = EndOfRead
     nextIndel ins del !pos !is !ic !io mms@(m:ms)
         | is >= max_seq || ic >= max_cig = EndOfRead
-        | otherwise = case br_cigar_at br ic of
-            (Ins,cl) ->             nextIndel (isq cl) del   pos (cl+is) (ic+1) 0 (drop cl mms)
-            (SMa,cl) ->             nextIndel  ins     del   pos (cl+is) (ic+1) 0 (drop cl mms)
-            (Del,cl) ->             nextIndel  ins (cl+del) (pos+cl) is  (ic+1) 0 mms
-            (Pad, _) ->             nextIndel  ins     del   pos     is  (ic+1) 0 mms
-            (HMa, _) ->             nextIndel  ins     del   pos     is  (ic+1) 0 mms
-            (Mat,cl) | io == cl  -> nextIndel  ins     del   pos     is  (ic+1) 0 mms
-                     | otherwise -> Indel del out $ nextBase del pos is   ic  io m ms  -- ends up generating a 'Base'
-            (Nop,cl) ->             firstBase               (pos+cl) is  (ic+1)   mms  -- ends up generating a 'Seek'
+        | otherwise = case b_cigar V.! ic of
+            Ins :* cl ->             nextIndel (isq cl) del   pos (cl+is) (ic+1) 0 (drop cl mms)
+            SMa :* cl ->             nextIndel  ins     del   pos (cl+is) (ic+1) 0 (drop cl mms)
+            Del :* cl ->             nextIndel  ins (cl+del) (pos+cl) is  (ic+1) 0 mms
+            Pad :*  _ ->             nextIndel  ins     del   pos     is  (ic+1) 0 mms
+            HMa :*  _ ->             nextIndel  ins     del   pos     is  (ic+1) 0 mms
+            Mat :* cl | io == cl  -> nextIndel  ins     del   pos     is  (ic+1) 0 mms
+                      | otherwise -> Indel del out $ nextBase del pos is   ic  io m ms  -- ends up generating a 'Base'
+            Nop :* cl ->             firstBase               (pos+cl) is  (ic+1)   mms  -- ends up generating a 'Seek'
       where
         out    = concat $ reverse ins
         isq cl = zipWith ($) [ get_seq i | i <- [is..is+cl-1] ] (take cl mms) : ins

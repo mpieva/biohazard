@@ -1,6 +1,7 @@
 {-# LANGUAGE OverloadedStrings, PatternGuards, BangPatterns #-}
 {-# LANGUAGE NoMonomorphismRestriction, FlexibleContexts, FlexibleInstances #-}
 {-# LANGUAGE RecordWildCards, TypeFamilies, MultiParamTypeClasses #-}
+{-# LANGUAGE TemplateHaskell #-}
 
 -- | Parsers and Printers for BAM and SAM.  We employ an @Iteratee@
 -- interface, and we strive to support everything possible in BAM.  So
@@ -54,6 +55,10 @@ module Bio.Bam.Rec (
     nullBamRec,
     getMd,
 
+    Cigar(..),
+    CigOp(..),
+    alignedLength,
+
     Nucleotides(..), Vector_Nucs_half,
     Extensions, Ext(..),
     extAsInt, extAsString, setQualFlag,
@@ -95,13 +100,14 @@ import Data.ByteString.Internal     ( accursedUnutterablePerformIO )
 import Data.Char                    ( ord, digitToInt )
 import Data.Foldable                ( foldMap )
 import Data.Int                     ( Int32, Int16, Int8 )
+import Data.Ix
 import Data.Monoid
 import Data.String                  ( fromString )
+import Data.Vector.Unboxed.Deriving
 import Data.Word                    ( Word32, Word16 )
 import Foreign.ForeignPtr
 import Foreign.Marshal.Alloc        ( alloca )
-import Foreign.Ptr                  ( castPtr )
-import Foreign.Storable             ( peek, poke, peekByteOff, pokeByteOff )
+import Foreign.Storable             ( peek, poke, peekByteOff, pokeByteOff, Storable(..) )
 import System.IO
 import System.IO.Unsafe             ( unsafeDupablePerformIO )
 
@@ -117,8 +123,56 @@ import qualified Data.Iteratee                      as I
 import qualified Data.Map.Strict                    as M
 import qualified Data.Vector.Generic                as V
 import qualified Data.Vector.Generic.Mutable        as VM
+import qualified Data.Vector.Storable               as VS
 import qualified Data.Vector.Unboxed                as U
 import qualified Data.Sequence                      as Z
+
+
+-- | Cigar line in BAM coding
+-- Bam encodes an operation and a length into a single integer, we keep
+-- those integers in an array.
+data Cigar = !CigOp :* !Int
+infix 9 :*
+
+data CigOp = Mat | Ins | Del | Nop | SMa | HMa | Pad
+    deriving ( Eq, Ord, Enum, Show, Bounded, Ix )
+
+instance Show Cigar where
+    showsPrec _ (op :* num) = shows num . (:) (S.index "MIDNSHP" (fromEnum op))
+
+derivingUnbox "Cigar"
+    [t| Cigar -> Word32 |]
+    [| \( op :* num ) -> fromIntegral $ fromEnum op .|. shiftL num 4 |]
+    [| \w -> toEnum (fromIntegral w .&. 0xf) :* fromIntegral (shiftR w 4) |]
+
+instance Storable Cigar where
+    sizeOf    _ = 4
+    alignment _ = 1
+
+    peek p = do w0 <- peekByteOff p 0 :: IO Word8
+                w1 <- peekByteOff p 1 :: IO Word8
+                w2 <- peekByteOff p 2 :: IO Word8
+                w3 <- peekByteOff p 3 :: IO Word8
+                let w = fromIntegral w0 `shiftL`  0 .|.  fromIntegral w1 `shiftL`  8 .|.
+                        fromIntegral w2 `shiftL` 16 .|.  fromIntegral w3 `shiftL` 24
+                return $ toEnum (w .&. 0xf) :* shiftR w 4
+
+    poke p (op :* num) = do pokeByteOff p 0 (fromIntegral $ w `shiftR`  0 .&. 0xff :: Word8)
+                            pokeByteOff p 1 (fromIntegral $ w `shiftR`  8 .&. 0xff :: Word8)
+                            pokeByteOff p 2 (fromIntegral $ w `shiftR` 16 .&. 0xff :: Word8)
+                            pokeByteOff p 3 (fromIntegral $ w `shiftR` 24 .&. 0xff :: Word8)
+        where
+            w = fromEnum op .|. shiftL num 4
+
+-- | extracts the aligned length from a cigar line
+-- This gives the length of an alignment as measured on the reference,
+-- which is different from the length on the query or the length of the
+-- alignment.
+{-# INLINE alignedLength #-}
+alignedLength :: V.Vector v Cigar => v Cigar -> Int
+alignedLength = V.foldl' (\a -> (a +) . l) 0
+  where l (op :* n) = if op == Mat || op == Del || op == Nop then n else 0
+
 
 -- | internal representation of a BAM record
 data BamRec = BamRec {
@@ -127,7 +181,7 @@ data BamRec = BamRec {
         b_rname :: Refseq,
         b_pos   :: Int,
         b_mapq  :: Qual,
-        b_cigar :: Cigar,
+        b_cigar :: VS.Vector Cigar,
         b_mrnm  :: Refseq,
         b_mpos  :: Int,
         b_isize :: Int,
@@ -144,7 +198,7 @@ nullBamRec = BamRec {
         b_rname = invalidRefseq,
         b_pos   = invalidPos,
         b_mapq  = Q 0,
-        b_cigar = Cigar [],
+        b_cigar = VS.empty,
         b_mrnm  = invalidRefseq,
         b_mpos  = invalidPos,
         b_isize = 0,
@@ -226,29 +280,34 @@ instance Show (Vector_Nucs_half Nucleotides) where
 {-# INLINE[1] unpackBam #-}
 unpackBam :: BamRaw -> BamRec
 unpackBam br = BamRec {
-        b_qname = B.unsafeTake l_read_name $ B.unsafeDrop 32 $ raw_data br,
-        b_flag  = getInt16 14,
-        b_rname = Refseq $ getInt32 0,
-        b_pos   = getInt32 4,
-        b_mapq  = Q $ B.unsafeIndex (raw_data br) 9,
-        b_cigar = Cigar $ map cigar_at [0..l_cigar-1],
-        b_mrnm  = Refseq $ getInt32 20,
-        b_mpos  = getInt32 24,
+        b_rname =      Refseq $ getInt32  0,
+        b_pos   =               getInt32  4,
+        b_mapq  =           Q $ getInt8   9,
+        b_flag  =               getInt16 14,
+        b_mrnm  =      Refseq $ getInt32 20,
+        b_mpos  =               getInt32 24,
         b_isize = fromIntegral (getInt32 28 :: Int32),
+
+        b_qname = B.unsafeTake l_read_name $ B.unsafeDrop 32 $ raw_data br,
+        b_cigar = VS.unsafeCast (VS.unsafeFromForeignPtr fp off_c (4*l_cigar) :: VS.Vector Word8),
         b_seq   = Vector_Nucs_half (2 * (off_s+off0)) l_seq fp,
         b_qual  = S.take l_seq $ S.drop off_q $ raw_data br,
+
         b_exts  = unpackExtensions $ S.drop off_e $ raw_data br,
         b_virtual_offset = virt_offset br }
   where
         (fp, off0, _) = B.toForeignPtr $ raw_data br
-        off_c = 33 + l_read_name
+        off_c =    33 + l_read_name
         off_s = off_c + 4 * l_cigar
         off_q = off_s + (l_seq + 1) `div` 2
         off_e = off_q +  l_seq
 
-        l_read_name = fromIntegral $ B.unsafeIndex (raw_data br) 8 - 1
+        l_read_name = getInt8   8 - 1
         l_seq       = getInt32 16
         l_cigar     = getInt16 12
+
+        getInt8 :: (Num a, Bits a) => Int -> a
+        getInt8  o = fromIntegral (B.unsafeIndex (raw_data br) o)
 
         getInt16 :: (Num a, Bits a) => Int -> a
         getInt16 o = fromIntegral (B.unsafeIndex (raw_data br) o) .|.
@@ -259,17 +318,6 @@ unpackBam br = BamRec {
                      fromIntegral (B.unsafeIndex (raw_data br) $ o+1) `shiftL`  8 .|.
                      fromIntegral (B.unsafeIndex (raw_data br) $ o+2) `shiftL` 16 .|.
                      fromIntegral (B.unsafeIndex (raw_data br) $ o+3) `shiftL` 24
-
-        -- Hrm.  Ugly.
-        cigar_at i = (co,cl)
-          where
-            cig_val = getInt32 $ off_c + i * 4
-            cl = cig_val `shiftR` 4
-            co = case cig_val .&. 0xf of {
-                        1 -> Ins ; 2 -> Del ;
-                        3 -> Nop ; 4 -> SMa ; 5 -> HMa ;
-                        6 -> Pad ; _ -> Mat }
-
 
 -- | A collection of extension fields.  The key is actually only two @Char@s, but that proved impractical.
 -- (Hmm... we could introduce a Key type that is a 16 bit int, then give
@@ -344,7 +392,7 @@ unpackExtensions = go
     getInt _ _ = 0
 
     getFloat s = unsafeDupablePerformIO $ alloca $ \buf ->
-                 poke (castPtr buf) (getInt 'I' s :: Word32) >> peek buf
+                 pokeByteOff buf 0 (getInt 'I' s :: Word32) >> peek buf
 
 
 encodeBamEntry :: BamRec -> BamRaw
@@ -355,7 +403,7 @@ encodeBamEntry = bamRaw 0 . S.concat . L.toChunks . runPut . putEntry
                      put_int_8     $ S.length (b_qname b) + 1
                      put_int_8     $ unQ (b_mapq b)
                      put_int_16    $ distinctBin (b_pos b) (alignedLength (b_cigar b))
-                     put_int_16    $ length $ unCigar $ b_cigar b
+                     put_int_16    $ VS.length $ b_cigar b
                      put_int_16    $ b_flag b
                      put_int_32    $ V.length $ b_seq b
                      putWord32le   $ unRefseq $ b_mrnm b
@@ -363,7 +411,7 @@ encodeBamEntry = bamRaw 0 . S.concat . L.toChunks . runPut . putEntry
                      put_int_32    $ b_isize b
                      putByteString $ b_qname b
                      putWord8 0
-                     mapM_ (put_int_32 . encodeCigar) $ unCigar $ b_cigar b
+                     VS.mapM_ putWord8 (VS.unsafeCast $ b_cigar b :: VS.Vector Word8)
                      putSeq $ b_seq b
                      putByteString $ if not (S.null (b_qual b)) then b_qual b
                                      else B.replicate (V.length $ b_seq b) 0xff
@@ -374,9 +422,6 @@ encodeBamEntry = bamRaw 0 . S.concat . L.toChunks . runPut . putEntry
     more_exts b = if xf /= 0 then x' else b_exts b
         where xf = b_flag b `shiftR` 16
               x' = insertE "FF" (Int xf) $ b_exts b
-
-    encodeCigar :: (CigOp,Int) -> Int
-    encodeCigar (op,l) = fromEnum op .|. l `shiftL` 4
 
     putSeq v = case v V.!? 0 of
                  Nothing -> return ()
@@ -455,7 +500,7 @@ putValue v = case v of
 
     fromFloat :: Float -> Int32
     fromFloat float = unsafeDupablePerformIO $ alloca $ \buf ->
-                      poke (castPtr buf) float >> peek buf
+                      pokeByteOff buf 0 float >> peek buf
 
 
 isPaired, isProperlyPaired, isUnmapped, isMateUnmapped, isReversed,
@@ -532,7 +577,7 @@ decodeSam' refs inner = joinI $ enumLinesBS $ decodeSamLoop refs inner
 parseSamRec :: (ByteString -> Refseq) -> P.Parser BamRec
 parseSamRec ref = (\nm fl rn po mq cg rn' -> BamRec nm fl rn po mq cg (rn' rn))
                   <$> word <*> num <*> (ref <$> word) <*> (subtract 1 <$> num)
-                  <*> (Q <$> num) <*> (Cigar <$> cigar) <*> rnext <*> (subtract 1 <$> num)
+                  <*> (Q <$> num) <*> (VS.fromList <$> cigar) <*> rnext <*> (subtract 1 <$> num)
                   <*> snum <*> sequ <*> quals <*> exts <*> pure 0
   where
     sep      = P.endOfInput <|> () <$ P.char '\t'
@@ -548,7 +593,7 @@ parseSamRec ref = (\nm fl rn po mq cg rn' -> BamRec nm fl rn po mq cg (rn' rn))
     quals    = {-# SCC "parseSamRec/quals" #-} B.empty <$ P.char '*' <* sep <|> B.map (subtract 33) <$> word
 
     cigar    = [] <$ P.char '*' <* sep <|>
-               P.manyTill (flip (,) <$> P.decimal <*> cigop) sep
+               P.manyTill (flip (:*) <$> P.decimal <*> cigop) sep
 
     cigop    = P.choice $ zipWith (\c r -> r <$ P.char c) "MIDNSHP" [Mat,Ins,Del,Nop,SMa,HMa,Pad]
     exts     = ext `P.sepBy` sep
@@ -666,28 +711,27 @@ pushBam :: BamRec -> Push
 pushBam BamRec{..} = mconcat
     [ ensureBuffer minlength
     , unsafeSetMark
-    , unsafePushWord32 (unRefseq b_rname)
-    , unsafePushWord32 (fromIntegral b_pos)
-    , unsafePushByte (fromIntegral $ B.length b_qname +1)
-    , unsafePushByte (unQ b_mapq)
-    , unsafePushWord16 (fromIntegral bin)
-    , unsafePushWord16 (fromIntegral $ length $ unCigar b_cigar)
-    , unsafePushWord16 (fromIntegral b_flag)
-    , unsafePushWord32 (fromIntegral $ V.length b_seq)
-    , unsafePushWord32 (unRefseq b_mrnm)
-    , unsafePushWord32 (fromIntegral b_mpos)
-    , unsafePushWord32 (fromIntegral b_isize)
+    , unsafePushWord32 $ unRefseq b_rname
+    , unsafePushWord32 $ fromIntegral b_pos
+    , unsafePushByte   $ fromIntegral $ B.length b_qname + 1
+    , unsafePushByte   $ unQ b_mapq
+    , unsafePushWord16 $ fromIntegral bin
+    , unsafePushWord16 $ fromIntegral $ VS.length b_cigar
+    , unsafePushWord16 $ fromIntegral b_flag
+    , unsafePushWord32 $ fromIntegral $ V.length b_seq
+    , unsafePushWord32 $ unRefseq b_mrnm
+    , unsafePushWord32 $ fromIntegral b_mpos
+    , unsafePushWord32 $ fromIntegral b_isize
     , unsafePushByteString b_qname
     , unsafePushByte 0
-    , foldMap (unsafePushWord32 . encodeCigar) (unCigar b_cigar)
+    , VS.foldr ((<>) . unsafePushByte) mempty (VS.unsafeCast b_cigar :: VS.Vector Word8)
     , pushSeq b_seq
     , unsafePushByteString b_qual
     , foldMap pushExt b_exts
     , endRecord ]
   where
     bin = distinctBin b_pos (alignedLength b_cigar)
-    minlength = 37 + B.length b_qname + 4 * length (unCigar b_cigar) + B.length b_qual + (V.length b_seq + 1) `shiftR` 1
-    encodeCigar (op,l) = fromIntegral $ fromEnum op .|. l `shiftL` 4
+    minlength = 37 + B.length b_qname + 4 * V.length b_cigar + B.length b_qual + (V.length b_seq + 1) `shiftR` 1
 
     pushSeq :: V.Vector vec Nucleotides => vec Nucleotides -> Push
     pushSeq v = case v V.!? 0 of
@@ -738,5 +782,5 @@ pushBam BamRec{..} = mconcat
 
         fromFloat :: Float -> Word32
         fromFloat float = unsafeDupablePerformIO $ alloca $ \buf ->
-                          poke (castPtr buf) float >> peek buf
+                          pokeByteOff buf 0 float >> peek buf
 

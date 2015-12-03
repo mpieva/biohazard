@@ -199,10 +199,11 @@ roundN rs out = do
 
     reversed (BW x) = x < 0
 
-    max_bandwidth = (+1) . (*2) . maximum . map abs . scanl plus 0 . unCigar
-    plus a (Mat,_) = a
-    plus a (Ins,n) = a+n
-    plus a (Del,n) = a-n
+    max_bandwidth = (+1) . (*2) . V.maximum . V.map abs . V.scanl plus 0
+
+    plus a (Mat :* _) = a
+    plus a (Ins :* n) = a+n
+    plus a (Del :* n) = a-n
 
 
 
