@@ -97,7 +97,7 @@ import Data.Binary.Put
 import Data.Bits                    ( Bits, testBit, shiftL, shiftR, (.&.), (.|.) )
 import Data.ByteString              ( ByteString )
 import Data.ByteString.Internal     ( accursedUnutterablePerformIO )
-import Data.Char                    ( ord, digitToInt )
+import Data.Char                    ( chr, ord, digitToInt )
 import Data.Foldable                ( foldMap )
 import Data.Int                     ( Int32, Int16, Int8 )
 import Data.Ix
@@ -180,7 +180,7 @@ data BamRec = BamRec {
         b_mpos  :: Int,
         b_isize :: Int,
         b_seq   :: Vector_Nucs_half Nucleotides,
-        b_qual  :: ByteString,         -- ^ quality, may be empty
+        b_qual  :: VS.Vector Qual,
         b_exts  :: Extensions,
         b_virtual_offset :: FileOffset -- ^ virtual offset for indexing purposes
     } deriving Show
@@ -197,7 +197,7 @@ nullBamRec = BamRec {
         b_mpos  = invalidPos,
         b_isize = 0,
         b_seq   = V.empty,
-        b_qual  = S.empty,
+        b_qual  = VS.empty,
         b_exts  = [],
         b_virtual_offset = 0
     }
@@ -285,7 +285,7 @@ unpackBam br = BamRec {
         b_qname = B.unsafeTake l_read_name $ B.unsafeDrop 32 $ raw_data br,
         b_cigar = VS.unsafeCast $ VS.unsafeFromForeignPtr fp (off0+off_c) (4*l_cigar),
         b_seq   = Vector_Nucs_half (2 * (off_s+off0)) l_seq fp,
-        b_qual  = S.take l_seq $ S.drop off_q $ raw_data br,
+        b_qual  = VS.unsafeCast $ VS.unsafeFromForeignPtr fp (off0+off_q) l_seq,
 
         b_exts  = unpackExtensions $ S.drop off_e $ raw_data br,
         b_virtual_offset = virt_offset br }
@@ -392,7 +392,8 @@ unpackExtensions = go
 encodeBamEntry :: BamRec -> BamRaw
 encodeBamEntry = bamRaw 0 . S.concat . L.toChunks . runPut . putEntry
   where
-    putEntry  b = do putWord32le   $ unRefseq $ b_rname b
+    putEntry b | V.length (b_seq b) == V.length (b_qual b) = do
+                     putWord32le   $ unRefseq $ b_rname b
                      put_int_32    $ b_pos b
                      put_int_8     $ S.length (b_qname b) + 1
                      put_int_8     $ unQ (b_mapq b)
@@ -407,10 +408,8 @@ encodeBamEntry = bamRaw 0 . S.concat . L.toChunks . runPut . putEntry
                      putWord8 0
                      VS.mapM_ putWord8 (VS.unsafeCast $ b_cigar b :: VS.Vector Word8)
                      putSeq $ b_seq b
-                     putByteString $ if not (S.null (b_qual b)) then b_qual b
-                                     else B.replicate (V.length $ b_seq b) 0xff
-                     forM_ (more_exts b) $ \(BamKey k,v) ->
-                         putWord16le k >> putValue v
+                     VS.mapM_ (putWord8 . unQ) $ b_qual b
+                     forM_ (more_exts b) $ \(BamKey k,v) -> putWord16le k >> putValue v
 
     more_exts :: BamRec -> Extensions
     more_exts b = if xf /= 0 then x' else b_exts b
@@ -569,7 +568,7 @@ decodeSam' :: Monad m => Refs -> Enumeratee ByteString [BamRec] m a
 decodeSam' refs inner = joinI $ enumLinesBS $ decodeSamLoop refs inner
 
 parseSamRec :: (ByteString -> Refseq) -> P.Parser BamRec
-parseSamRec ref = (\nm fl rn po mq cg rn' -> BamRec nm fl rn po mq cg (rn' rn))
+parseSamRec ref = mkBamRec
                   <$> word <*> num <*> (ref <$> word) <*> (subtract 1 <$> num)
                   <*> (Q <$> num) <*> (VS.fromList <$> cigar) <*> rnext <*> (subtract 1 <$> num)
                   <*> snum <*> sequ <*> quals <*> exts <*> pure 0
@@ -584,7 +583,10 @@ parseSamRec ref = (\nm fl rn po mq cg rn' -> BamRec nm fl rn po mq cg (rn' rn))
                (V.empty <$ P.char '*' <|>
                V.fromList . map toNucleotides . S.unpack <$> P.takeWhile is_nuc) <* sep
 
-    quals    = {-# SCC "parseSamRec/quals" #-} B.empty <$ P.char '*' <* sep <|> B.map (subtract 33) <$> word
+    quals    = {-# SCC "parseSamRec/quals" #-} defaultQs <$ P.char '*' <* sep <|> bsToVec <$> word
+        where
+            defaultQs sq = VS.replicate (V.length sq) (Q 0xff)
+            bsToVec qs _ = VS.fromList . map (Q . subtract 33) $ B.unpack qs
 
     cigar    = [] <$ P.char '*' <* sep <|>
                P.manyTill (flip (:*) <$> P.decimal <*> cigop) sep
@@ -608,6 +610,9 @@ parseSamRec ref = (\nm fl rn po mq cg rn' -> BamRec nm fl rn po mq cg (rn' rn))
     repack (a:b:cs) = fromIntegral (digitToInt a * 16 + digitToInt b) : repack cs ; repack _ = []
     is_nuc = P.inClass "acgtswkmrybdhvnACGTSWKMRYBDHVN"
 
+    mkBamRec nm fl rn po mq cg rn' mp is sq qs' =
+                BamRec nm fl rn po mq cg (rn' rn) mp is sq (qs' sq)
+
 encodeSamEntry :: Refs -> BamRec -> String -> String
 encodeSamEntry refs b = conjoin '\t' [
     unpck (b_qname b),
@@ -620,7 +625,7 @@ encodeSamEntry refs b = conjoin '\t' [
     shows (b_mpos b + 1),
     shows (b_isize b + 1),
     shows (V.toList $ b_seq b),
-    unpck (B.map (+33) $ b_qual b) ] .
+    (++)  (V.toList . V.map (chr . (+33) . fromIntegral . unQ) $ b_qual b) ] .
     foldr (\(k,v) f -> (:) '\t' . shows k . (:) ':' . extToSam v . f) id (b_exts b)
   where
     unpck = (++) . S.unpack
@@ -720,12 +725,12 @@ pushBam BamRec{..} = mconcat
     , unsafePushByte 0
     , VS.foldr ((<>) . unsafePushByte) mempty (VS.unsafeCast b_cigar :: VS.Vector Word8)
     , pushSeq b_seq
-    , unsafePushByteString b_qual
+    , VS.foldr ((<>) . unsafePushByte . unQ) mempty b_qual
     , foldMap pushExt b_exts
     , endRecord ]
   where
     bin = distinctBin b_pos (alignedLength b_cigar)
-    minlength = 37 + B.length b_qname + 4 * V.length b_cigar + B.length b_qual + (V.length b_seq + 1) `shiftR` 1
+    minlength = 37 + B.length b_qname + 4 * V.length b_cigar + V.length b_qual + (V.length b_seq + 1) `shiftR` 1
 
     pushSeq :: V.Vector vec Nucleotides => vec Nucleotides -> Push
     pushSeq v = case v V.!? 0 of

@@ -122,7 +122,7 @@ withIndex (Just fp) tagi tagq enum = mergeEnums enum (fromFastq fp) (convStream 
                         "read names do not match: " ++ shows (b_qname (fst seqrecs)) " & " ++ show (b_qname idxrec)
 
                  let idxseq  = S.pack $ map showNucleotides $ V.toList $ b_seq idxrec
-                     idxqual = B.map (+33) $ b_qual idxrec
+                     idxqual = B.pack $ map   ((+33) . unQ) $ V.toList $ b_qual idxrec
                  return [ flip mapU2 seqrecs $
                         \r -> r { b_exts = (if B.null idxqual then id else insertE tagq (Text idxqual))
                                          $ insertE tagi (Text idxseq) $ b_exts r } ]

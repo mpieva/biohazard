@@ -50,7 +50,7 @@ import Control.Applicative
 import Control.Monad
 import Data.Binary.Builder          ( toLazyByteString )
 import Data.Binary.Put
-import Data.Bits                    ( Bits, shiftL, shiftR, (.&.), (.|.) )
+import Data.Bits                    ( Bits, shiftL, (.|.) )
 import Data.Monoid
 import Data.Sequence                ( (|>) )
 import System.Environment           ( getArgs )

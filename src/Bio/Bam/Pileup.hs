@@ -15,14 +15,12 @@ import Control.Arrow ( (&&&) )
 import Control.Applicative
 import Control.Monad hiding ( mapM_ )
 import Control.Monad.Fix ( fix )
-import Data.Bits
 import Data.Foldable hiding ( sum, product )
 import Data.Monoid
 import Data.Ord
 import Data.Vec.Packed ( Mat44D, packMat )
 
 import qualified Data.ByteString        as B
-import qualified Data.ByteString.Unsafe        as B
 import qualified Data.Vector.Generic    as V
 import qualified Data.Vector.Unboxed    as U
 
@@ -156,7 +154,7 @@ decompose br matrices
               | n == nucsT -> DB nucT qe
               | otherwise  -> DB nucA (Q 0)
       where
-        !q = case b_qual `B.index` i of 0xff -> Q 30 ; x -> Q x     -- quality; invalid (0xff) becomes 30
+        !q = case b_qual V.! i of Q 0xff -> Q 30 ; x -> x           -- quality; invalid (0xff) becomes 30
         !q' | i >= B.length baq = q                                 -- no BAQ available
             | otherwise = Q (unQ q + (B.index baq i - 64))          -- else correct for BAQ
         !qe = min q' b_mapq                                         -- use MAPQ as upper limit

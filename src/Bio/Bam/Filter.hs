@@ -12,8 +12,6 @@ import Bio.Base
 import Bio.Iteratee
 import Data.Bits
 
-import qualified Data.ByteString     as S
-import qualified Data.Iteratee       as I
 import qualified Data.Vector.Generic as V
 
 -- ^ Quality filters adapted from old pipeline.
@@ -28,10 +26,10 @@ filterPairs :: Monad m => (BamRec -> [BamRec])
                        -> Enumeratee [BamRec] [BamRec] m a
 filterPairs ps pp = eneeCheckIfDone step
   where
-    step k = I.tryHead >>= step' k
+    step k = tryHead >>= step' k
     step' k Nothing = return $ liftI k
     step' k (Just b)
-        | isPaired b = I.tryHead >>= step'' k b
+        | isPaired b = tryHead >>= step'' k b
         | otherwise  = case ps b of [] -> step k ; b' -> eneeCheckIfDone step . k $ Chunk b'
 
     step'' k b Nothing = case pp (Just b) Nothing of
@@ -96,8 +94,8 @@ qualityAverage :: Int -> QualFilter
 qualityAverage q b = if p then b else b'
   where
     b' = setQualFlag 'Q' $ b { b_flag = b_flag b .|. flagFailsQC }
-    p  = let total = S.foldl' (\a x -> a + fromIntegral x) 0 $ b_qual b
-         in total >= q * S.length (b_qual b)
+    p  = let total = V.foldl' (\a x -> a + fromIntegral (unQ x)) 0 $ b_qual b
+         in total >= q * V.length (b_qual b)
 
 -- | Filter on minimum quality.  In @qualityMinimum n q@, a read passes
 -- if it has no more than @n@ bases with quality less than @q@.  Reads
@@ -107,23 +105,23 @@ qualityMinimum :: Int -> Qual -> QualFilter
 qualityMinimum n (Q q) b = if p then b else b'
   where
     b' = setQualFlag 'Q' $ b { b_flag = b_flag b .|. flagFailsQC }
-    p  = S.length (S.filter (< q) (b_qual b)) <= n
+    p  = V.length (V.filter (< Q q) (b_qual b)) <= n
 
 
 -- | Convert quality scores from old Illumina scale (different formula
 -- and offset 64 in FastQ).
 qualityFromOldIllumina :: BamRec -> BamRec
-qualityFromOldIllumina b = b { b_qual = S.map conv $ b_qual b }
+qualityFromOldIllumina b = b { b_qual = V.map conv $ b_qual b }
   where
-    conv s = let s' :: Double
-                 s' = exp $ log 10 * (fromIntegral s - 31) / (-10)
-                 p  = s' / (1+s')
-                 q  = - 10 * log p / log 10
-             in round q
+    conv (Q s) = let s' :: Double
+                     s' = exp $ log 10 * (fromIntegral s - 31) / (-10)
+                     p  = s' / (1+s')
+                     q  = - 10 * log p / log 10
+                 in Q (round q)
 
 -- | Convert quality scores from new Illumina scale (standard formula
 -- but offset 64 in FastQ).
 qualityFromNewIllumina :: BamRec -> BamRec
-qualityFromNewIllumina b = b { b_qual = S.map (subtract 31) $ b_qual b }
+qualityFromNewIllumina b = b { b_qual = V.map (Q . subtract 31 . unQ) $ b_qual b }
 
 

@@ -100,7 +100,7 @@ parseFastq' descr it = do skipJunk ; convStream (parserToIteratee $ (:[]) <$> pR
              <|> pure []                                                   <?> "sequence"
 
     pQual sq = (,) sq <$> (char '+' *> skipWhile ('\n' /=) *> pQual' (length sq) <* skipSpace <|> return S.empty)  <?> "qualities"
-    pQual' n = B.map (subtract 33) . B.filter (not . isSpace_w8) <$> scan n step
+    pQual' n = B.filter (not . isSpace_w8) <$> scan n step
     step 0 _ = Nothing
     step i c | isSpace c = Just i
              | otherwise = Just (i-1)
@@ -114,7 +114,7 @@ skipJunk = I.peek >>= check
 
 makeRecord :: Seqid -> (BamRec->BamRec) -> (String, S.ByteString) -> BamRec
 makeRecord name extra (sq,qual) = extra $ nullBamRec
-        { b_qname = name, b_seq = V.fromList $ read sq, b_qual = qual }
+        { b_qname = name, b_seq = V.fromList $ read sq, b_qual = V.fromList $ map (Q . subtract 33) $ B.unpack qual }
 
 ----------------------------------------------------------------------------
 

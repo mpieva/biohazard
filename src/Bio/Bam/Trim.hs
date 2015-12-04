@@ -9,7 +9,6 @@ import Bio.Base
 
 import Data.Bits ( testBit )
 import Data.List ( inits )
-import qualified Data.ByteString     as S
 import qualified Data.Vector.Generic as V
 
 -- | Trims from the 3' end of a sequence.
@@ -31,13 +30,13 @@ trim_3' p b | b_flag b `testBit` 4 = trim_rev
             | otherwise            = trim_fwd
   where
     trim_fwd = let l = subtract 1 . fromIntegral . length . takeWhile (uncurry p) $
-                            zip (inits . reverse .         V.toList $ b_seq b)
-                                (inits . reverse . map Q . S.unpack $ b_qual b)
+                            zip (inits . reverse . V.toList $ b_seq b)
+                                (inits . reverse . V.toList $ b_qual b)
                in trim_3 l b
 
     trim_rev = let l = subtract 1 . fromIntegral . length . takeWhile (uncurry p) $
-                            zip (inits .         V.toList $ b_seq  b)
-                                (inits . map Q . S.unpack $ b_qual b)
+                            zip (inits . V.toList $ b_seq  b)
+                                (inits . V.toList $ b_qual b)
                in trim_3 l b
 
 trim_3 :: Int -> BamRec -> BamRec
@@ -46,13 +45,13 @@ trim_3 l b | b_flag b `testBit` 4 = trim_rev
   where
     trim_fwd = let (_, cigar') = trim_back_cigar (b_cigar b) l
                in b { b_seq   = V.take (V.length (b_seq  b) - l) (b_seq  b)
-                    , b_qual  = S.take (S.length (b_qual b) - l) (b_qual b)
+                    , b_qual  = V.take (V.length (b_qual b) - l) (b_qual b)
                     , b_cigar = cigar'
                     , b_exts  = deleteE "MD" (b_exts b) }
 
     trim_rev = let (off, cigar') = trim_fwd_cigar (b_cigar b) l
                in b { b_seq   = V.drop l (b_seq  b)
-                    , b_qual  = S.drop l (b_qual b)
+                    , b_qual  = V.drop l (b_qual b)
                     , b_cigar = cigar'
                     , b_exts  = deleteE "MD" (b_exts b)
                     , b_pos   = b_pos b + off

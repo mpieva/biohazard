@@ -148,7 +148,7 @@ round1 sm rs out = convStream (headStream >>= seed) =$ roundN rs out
         BamRec{..} = unpackBam br
         low_qual = 2 * l1 < l2
         l2 = V.length b_seq
-        l1 = B.length $ B.filter (> 10) b_qual
+        l1 = V.length $ V.filter (> Q 10) b_qual
 
 roundN :: Monad m
        => RefSeq

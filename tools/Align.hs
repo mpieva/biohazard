@@ -70,10 +70,10 @@ newtype QuerySeq = QS { unQS :: U.Vector Word8 } deriving Show
 
 -- | Prepare query for subsequent alignment to the forward strand.
 prep_query_fwd :: BamRaw -> QuerySeq
-prep_query_fwd br = QS $ U.fromListN len $ zipWith pair (V.toList b_seq) (B.unpack b_qual)
+prep_query_fwd br = QS $ U.fromListN len $ zipWith pair (V.toList b_seq) (V.toList b_qual)
   where
     BamRec{..} = unpackBam br
-    pair b q = q `shiftL` 2 .|. indexV "prep_query_fwd" code (fromIntegral $ unNs b)
+    pair b (Q q) = q `shiftL` 2 .|. indexV "prep_query_fwd" code (fromIntegral $ unNs b)
     code = U.fromListN 16 [0,0,1,0,2,0,0,0,3,0,0,0,0,0,0,0]
     len  = V.length b_seq
 
@@ -85,8 +85,8 @@ prep_query_rev = revcompl_query . prep_query_fwd
 qseqToBamSeq :: QuerySeq -> Vector_Nucs_half Nucleotides
 qseqToBamSeq = V.fromList . U.toList . U.map (\x -> Ns $ 1 `shiftL` fromIntegral (x .&. 3)) . unQS
 
-qseqToBamQual :: QuerySeq -> B.ByteString
-qseqToBamQual = B.pack . U.toList . U.map (`shiftR` 2) . unQS
+qseqToBamQual :: QuerySeq -> S.Vector Qual
+qseqToBamQual = S.convert . U.map (Q . (`shiftR` 2)) . unQS
 
 -- | Memoization matrix for dynamic programming.  We understand it as a
 -- matrix B columns wide and L rows deep, where B is the bandwidth and L
