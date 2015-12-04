@@ -418,9 +418,9 @@ bgzfBlocks = eneeCheckIfDone (liftI . to_blocks 0 [])
         | otherwise                         = eneeCheckIfDone (\k' -> to_blocks 0 [] k' (Chunk (SpecialChunk c cs))) . k $ Chunk acc
 
     to_blocks  alen acc k (Chunk (RecordChunk c cs))
-        -- if it fits, we accumulate,   (XXX needs to consider the fsck'ing length prefix!)
+        -- if it fits, we accumulate,  (needs to consider the length prefix!)
         | alen + S.length c + 4 < maxBlockSize  = to_blocks (alen + S.length c + 4) (c:encLength c:acc) k (Chunk cs)
-        -- else if nothing's pending, we break the chunk,   (XXX needs to consider the fsck'ing length prefix!)
+        -- else if nothing's pending, we break the chunk,  (needs to consider the length prefix!)
         | null acc                       = let (l,r) = S.splitAt (maxBlockSize-4) c
                                            in eneeCheckIfDone (\k' -> to_blocks 0 [] k' (Chunk (LeftoverChunk r cs))) . k $
                                                     Chunk [l, encLength l]

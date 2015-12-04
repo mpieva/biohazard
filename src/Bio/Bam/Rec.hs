@@ -103,7 +103,6 @@ import Data.Int                     ( Int32, Int16, Int8 )
 import Data.Ix
 import Data.Monoid
 import Data.String                  ( fromString )
-import Data.Vector.Unboxed.Deriving
 import Data.Word                    ( Word32, Word16 )
 import Foreign.ForeignPtr
 import Foreign.Marshal.Alloc        ( alloca )
@@ -140,11 +139,6 @@ data CigOp = Mat | Ins | Del | Nop | SMa | HMa | Pad
 instance Show Cigar where
     showsPrec _ (op :* num) = shows num . (:) (S.index "MIDNSHP" (fromEnum op))
 
-derivingUnbox "Cigar"
-    [t| Cigar -> Word32 |]
-    [| \( op :* num ) -> fromIntegral $ fromEnum op .|. shiftL num 4 |]
-    [| \w -> toEnum (fromIntegral w .&. 0xf) :* fromIntegral (shiftR w 4) |]
-
 instance Storable Cigar where
     sizeOf    _ = 4
     alignment _ = 1
@@ -157,10 +151,10 @@ instance Storable Cigar where
                         fromIntegral w2 `shiftL` 16 .|.  fromIntegral w3 `shiftL` 24
                 return $ toEnum (w .&. 0xf) :* shiftR w 4
 
-    poke p (op :* num) = do pokeByteOff p 0 (fromIntegral $ w `shiftR`  0 .&. 0xff :: Word8)
-                            pokeByteOff p 1 (fromIntegral $ w `shiftR`  8 .&. 0xff :: Word8)
-                            pokeByteOff p 2 (fromIntegral $ w `shiftR` 16 .&. 0xff :: Word8)
-                            pokeByteOff p 3 (fromIntegral $ w `shiftR` 24 .&. 0xff :: Word8)
+    poke p (op :* num) = do pokeByteOff p 0 (fromIntegral $ shiftR w  0 :: Word8)
+                            pokeByteOff p 1 (fromIntegral $ shiftR w  8 :: Word8)
+                            pokeByteOff p 2 (fromIntegral $ shiftR w 16 :: Word8)
+                            pokeByteOff p 3 (fromIntegral $ shiftR w 24 :: Word8)
         where
             w = fromEnum op .|. shiftL num 4
 
@@ -289,7 +283,7 @@ unpackBam br = BamRec {
         b_isize = fromIntegral (getInt32 28 :: Int32),
 
         b_qname = B.unsafeTake l_read_name $ B.unsafeDrop 32 $ raw_data br,
-        b_cigar = VS.unsafeCast (VS.unsafeFromForeignPtr fp off_c (4*l_cigar) :: VS.Vector Word8),
+        b_cigar = VS.unsafeCast $ VS.unsafeFromForeignPtr fp (off0+off_c) (4*l_cigar),
         b_seq   = Vector_Nucs_half (2 * (off_s+off0)) l_seq fp,
         b_qual  = S.take l_seq $ S.drop off_q $ raw_data br,
 
