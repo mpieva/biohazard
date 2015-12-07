@@ -53,7 +53,7 @@ Library
                        Bio.Bam.Raw,
                        Bio.Bam.Regions,
                        Bio.Bam.Rec,
-                       -- Bio.Bam.Rmdup,
+                       Bio.Bam.Rmdup,
                        Bio.Bam.Trim,
                        Bio.Genocall,
                        Bio.Genocall.Adna,
@@ -170,27 +170,27 @@ Executable bam-resample
                        bytestring,
                        random
 
--- Executable bam-rewrap
-  -- Main-is:             bam-rewrap.hs
-  -- Hs-Source-Dirs:      tools
-  -- Ghc-options:         -Wall -auto-all -threaded -rtsopts -with-rtsopts=-N
-  -- Build-depends:       base,
-                       -- biohazard,
-                       -- bytestring,
-                       -- containers
+Executable bam-rewrap
+  Main-is:             bam-rewrap.hs
+  Hs-Source-Dirs:      tools
+  Ghc-options:         -Wall -auto-all -threaded -rtsopts -with-rtsopts=-N
+  Build-depends:       base,
+                       biohazard,
+                       bytestring,
+                       containers
 
--- Executable bam-rmdup
-  -- Main-is:             bam-rmdup.hs
-  -- Hs-Source-Dirs:      tools
-  -- Ghc-options:         -Wall -auto-all -threaded -rtsopts -with-rtsopts=-N
-  -- Build-depends:       base,
-                       -- biohazard,
-                       -- bytestring,
-                       -- containers,
-                       -- iteratee,
-                       -- unordered-containers,
-                       -- vector,
-                       -- vector-algorithms
+Executable bam-rmdup
+  Main-is:             bam-rmdup.hs
+  Hs-Source-Dirs:      tools
+  Ghc-options:         -Wall -auto-all -threaded -rtsopts -with-rtsopts=-N
+  Build-depends:       base,
+                       biohazard,
+                       bytestring,
+                       containers,
+                       iteratee,
+                       unordered-containers,
+                       vector,
+                       vector-algorithms
 
 Executable bam-trim
   Main-is:             bam-trim.hs

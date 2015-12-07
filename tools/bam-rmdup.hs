@@ -1,5 +1,6 @@
-{-# LANGUAGE RecordWildCards, BangPatterns, FlexibleContexts #-}
+{-# LANGUAGE RecordWildCards, BangPatterns, FlexibleContexts, OverloadedStrings #-}
 import Bio.Bam
+import Bio.Bam.Rmdup
 import Bio.Base
 import Bio.Util ( showNum, showOOM, estimateComplexity )
 import Control.Monad
@@ -24,20 +25,21 @@ import qualified Data.HashMap.Strict    as M
 import qualified Data.IntMap            as IM
 import qualified Data.Iteratee          as I
 import qualified Data.Sequence          as Z
-import qualified Data.Vector            as V
+import qualified Data.Vector            as VV
+import qualified Data.Vector.Generic    as V
 
 data Conf = Conf {
-    output :: Maybe ((BamRaw -> Seqid) -> BamMeta -> Iteratee [BamRaw] IO ()),
+    output :: Maybe ((BamRec -> Seqid) -> BamMeta -> Iteratee [BamRec] IO ()),
     strand_preserved :: Bool,
     collapse :: Bool -> Collapse,
-    clean_multimap :: BamRaw -> IO (Maybe BamRaw),
+    clean_multimap :: BamRec -> IO (Maybe BamRec),
     keep_all :: Bool,
     keep_unaligned :: Bool,
     keep_improper :: Bool,
-    transform :: BamRaw -> Maybe BamRaw,
+    transform :: BamRec -> Maybe BamRec,
     min_len :: Int,
     min_qual :: Qual,
-    get_label :: M.HashMap Seqid Seqid -> BamRaw -> Seqid,
+    get_label :: M.HashMap Seqid Seqid -> BamRec -> Seqid,
     putResult :: String -> IO (),
     debug :: String -> IO (),
     which :: Which,
@@ -86,10 +88,10 @@ options = [
     Option "V"  ["version"]        (NoArg  (const vrsn))      "Display version number and exit" ]
 
   where
-    set_output "-" c =                    return $ c { output = Just $ \_ -> pipeRawBamOutput, putResult = hPutStr stderr }
-    set_output   f c =                    return $ c { output = Just $ \_ -> writeRawBamFile f }
+    set_output "-" c =                    return $ c { output = Just $ \_ -> pipeBamOutput, putResult = hPutStr stderr }
+    set_output   f c =                    return $ c { output = Just $ \_ -> writeBamFile f }
     set_lib_out  f c =                    return $ c { output = Just $       writeLibBamFiles f }
-    set_debug_out  c =                    return $ c { output = Just $ \_ -> pipeRawSamOutput, putResult = hPutStr stderr }
+    set_debug_out  c =                    return $ c { output = Just $ \_ -> pipeSamOutput, putResult = hPutStr stderr }
     set_qual     n c = readIO n >>= \q -> return $ c { collapse = cons_collapse' (Q q) }
     set_no_strand  c =                    return $ c { strand_preserved = False }
     set_verbose    c =                    return $ c { debug = hPutStr stderr }
@@ -166,17 +168,17 @@ cheap_collapse'  True  = cheap_collapse_keep
 -- If no RG is present, the empty string is returned.  This serves as
 -- fall-back.
 
-get_library, get_no_library :: M.HashMap Seqid Seqid -> BamRaw -> Seqid
-get_library  tbl br = M.lookupDefault rg rg tbl where rg = br_extAsString "RG" br
+get_library, get_no_library :: M.HashMap Seqid Seqid -> BamRec -> Seqid
+get_library  tbl br = M.lookupDefault rg rg tbl where rg = extAsString "RG" br
 get_no_library _  _ = S.empty
 
 mk_rg_tbl :: BamMeta -> M.HashMap Seqid Seqid
 mk_rg_tbl hdr = M.fromList
     [ (rg_id, rg_lb)
-    | ('R','G',fields) <- meta_other_shit hdr
-    , rg_id <- take 1   [ i | ('I','D',i) <- fields ]
-    , rg_lb <- take 1 $ [ l | ('L','B',l) <- fields ]
-                     ++ [ s | ('S','M',s) <- fields ]
+    | ("RG",fields) <- meta_other_shit hdr
+    , rg_id <- take 1   [ i | ("ID",i) <- fields ]
+    , rg_lb <- take 1 $ [ l | ("LB",l) <- fields ]
+                     ++ [ s | ("SM",s) <- fields ]
                      ++ [ rg_id ] ]
 
 data Counts = Counts { tin          :: !Int
@@ -200,12 +202,12 @@ main = do
                 debug "mapping of read groups to libraries:\n"
                 mapM_ debug [ unpackSeqid k ++ " --> " ++ unpackSeqid v ++ "\n" | (k,v) <- M.toList tbl ]
 
-       let filters = mapChunks (mapMaybe transform) ><>
+       let filters = progressPos "Rmdup at " debug refs' ><>
+                     mapChunks (mapMaybe (transform . unpackBam)) ><>
                      mapChunksM (mapMM clean_multimap) ><>
                      filterStream (\br -> (keep_unaligned || is_aligned br) &&
                                           (keep_improper || is_proper br) &&
-                                          eff_len br >= min_len) ><>
-                     progressPos "Rmdup at " debug refs'
+                                          eff_len br >= min_len)
 
        let (co, ou) = case output of Nothing -> (cheap_collapse', skipToEof)
                                      Just  o -> (collapse, joinI $ wrapSortWith circtable $
@@ -213,7 +215,7 @@ main = do
 
        ou' <- takeWhileE is_halfway_aligned ><> filters ><>
               normalizeSortWith circtable ><>
-              filterStream (\br -> br_mapq br >= min_qual) ><>
+              filterStream (\b -> b_mapq b >= min_qual) ><>
               rmdup (get_label tbl) strand_preserved (co keep_all) $
               count_all (get_label tbl) `I.zip` ou
 
@@ -256,45 +258,45 @@ do_report lbl Counts{..} = intercalate "\t" fs
 -- don't double count mate pairs, while still working mostly sensibly in
 -- the presence of broken BAM files.
 
-count_all :: Functor m => (BamRaw -> Seqid) -> Iteratee [BamRaw] m (M.HashMap Seqid Counts)
+count_all :: Functor m => (BamRec -> Seqid) -> Iteratee [BamRec] m (M.HashMap Seqid Counts)
 count_all lbl = M.map fixup `fmap` I.foldl' plus M.empty
   where
-    plus m br = M.insert (lbl br) cs m
+    plus m b = M.insert (lbl b) cs m
       where
-        !cs = plus1 (M.lookupDefault (Counts 0 0 0 0) (lbl br) m) br
+        !cs = plus1 (M.lookupDefault (Counts 0 0 0 0) (lbl b) m) b
 
-    plus1 (Counts ti to gs gt) br = Counts ti' to' gs' gt'
+    plus1 (Counts ti to gs gt) b = Counts ti' to' gs' gt'
       where
-        !w   = if br_isPaired br then 1 else 2
-        !ti' = ti + w * br_extAsInt 1 "XP" br
+        !w   = if isPaired b then 1 else 2
+        !ti' = ti + w * extAsInt 1 "XP" b
         !to' = to + w
-        !gs' = if br_mapq br >= Q 20 && br_extAsInt 1 "XP" br == 1 then gs + w else gs
-        !gt' = if br_mapq br >= Q 20                               then gt + w else gt
+        !gs' = if b_mapq b >= Q 20 && extAsInt 1 "XP" b == 1 then gs + w else gs
+        !gt' = if b_mapq b >= Q 20                           then gt + w else gt
 
     fixup (Counts ti to gs gt) = Counts (div ti 2) (div to 2) (div gs 2) (div gt 2)
 
-eff_len :: BamRaw -> Int
-eff_len br | br_isProperlyPaired br = abs $ br_isize br
-           | otherwise              = br_l_seq br
+eff_len :: BamRec -> Int
+eff_len b | isProperlyPaired b = abs $ b_isize b
+          | otherwise          = V.length $ b_seq b
 
 is_halfway_aligned :: BamRaw -> Bool
-is_halfway_aligned br = not (br_isUnmapped br) || not (br_isMateUnmapped br)
+is_halfway_aligned br = not (isUnmapped b) || not (isMateUnmapped b)
+    where b = unpackBam br
 
-is_aligned :: BamRaw -> Bool
-is_aligned br = not (br_isUnmapped br && br_isMateUnmapped br) && isValidRefseq (br_rname br)
+is_aligned :: BamRec -> Bool
+is_aligned b = not (isUnmapped b && isMateUnmapped b) && isValidRefseq (b_rname b)
 
-is_proper :: BamRaw -> Bool
-is_proper br = not (br_isPaired br) ||
-               (br_isMateUnmapped br == br_isUnmapped br && br_isProperlyPaired br)
+is_proper :: BamRec -> Bool
+is_proper b = not (isPaired b) || (isMateUnmapped b == isUnmapped b && isProperlyPaired b)
 
-make_single :: BamRaw -> Maybe BamRaw
-make_single br | br_isPaired br && br_isSecondMate br = Nothing
-               | br_isUnmapped br                     = Nothing
-               | not (br_isPaired br)                 = Just br
-               | otherwise = Just $! mutateBamRaw br $ do setFlag $ br_flag br .&. complement pair_flags
-                                                          setMrnm $ invalidRefseq
-                                                          setMpos $ invalidPos
-                                                          setIsize $ 0
+make_single :: BamRec -> Maybe BamRec
+make_single b | isPaired b && isSecondMate b = Nothing
+              | isUnmapped b                 = Nothing
+              | not (isPaired b)             = Just b
+              | otherwise = Just $ b { b_flag = b_flag b .&. complement pair_flags
+                                     , b_mrnm = invalidRefseq
+                                     , b_mpos = invalidPos
+                                     , b_isize = 0 }
   where
     pair_flags = flagPaired .|. flagProperlyPaired .|.
                  flagFirstMate .|. flagSecondMate .|.
@@ -328,13 +330,13 @@ decodeWithIndex enum fp k0 = do
 
 
 writeLibBamFiles :: (MonadIO m, MonadMask m)
-                 => FilePath -> (BamRaw -> Seqid) -> BamMeta -> Iteratee [BamRaw] m ()
+                 => FilePath -> (BamRec -> Seqid) -> BamMeta -> Iteratee [BamRec] m ()
 writeLibBamFiles fp lbl hdr = tryHead >>= loop M.empty
   where
     loop m  Nothing  = liftIO . mapM_ run $ M.elems m
     loop m (Just br) = do
         let !l = lbl br
-        let !it = M.lookupDefault (writeRawBamFile (fp `subst` l) hdr) l m
+        let !it = M.lookupDefault (writeBamFile (fp `subst` l) hdr) l m
         it' <- liftIO $ enumPure1Chunk [br] it
         let !m' = M.insert l it' m
         tryHead >>= loop m'
@@ -352,48 +354,48 @@ mapMM f = go []
     go acc (a:as) = do b <- f a ; go (maybe acc (:acc) b) as
 
 
-check_flags :: Monad m => BamRaw -> m (Maybe BamRaw)
-check_flags b | br_extAsInt 1 "HI" b /= 1 = fail "cannot deal with HI /= 1"
-              | br_extAsInt 1 "IH" b /= 1 = fail "cannot deal with IH /= 1"
-              | br_extAsInt 1 "NH" b /= 1 = fail "cannot deal with NH /= 1"
-              | otherwise                 = return $ Just b
+check_flags :: Monad m => BamRec -> m (Maybe BamRec)
+check_flags b | extAsInt 1 "HI" b /= 1 = fail "cannot deal with HI /= 1"
+              | extAsInt 1 "IH" b /= 1 = fail "cannot deal with IH /= 1"
+              | extAsInt 1 "NH" b /= 1 = fail "cannot deal with NH /= 1"
+              | otherwise              = return $ Just b
 
-clean_multi_flags :: Monad m => BamRaw -> m (Maybe BamRaw)
-clean_multi_flags b = return $ if br_extAsInt 1 "HI" b /= 1 then Nothing else Just b'
+clean_multi_flags :: Monad m => BamRec -> m (Maybe BamRec)
+clean_multi_flags b = return $ if extAsInt 1 "HI" b /= 1 then Nothing else Just b'
   where
-    b' = mutateBamRaw b $ mapM_ removeExt ["HI","IH","NH"]
+    b' = b { b_exts = deleteE "HI" $ deleteE "IH" $ deleteE "NH" $ b_exts b }
 
 
 -- Given a map from reference sequences to arguments, extract those
 -- groups as list, apply a function to the argument and the list, pass
 -- the result on.  Absent groups are passed on as they are.  Note that
 -- ordering within groups is messed up (it doesn't matter here).
-mapAtGroups :: Monad m => IM.IntMap a -> (a -> [BamRaw] -> [BamRaw]) -> Enumeratee [BamRaw] [BamRaw] m b
+mapAtGroups :: Monad m => IM.IntMap a -> (a -> [BamRec] -> [BamRec]) -> Enumeratee [BamRec] [BamRec] m b
 mapAtGroups m f = eneeCheckIfDonePass no_group
   where
     no_group k (Just e) = idone (liftI k) $ EOF (Just e)
     no_group k Nothing  = tryHead >>= maybe (idone (liftI k) $ EOF Nothing) (\a -> no_group_1 a k Nothing)
 
     no_group_1 _ k (Just e) = idone (liftI k) $ EOF (Just e)
-    no_group_1 a k Nothing  = case IM.lookup (br_rname_int a) m of
+    no_group_1 a k Nothing  = case IM.lookup (b_rname_int a) m of
             Nothing  -> eneeCheckIfDonePass no_group . k $ Chunk [a]
-            Just arg -> cont_group (br_rname a) arg [a] k Nothing
+            Just arg -> cont_group (b_rname a) arg [a] k Nothing
 
-    cont_group rn arg acc k (Just e) = idone (liftI k) $ EOF (Just e)
-    cont_group rn arg acc k Nothing = tryHead >>= maybe flush_eof check1
+    cont_group _rn _arg _acc k (Just e) = idone (liftI k) $ EOF (Just e)
+    cont_group  rn  arg  acc k Nothing  = tryHead >>= maybe flush_eof check1
       where
         flush_eof  = idone (k $ Chunk $ f arg acc) (EOF Nothing)
         flush_go a = eneeCheckIfDonePass (no_group_1 a) . k . Chunk $ f arg acc
-        check1 a | br_rname a == rn = cont_group rn arg (a:acc) k Nothing
-                 | otherwise        = flush_go a
+        check1 a | b_rname a == rn = cont_group rn arg (a:acc) k Nothing
+                 | otherwise       = flush_go a
 
-    br_rname_int = fromIntegral . unRefseq . br_rname
+    b_rname_int = fromIntegral . unRefseq . b_rname
 
-normalizeSortWith :: Monad m => IM.IntMap (Seqid, Int) -> Enumeratee [BamRaw] [BamRaw] m a
+normalizeSortWith :: Monad m => IM.IntMap (Seqid, Int) -> Enumeratee [BamRec] [BamRec] m a
 normalizeSortWith m = mapAtGroups m $ \(nm,l) -> sortPos . map (normalizeTo nm l)
 
-wrapSortWith :: Monad m => IM.IntMap (Seqid, Int) -> Enumeratee [BamRaw] [BamRaw] m a
+wrapSortWith :: Monad m => IM.IntMap (Seqid, Int) -> Enumeratee [BamRec] [BamRec] m a
 wrapSortWith m = mapAtGroups m $ \(_,l) -> sortPos . concatMap (wrapTo l)
 
-sortPos :: [BamRaw] -> [BamRaw]
-sortPos l = V.toList $ runST (V.unsafeThaw (V.fromList l) >>= \vm -> sortBy (comparing br_pos) vm >> V.unsafeFreeze vm)
+sortPos :: [BamRec] -> [BamRec]
+sortPos l = VV.toList $ runST (VV.unsafeThaw (VV.fromList l) >>= \vm -> sortBy (comparing b_pos) vm >> VV.unsafeFreeze vm)

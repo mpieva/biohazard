@@ -32,7 +32,6 @@ import System.Exit
 import System.IO
 
 import qualified Bio.Iteratee.ZLib          as ZLib
-import qualified Data.ByteString            as B
 import qualified Data.ByteString.Char8      as S
 import qualified Data.ByteString.Lazy.Char8 as L
 import qualified Data.Foldable              as F

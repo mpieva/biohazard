@@ -3,6 +3,7 @@ import System.Environment
 import System.IO
 import Data.ByteString.Char8 ( hPut )
 
+main :: IO ()
 main = do
     [m, inf, outf] <- getArgs
     case m of

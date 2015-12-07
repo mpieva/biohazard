@@ -130,7 +130,7 @@ import qualified Data.Sequence                      as Z
 -- | Cigar line in BAM coding
 -- Bam encodes an operation and a length into a single integer, we keep
 -- those integers in an array.
-data Cigar = !CigOp :* !Int
+data Cigar = !CigOp :* !Int deriving (Eq, Ord)
 infix 9 :*
 
 data CigOp = Mat | Ins | Del | Nop | SMa | HMa | Pad

@@ -12,7 +12,6 @@ import Data.Bits
 import Data.List (group)
 import Data.Sequence ( (<|), (><), ViewL((:<)) )
 
-import qualified Data.ByteString             as B
 import qualified Data.Foldable               as F
 import qualified Data.Sequence               as Z
 import qualified Data.Vector.Generic         as V
