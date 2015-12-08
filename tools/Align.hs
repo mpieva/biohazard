@@ -68,15 +68,14 @@ prep_reference = RS . U.concat .  map (either (to probG) (to probB))
 newtype QuerySeq = QS { unQS :: U.Vector Word8 } deriving Show
 
 -- | Prepare query for subsequent alignment to the forward strand.
-prep_query_fwd :: BamRaw -> QuerySeq
-prep_query_fwd br = QS $ U.fromListN len $ zipWith pair (V.toList b_seq) (V.toList b_qual)
+prep_query_fwd :: BamRec -> QuerySeq
+prep_query_fwd BamRec{..} = QS $ U.fromListN len $ zipWith pair (V.toList b_seq) (V.toList b_qual)
   where
-    BamRec{..} = unpackBam br
     pair b (Q q) = q `shiftL` 2 .|. indexV "prep_query_fwd" code (fromIntegral $ unNs b)
     code = U.fromListN 16 [0,0,1,0,2,0,0,0,3,0,0,0,0,0,0,0]
     len  = V.length b_seq
 
-prep_query_rev :: BamRaw -> QuerySeq
+prep_query_rev :: BamRec -> QuerySeq
 prep_query_rev = revcompl_query . prep_query_fwd
   where
   revcompl_query (QS v) = QS $ U.map (xor 3) $ U.reverse v

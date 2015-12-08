@@ -24,14 +24,6 @@ module Bio.Bam.Raw (
     combineCoordinates,
     combineNames,
 
-    encodeBam,
-    encodeBamWith,
-    encodeBamUncompressed,
-
-    writeRawBamFile,
-    writeRawBamHandle,
-    pipeRawBamOutput,
-
     BamrawEnumeratee,
     BamRaw,
     bamRaw,
@@ -48,17 +40,12 @@ import Bio.Util ( showNum )
 
 import Control.Applicative
 import Control.Monad
-import Data.Binary.Builder          ( toLazyByteString )
-import Data.Binary.Put
 import Data.Bits                    ( Bits, shiftL, (.|.) )
 import Data.Monoid
 import Data.Sequence                ( (|>) )
 import System.Environment           ( getArgs )
-import System.IO
 
-import qualified Control.Monad.Catch            as C
 import qualified Data.ByteString                as S
-import qualified Data.ByteString.Lazy.Char8     as L
 import qualified Data.ByteString.Unsafe         as S
 import qualified Data.Foldable                  as F
 import qualified Data.Map                       as M
@@ -68,7 +55,6 @@ import qualified Data.Sequence                  as Z
 -- interface, and we strive to keep BAM records in their encoded form.
 -- This is most compact and often fasted, since it saves the time for
 -- repeated decoding and encoding, if that's not strictly needed.
-
 
 type BamrawEnumeratee m b = Enumeratee' BamMeta S.ByteString [BamRaw] m b
 
@@ -160,46 +146,6 @@ combineNames :: Monad m => BamMeta -> Enumeratee [BamRaw] [BamRaw] (Iteratee [Ba
 combineNames _ = mergeSortStreams (?)
   where u ? v = case br_qname u `compareNames` br_qname v of LT -> Less ; _ -> NotLess
 
-
-
--- | Encode stuff into a BAM stream.
--- We send the encoded header and reference list to output through the
--- Bgzf compressor, then receive a list of records, which we concatenate
--- and send to output, too.
---
--- It would be nice if we were able to write an index on the side.  That
--- hasn't been designed in, yet.
-
-encodeBam :: BamMeta -> Enumeratee [BamRaw] S.ByteString IO a
-encodeBam = encodeBamWith 6 -- sensible default compression level
-
-encodeBamUncompressed :: BamMeta -> Enumeratee [BamRaw] S.ByteString IO a
-encodeBamUncompressed = encodeBamWith 0
-
-encodeBamWith :: Int -> BamMeta -> Enumeratee [BamRaw] S.ByteString IO a
-encodeBamWith lv meta = eneeBam ><> compressBgzfLv lv
-  where
-    eneeBam  = eneeCheckIfDone (\k -> eneeBam2 . k $ Chunk (SpecialChunk header NoChunk))
-    eneeBam2 = eneeCheckIfDone (liftI . put)
-
-    put k (EOF   mx) = idone (liftI k) $ EOF mx
-    put k (Chunk rs) = eneeCheckIfDone (liftI . put) . k . Chunk $ foldr (RecordChunk . raw_data) NoChunk rs
-
-    header = S.concat . L.toChunks $ runPut putHeader
-
-    putHeader = do putByteString "BAM\1"
-                   let hdr = toLazyByteString $ showBamMeta meta
-                   putWord32le $ fromIntegral $ L.length hdr
-                   putLazyByteString hdr
-                   putWord32le . fromIntegral . Z.length $ meta_refs meta
-                   F.mapM_ putRef $ meta_refs meta
-
-    putRef bs = do putWord32le . fromIntegral $ S.length (sq_name bs) + 1
-                   putByteString $ sq_name bs
-                   putWord8 0
-                   putWord32le . fromIntegral $ sq_length bs
-
-
 -- | Bam record in its native encoding along with virtual address.
 data BamRaw = BamRaw { virt_offset :: {-# UNPACK #-} !FileOffset
                      , raw_data :: {-# UNPACK #-} !S.ByteString }
@@ -217,12 +163,10 @@ bamRaw o s = if good then r else error $ "broken BAM record " ++ show (S.length 
 
 -- | Accessor for raw bam.
 {-# INLINE br_qname #-}
-{-# DEPRECATED br_qname "use unpackBam" #-}
 br_qname :: BamRaw -> Seqid
 br_qname r@(BamRaw _ raw) = S.unsafeTake (br_l_read_name r) $ S.unsafeDrop 32 raw
 
 {-# INLINE br_l_read_name #-}
-{-# DEPRECATED br_l_read_name "use unpackBam" #-}
 br_l_read_name :: BamRaw -> Int
 br_l_read_name (BamRaw _ raw) = fromIntegral $ S.unsafeIndex raw 8 - 1
 
@@ -236,12 +180,10 @@ getInt s o = fromIntegral (S.unsafeIndex s $ o+0)             .|. fromIntegral (
              fromIntegral (S.unsafeIndex s $ o+2) `shiftL` 16 .|. fromIntegral (S.unsafeIndex s $ o+3) `shiftL` 24
 
 {-# INLINE br_rname #-}
-{-# DEPRECATED br_rname "use unpackBam" #-}
 br_rname :: BamRaw -> Refseq
 br_rname (BamRaw _ raw) = Refseq $ getInt raw 0
 
 {-# INLINE br_pos #-}
-{-# DEPRECATED br_pos "use unpackBam" #-}
 br_pos :: BamRaw -> Int
 br_pos (BamRaw _ raw) = getInt raw 4
 
@@ -289,18 +231,6 @@ getBamRaw = do off <- getOffset
                         when (bsize < 32) $ fail "short BAM record"
                         iGetString (fromIntegral bsize)
                return [bamRaw off raw]
-
-writeRawBamFile :: FilePath -> BamMeta -> Iteratee [BamRaw] IO ()
-writeRawBamFile fp meta =
-    C.bracket (liftIO $ openBinaryFile fp WriteMode)
-              (liftIO . hClose)
-              (flip writeRawBamHandle meta)
-
-pipeRawBamOutput :: BamMeta -> Iteratee [BamRaw] IO ()
-pipeRawBamOutput meta = encodeBamUncompressed meta =$ mapChunksM_ (liftIO . S.hPut stdout)
-
-writeRawBamHandle :: Handle -> BamMeta -> Iteratee [BamRaw] IO ()
-writeRawBamHandle hdl meta = encodeBam meta =$ mapChunksM_ (liftIO . S.hPut hdl)
 
 -- | A simple progress indicator that prints sequence id and position.
 progressPos :: MonadIO m => String -> (String -> IO ()) -> Refs -> Enumeratee [BamRaw] [BamRaw] m a

@@ -48,7 +48,7 @@ main' num files = do
              joinI $ decodeAnyBam $
              joinI . groupOn (b_qname . unpackBam) .
              joinI . resample num total .
-             protectTerm . pipeRawBamOutput . add_pg
+             protectTerm . pipeBamOutput . add_pg
 
 
 resample :: MonadIO m => Int -> Int -> Enumeratee [[BamRaw]] [BamRaw] m a

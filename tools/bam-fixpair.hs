@@ -67,7 +67,7 @@ data Config = CF { report_mrnm :: !Bool
                  , output :: BamMeta -> Iteratee [BamRec] IO () }
 
 config0 :: IO Config
-config0 = return $ CF True True False True False True Errors KillNone (protectTerm . pipeBamOutput2)
+config0 = return $ CF True True False True False True Errors KillNone (protectTerm . pipeBamOutput)
 
 options :: [OptDescr (Config -> IO Config)]
 options = [
@@ -109,8 +109,8 @@ options = [
                 hPutStrLn stderr $ pn ++ ", version " ++ showVersion version
                 exitSuccess
 
-    set_output "-" c = return $ c { output = pipeBamOutput2 }
-    set_output  f  c = return $ c { output = writeBamFile2 f }
+    set_output "-" c = return $ c { output = pipeBamOutput }
+    set_output  f  c = return $ c { output = writeBamFile f }
     set_validate   c = return $ c { output = \_ -> skipToEof }
 
 

@@ -28,16 +28,9 @@ module Bio.Bam.Rec (
     BamEnumeratee,
     isBamOrSam,
 
+    IsBamRec(..),
     unpackBam,
-    encodeBamEntry,
-    encodeSamEntry,
-    encodeBamWith2,
-    encodeBamRawWith2,
-    pushBam,
-    pushBamRaw,
-    writeBamFile2,
-    pipeBamOutput2,
-    writeBamHandle2,
+    encodeBamWith,
 
     decodeSam,
     decodeSam',
@@ -48,7 +41,6 @@ module Bio.Bam.Rec (
     writeBamFile,
     writeBamHandle,
     pipeBamOutput,
-    pipeRawSamOutput,
     pipeSamOutput,
 
     BamRec(..),
@@ -93,7 +85,6 @@ import Control.Monad.Primitive      ( unsafePrimToPrim )
 import Control.Applicative
 import Data.Attoparsec.ByteString   ( anyWord8 )
 import Data.Binary.Builder          ( toLazyByteString )
-import Data.Binary.Put
 import Data.Bits                    ( Bits, testBit, shiftL, shiftR, (.&.), (.|.) )
 import Data.ByteString              ( ByteString )
 import Data.ByteString.Internal     ( accursedUnutterablePerformIO )
@@ -389,63 +380,6 @@ unpackExtensions = go
                  pokeByteOff buf 0 (getInt 'I' s :: Word32) >> peek buf
 
 
-encodeBamEntry :: BamRec -> BamRaw
-encodeBamEntry = bamRaw 0 . S.concat . L.toChunks . runPut . putEntry
-  where
-    putEntry b | V.length (b_seq b) == V.length (b_qual b) = do
-                     putWord32le   $ unRefseq $ b_rname b
-                     put_int_32    $ b_pos b
-                     put_int_8     $ S.length (b_qname b) + 1
-                     put_int_8     $ unQ (b_mapq b)
-                     put_int_16    $ distinctBin (b_pos b) (alignedLength (b_cigar b))
-                     put_int_16    $ VS.length $ b_cigar b
-                     put_int_16    $ b_flag b
-                     put_int_32    $ V.length $ b_seq b
-                     putWord32le   $ unRefseq $ b_mrnm b
-                     put_int_32    $ b_mpos b
-                     put_int_32    $ b_isize b
-                     putByteString $ b_qname b
-                     putWord8 0
-                     VS.mapM_ putWord8 (VS.unsafeCast $ b_cigar b :: VS.Vector Word8)
-                     putSeq $ b_seq b
-                     VS.mapM_ (putWord8 . unQ) $ b_qual b
-                     forM_ (more_exts b) $ \(BamKey k,v) -> putWord16le k >> putValue v
-
-    more_exts :: BamRec -> Extensions
-    more_exts b = if xf /= 0 then x' else b_exts b
-        where xf = b_flag b `shiftR` 16
-              x' = insertE "FF" (Int xf) $ b_exts b
-
-    putSeq v = case v V.!? 0 of
-                 Nothing -> return ()
-                 Just a  -> case v V.!? 1 of
-                    Nothing -> putWord8 (unNs a `shiftL` 4)
-                    Just b  -> do putWord8 (unNs a `shiftL` 4 .|. unNs b)
-                                  putSeq (V.drop 2 v)
-
--- | writes BAM encoded stuff to a @Handle@
--- We generate BAM with dynamic blocks, then stream them out to the file.
---
--- XXX This could write indexes on the side---a simple block index
--- for MapReduce style slicing, a standard BAM index or a name index
--- would be possible.
-writeBamHandle :: Handle -> BamMeta -> Iteratee [BamRec] IO ()
-writeBamHandle hdl meta = I.mapStream encodeBamEntry =$ writeRawBamHandle hdl meta
-
--- | writes BAM encoded stuff to a file
--- XXX This should(!) write indexes on the side---a simple block index
--- for MapReduce style slicing, a standard BAM index or a name index
--- would be possible.  When writing to a file, this makes even more
--- sense than when writing to a @Handle@.
-writeBamFile :: FilePath -> BamMeta -> Iteratee [BamRec] IO ()
-writeBamFile fp meta = I.mapStream encodeBamEntry =$ writeRawBamFile fp meta
-
--- | write BAM encoded stuff to stdout
--- This send uncompressed BAM to stdout.  Useful for piping to other
--- tools.
-pipeBamOutput :: BamMeta -> Iteratee [BamRec] IO ()
-pipeBamOutput meta = I.mapStream encodeBamEntry =$ pipeRawBamOutput meta
-
 -- | write in SAM format to stdout
 -- This is useful for piping to other tools (say, AWK scripts) or for
 -- debugging.  No convenience function to send SAM to a file exists,
@@ -453,48 +387,6 @@ pipeBamOutput meta = I.mapStream encodeBamEntry =$ pipeRawBamOutput meta
 pipeSamOutput :: MonadIO m => BamMeta -> Iteratee [BamRec] m ()
 pipeSamOutput meta = do liftIO . L.putStr . toLazyByteString $ showBamMeta meta
                         mapStreamM_ $ \b -> liftIO . putStr $ encodeSamEntry (meta_refs meta) b "\n"
-
-pipeRawSamOutput :: MonadIO m => BamMeta -> Iteratee [BamRaw] m ()
-pipeRawSamOutput hdr = joinI $ mapStream unpackBam $ pipeSamOutput hdr
-
-put_int_32, put_int_16, put_int_8 :: Integral a => a -> Put
-put_int_32 = putWord32le . fromIntegral
-put_int_16 = putWord16le . fromIntegral
-put_int_8  = putWord8 . fromIntegral
-
-putChr :: Char -> Put
-putChr = putWord8 . fromIntegral . ord
-
-putValue :: Ext -> Put
-putValue v = case v of
-    Text t      -> putChr 'Z' >> putByteString t >> putWord8 0
-    Bin b       -> putChr 'H' >> putByteString b >> putWord8 0
-    Char c      -> putChr 'A' >> putWord8 c
-    Float f     -> putChr 'f' >> put_int_32 (fromFloat f)
-    Int i       -> case put_some_int (U.singleton i) of
-                        (c,op) -> putChr c >> op i
-    IntArr   ia -> case put_some_int ia of
-                        (c,op) -> putChr 'B' >> putChr c >> put_int_32 (U.length ia-1)
-                                  >> mapM_ op (U.toList ia)
-    FloatArr fa -> putChr 'B' >> putChr 'f' >> put_int_32 (U.length fa-1)
-                   >> mapM_ (put_int_32 . fromFloat) (U.toList fa)
-  where
-    put_some_int :: U.Vector Int -> (Char, Int -> Put)
-    put_some_int is
-        | U.all (between        0    0xff) is = ('C', put_int_8)
-        | U.all (between   (-0x80)   0x7f) is = ('c', put_int_8)
-        | U.all (between        0  0xffff) is = ('S', put_int_16)
-        | U.all (between (-0x8000) 0x7fff) is = ('s', put_int_16)
-        | U.all                      (> 0) is = ('I', put_int_32)
-        | otherwise                           = ('i', put_int_32)
-
-    between :: Int -> Int -> Int -> Bool
-    between l r x = l <= x && x <= r
-
-    fromFloat :: Float -> Int32
-    fromFloat float = unsafeDupablePerformIO $ alloca $ \buf ->
-                      pokeByteOff buf 0 float >> peek buf
-
 
 isPaired, isProperlyPaired, isUnmapped, isMateUnmapped, isReversed,
     isMateReversed, isFirstMate, isSecondMate, isAuxillary, isFailsQC,
@@ -514,10 +406,8 @@ isDuplicate      = flip testBit 10 . b_flag
 isTrimmed        = flip testBit 16 . b_flag
 isMerged         = flip testBit 17 . b_flag
 
-
 type_mask :: Int
 type_mask = flagFirstMate .|. flagSecondMate .|. flagPaired
-
 
 extAsInt :: Int -> BamKey -> BamRec -> Int
 extAsInt d nm br = case lookup nm (b_exts br) of Just (Int i) -> i ; _ -> d
@@ -528,13 +418,11 @@ extAsString nm br = case lookup nm (b_exts br) of
     Just (Text s) -> s
     _             -> B.empty
 
-
 setQualFlag :: Char -> BamRec -> BamRec
 setQualFlag c br = br { b_exts = updateE "ZQ" (Text s') $ b_exts br }
   where
     s  = extAsString "ZQ" br
     s' = if c `S.elem` s then s else c `S.cons` s
-
 
 -- | Iteratee-style parser for SAM files, designed to be compatible with
 -- the BAM parsers.  Parses plain uncompressed SAM, nothing else.  Since
@@ -643,32 +531,28 @@ encodeSamEntry refs b = conjoin '\t' [
     w2d = (:) . S.index "0123456789ABCDEF" . fromIntegral
     sarr = conjoin ',' . map shows . U.toList
 
+class IsBamRec a where
+    pushBam :: a -> Push
+
+instance IsBamRec BamRaw where
+    {-# INLINE pushBam #-}
+    pushBam = pushBamRaw
+
+instance IsBamRec BamRec where
+    {-# INLINE pushBam #-}
+    pushBam = pushBamRec
+
+instance (IsBamRec a, IsBamRec b) => IsBamRec (Either a b) where
+    {-# INLINE pushBam #-}
+    pushBam = either pushBam pushBam
+
 -- | Encodes BAM records straight into a dynamic buffer, the BGZF's it.
 -- Should be fairly direct and perform well.
-{-# INLINE encodeBamWith2 #-}
-encodeBamWith2 :: MonadIO m => Int -> BamMeta -> Enumeratee [BamRec] B.ByteString m a
-encodeBamWith2 lv meta = joinI . eneeBam . encodeBgzfWith lv
+{-# INLINE encodeBamWith #-}
+encodeBamWith :: (MonadIO m, IsBamRec r) => Int -> BamMeta -> Enumeratee [r] B.ByteString m a
+encodeBamWith lv meta = joinI . eneeBam . encodeBgzfWith lv
   where
     eneeBam  = eneeCheckIfDone (\k -> mapChunks (foldMap pushBam) . k $ Chunk pushHeader)
-
-    pushHeader = pushByteString "BAM\1"
-              <> setMark                        -- the length byte
-              <> pushBuilder (showBamMeta meta)
-              <> endRecord                      -- fills the length in
-              <> pushWord32 (fromIntegral . Z.length $ meta_refs meta)
-              <> foldMap pushRef (meta_refs meta)
-
-    pushRef bs = ensureBuffer     (fromIntegral $ B.length (sq_name bs) + 9)
-              <> unsafePushWord32 (fromIntegral $ B.length (sq_name bs) + 1)
-              <> unsafePushByteString (sq_name bs)
-              <> unsafePushByte 0
-              <> unsafePushWord32 (fromIntegral $ sq_length bs)
-
-{-# INLINE encodeBamRawWith2 #-}
-encodeBamRawWith2 :: MonadIO m => Int -> BamMeta -> Enumeratee [BamRaw] B.ByteString m a
-encodeBamRawWith2 lv meta = joinI . eneeBam . encodeBgzfWith lv
-  where
-    eneeBam  = eneeCheckIfDone (\k -> mapChunks (foldMap pushBamRaw) . k $ Chunk pushHeader)
 
     pushHeader = pushByteString "BAM\1"
               <> setMark                        -- the length byte
@@ -689,25 +573,39 @@ pushBamRaw br = ensureBuffer (B.length (raw_data br) + 4)
              <> unsafePushWord32 (fromIntegral $ B.length (raw_data br))
              <> unsafePushByteString (raw_data br)
 
-writeBamFile2 :: FilePath -> BamMeta -> Iteratee [BamRec] IO ()
-writeBamFile2 fp meta =
+-- | writes BAM encoded stuff to a file
+-- XXX This should(!) write indexes on the side---a simple block index
+-- for MapReduce style slicing, a standard BAM index or a name index
+-- would be possible.  When writing to a file, this makes even more
+-- sense than when writing to a @Handle@.
+writeBamFile :: IsBamRec r => FilePath -> BamMeta -> Iteratee [r] IO ()
+writeBamFile fp meta =
     C.bracket (liftIO $ openBinaryFile fp WriteMode)
               (liftIO . hClose)
-              (flip writeBamHandle2 meta)
+              (flip writeBamHandle meta)
 
-pipeBamOutput2 :: BamMeta -> Iteratee [BamRec] IO ()
-pipeBamOutput2 meta = encodeBamWith2 0 meta =$ mapChunksM_ (liftIO . S.hPut stdout)
+-- | write BAM encoded stuff to stdout
+-- This send uncompressed BAM to stdout.  Useful for piping to other
+-- tools.
+pipeBamOutput :: IsBamRec r => BamMeta -> Iteratee [r] IO ()
+pipeBamOutput meta = encodeBamWith 0 meta =$ mapChunksM_ (liftIO . S.hPut stdout)
 
-writeBamHandle2 :: MonadIO m => Handle -> BamMeta -> Iteratee [BamRec] m ()
-writeBamHandle2 hdl meta = encodeBamWith2 6 meta =$ mapChunksM_ (liftIO . S.hPut hdl)
+-- | writes BAM encoded stuff to a @Handle@
+-- We generate BAM with dynamic blocks, then stream them out to the file.
+--
+-- XXX This could write indexes on the side---a simple block index
+-- for MapReduce style slicing, a standard BAM index or a name index
+-- would be possible.
+writeBamHandle :: (MonadIO m, IsBamRec r) => Handle -> BamMeta -> Iteratee [r] m ()
+writeBamHandle hdl meta = encodeBamWith 6 meta =$ mapChunksM_ (liftIO . S.hPut hdl)
 
 {-# RULES
-    "pushBam/unpackBam"     forall b . pushBam (unpackBam b) = pushBamRaw b
+    "pushBam/unpackBam"     forall b . pushBamRec (unpackBam b) = pushBamRaw b
   #-}
 
-{-# INLINE[1] pushBam #-}
-pushBam :: BamRec -> Push
-pushBam BamRec{..} = mconcat
+{-# INLINE[1] pushBamRec #-}
+pushBamRec :: BamRec -> Push
+pushBamRec BamRec{..} = mconcat
     [ ensureBuffer minlength
     , unsafeSetMark
     , unsafePushWord32 $ unRefseq b_rname

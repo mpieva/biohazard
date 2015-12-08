@@ -3,7 +3,6 @@
 module SimpleSeed where
 
 import Bio.Base
-import Bio.Bam.Raw
 import Bio.Bam.Rec
 
 import Data.Bits
@@ -73,8 +72,8 @@ create_seed_maps = SM . IM.unionsWith const . map (unSM . create_seed_map)
 -- first---there can be only one such overlap per strand.  We should
 -- probably discard overly long regions.
 
-do_seed :: Int -> SeedMap -> BamRaw -> Maybe (Int,Int)
-do_seed ln (SM sm) br = -- do S.hPut stdout $ S.concat [ b_qname, key, ":  ", S.pack (shows b_seq "\n") ]
+do_seed :: Int -> SeedMap -> BamRec -> Maybe (Int,Int)
+do_seed ln (SM sm) BamRec{..} = -- do S.hPut stdout $ S.concat [ b_qname, key, ":  ", S.pack (shows b_seq "\n") ]
                    --    mapM_ (\x -> hPutStrLn stdout $ "  " ++ show x) rgns
                    case rgns of
                            [         ] -> Nothing -- putStrLn "discard"
@@ -89,8 +88,6 @@ do_seed ln (SM sm) br = -- do S.hPut stdout $ S.concat [ b_qname, key, ":  ", S.
                                                          --     ++ shows (b-a) "/" ++ shows (V.length b_seq) ")"
 
   where
-    BamRec{..} = unpackBam br
-
     seeds = filter ((/= 0) . fst) $ filter ((/= template) . fst) $
             filter ((>= 0) . snd) $ create_seed_words $ V.toList b_seq
 

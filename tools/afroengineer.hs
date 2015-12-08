@@ -132,11 +132,11 @@ main = do
 round1 :: MonadIO m
        => SeedMap -> RefSeq
        -> Iteratee [(QueryRec, AlignResult)] m ()       -- BAM output
-       -> Iteratee [BamRaw] m                           -- queries in
+       -> Iteratee [BamRec] m                           -- queries in
             (RefSeq, [QueryRec])                        -- new reference & queries out
 round1 sm rs out = convStream (headStream >>= seed) =$ roundN rs out
   where
-    seed br
+    seed br@BamRec{..}
         | low_qual  = return []
         | otherwise = case do_seed (refseq_len rs) sm br of
             Nothing                -> return []
@@ -144,7 +144,6 @@ round1 sm rs out = convStream (headStream >>= seed) =$ roundN rs out
                        | otherwise -> return [ QR b_qname (prep_query_rev br) (RP (-b)) (BW (-bw)) ]
                 where bw = b - a - V.length b_seq
       where
-        BamRec{..} = unpackBam br
         low_qual = 2 * l1 < l2
         l2 = V.length b_seq
         l1 = V.length $ V.filter (> Q 10) b_qual
@@ -262,9 +261,9 @@ ref_to_ascii (RS v) = [ base | i <- [0, 5 .. V.length v - 5]
 
 
 
-readFreakingInput :: (MonadIO m, MonadMask m) => FilePath -> Enumerator [BamRaw] m b
+readFreakingInput :: (MonadIO m, MonadMask m) => FilePath -> Enumerator [BamRec] m b
 readFreakingInput fp k | ".bam" `isSuffixOf` fp = do liftIO (hPutStrLn stderr $ "Reading BAM from " ++ fp)
-                                                     decodeAnyBamFile fp $ const k
+                                                     decodeAnyBamFile fp . const $= mapStream unpackBam $ k
                        | otherwise              = maybe_read_two fp unzipFastq k
 
 check_r2 :: FilePath -> IO (Maybe FilePath)
@@ -279,8 +278,8 @@ check_r2 = go [] . reverse
 maybe_read_two :: (MonadIO m, MonadMask m)
     => FilePath
     -> (forall m1 b . (MonadIO m1, MonadMask m1) => Enumeratee S.ByteString [BamRec] m1 b)
-    -> Enumerator [BamRaw] m a
-maybe_read_two fp e1 = (\k -> liftIO (check_r2 fp) >>= maybe (rd1 k) (rd2 k)) $= mapStream encodeBamEntry
+    -> Enumerator [BamRec] m a
+maybe_read_two fp e1 = (\k -> liftIO (check_r2 fp) >>= maybe (rd1 k) (rd2 k))
   where
     rd1 k     = do liftIO (hPutStrLn stderr $ "Reading FastQ from " ++ fp)
                    enumFile defaultBufSize fp  $= e1 $ k

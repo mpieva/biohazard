@@ -299,7 +299,7 @@ unlessQuiet     _ k = k
 
 data Conf = Conf {
         cf_index_list :: FilePath,
-        cf_output     :: Maybe (BamMeta -> Iteratee [BamRaw] IO ()),
+        cf_output     :: Maybe (BamMeta -> Iteratee [BamRec] IO ()),
         cf_stats_hdl  :: Handle,
         cf_num_stats  :: Int -> Int,
         cf_threshold  :: Double,
@@ -338,8 +338,8 @@ options = [
     Option "h?" ["help", "usage"] (NoArg        (const usage)) "Print this message and exit",
     Option "V"  ["version"]       (NoArg         (const vrsn)) "Display version number and exit" ]
   where
-    set_output  "-" c = return $ c { cf_output = Just $ pipeRawBamOutput, cf_stats_hdl = stderr }
-    set_output   fp c = return $ c { cf_output = Just $ writeRawBamFile fp }
+    set_output  "-" c = return $ c { cf_output = Just $ pipeBamOutput, cf_stats_hdl = stderr }
+    set_output   fp c = return $ c { cf_output = Just $ writeBamFile fp }
     set_index_db fp c = return $ c { cf_index_list = fp }
     set_rgs      fp c = return $ c { cf_readgroups = fp : cf_readgroups c }
     set_loud        c = return $ c { cf_loudness = Loud }
@@ -456,15 +456,14 @@ main = do
                                                Nothing | cf_pedantic -> deleteE "RG" $ b_exts b
                                                        | otherwise   -> updateE "RG" (Text rg) $ b_exts b
                                                Just (rgn,_)          -> updateE "RG" (Text rgn) $ b_exts b
-                                        b' = case lookup "ZQ" ex of
+                                    return $ case lookup "ZQ" ex of
                                                 Just (Text t) | BS.null t' -> b { b_exts = deleteE "ZQ" ex
                                                                                 , b_flag = b_flag b .&. complement flagFailsQC }
                                                               | otherwise  -> b { b_exts = updateE "ZQ" (Text t') ex }
                                                   where
                                                     t' = BS.filter (\c -> c /= 'C' && c /= 'I' && c /= 'W') t
                                                 _                          -> b { b_exts = ex
-                                                                                , b_flag = b_flag b .&. complement flagFailsQC }
-                                    return $ encodeBamEntry b') =$
+                                                                                , b_flag = b_flag b .&. complement flagFailsQC }) =$
                                progressNum "writing " info =$
                                out (add_pg hdr')
 
