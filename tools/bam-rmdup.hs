@@ -217,12 +217,13 @@ main = do
               rmdup (get_label tbl) strand_preserved (co keep_all) $
               count_all (get_label tbl) `I.zip` ou
 
-       liftIO $ debug "\27[Krmdup done; copying junk\n"
+       let do_copy = do liftIO $ debug "\27[Krmdup done; copying junk\n" ; joinI (filters ou')
+           do_bail = do liftIO $ debug "\27[Krmdup done\n" ; lift (run ou')
 
        case which of
-            Unaln              -> joinI $ filters ou'
-            _ | keep_unaligned -> joinI $ filters ou'
-            _                  -> lift (run ou')
+            Unaln              -> do_copy
+            _ | keep_unaligned -> do_copy
+            _                  -> do_bail
 
     putResult . unlines $
         "\27[K#RG\tin\tout\tin@MQ20\tsingle@MQ20\tunseen\ttotal\t%unique\t%exhausted"
@@ -278,7 +279,7 @@ eff_len br | br_isProperlyPaired br = abs $ br_isize br
            | otherwise              = br_l_seq br
 
 is_halfway_aligned :: BamRaw -> Bool
-is_halfway_aligned br = not (br_isUnmapped br) || not (br_isMateUnmapped br)
+is_halfway_aligned br = isValidRefseq $ br_rname br
 
 is_aligned :: BamRaw -> Bool
 is_aligned br = not (br_isUnmapped br && br_isMateUnmapped br) && isValidRefseq (br_rname br)
