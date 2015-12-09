@@ -221,36 +221,17 @@ data BamRaw = BamRaw { virt_offset :: {-# UNPACK #-} !FileOffset
                      , raw_data :: {-# UNPACK #-} !S.ByteString }
 
 -- | Smart constructor.  Makes sure we got a at least a full record.
+{-# INLINE bamRaw #-}
 bamRaw :: FileOffset -> S.ByteString -> BamRaw
-bamRaw o s = if good then r else error $ "broken BAM record " ++ show (S.length s, m) ++ show m
+bamRaw o s = if good then BamRaw o s else error $ "broken BAM record " ++ show (S.length s, m) ++ show m
   where
-    r = BamRaw o s
     good | S.length s < 32 = False
          | otherwise       = S.length s >= sum m
-    m = [ 32, br_l_read_name r, l_seq, (l_seq+1) `div` 2, n_cigar * 4 ]
-    n_cigar = fromIntegral (B.unsafeIndex s 12) .|. fromIntegral (B.unsafeIndex s 13) `shiftL`  8
-    l_seq = getInt32 s 16
-
-{-# INLINE br_l_read_name #-}
-br_l_read_name :: BamRaw -> Int
-br_l_read_name (BamRaw _ raw) = fromIntegral $ B.unsafeIndex raw 8 - 1
-
--- | Load an unaligned, little-endian int.  This is probably quite slow
--- and unnecessary on some platforms.  On i386, ix86_64 and powerPC, we
--- could cast the pointer and do a direct load.  Other may have special
--- primitives.  Worth investigating?
-{-# INLINE getInt32 #-}
-getInt32 :: (Num a, Bits a) => B.ByteString -> Int -> a
-getInt32 s o = fromIntegral (B.unsafeIndex s $ o+0)             .|. fromIntegral (B.unsafeIndex s $ o+1) `shiftL`  8 .|.
-             fromIntegral (B.unsafeIndex s $ o+2) `shiftL` 16 .|. fromIntegral (B.unsafeIndex s $ o+3) `shiftL` 24
-
-{-# INLINE br_rname #-}
-br_rname :: BamRaw -> Refseq
-br_rname (BamRaw _ raw) = Refseq $ getInt32 raw 0
-
-{-# INLINE br_pos #-}
-br_pos :: BamRaw -> Int
-br_pos (BamRaw _ raw) = getInt32 raw 4
+    m = [ 32, l_rnm, l_seq, (l_seq+1) `div` 2, l_cig * 4 ]
+    l_rnm = fromIntegral (B.unsafeIndex s  8) - 1
+    l_cig = fromIntegral (B.unsafeIndex s 12)             .|. fromIntegral (B.unsafeIndex s 13) `shiftL`  8
+    l_seq = fromIntegral (B.unsafeIndex s 16)             .|. fromIntegral (B.unsafeIndex s 17) `shiftL`  8 .|.
+            fromIntegral (B.unsafeIndex s 18) `shiftL` 16 .|. fromIntegral (B.unsafeIndex s 19) `shiftL` 24
 
 {-# INLINE[1] unpackBam #-}
 unpackBam :: BamRaw -> BamRec
@@ -413,8 +394,9 @@ progressPos msg put refs = eneeCheckIfDonePass (icont . go 0)
     go !_ k (EOF         mx) = idone (liftI k) (EOF mx)
     go !n k (Chunk    [   ]) = liftI $ go n k
     go !n k (Chunk as@(a:_)) = do let !n' = n + length as
-                                      nm = unpackSeqid (sq_name (getRef refs (br_rname a))) ++ ":"
-                                  when (n `div` 65536 /= n' `div` 65536) $ liftIO $ put $
-                                        "\27[K" ++ msg ++ nm ++ showNum (br_pos a) ++ "\r"
+                                  when (n `div` 65536 /= n' `div` 65536) $ liftIO $ do
+                                      let BamRec{..} = unpackBam a
+                                          nm = unpackSeqid (sq_name (getRef refs b_rname)) ++ ":"
+                                      put $ "\27[K" ++ msg ++ nm ++ showNum b_pos ++ "\r"
                                   eneeCheckIfDonePass (icont . go n') . k $ Chunk as
 
