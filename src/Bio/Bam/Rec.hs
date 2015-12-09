@@ -65,11 +65,10 @@ import Bio.Iteratee
 import Bio.Util                     ( showNum )
 
 import Control.Monad
-import Control.Monad.Primitive      ( unsafePrimToPrim )
+import Control.Monad.Primitive      ( unsafePrimToPrim, unsafeInlineIO )
 import Control.Applicative
 import Data.Bits                    ( Bits, testBit, shiftL, shiftR, (.&.), (.|.) )
 import Data.ByteString              ( ByteString )
-import Data.ByteString.Internal     ( accursedUnutterablePerformIO )
 import Data.Int                     ( Int32, Int16, Int8 )
 import Data.Ix
 import Data.Monoid
@@ -189,8 +188,7 @@ instance V.Vector Vector_Nucs_half Nucleotides where
     basicUnsafeIndexM (Vector_Nucs_half o _ fp) i
         | even (o+i) = return . Ns $ (b `shiftR` 4) .&. 0xF
         | otherwise  = return . Ns $  b             .&. 0xF
-      where !b = accursedUnutterablePerformIO $ withForeignPtr fp $
-                        \p -> peekByteOff p ((o+i) `shiftR` 1)
+      where !b = unsafeInlineIO $ withForeignPtr fp $ \p -> peekByteOff p ((o+i) `shiftR` 1)
 
 instance VM.MVector MVector_Nucs_half Nucleotides where
     basicLength          (MVector_Nucs_half _ l  _) = l
