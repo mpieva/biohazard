@@ -71,7 +71,6 @@ import Data.Bits                    ( Bits, testBit, shiftL, shiftR, (.&.), (.|.
 import Data.ByteString              ( ByteString )
 import Data.Int                     ( Int32, Int16, Int8 )
 import Data.Ix
-import Data.Monoid
 import Data.String                  ( fromString )
 import Data.Word                    ( Word32, Word16 )
 import Foreign.ForeignPtr

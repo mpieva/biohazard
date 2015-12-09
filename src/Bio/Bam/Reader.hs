@@ -45,6 +45,7 @@ import Control.Arrow                ( (&&&) )
 import Control.Monad
 import Data.Attoparsec.ByteString   ( anyWord8 )
 import Data.Char                    ( digitToInt )
+import Data.Monoid
 import Data.Sequence                ( (|>) )
 import Data.String                  ( fromString )
 import System.Environment           ( getArgs )
