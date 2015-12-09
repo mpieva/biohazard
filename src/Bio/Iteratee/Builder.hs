@@ -21,10 +21,10 @@ import Data.Primitive.ByteArray
 import GHC.Exts
 import GHC.Word ( Word8, Word16, Word32 )
 
-import qualified Data.ByteString        as B
-import qualified Data.ByteString.Unsafe as B
-import qualified Data.Binary.Builder    as B ( Builder, toLazyByteString )
-import qualified Data.ByteString.Lazy   as B ( foldrChunks )
+import qualified Data.ByteString            as B
+import qualified Data.ByteString.Unsafe     as B
+import qualified Data.ByteString.Builder    as B ( Builder, toLazyByteString )
+import qualified Data.ByteString.Lazy       as B ( foldrChunks )
 
 import Bio.Iteratee
 import Bio.Iteratee.Bgzf

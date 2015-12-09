@@ -70,7 +70,6 @@ import Control.Applicative
 import Data.Bits                    ( Bits, testBit, shiftL, shiftR, (.&.), (.|.) )
 import Data.ByteString              ( ByteString )
 import Data.ByteString.Internal     ( accursedUnutterablePerformIO )
-import Data.Foldable                ( foldMap )
 import Data.Int                     ( Int32, Int16, Int8 )
 import Data.Ix
 import Data.Monoid
@@ -85,7 +84,6 @@ import qualified Data.ByteString                    as B
 import qualified Data.ByteString.Char8              as S
 import qualified Data.ByteString.Internal           as B
 import qualified Data.ByteString.Unsafe             as B
-import qualified Data.Foldable                      as F
 import qualified Data.Vector.Generic                as V
 import qualified Data.Vector.Generic.Mutable        as VM
 import qualified Data.Vector.Storable               as VS

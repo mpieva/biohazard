@@ -16,7 +16,7 @@ import Bio.Iteratee
 import Bio.Iteratee.Builder
 
 import Control.Applicative
-import Data.Binary.Builder          ( toLazyByteString )
+import Data.ByteString.Builder      ( toLazyByteString )
 import Data.Bits
 import Data.Char                    ( ord, chr )
 import Data.Monoid

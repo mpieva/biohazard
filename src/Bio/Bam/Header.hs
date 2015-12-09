@@ -51,7 +51,7 @@ import Bio.Base
 import Control.Applicative
 import Data.Bits                    ( shiftL, shiftR, (.&.), (.|.) )
 import Data.Char                    ( isDigit, ord, chr )
-import Data.Binary.Builder
+import Data.ByteString.Builder
 import Data.Ix
 import Data.List                    ( (\\), foldl' )
 import Data.Monoid
@@ -215,35 +215,31 @@ showBamMeta (BamMeta h ss os cs) =
     F.foldMap show_bam_meta_comment cs
   where
     show_bam_meta_hdr (BamHeader (major,minor) so os') =
-        fromByteString "@HD\tVN:" <>
-        fromShow major <> char7 '.' <> fromShow minor <>
-        fromByteString (case so of Unknown     -> B.empty
-                                   Unsorted    -> "\tSO:unsorted"
-                                   Grouped     -> "\tSO:grouped"
-                                   Queryname   -> "\tSO:queryname"
-                                   Coordinate  -> "\tSO:coordinate"
-                                   GroupSorted -> "\tSO:groupsort") <>
+        byteString "@HD\tVN:" <>
+        intDec major <> char7 '.' <> intDec minor <>
+        byteString (case so of Unknown     -> B.empty
+                               Unsorted    -> "\tSO:unsorted"
+                               Grouped     -> "\tSO:grouped"
+                               Queryname   -> "\tSO:queryname"
+                               Coordinate  -> "\tSO:coordinate"
+                               GroupSorted -> "\tSO:groupsort") <>
         show_bam_others os'
 
     show_bam_meta_seq (BamSQ  _  _ []) = mempty
     show_bam_meta_seq (BamSQ nm ln ts) =
-        fromByteString "@SQ\tSN:" <> fromByteString nm <>
-        fromByteString "\tLN:" <> fromShow ln <> show_bam_others ts
+        byteString "@SQ\tSN:" <> byteString nm <>
+        byteString "\tLN:" <> intDec ln <> show_bam_others ts
 
-    show_bam_meta_comment cm = fromByteString "@CO\t" <> fromByteString cm <> char7 '\n'
+    show_bam_meta_comment cm = byteString "@CO\t" <> byteString cm <> char7 '\n'
 
     show_bam_meta_other (BamKey k,ts) =
-        char7 '@' <> putWord16le k <> show_bam_others ts
+        char7 '@' <> word16LE k <> show_bam_others ts
 
     show_bam_others ts =
         F.foldMap show_bam_other ts <> char7 '\n'
 
     show_bam_other (BamKey k,v) =
-        char7 '\t' <> putWord16le k <> char7 ':' <> fromByteString v
-
-
-    char7 = singleton . c2w
-    fromShow = F.foldMap char7 . show
+        char7 '\t' <> word16LE k <> char7 ':' <> byteString v
 
 
 -- | Reference sequence in Bam
