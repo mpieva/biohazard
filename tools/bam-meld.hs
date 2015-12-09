@@ -12,7 +12,9 @@
 
 import Bio.Base
 import Bio.Bam.Header
+import Bio.Bam.Reader
 import Bio.Bam.Rec
+import Bio.Bam.Writer
 import Bio.Iteratee
 import Control.Monad                            ( unless, foldM )
 import Data.List                                ( sortBy )

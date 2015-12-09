@@ -16,7 +16,7 @@ module Bio.Bam.Index (
 ) where
 
 import Bio.Bam.Header
-import Bio.Bam.Raw
+import Bio.Bam.Reader
 import Bio.Bam.Rec
 import Bio.Bam.Regions              ( Region(..), Subsequence(..) )
 import Bio.Iteratee

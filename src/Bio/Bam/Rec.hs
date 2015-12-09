@@ -19,31 +19,15 @@
 --   written.  Actually, having @writeBamHandle@ return enhanced
 --   flagstats as a result might be even better.
 --
--- TONOTDO:
--- - Reader for gzipped/bzipped/bgzf'ed SAM.  Storing SAM is a bad idea,
---   so why would anyone ever want to compress, much less index it?
 
 module Bio.Bam.Rec (
-    Block,
-    BamEnumeratee,
-    isBamOrSam,
-
-    IsBamRec(..),
-    unpackBam,
-    encodeBamWith,
-
-    decodeSam,
-    decodeSam',
-
-    decodeAnyBamOrSam,
-    decodeAnyBamOrSamFile,
-
-    writeBamFile,
-    writeBamHandle,
-    pipeBamOutput,
-    pipeSamOutput,
+    BamRaw,
+    bamRaw,
+    virt_offset,
+    raw_data,
 
     BamRec(..),
+    unpackBam,
     nullBamRec,
     getMd,
 
@@ -71,24 +55,21 @@ module Bio.Bam.Rec (
     isMerged,
     type_mask,
 
+    progressPos,
     Word32
 ) where
 
 import Bio.Base
 import Bio.Bam.Header
-import Bio.Bam.Raw
 import Bio.Iteratee
-import Bio.Iteratee.Builder
+import Bio.Util                     ( showNum )
 
 import Control.Monad
 import Control.Monad.Primitive      ( unsafePrimToPrim )
 import Control.Applicative
-import Data.Attoparsec.ByteString   ( anyWord8 )
-import Data.Binary.Builder          ( toLazyByteString )
 import Data.Bits                    ( Bits, testBit, shiftL, shiftR, (.&.), (.|.) )
 import Data.ByteString              ( ByteString )
 import Data.ByteString.Internal     ( accursedUnutterablePerformIO )
-import Data.Char                    ( chr, ord, digitToInt )
 import Data.Foldable                ( foldMap )
 import Data.Int                     ( Int32, Int16, Int8 )
 import Data.Ix
@@ -98,24 +79,17 @@ import Data.Word                    ( Word32, Word16 )
 import Foreign.ForeignPtr
 import Foreign.Marshal.Alloc        ( alloca )
 import Foreign.Storable             ( peek, poke, peekByteOff, pokeByteOff, Storable(..) )
-import System.IO
 import System.IO.Unsafe             ( unsafeDupablePerformIO )
 
-import qualified Control.Monad.Catch                as C
-import qualified Data.Attoparsec.ByteString.Char8   as P
 import qualified Data.ByteString                    as B
 import qualified Data.ByteString.Char8              as S
 import qualified Data.ByteString.Internal           as B
-import qualified Data.ByteString.Lazy.Char8         as L
 import qualified Data.ByteString.Unsafe             as B
 import qualified Data.Foldable                      as F
-import qualified Data.Iteratee                      as I
-import qualified Data.Map.Strict                    as M
 import qualified Data.Vector.Generic                as V
 import qualified Data.Vector.Generic.Mutable        as VM
 import qualified Data.Vector.Storable               as VS
 import qualified Data.Vector.Unboxed                as U
-import qualified Data.Sequence                      as Z
 
 
 -- | Cigar line in BAM coding
@@ -199,26 +173,6 @@ getMd r = case lookup "MD" $ b_exts r of
     Just (Char mdfield) -> readMd $ B.singleton mdfield
     _                   -> Nothing
 
-type BamEnumeratee m b = Enumeratee' BamMeta ByteString [BamRec] m b
-
-isBamOrSam :: MonadIO m => Iteratee ByteString m (BamEnumeratee m a)
-isBamOrSam = maybe decodeSam wrap `liftM` isBam
-  where
-    wrap enee it' = enee (\hdr -> I.mapStream unpackBam (it' hdr)) >>= lift . run
-
-
--- | Checks if a file contains BAM in any of the common forms,
--- then decompresses it appropriately.  If the stream doesn't contain
--- BAM at all, it is instead decoded as SAM.  Since SAM is next to
--- impossible to recognize reliably, we don't even try.  Any old junk is
--- decoded as SAM and will fail later.
-decodeAnyBamOrSam :: MonadIO m => BamEnumeratee m a
-decodeAnyBamOrSam it = isBamOrSam >>= \k -> k it
-
-decodeAnyBamOrSamFile :: (MonadIO m, MonadMask m)
-                      => FilePath -> (BamMeta -> Iteratee [BamRec] m a) -> m (Iteratee [BamRec] m a)
-decodeAnyBamOrSamFile fn k = enumFileRandom defaultBufSize fn (decodeAnyBamOrSam k) >>= run
-
 -- | A vector that packs two 'Nucleotides' into one byte, just like Bam does.
 data Vector_Nucs_half a = Vector_Nucs_half !Int !Int !(ForeignPtr Word8)
 
@@ -261,6 +215,42 @@ instance VM.MVector MVector_Nucs_half Nucleotides where
 
 instance Show (Vector_Nucs_half Nucleotides) where
     show = show . V.toList
+
+-- | Bam record in its native encoding along with virtual address.
+data BamRaw = BamRaw { virt_offset :: {-# UNPACK #-} !FileOffset
+                     , raw_data :: {-# UNPACK #-} !S.ByteString }
+
+-- | Smart constructor.  Makes sure we got a at least a full record.
+bamRaw :: FileOffset -> S.ByteString -> BamRaw
+bamRaw o s = if good then r else error $ "broken BAM record " ++ show (S.length s, m) ++ show m
+  where
+    r = BamRaw o s
+    good | S.length s < 32 = False
+         | otherwise       = S.length s >= sum m
+    m = [ 32, br_l_read_name r, l_seq, (l_seq+1) `div` 2, n_cigar * 4 ]
+    n_cigar = fromIntegral (B.unsafeIndex s 12) .|. fromIntegral (B.unsafeIndex s 13) `shiftL`  8
+    l_seq = getInt32 s 16
+
+{-# INLINE br_l_read_name #-}
+br_l_read_name :: BamRaw -> Int
+br_l_read_name (BamRaw _ raw) = fromIntegral $ B.unsafeIndex raw 8 - 1
+
+-- | Load an unaligned, little-endian int.  This is probably quite slow
+-- and unnecessary on some platforms.  On i386, ix86_64 and powerPC, we
+-- could cast the pointer and do a direct load.  Other may have special
+-- primitives.  Worth investigating?
+{-# INLINE getInt32 #-}
+getInt32 :: (Num a, Bits a) => B.ByteString -> Int -> a
+getInt32 s o = fromIntegral (B.unsafeIndex s $ o+0)             .|. fromIntegral (B.unsafeIndex s $ o+1) `shiftL`  8 .|.
+             fromIntegral (B.unsafeIndex s $ o+2) `shiftL` 16 .|. fromIntegral (B.unsafeIndex s $ o+3) `shiftL` 24
+
+{-# INLINE br_rname #-}
+br_rname :: BamRaw -> Refseq
+br_rname (BamRaw _ raw) = Refseq $ getInt32 raw 0
+
+{-# INLINE br_pos #-}
+br_pos :: BamRaw -> Int
+br_pos (BamRaw _ raw) = getInt32 raw 4
 
 {-# INLINE[1] unpackBam #-}
 unpackBam :: BamRaw -> BamRec
@@ -380,14 +370,6 @@ unpackExtensions = go
                  pokeByteOff buf 0 (getInt 'I' s :: Word32) >> peek buf
 
 
--- | write in SAM format to stdout
--- This is useful for piping to other tools (say, AWK scripts) or for
--- debugging.  No convenience function to send SAM to a file exists,
--- because that's a stupid idea.
-pipeSamOutput :: MonadIO m => BamMeta -> Iteratee [BamRec] m ()
-pipeSamOutput meta = do liftIO . L.putStr . toLazyByteString $ showBamMeta meta
-                        mapStreamM_ $ \b -> liftIO . putStr $ encodeSamEntry (meta_refs meta) b "\n"
-
 isPaired, isProperlyPaired, isUnmapped, isMateUnmapped, isReversed,
     isMateReversed, isFirstMate, isSecondMate, isAuxillary, isFailsQC,
     isDuplicate, isTrimmed, isMerged :: BamRec -> Bool
@@ -424,260 +406,15 @@ setQualFlag c br = br { b_exts = updateE "ZQ" (Text s') $ b_exts br }
     s  = extAsString "ZQ" br
     s' = if c `S.elem` s then s else c `S.cons` s
 
--- | Iteratee-style parser for SAM files, designed to be compatible with
--- the BAM parsers.  Parses plain uncompressed SAM, nothing else.  Since
--- it is supposed to work the same way as the BAM parser, it requires
--- the presense of the SQ header lines.  These are stripped from the
--- header text and turned into the symbol table.
-decodeSam :: Monad m => (BamMeta -> Iteratee [BamRec] m a) -> Iteratee ByteString m (Iteratee [BamRec] m a)
-decodeSam inner = joinI $ enumLinesBS $ do
-    let pHeaderLine acc str = case P.parseOnly parseBamMetaLine str of Right f -> return $ f : acc
-                                                                       Left e  -> fail $ e ++ ", " ++ show str
-    meta <- liftM (foldr ($) mempty . reverse) (joinI $ I.breakE (not . S.isPrefixOf "@") $ I.foldM pHeaderLine [])
-    decodeSamLoop (meta_refs meta) (inner meta)
-
-decodeSamLoop :: Monad m => Refs -> Enumeratee [ByteString] [BamRec] m a
-decodeSamLoop refs inner = I.convStream (liftI parse_record) inner
-  where !refs' = M.fromList $ zip [ nm | BamSQ { sq_name = nm } <- F.toList refs ] [toEnum 0..]
-        ref x = M.findWithDefault invalidRefseq x refs'
-
-        parse_record (EOF x) = icont parse_record x
-        parse_record (Chunk []) = liftI parse_record
-        parse_record (Chunk (l:ls)) | "@" `S.isPrefixOf` l = parse_record (Chunk ls)
-        parse_record (Chunk (l:ls)) = case P.parseOnly (parseSamRec ref) l of
-            Right  r -> idone [r] (Chunk ls)
-            Left err -> icont parse_record (Just $ iterStrExc $ err ++ ", " ++ show l)
-
--- | Parser for SAM that doesn't look for a header.  Has the advantage
--- that it doesn't stall on a pipe that never delivers data.  Has the
--- disadvantage that it never reads the header and therefore needs a
--- list of allowed RNAMEs.
-decodeSam' :: Monad m => Refs -> Enumeratee ByteString [BamRec] m a
-decodeSam' refs inner = joinI $ enumLinesBS $ decodeSamLoop refs inner
-
-parseSamRec :: (ByteString -> Refseq) -> P.Parser BamRec
-parseSamRec ref = mkBamRec
-                  <$> word <*> num <*> (ref <$> word) <*> (subtract 1 <$> num)
-                  <*> (Q <$> num) <*> (VS.fromList <$> cigar) <*> rnext <*> (subtract 1 <$> num)
-                  <*> snum <*> sequ <*> quals <*> exts <*> pure 0
+-- | A simple progress indicator that prints sequence id and position.
+progressPos :: MonadIO m => String -> (String -> IO ()) -> Refs -> Enumeratee [BamRaw] [BamRaw] m a
+progressPos msg put refs = eneeCheckIfDonePass (icont . go 0)
   where
-    sep      = P.endOfInput <|> () <$ P.char '\t'
-    word     = P.takeTill ((==) '\t') <* sep
-    num      = P.decimal <* sep
-    snum     = P.signed P.decimal <* sep
-
-    rnext    = id <$ P.char '=' <* sep <|> const . ref <$> word
-    sequ     = {-# SCC "parseSamRec/sequ" #-}
-               (V.empty <$ P.char '*' <|>
-               V.fromList . map toNucleotides . S.unpack <$> P.takeWhile is_nuc) <* sep
-
-    quals    = {-# SCC "parseSamRec/quals" #-} defaultQs <$ P.char '*' <* sep <|> bsToVec <$> word
-        where
-            defaultQs sq = VS.replicate (V.length sq) (Q 0xff)
-            bsToVec qs _ = VS.fromList . map (Q . subtract 33) $ B.unpack qs
-
-    cigar    = [] <$ P.char '*' <* sep <|>
-               P.manyTill (flip (:*) <$> P.decimal <*> cigop) sep
-
-    cigop    = P.choice $ zipWith (\c r -> r <$ P.char c) "MIDNSHP" [Mat,Ins,Del,Nop,SMa,HMa,Pad]
-    exts     = ext `P.sepBy` sep
-    ext      = (\a b v -> (fromString [a,b],v)) <$> P.anyChar <*> P.anyChar <*> (P.char ':' *> value)
-
-    value    = P.char 'A' *> P.char ':' *> (Char <$>               anyWord8) <|>
-               P.char 'i' *> P.char ':' *> (Int  <$>     P.signed P.decimal) <|>
-               P.char 'Z' *> P.char ':' *> (Text <$> P.takeTill ((==) '\t')) <|>
-               P.char 'H' *> P.char ':' *> (Bin  <$>               hexarray) <|>
-               P.char 'f' *> P.char ':' *> (Float . realToFrac <$> P.double) <|>
-               P.char 'B' *> P.char ':' *> (
-                    P.satisfy (P.inClass "cCsSiI") *> (intArr   <$> many (P.char ',' *> P.signed P.decimal)) <|>
-                    P.char 'f'                     *> (floatArr <$> many (P.char ',' *> P.double)))
-
-    intArr   is = IntArr   $ U.fromList is
-    floatArr fs = FloatArr $ U.fromList $ map realToFrac fs
-    hexarray    = B.pack . repack . S.unpack <$> P.takeWhile (P.inClass "0-9A-Fa-f")
-    repack (a:b:cs) = fromIntegral (digitToInt a * 16 + digitToInt b) : repack cs ; repack _ = []
-    is_nuc = P.inClass "acgtswkmrybdhvnACGTSWKMRYBDHVN"
-
-    mkBamRec nm fl rn po mq cg rn' mp is sq qs' =
-                BamRec nm fl rn po mq cg (rn' rn) mp is sq (qs' sq)
-
-encodeSamEntry :: Refs -> BamRec -> String -> String
-encodeSamEntry refs b = conjoin '\t' [
-    unpck (b_qname b),
-    shows (b_flag b .&. 0xffff),
-    unpck (sq_name $ getRef refs $ b_rname b),
-    shows (b_pos b + 1),
-    shows (b_mapq b),
-    shows (b_cigar b),
-    unpck (sq_name $ getRef refs $ b_mrnm b),
-    shows (b_mpos b + 1),
-    shows (b_isize b + 1),
-    shows (V.toList $ b_seq b),
-    (++)  (V.toList . V.map (chr . (+33) . fromIntegral . unQ) $ b_qual b) ] .
-    foldr (\(k,v) f -> (:) '\t' . shows k . (:) ':' . extToSam v . f) id (b_exts b)
-  where
-    unpck = (++) . S.unpack
-    conjoin c = foldr1 (\a f -> a . (:) c . f)
-
-    extToSam (Int        i) = (:) 'i' . (:) ':' . shows i
-    extToSam (Float      f) = (:) 'f' . (:) ':' . shows f
-    extToSam (Text       t) = (:) 'Z' . (:) ':' . unpck t
-    extToSam (Bin        x) = (:) 'H' . (:) ':' . tohex x
-    extToSam (Char       c) = (:) 'A' . (:) ':' . (:) (w2c c)
-    extToSam (IntArr   arr) = (:) 'B' . (:) ':' . (:) 'i' . sarr arr
-    extToSam (FloatArr arr) = (:) 'B' . (:) ':' . (:) 'f' . sarr arr
-
-    tohex = B.foldr (\c f -> w2d (c `shiftR` 4) . w2d (c .&. 0xf) . f) id
-    w2d = (:) . S.index "0123456789ABCDEF" . fromIntegral
-    sarr = conjoin ',' . map shows . U.toList
-
-class IsBamRec a where
-    pushBam :: a -> Push
-
-instance IsBamRec BamRaw where
-    {-# INLINE pushBam #-}
-    pushBam = pushBamRaw
-
-instance IsBamRec BamRec where
-    {-# INLINE pushBam #-}
-    pushBam = pushBamRec
-
-instance (IsBamRec a, IsBamRec b) => IsBamRec (Either a b) where
-    {-# INLINE pushBam #-}
-    pushBam = either pushBam pushBam
-
--- | Encodes BAM records straight into a dynamic buffer, the BGZF's it.
--- Should be fairly direct and perform well.
-{-# INLINE encodeBamWith #-}
-encodeBamWith :: (MonadIO m, IsBamRec r) => Int -> BamMeta -> Enumeratee [r] B.ByteString m a
-encodeBamWith lv meta = joinI . eneeBam . encodeBgzfWith lv
-  where
-    eneeBam  = eneeCheckIfDone (\k -> mapChunks (foldMap pushBam) . k $ Chunk pushHeader)
-
-    pushHeader = pushByteString "BAM\1"
-              <> setMark                        -- the length byte
-              <> pushBuilder (showBamMeta meta)
-              <> endRecord                      -- fills the length in
-              <> pushWord32 (fromIntegral . Z.length $ meta_refs meta)
-              <> foldMap pushRef (meta_refs meta)
-
-    pushRef bs = ensureBuffer     (fromIntegral $ B.length (sq_name bs) + 9)
-              <> unsafePushWord32 (fromIntegral $ B.length (sq_name bs) + 1)
-              <> unsafePushByteString (sq_name bs)
-              <> unsafePushByte 0
-              <> unsafePushWord32 (fromIntegral $ sq_length bs)
-
-{-# INLINE pushBamRaw #-}
-pushBamRaw :: BamRaw -> Push
-pushBamRaw br = ensureBuffer (B.length (raw_data br) + 4)
-             <> unsafePushWord32 (fromIntegral $ B.length (raw_data br))
-             <> unsafePushByteString (raw_data br)
-
--- | writes BAM encoded stuff to a file
--- XXX This should(!) write indexes on the side---a simple block index
--- for MapReduce style slicing, a standard BAM index or a name index
--- would be possible.  When writing to a file, this makes even more
--- sense than when writing to a @Handle@.
-writeBamFile :: IsBamRec r => FilePath -> BamMeta -> Iteratee [r] IO ()
-writeBamFile fp meta =
-    C.bracket (liftIO $ openBinaryFile fp WriteMode)
-              (liftIO . hClose)
-              (flip writeBamHandle meta)
-
--- | write BAM encoded stuff to stdout
--- This send uncompressed BAM to stdout.  Useful for piping to other
--- tools.
-pipeBamOutput :: IsBamRec r => BamMeta -> Iteratee [r] IO ()
-pipeBamOutput meta = encodeBamWith 0 meta =$ mapChunksM_ (liftIO . S.hPut stdout)
-
--- | writes BAM encoded stuff to a @Handle@
--- We generate BAM with dynamic blocks, then stream them out to the file.
---
--- XXX This could write indexes on the side---a simple block index
--- for MapReduce style slicing, a standard BAM index or a name index
--- would be possible.
-writeBamHandle :: (MonadIO m, IsBamRec r) => Handle -> BamMeta -> Iteratee [r] m ()
-writeBamHandle hdl meta = encodeBamWith 6 meta =$ mapChunksM_ (liftIO . S.hPut hdl)
-
-{-# RULES
-    "pushBam/unpackBam"     forall b . pushBamRec (unpackBam b) = pushBamRaw b
-  #-}
-
-{-# INLINE[1] pushBamRec #-}
-pushBamRec :: BamRec -> Push
-pushBamRec BamRec{..} = mconcat
-    [ ensureBuffer minlength
-    , unsafeSetMark
-    , unsafePushWord32 $ unRefseq b_rname
-    , unsafePushWord32 $ fromIntegral b_pos
-    , unsafePushByte   $ fromIntegral $ B.length b_qname + 1
-    , unsafePushByte   $ unQ b_mapq
-    , unsafePushWord16 $ fromIntegral bin
-    , unsafePushWord16 $ fromIntegral $ VS.length b_cigar
-    , unsafePushWord16 $ fromIntegral b_flag
-    , unsafePushWord32 $ fromIntegral $ V.length b_seq
-    , unsafePushWord32 $ unRefseq b_mrnm
-    , unsafePushWord32 $ fromIntegral b_mpos
-    , unsafePushWord32 $ fromIntegral b_isize
-    , unsafePushByteString b_qname
-    , unsafePushByte 0
-    , VS.foldr ((<>) . unsafePushByte) mempty (VS.unsafeCast b_cigar :: VS.Vector Word8)
-    , pushSeq b_seq
-    , VS.foldr ((<>) . unsafePushByte . unQ) mempty b_qual
-    , foldMap pushExt b_exts
-    , endRecord ]
-  where
-    bin = distinctBin b_pos (alignedLength b_cigar)
-    minlength = 37 + B.length b_qname + 4 * V.length b_cigar + V.length b_qual + (V.length b_seq + 1) `shiftR` 1
-
-    pushSeq :: V.Vector vec Nucleotides => vec Nucleotides -> Push
-    pushSeq v = case v V.!? 0 of
-                    Nothing -> mempty
-                    Just a  -> case v V.!? 1 of
-                        Nothing -> unsafePushByte (unNs a `shiftL` 4)
-                        Just b  -> unsafePushByte (unNs a `shiftL` 4 .|. unNs b)
-                                   <> pushSeq (V.drop 2 v)
-
-    pushExt :: (BamKey, Ext) -> Push
-    pushExt (BamKey k, e) = case e of
-        Text t -> common (4 + B.length t) 'Z' $
-                  unsafePushByteString t <> unsafePushByte 0
-
-        Bin  t -> common (4 + B.length t) 'H' $
-                  unsafePushByteString t <> unsafePushByte 0
-
-        Char c -> common 4 'A' $ unsafePushByte c
-
-        Float f -> common 7 'f' $ unsafePushWord32 (fromIntegral $ fromFloat f)
-
-        Int i   -> case put_some_int (U.singleton i) of
-                        (c,op) -> common 7 c (op i)
-
-        IntArr  ia -> case put_some_int ia of
-                        (c,op) -> common (4 * U.length ia) 'B' $ unsafePushByte (fromIntegral $ ord c)
-                                  <> unsafePushWord32 (fromIntegral $ U.length ia-1)
-                                  <> U.foldr ((<>) . op) mempty ia
-
-        FloatArr fa -> common (4 * U.length fa) 'B' $ unsafePushByte (fromIntegral $ ord 'f')
-                       <> unsafePushWord32 (fromIntegral $ U.length fa-1)
-                       <> U.foldr ((<>) . unsafePushWord32 . fromFloat) mempty fa
-      where
-        common l z b = ensureBuffer l <> unsafePushWord16 k
-                    <> unsafePushByte (fromIntegral $ ord z) <> b
-
-        put_some_int :: U.Vector Int -> (Char, Int -> Push)
-        put_some_int is
-            | U.all (between        0    0xff) is = ('C', unsafePushByte . fromIntegral)
-            | U.all (between   (-0x80)   0x7f) is = ('c', unsafePushByte . fromIntegral)
-            | U.all (between        0  0xffff) is = ('S', unsafePushWord16 . fromIntegral)
-            | U.all (between (-0x8000) 0x7fff) is = ('s', unsafePushWord16 . fromIntegral)
-            | U.all                      (> 0) is = ('I', unsafePushWord32 . fromIntegral)
-            | otherwise                           = ('i', unsafePushWord32 . fromIntegral)
-
-        between :: Int -> Int -> Int -> Bool
-        between l r x = l <= x && x <= r
-
-        fromFloat :: Float -> Word32
-        fromFloat float = unsafeDupablePerformIO $ alloca $ \buf ->
-                          pokeByteOff buf 0 float >> peek buf
+    go !_ k (EOF         mx) = idone (liftI k) (EOF mx)
+    go !n k (Chunk    [   ]) = liftI $ go n k
+    go !n k (Chunk as@(a:_)) = do let !n' = n + length as
+                                      nm = unpackSeqid (sq_name (getRef refs (br_rname a))) ++ ":"
+                                  when (n `div` 65536 /= n' `div` 65536) $ liftIO $ put $
+                                        "\27[K" ++ msg ++ nm ++ showNum (br_pos a) ++ "\r"
+                                  eneeCheckIfDonePass (icont . go n') . k $ Chunk as
 

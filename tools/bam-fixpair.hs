@@ -30,8 +30,9 @@ TODO:
 
 import Bio.Base
 import Bio.Bam.Header
-import Bio.Bam.Raw hiding ( mergeInputs, combineCoordinates )
+import Bio.Bam.Reader hiding ( mergeInputs, combineCoordinates )
 import Bio.Bam.Rec
+import Bio.Bam.Writer
 import Bio.Iteratee
 import Bio.PriorityQueue
 import Bio.Util                                 ( showNum )

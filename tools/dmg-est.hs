@@ -39,7 +39,7 @@
 
 import Bio.Bam.Header
 import Bio.Bam.Index
-import Bio.Bam.Raw
+import Bio.Bam.Reader
 import Bio.Bam.Rec
 import Bio.Base
 import Bio.Genocall.Adna

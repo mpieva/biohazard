@@ -50,11 +50,12 @@ Library
                        Bio.Bam.Header,
                        Bio.Bam.Index,
                        Bio.Bam.Pileup,
-                       Bio.Bam.Raw,
                        Bio.Bam.Regions,
+                       Bio.Bam.Reader
                        Bio.Bam.Rec,
                        Bio.Bam.Rmdup,
                        Bio.Bam.Trim,
+                       Bio.Bam.Writer,
                        Bio.Genocall,
                        Bio.Genocall.Adna,
                        Bio.Genocall.AvroFile,
