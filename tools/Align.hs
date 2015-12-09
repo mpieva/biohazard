@@ -12,9 +12,10 @@ import Data.Bits
 import Data.List (group)
 import Data.Sequence ( (<|), (><), ViewL((:<)) )
 
-import qualified Data.ByteString             as S
 import qualified Data.Foldable               as F
 import qualified Data.Sequence               as Z
+import qualified Data.Vector.Generic         as V
+import qualified Data.Vector.Storable        as S
 import qualified Data.Vector.Unboxed         as U
 import qualified Data.Vector.Unboxed.Mutable as UM
 
@@ -67,25 +68,23 @@ prep_reference = RS . U.concat .  map (either (to probG) (to probB))
 newtype QuerySeq = QS { unQS :: U.Vector Word8 } deriving Show
 
 -- | Prepare query for subsequent alignment to the forward strand.
-prep_query_fwd :: BamRaw -> QuerySeq
-prep_query_fwd br = QS $ U.fromListN len
-    [ q `shiftL` 2 .|. indexV "prep_query_fwd" code b | i <- [0 .. len-1]
-    , let b = fromIntegral $ unNs $ br_seq_at  br i
-    , let q = fromIntegral $ unQ  $ br_qual_at br i ]
+prep_query_fwd :: BamRec -> QuerySeq
+prep_query_fwd BamRec{..} = QS $ U.fromListN len $ zipWith pair (V.toList b_seq) (V.toList b_qual)
   where
-    len  = br_l_seq br
+    pair b (Q q) = q `shiftL` 2 .|. indexV "prep_query_fwd" code (fromIntegral $ unNs b)
     code = U.fromListN 16 [0,0,1,0,2,0,0,0,3,0,0,0,0,0,0,0]
+    len  = V.length b_seq
 
-prep_query_rev :: BamRaw -> QuerySeq
+prep_query_rev :: BamRec -> QuerySeq
 prep_query_rev = revcompl_query . prep_query_fwd
   where
   revcompl_query (QS v) = QS $ U.map (xor 3) $ U.reverse v
 
-qseqToBamSeq :: QuerySeq -> U.Vector Nucleotides
-qseqToBamSeq = U.map (\x -> Ns $ 1 `shiftL` fromIntegral (x .&. 3)) . unQS
+qseqToBamSeq :: QuerySeq -> Vector_Nucs_half Nucleotides
+qseqToBamSeq = V.fromList . U.toList . U.map (\x -> Ns $ 1 `shiftL` fromIntegral (x .&. 3)) . unQS
 
-qseqToBamQual :: QuerySeq -> S.ByteString
-qseqToBamQual = S.pack . U.toList . U.map (`shiftR` 2) . unQS
+qseqToBamQual :: QuerySeq -> S.Vector Qual
+qseqToBamQual = S.convert . U.map (Q . (`shiftR` 2)) . unQS
 
 -- | Memoization matrix for dynamic programming.  We understand it as a
 -- matrix B columns wide and L rows deep, where B is the bandwidth and L
@@ -98,10 +97,10 @@ newtype Bandwidth = BW Int deriving Show
 newtype RefPosn   = RP Int deriving Show
 
 data AlignResult = AlignResult
-        { viterbi_forward :: MemoMat         -- DP matrix from running Viterbi
-        , viterbi_score :: Float             -- alignment score (log scale, vs. radom alignment)
-        , viterbi_position :: Int            -- position (start of the most probable alignment)
-        , viterbi_backtrace :: Cigar }       -- backtrace (most probable alignment)
+        { viterbi_forward :: MemoMat            -- DP matrix from running Viterbi
+        , viterbi_score :: Float                -- alignment score (log scale, vs. radom alignment)
+        , viterbi_position :: Int               -- position (start of the most probable alignment)
+        , viterbi_backtrace :: S.Vector Cigar } -- backtrace (most probable alignment)
   deriving Show
 
 data Traced = Tr { tr_op :: CigOp, tr_score :: Float }
@@ -173,7 +172,7 @@ align gp (RS rs) (QS qs) (RP p0) (BW bw_) = runST (do
         forM_ [0 .. bw-1] $ \col ->
             UM.write v (bw*row + col) . tr_score =<< cell row col
 
-    let pack_cigar = Cigar . map (\x -> (head x, length x)) . group
+    let pack_cigar = S.fromList . map (\x -> head x :* length x) . group
     let traceback acc row col = do op <- tr_op <$> cell row col
                                    case op of Mat -> traceback (Mat:acc) (row-1) (col+0)
                                               Ins -> traceback (Ins:acc) (row-1) (col+1)
@@ -224,7 +223,7 @@ mkNC !i !b | U.length b /= 5 = error "mkNC"
 add_to_refseq :: NewRefSeq -> QuerySeq -> AlignResult -> NewRefSeq
 add_to_refseq (NRS nrs0) (QS qs0) AlignResult{..} =
     NRS $ rotateZ (Z.length nrs0 - viterbi_position)
-        $ mat here back qs0 (unCigar viterbi_backtrace)
+        $ mat here back qs0 $ S.toList viterbi_backtrace
   where
     here :< back = Z.viewl $ rotateZ viterbi_position nrs0
     rotateZ n = uncurry (flip (><)) . Z.splitAt n
@@ -239,28 +238,28 @@ add_to_refseq (NRS nrs0) (QS qs0) AlignResult{..} =
     -- The other deals with a base.  We vote for it if we matched it,
     -- against it if we deleted it.  Then we recurse.
     ins !nc@(NC is b) !nrs !nins !qs cigs = case cigs of
-        [          ] -> nc <| nrs
-        (( _ ,0):cs) -> ins nc nrs nins qs cs
+        [            ] -> nc <| nrs
+        ( _  :* 0 :cs) -> ins nc nrs nins qs cs
 
-        ((Ins,n):cs) -> let is' = vote_for_at votes (U.sum b) nins (U.head qs) is
-                        in ins (mkNC is' b) nrs (nins+1) (U.tail qs) ((Ins,n-1):cs)
+        (Ins :* n :cs) -> let is' = vote_for_at votes (U.sum b) nins (U.head qs) is
+                          in ins (mkNC is' b) nrs (nins+1) (U.tail qs) (Ins :* (n-1) : cs)
 
-        _            -> let is' = vote_against_from votes nins is
-                        in mat (mkNC is' b) nrs qs cigs
+        _              -> let is' = vote_against_from votes nins is
+                          in mat (mkNC is' b) nrs qs cigs
 
     mat !nc@(NC is b) !nrs !qs cigs = case cigs of
-        [          ] -> nc <| nrs
-        (( _ ,0):cs) -> mat nc nrs qs cs
+        [            ] -> nc <| nrs
+        ( _  :* 0 :cs) -> mat nc nrs qs cs
 
-        ((Del,n):cs) -> let nc2 :< rest = Z.viewl nrs
-                            b' = vote_against votes b
-                        in mkNC is b' <!| mat nc2 rest qs ((Del,n-1):cs)
+        (Del :* n :cs) -> let nc2 :< rest = Z.viewl nrs
+                              b' = vote_against votes b
+                          in mkNC is b' <!| mat nc2 rest qs (Del :* (n-1) : cs)
 
-        ((Mat,n):cs) -> let nc2 :< rest = Z.viewl nrs
-                            b' = vote_for votes (U.head qs) b
-                        in mkNC is b' <!| mat nc2 rest (U.tail qs) ((Mat,n-1):cs)
+        (Mat :* n :cs) -> let nc2 :< rest = Z.viewl nrs
+                              b' = vote_for votes (U.head qs) b
+                          in mkNC is b' <!| mat nc2 rest (U.tail qs) (Mat :* (n-1) : cs)
 
-        _            -> ins nc nrs (0::Int) qs cigs
+        _              -> ins nc nrs (0::Int) qs cigs
 
     (<!|) !a !as = a <| as
 

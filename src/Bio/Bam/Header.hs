@@ -6,6 +6,7 @@ module Bio.Bam.Header (
         showBamMeta,
         addPG,
 
+        BamKey(..),
         BamHeader(..),
         BamSQ(..),
         BamSorting(..),
@@ -36,12 +37,9 @@ module Bio.Bam.Header (
         flagAuxillary,
         flagFailsQC,
         flagDuplicate,
-        flagTrimmed,
-        flagMerged,
+        eflagTrimmed,
+        eflagMerged,
 
-        Cigar(..),
-        CigOp(..),
-        cigarToAlnLen,
         distinctBin,
 
         MdOp(..),
@@ -51,15 +49,16 @@ module Bio.Bam.Header (
 
 import Bio.Base
 import Control.Applicative
-import Data.Bits                    ( shiftL, shiftR )
-import Data.Char                    ( isDigit )
-import Data.Binary.Builder
+import Data.Bits                    ( shiftL, shiftR, (.&.), (.|.) )
+import Data.Char                    ( isDigit, ord, chr )
+import Data.ByteString.Builder
 import Data.Ix
 import Data.List                    ( (\\), foldl' )
 import Data.Monoid
 import Data.Sequence                ( (><), (|>) )
+import Data.String
 import Data.Version                 ( Version, showVersion )
-import Data.Word                    ( Word32 )
+import Data.Word                    ( Word16, Word32 )
 import System.Environment           ( getArgs, getProgName )
 
 import qualified Data.Attoparsec.ByteString.Char8   as P
@@ -71,10 +70,25 @@ import qualified Data.Sequence                      as Z
 data BamMeta = BamMeta {
         meta_hdr :: !BamHeader,
         meta_refs :: !Refs,
-        meta_other_shit :: [(Char, Char, BamOtherShit)],
+        meta_other_shit :: [(BamKey, BamOtherShit)],
         meta_comment :: [S.ByteString]
     } deriving Show
 
+-- | Exactly two characters, for the \"named\" fields in bam.
+newtype BamKey = BamKey Word16
+    deriving ( Eq, Ord )
+
+instance IsString BamKey where
+    {-# INLINE fromString #-}
+    fromString [a,b]
+        | ord a < 256 && ord b < 256
+            = BamKey . fromIntegral $ ord a .|. shiftL (ord b) 8
+
+    fromString s
+            = error $ "Not a legal BAM key: " ++ show s
+
+instance Show BamKey where
+    show (BamKey a) = [ chr (fromIntegral a .&. 0xff), chr (shiftR (fromIntegral a) 8 .&. 0xff) ]
 
 addPG :: Maybe Version -> IO (BamMeta -> BamMeta)
 addPG vn = do
@@ -82,20 +96,20 @@ addPG vn = do
     pn   <- getProgName
     return $ go args pn
   where
-    go args pn bm = bm { meta_other_shit = ('P','G',pg_line) : meta_other_shit bm }
+    go args pn bm = bm { meta_other_shit = ("PG",pg_line) : meta_other_shit bm }
       where
-        pg_line = concat [ [ ('I','D', pg_id) ]
-                         , [ ('P','N', S.pack pn) ]
-                         , [ ('C','L', S.pack $ unwords args) ]
-                         , maybe [] (\v -> [('V','N',S.pack (showVersion v))]) vn
-                         , map (\p -> ('P','P',p)) (take 1 pg_pp)
-                         , map (\p -> ('p','p',p)) (drop 1 pg_pp) ]
+        pg_line = concat [ [ ("ID", pg_id) ]
+                         , [ ("PN", S.pack pn) ]
+                         , [ ("CL", S.pack $ unwords args) ]
+                         , maybe [] (\v -> [("VN",S.pack (showVersion v))]) vn
+                         , map (\p -> ("PP",p)) (take 1 pg_pp)
+                         , map (\p -> ("pp",p)) (drop 1 pg_pp) ]
 
         pg_id : _ = filter (not . flip elem pg_ids) . map S.pack $
                       pn : [ pn ++ '-' : show i | i <- [(1::Int)..] ]
 
-        pg_ids = [ pgid | ('P','G',fs) <- meta_other_shit bm, ('I','D',pgid) <- fs ]
-        pg_pps = [ pgid | ('P','G',fs) <- meta_other_shit bm, ('P','P',pgid) <- fs ]
+        pg_ids = [ pgid | ("PG",fs) <- meta_other_shit bm, ("ID",pgid) <- fs ]
+        pg_pps = [ pgid | ("PG",fs) <- meta_other_shit bm, ("PP",pgid) <- fs ]
 
         pg_pp  = pg_ids \\ pg_pps
 
@@ -134,7 +148,7 @@ bad_seq = BamSQ (error "no SN field") (error "no LN field") []
 data BamSorting = Unknown | Unsorted | Grouped | Queryname | Coordinate | GroupSorted
     deriving (Show, Eq)
 
-type BamOtherShit = [(Char, Char, S.ByteString)]
+type BamOtherShit = [(BamKey, S.ByteString)]
 
 parseBamMeta :: P.Parser BamMeta
 parseBamMeta = fixup . foldl' (flip ($)) mempty <$> P.sepBy parseBamMetaLine (P.skipWhile (=='\t') >> P.char '\n')
@@ -179,16 +193,19 @@ parseBamMetaLine = P.char '@' >> P.choice [hdLine, sqLine, coLine, otherLine]
              (\s meta -> s `seq` meta { meta_comment = s : meta_comment meta })
                <$> P.takeWhile (/= 'n')
 
-    otherLine = (\a b ts meta -> meta { meta_other_shit = (a,b,ts) : meta_other_shit meta })
-                  <$> P.anyChar <*> P.anyChar <*> (tabs >> P.sepBy1 tagother tabs)
+    otherLine = (\k ts meta -> meta { meta_other_shit = (k,ts) : meta_other_shit meta })
+                  <$> bamkey <*> (tabs >> P.sepBy1 tagother tabs)
 
-    tagother :: P.Parser (Char,Char,S.ByteString)
-    tagother = (,,) <$> P.anyChar <*> P.anyChar <*> (P.char ':' >> pall)
+    tagother :: P.Parser (BamKey,S.ByteString)
+    tagother = (,) <$> bamkey <*> (P.char ':' >> pall)
 
     tabs = P.char '\t' >> P.skipWhile (== '\t')
 
     pall :: P.Parser S.ByteString
     pall = P.takeWhile (\c -> c/='\t' && c/='\n')
+
+    bamkey :: P.Parser BamKey
+    bamkey = (\a b -> fromString [a,b]) <$> P.anyChar <*> P.anyChar
 
 showBamMeta :: BamMeta -> Builder
 showBamMeta (BamMeta h ss os cs) =
@@ -198,35 +215,31 @@ showBamMeta (BamMeta h ss os cs) =
     F.foldMap show_bam_meta_comment cs
   where
     show_bam_meta_hdr (BamHeader (major,minor) so os') =
-        fromByteString "@HD\tVN:" <>
-        fromShow major <> char7 '.' <> fromShow minor <>
-        fromByteString (case so of Unknown     -> B.empty
-                                   Unsorted    -> "\tSO:unsorted"
-                                   Grouped     -> "\tSO:grouped"
-                                   Queryname   -> "\tSO:queryname"
-                                   Coordinate  -> "\tSO:coordinate"
-                                   GroupSorted -> "\tSO:groupsort") <>
+        byteString "@HD\tVN:" <>
+        intDec major <> char7 '.' <> intDec minor <>
+        byteString (case so of Unknown     -> B.empty
+                               Unsorted    -> "\tSO:unsorted"
+                               Grouped     -> "\tSO:grouped"
+                               Queryname   -> "\tSO:queryname"
+                               Coordinate  -> "\tSO:coordinate"
+                               GroupSorted -> "\tSO:groupsort") <>
         show_bam_others os'
 
     show_bam_meta_seq (BamSQ  _  _ []) = mempty
     show_bam_meta_seq (BamSQ nm ln ts) =
-        fromByteString "@SQ\tSN:" <> fromByteString nm <>
-        fromByteString "\tLN:" <> fromShow ln <> show_bam_others ts
+        byteString "@SQ\tSN:" <> byteString nm <>
+        byteString "\tLN:" <> intDec ln <> show_bam_others ts
 
-    show_bam_meta_comment cm = fromByteString "@CO\t" <> fromByteString cm <> char7 '\n'
+    show_bam_meta_comment cm = byteString "@CO\t" <> byteString cm <> char7 '\n'
 
-    show_bam_meta_other (a,b,ts) =
-        char7 '@' <> char7 a <> char7 b <> show_bam_others ts
+    show_bam_meta_other (BamKey k,ts) =
+        char7 '@' <> word16LE k <> show_bam_others ts
 
     show_bam_others ts =
         F.foldMap show_bam_other ts <> char7 '\n'
 
-    show_bam_other (a,b,v) =
-        char7 '\t' <> char7 a <> char7 b <> char7 ':' <> fromByteString v
-
-
-    char7 = singleton . c2w
-    fromShow = F.foldMap char7 . show
+    show_bam_other (BamKey k,v) =
+        char7 '\t' <> word16LE k <> char7 ':' <> byteString v
 
 
 -- | Reference sequence in Bam
@@ -262,7 +275,7 @@ invalidRefseq = Refseq 0xffffffff
 -- Bam uses this value to encode a missing position.
 {-# INLINE invalidPos #-}
 invalidPos :: Int
-invalidPos = 0xFFFFFFFF
+invalidPos = -1
 
 -- | Tests whether a position is valid.
 -- Returns true unless the the argument equals @invalidPos@.
@@ -291,7 +304,7 @@ getRef refs (Refseq i)
 
 
 flagPaired, flagProperlyPaired, flagUnmapped, flagMateUnmapped, flagReversed, flagMateReversed, flagFirstMate, flagSecondMate,
- flagAuxillary, flagFailsQC, flagDuplicate, flagTrimmed, flagMerged :: Int
+ flagAuxillary, flagFailsQC, flagDuplicate :: Int
 
 flagPaired = 0x1
 flagProperlyPaired = 0x2
@@ -305,8 +318,9 @@ flagAuxillary = 0x100
 flagFailsQC = 0x200
 flagDuplicate = 0x400
 
-flagTrimmed = 0x10000
-flagMerged  = 0x20000
+eflagTrimmed, eflagMerged :: Int
+eflagTrimmed       = 0x1
+eflagMerged        = 0x2
 
 
 -- | Compares two sequence names the way samtools does.
@@ -338,29 +352,6 @@ compareNames n m = case (B.uncons n, B.uncons m) of
                     EQ -> n' `compareNames` m'
   where
     is_digit c = 48 <= c && c < 58
-
-
--- | Cigar line in BAM coding
--- Bam encodes an operation and a length into a single integer, we keep
--- those integers in an array.
-newtype Cigar = Cigar { unCigar :: [(CigOp, Int)] }
-
-data CigOp = Mat | Ins | Del | Nop | SMa | HMa | Pad
-    deriving ( Eq, Ord, Enum, Show, Bounded, Ix )
-
-instance Show Cigar where
-    show (Cigar []) = "*"
-    show (Cigar cs) = concat [ shows l (toChr op) | (op,l) <- cs ]
-      where toChr = (:[]) . S.index "MIDNSHP=X" . fromEnum
-
-
--- | extracts the aligned length from a cigar line
--- This gives the length of an alignment as measured on the reference,
--- which is different from the length on the query or the length of the
--- alignment.
-cigarToAlnLen :: Cigar -> Int
-cigarToAlnLen (Cigar cig) = sum $ map l cig
-  where l (op,n) = if op == Mat || op == Del || op == Nop then n else 0
 
 
 data MdOp = MdNum Int | MdRep Nucleotides | MdDel [Nucleotides] deriving Show

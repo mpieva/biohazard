@@ -26,11 +26,12 @@ import Bio.Bam
 import Bio.Util ( showNum )
 import Control.Applicative
 import Control.Arrow ( (&&&) )
-import Control.Monad ( when, unless, forM_ )
+import Control.Monad ( when, unless, forM_, foldM )
 import Data.Aeson
 import Data.Bits
 import Data.List ( foldl', sortBy )
 import Data.Monoid
+import Data.String ( fromString )
 import Data.Version ( showVersion )
 import Data.Word ( Word64 )
 import Foreign.C.Types
@@ -47,7 +48,6 @@ import System.Random ( randomRIO )
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Char8 as BS
 import qualified Data.HashMap.Strict as HM
-import qualified Data.Map as M
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as T
 import qualified Data.Text.IO as T
@@ -74,11 +74,11 @@ fromSQ sq qs = Index . foldl' (\a b -> a `shiftL` 8 .|. fromIntegral b) 0 $
                take 8 $ (++ repeat 0) $
                B.zipWith (\b q -> shiftL (b .&. 0xE) 4 .|. (min 31 $ max 33 q - 33)) sq qs
 
-fromTags :: String -> String -> BamRaw -> Index
+fromTags :: BamKey -> BamKey -> BamRaw -> Index
 fromTags itag qtag br = fromSQ sq  (if B.null qs then "@@@@@@@@" else qs)
   where
-    sq = br_extAsString itag br
-    qs = br_extAsString qtag br
+    sq = extAsString itag $ unpackBam br
+    qs = extAsString qtag $ unpackBam br
 
 gather :: MonadIO m => Int -> (String -> IO ()) -> (String -> IO ()) -> BamMeta -> Iteratee [BamRaw] m (U.Vector (Index, Index))
 gather num say mumble hdr = case hdr_sorting $ meta_hdr hdr of
@@ -101,7 +101,7 @@ gather num say mumble hdr = case hdr_sorting $ meta_hdr hdr of
                             ++ showNum num ++ " from whole file.\n"
                 go subsam2vector
 
-    go k = filterStream (\b -> not (br_isPaired b) || br_isFirstMate b) =$
+    go k = filterStream ((\b -> not (isPaired b) || isFirstMate b) . unpackBam) =$
            progressNum "reading " mumble =$
            mapStream (fromTags "XI" "YI" &&& fromTags "XJ" "YJ") =$ k num
 
@@ -170,7 +170,8 @@ readRGdefns p7is p5is = map repack . filter (not . null) . map (T.split (=='\t')
             Nothing -> error $ "unknown P5 index " ++ show p5
             Just i5 -> RG (T.encodeUtf8 rg) i7 i5 (map repack1 tags)
     repack ws = error $ "short RG line " ++ show (T.intercalate "\t" ws)
-    repack1 w | T.length w > 3 && T.index w 2 == ':' = (T.index w 0, T.index w 1, T.encodeUtf8 $ T.drop 3 w)
+    repack1 w | T.length w > 3 && T.index w 2 == ':'
+                    = (fromString [T.index w 0, T.index w 1], T.encodeUtf8 $ T.drop 3 w)
               | otherwise = error $ "illegal tag " ++ show w
 
 default_rgs :: T.Text
@@ -262,15 +263,17 @@ class1 rgs p7 p5 prior (x,y) =
        VS.unsafeWith prior                                          $ \pv ->
        VS.unsafeWith m7                                             $ \q7 ->
        VS.unsafeWith m5                                             $ \q5 ->
-       c_unmix_total pv q7 (fromIntegral $ VS.length m7)
-                        q5 (fromIntegral $ l5 `div` succ padding)
-                        pi7 pi5                                   >>= \total ->
+       ( {-# SCC "c_unmix_total" #-}
+         c_unmix_total pv q7 (fromIntegral $ VS.length m7)
+                          q5 (fromIntegral $ l5 `div` succ padding)
+                          pi7 pi5 )                               >>= \total ->
        peek pi7                                                   >>= \i7 ->
        peek pi5                                                   >>= \i5 ->
        withDirt (fromIntegral i7, fromIntegral i5)                  $ \pw ->
-       c_unmix_qual pw pv q7 (fromIntegral $ VS.length m7)
-                          q5 (fromIntegral $ l5 `div` succ padding)
-                          total i7 i5                             >>= \qual ->
+       ( {-# SCC "c_unmix_qual" #-}
+         c_unmix_qual pw pv q7 (fromIntegral $ VS.length m7)
+                            q5 (fromIntegral $ l5 `div` succ padding)
+                            total i7 i5 )                         >>= \qual ->
        return ( qual, fromIntegral i7, fromIntegral i5 )
   where
     withDirt ix k = case HM.lookup ix rgs of
@@ -298,13 +301,12 @@ unlessQuiet     _ k = k
 
 data Conf = Conf {
         cf_index_list :: FilePath,
-        cf_output     :: Maybe (BamMeta -> Iteratee [BamRaw] IO ()),
+        cf_output     :: Maybe (BamMeta -> Iteratee [BamRec] IO ()),
         cf_stats_hdl  :: Handle,
         cf_num_stats  :: Int -> Int,
         cf_threshold  :: Double,
         cf_loudness   :: Loudness,
         cf_single     :: Bool,
-        cf_pedantic   :: Bool,
         cf_samplesize :: Int,
         cf_readgroups :: [FilePath] }
 
@@ -318,7 +320,6 @@ defaultConf = do ixdb <- getDataFileName "index_db.json"
                         cf_threshold  = 0.000005,
                         cf_loudness   = Normal,
                         cf_single     = False,
-                        cf_pedantic   = False,
                         cf_samplesize = 50000,
                         cf_readgroups = [] }
 
@@ -331,20 +332,18 @@ options = [
     Option [ ] ["threshold"]      (ReqArg set_thresh   "FRAC") "Iterate till uncertainty is below FRAC",
     Option [ ] ["sample"]         (ReqArg set_sample    "NUM") "Sample NUM reads for mixture estimation",
     Option [ ] ["components"]     (ReqArg set_compo     "NUM") "Print NUM components of the mixture",
-    Option [ ] ["pedantic"]       (NoArg         set_pedantic) "Be pedantic about read groups",
     Option "v" ["verbose"]        (NoArg             set_loud) "Print more diagnostic messages",
     Option "q" ["quiet"]          (NoArg            set_quiet) "Print fewer diagnostic messages",
     Option "h?" ["help", "usage"] (NoArg        (const usage)) "Print this message and exit",
     Option "V"  ["version"]       (NoArg         (const vrsn)) "Display version number and exit" ]
   where
-    set_output  "-" c = return $ c { cf_output = Just $ pipeRawBamOutput, cf_stats_hdl = stderr }
-    set_output   fp c = return $ c { cf_output = Just $ writeRawBamFile fp }
+    set_output  "-" c = return $ c { cf_output = Just $ pipeBamOutput, cf_stats_hdl = stderr }
+    set_output   fp c = return $ c { cf_output = Just $ writeBamFile fp }
     set_index_db fp c = return $ c { cf_index_list = fp }
     set_rgs      fp c = return $ c { cf_readgroups = fp : cf_readgroups c }
     set_loud        c = return $ c { cf_loudness = Loud }
     set_quiet       c = return $ c { cf_loudness = Quiet }
     set_single      c = return $ c { cf_single = True }
-    set_pedantic    c = return $ c { cf_pedantic = True }
     set_thresh    a c = readIO a >>= \x -> return $ c { cf_threshold = x }
     set_sample    a c = readIO a >>= \x -> return $ c { cf_samplesize = x }
     set_compo     a c = readIO a >>= \x -> return $ c { cf_num_stats = const x }
@@ -442,30 +441,34 @@ main = do
 
         Just out -> do  concatInputs files >=> run $ \hdr ->
                             let hdr' = hdr { meta_other_shit =
-                                              [ os | os@(x,y,_) <- meta_other_shit hdr, x /= 'R' || y /= 'G' ] ++
-                                              HM.elems (HM.fromList [ (rgid, ('R','G', ('I','D',rgid):tags)) | RG{..} <- rgdefs ] ) }
-
-                                clean_flags (Text t) = Text $ BS.filter (\c -> c /= 'C' && c /= 'I' && c /= 'W') t
-                                clean_flags        x = x
-
+                                              [ os | os@(k,_) <- meta_other_shit hdr, k /= "RG" ] ++
+                                              HM.elems (HM.fromList [ (rgid, ("RG", ("ID",rgid):tags)) | RG{..} <- rgdefs ] ) }
                             in mapStreamM (\br -> do
-                                    let x = fromTags "XI" "YI" br
-                                        y = fromTags "XJ" "YJ" br
-                                    (p,i7,i5) <- class1 rgs (unique_indices p7is) (unique_indices p5is) mix (x,y)
+                                    let b = unpackBam br
+                                        eff_rgs | not (isPaired b) = rgs
+                                                | isFirstMate b    = rgs
+                                                | otherwise        = HM.empty
+                                    (p,i7,i5) <- class1 eff_rgs (unique_indices p7is) (unique_indices p5is) mix
+                                                                (fromTags "XI" "YI" br, fromTags "XJ" "YJ" br)
                                     let q = negate . round $ 10 / log 10 * log p
-                                        b = decodeBamEntry br
-                                        rg = T.encodeUtf8 $ T.concat [ ns7 V.! i7, ",", ns5 V.! i5 ]
-                                        b' = b { b_exts = M.delete "ZR" . M.delete "Z0" . M.delete "Z2"
-                                                        . M.insert "Z1" (Int q) . M.adjust clean_flags "ZQ"
-                                                        $ case HM.lookup (i7,i5) rgs of
-                                                            Nothing | cf_pedantic -> M.delete "RG" $ b_exts b
-                                                                    | otherwise   -> M.insert "RG" (Text rg) $ b_exts b
-                                                            Just (rgn,_)          -> M.insert "RG" (Text rgn) $ b_exts b }
-                                    return $ encodeBamEntry b') =$
+                                        ex = deleteE "ZR" . deleteE "Z0" . deleteE "Z2" . updateE "Z1" (Int q) $
+                                             updateE "ZX" (Text $ T.encodeUtf8 $ T.concat [ ns7 V.! i7, ",", ns5 V.! i5 ]) $
+                                             case HM.lookup (i7,i5) rgs of
+                                               Nothing      -> deleteE "RG" $ b_exts b
+                                               Just (rgn,_) -> updateE "RG" (Text rgn) $ b_exts b
+                                    return $ case lookup "ZQ" ex of
+                                                Just (Text t) | BS.null t' -> b { b_exts = deleteE "ZQ" ex
+                                                                                , b_flag = b_flag b .&. complement flagFailsQC }
+                                                              | otherwise  -> b { b_exts = updateE "ZQ" (Text t') ex }
+                                                  where
+                                                    t' = BS.filter (\c -> c /= 'C' && c /= 'I' && c /= 'W') t
+                                                _                          -> b { b_exts = ex
+                                                                                , b_flag = b_flag b .&. complement flagFailsQC }) =$
                                progressNum "writing " info =$
                                out (add_pg hdr')
 
                         unlessQuiet cf_loudness $ do
+                            grand_total <- foldM (\ !acc (_,dirt) -> VS.freeze dirt >>= return . (+) acc . VS.sum) 0 (HM.elems rgs)
                             T.hPutStrLn cf_stats_hdl "\nmaximum achievable and average quality, top pollutants:"
                             forM_ (sortOn (fst.snd) $ HM.toList rgs) $ \((i7,i5), (rgid,dirt_)) -> do
                                 dirt <- VS.freeze dirt_
@@ -497,7 +500,8 @@ main = do
                                         L.singleton ':' <> L.singleton ' ' <>
                                         adj_left 4 ' ' (L.singleton 'Q' <> L.decimal (max 0 qmax)) <> L.fromText ", " <>
                                         adj_left 4 ' ' (L.singleton 'Q' <> L.decimal (max 0 qavg)) <> L.fromText ", " <>
-                                        L.fromString (showNum (round total :: Int)) <> L.fromText "; " <>
+                                        L.fromString (showNum (round total :: Int)) <> L.fromText " (" <>
+                                        L.formatRealFloat L.Fixed (Just 2) (100*total/grand_total) <> L.fromText "%); " <>
                                         foldr1 (\a b -> a <> L.fromText ", " <> b)
                                             (take num $ U.foldr fmt_one [] v')
 

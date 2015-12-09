@@ -16,7 +16,8 @@ module Bio.Bam.Index (
 ) where
 
 import Bio.Bam.Header
-import Bio.Bam.Raw
+import Bio.Bam.Reader
+import Bio.Bam.Rec
 import Bio.Bam.Regions              ( Region(..), Subsequence(..) )
 import Bio.Iteratee
 import Bio.Iteratee.Bgzf
@@ -26,7 +27,6 @@ import Data.ByteString              ( ByteString )
 import Data.Char                    ( chr )
 import Data.Int                     ( Int64 )
 import Data.IntMap                  ( IntMap )
-import Data.Word                    ( Word32 )
 import System.Directory             ( doesFileExist )
 import System.FilePath              ( dropExtension, takeExtension, (<.>) )
 import System.Random                ( randomRIO )
@@ -304,7 +304,7 @@ eneeBamRefseq BamIndex{..} (Refseq r) iter
     | Just ckpts <- refseq_ckpoints V.!? fromIntegral r
     , Just (voff, _) <- M.minView ckpts
     , voff /= 0 = do seek $ fromIntegral voff
-                     breakE ((Refseq r /=) . br_rname) iter
+                     breakE ((Refseq r /=) . b_rname . unpackBam) iter
     | otherwise = return iter
 
 -- | Seeks to the part of a Bam file that contains unaligned reads and
@@ -314,7 +314,7 @@ eneeBamRefseq BamIndex{..} (Refseq r) iter
 
 eneeBamUnaligned :: Monad m => BamIndex b -> Enumeratee [BamRaw] [BamRaw] m a
 eneeBamUnaligned BamIndex{..} iter = do when (unaln_off /= 0) $ seek $ fromIntegral unaln_off
-                                        filterStream (not . isValidRefseq . br_rname) iter
+                                        filterStream (not . isValidRefseq . b_rname . unpackBam) iter
 
 -- | Enumerates one 'Segment'.  Seeks to the start offset, unless
 -- reading over the skipped part looks cheaper.  Enumerates until we
@@ -327,14 +327,15 @@ eneeBamSegment (Segment beg end mpos) out = do
             where o = fromIntegral $ virt_offset br
         _                                      -> seek $ fromIntegral beg
 
-    let in_segment br = virt_offset br <= fromIntegral end && br_pos br <= mpos
+    let in_segment br = virt_offset br <= fromIntegral end && b_pos (unpackBam br) <= mpos
     takeWhileE in_segment out
 
 eneeBamSubseq :: Monad m => BamIndex b -> Refseq -> R.Subsequence -> Enumeratee [BamRaw] [BamRaw] m a
-eneeBamSubseq bi ref subs
-    = let segs = foldr (~~) [] $ segmentLists bi ref subs
-          olap br = br_rname br == ref && R.overlaps (br_pos br) (br_pos br + br_aln_length br) subs
-      in foldr ((>=>) . eneeBamSegment) return segs ><> filterStream olap
+eneeBamSubseq bi ref subs = foldr ((>=>) . eneeBamSegment) return segs ><> filterStream olap
+  where
+    segs = foldr (~~) [] $ segmentLists bi ref subs
+    olap br = b_rname == ref && R.overlaps b_pos (b_pos + alignedLength b_cigar) subs
+                    where BamRec{..} = unpackBam br
 
 eneeBamRegions :: Monad m => BamIndex b -> [R.Region] -> Enumeratee [BamRaw] [BamRaw] m a
 eneeBamRegions bi = foldr ((>=>) . uncurry (eneeBamSubseq bi)) return . R.toList . R.fromList
@@ -358,7 +359,7 @@ subsampleBam fp o = liftIO (E.try (readBamIndex fp)) >>= subsam
     subsam (Left e) = enumFile defaultBufSize fp >=> run $
                       joinI $ decompressBgzfBlocks $
                       joinI $ decodeBam $ \hdr ->
-                      takeWhileE (isValidRefseq . br_rname) (o hdr)
+                      takeWhileE (isValidRefseq . b_rname . unpackBam) (o hdr)
                             `const` (e::E.SomeException)
 
     -- with index: chose random bins and read from them

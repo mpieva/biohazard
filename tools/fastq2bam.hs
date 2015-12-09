@@ -1,9 +1,11 @@
-{-# LANGUAGE BangPatterns #-}
+{-# LANGUAGE BangPatterns, OverloadedStrings #-}
 import Bio.Base
 import Bio.Bam
+import Bio.Bam.Evan ( removeWarts )
 import Bio.Iteratee.ZLib
 import Control.Monad
 import Data.Bits
+import Data.Monoid ( mempty )
 import System.Console.GetOpt
 import System.Environment
 import System.Exit
@@ -11,8 +13,7 @@ import System.IO
 
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Char8 as S
-import qualified Data.Map as M
-import qualified Data.Vector.Unboxed as V
+import qualified Data.Vector.Generic as V
 
 -- TODO:
 -- - optional(!) GZip
@@ -96,7 +97,7 @@ concatDuals [              ] = []
 
 -- Enumerates a file.  Sequence and quality end up in b_seq and b_qual.
 fromFastq :: (MonadIO m, MonadMask m) => FilePath -> Enumerator [BamRec] m a
-fromFastq fp = enumAny fp $= enumInflateAny $= parseFastqCassava
+fromFastq fp = enumAny fp $= enumInflateAny $= parseFastqCassava $= mapStream removeWarts
   where
     enumAny "-" = enumHandle defaultBufSize stdin
     enumAny  f  = enumFile defaultBufSize f
@@ -110,7 +111,7 @@ enum_input inp@(Input r1 mr2 mi1 mi2) o = do
 -- Given an enumerator and maybe a filename, read index sequences from
 -- the file and merge them with the numerator.
 withIndex :: (MonadIO m, MonadMask m)
-          => Maybe FilePath -> String -> String
+          => Maybe FilePath -> BamKey -> BamKey
           -> Enumerator [UpToTwo BamRec] m a -> Enumerator [UpToTwo BamRec] m a
 withIndex Nothing      _    _ enum = enum
 withIndex (Just fp) tagi tagq enum = mergeEnums enum (fromFastq fp) (convStream combine)
@@ -121,10 +122,10 @@ withIndex (Just fp) tagi tagq enum = mergeEnums enum (fromFastq fp) (convStream 
                         "read names do not match: " ++ shows (b_qname (fst seqrecs)) " & " ++ show (b_qname idxrec)
 
                  let idxseq  = S.pack $ map showNucleotides $ V.toList $ b_seq idxrec
-                     idxqual = B.map (+33) $ b_qual idxrec
+                     idxqual = B.pack $ map   ((+33) . unQ) $ V.toList $ b_qual idxrec
                  return [ flip mapU2 seqrecs $
-                        \r -> r { b_exts = (if B.null idxqual then id else M.insert tagq (Text idxqual))
-                                         $ M.insert tagi (Text idxseq) $ b_exts r } ]
+                        \r -> r { b_exts = (if B.null idxqual then id else insertE tagq (Text idxqual))
+                                         $ insertE tagi (Text idxseq) $ b_exts r } ]
 
 -- Enumerate dual files.  We read two FastQ files and match them up.  We
 -- must make sure the names match, and we will flag everything as
@@ -141,7 +142,7 @@ enumDual f1 f2 = mergeEnums (fromFastq f1 $= mapStream one) (fromFastq f2) (conv
                         "read names do not match: " ++ shows (b_qname firstMate) " & " ++ show (b_qname secondMate)
 
                  let qc = (b_flag firstMate .|. b_flag secondMate) .&. flagFailsQC
-                     addx k = maybe id (M.insert k) $ maybe (M.lookup k (b_exts secondMate)) Just $ M.lookup k (b_exts firstMate)
+                     addx k = maybe id (updateE k) $ maybe (lookup k (b_exts secondMate)) Just $ lookup k (b_exts firstMate)
                      add_indexes = addx "XI" . addx "XJ" . addx "YI" . addx "YJ"
 
                  return [ two (firstMate  { b_flag = qc .|.  flagFirstMate .|. flagPaired .|. b_flag firstMate .&. complement flagSecondMate

@@ -36,9 +36,8 @@ import qualified Data.ByteString.Char8      as S
 import qualified Data.ByteString.Lazy.Char8 as L
 import qualified Data.Foldable              as F
 import qualified Data.Iteratee              as I
-import qualified Data.Map                   as M
 import qualified Data.Sequence              as Z
-import qualified Data.Vector.Unboxed        as U
+import qualified Data.Vector.Generic        as V
 
 import Debug.Trace
 
@@ -133,21 +132,21 @@ main = do
 round1 :: MonadIO m
        => SeedMap -> RefSeq
        -> Iteratee [(QueryRec, AlignResult)] m ()       -- BAM output
-       -> Iteratee [BamRaw] m                           -- queries in
+       -> Iteratee [BamRec] m                           -- queries in
             (RefSeq, [QueryRec])                        -- new reference & queries out
 round1 sm rs out = convStream (headStream >>= seed) =$ roundN rs out
   where
-    seed br = case do_seed (refseq_len rs) sm br of
-        _ | low_qual br        -> return []
-        Nothing                -> return []
-        Just (a,b) | a >= 0    -> return [ QR (br_qname br) (prep_query_fwd br) (RP   a ) (BW   bw ) ]
-                   | otherwise -> return [ QR (br_qname br) (prep_query_rev br) (RP (-b)) (BW (-bw)) ]
-            where bw = b - a - br_l_seq br
-
-    low_qual br = 2 * l1 < l2 where
-        l2 = br_l_seq br
-        l1 = F.foldl' step 0 [0 .. l2-1]
-        step a i = if br_qual_at br i > Q 10 then a+1 else a
+    seed br@BamRec{..}
+        | low_qual  = return []
+        | otherwise = case do_seed (refseq_len rs) sm br of
+            Nothing                -> return []
+            Just (a,b) | a >= 0    -> return [ QR b_qname (prep_query_fwd br) (RP   a ) (BW   bw ) ]
+                       | otherwise -> return [ QR b_qname (prep_query_rev br) (RP (-b)) (BW (-bw)) ]
+                where bw = b - a - V.length b_seq
+      where
+        low_qual = 2 * l1 < l2
+        l2 = V.length b_seq
+        l1 = V.length $ V.filter (> Q 10) b_qual
 
 roundN :: Monad m
        => RefSeq
@@ -175,7 +174,7 @@ roundN rs out = do
                 -- get alignment ends from ar, add some buffer
                 -- XXX does this yield invalid coordinates?
                 let !left  = viterbi_position ar - 8
-                    !right = viterbi_position ar + 8 + cigarToAlnLen (viterbi_backtrace ar)
+                    !right = viterbi_position ar + 8 + alignedLength (viterbi_backtrace ar)
                 in (left,right,qr) : l) []
 
     xlate :: XTab -> (Int, Int, QueryRec) -> QueryRec
@@ -198,10 +197,11 @@ roundN rs out = do
 
     reversed (BW x) = x < 0
 
-    max_bandwidth = (+1) . (*2) . maximum . map abs . scanl plus 0 . unCigar
-    plus a (Mat,_) = a
-    plus a (Ins,n) = a+n
-    plus a (Del,n) = a-n
+    max_bandwidth = (+1) . (*2) . V.maximum . V.map abs . V.scanl plus 0
+
+    plus a (Mat :* _) = a
+    plus a (Ins :* n) = a+n
+    plus a (Del :* n) = a-n
 
 
 
@@ -229,7 +229,7 @@ write_iter_bam fp hdr = mapStream conv =$ writeBamFile fp hdr
             , b_seq             = qseqToBamSeq qr_seq
             , b_qual            = qseqToBamQual qr_seq
             , b_virtual_offset  = 0
-            , b_exts            = M.empty }
+            , b_exts            = [] }
       where
         qname = qr_name `S.append` S.pack ("  " ++ showFFloat (Just 1) viterbi_score [])
         reversed (BW x) = x < 0
@@ -246,24 +246,24 @@ write_ref_fasta fp num rs = writeFile fp $ unlines $
     chunk n s = case splitAt n s of _ | null s -> [] ; (l,r) -> l : chunk n r
 
 ref_to_ascii :: RefSeq -> String
-ref_to_ascii (RS v) = [ base | i <- [0, 5 .. U.length v - 5]
+ref_to_ascii (RS v) = [ base | i <- [0, 5 .. V.length v - 5]
                              , let pgap = indexV "ref_to_ascii/pgap" v (i+4)
                              , pgap > 3
                              , let letters = if pgap <= 6 then "acgtn" else "ACGTN"
                              , let (index, p1, p2) = minmin i 4
                              , let good = p2 - p1 >= 3 -- probably nonsense
-                             , let base = S.index letters $ if good then index else  trace (show (U.slice i 5 v)) 4 ]
+                             , let base = S.index letters $ if good then index else  trace (show (V.slice i 5 v)) 4 ]
   where
-    minmin i0 l = U.ifoldl' step (l, 255, 255) $ U.slice i0 l v
+    minmin i0 l = V.ifoldl' step (l, 255, 255) $ V.slice i0 l v
     step (!i, !m, !n) j x | x <= m    = (j, x, m)
                           | x <= n    = (i, m, x)
                           | otherwise = (i, m, n)
 
 
 
-readFreakingInput :: (MonadIO m, MonadMask m) => FilePath -> Enumerator [BamRaw] m b
+readFreakingInput :: (MonadIO m, MonadMask m) => FilePath -> Enumerator [BamRec] m b
 readFreakingInput fp k | ".bam" `isSuffixOf` fp = do liftIO (hPutStrLn stderr $ "Reading BAM from " ++ fp)
-                                                     decodeAnyBamFile fp $ const k
+                                                     decodeAnyBamFile fp . const $= mapStream unpackBam $ k
                        | otherwise              = maybe_read_two fp unzipFastq k
 
 check_r2 :: FilePath -> IO (Maybe FilePath)
@@ -278,8 +278,8 @@ check_r2 = go [] . reverse
 maybe_read_two :: (MonadIO m, MonadMask m)
     => FilePath
     -> (forall m1 b . (MonadIO m1, MonadMask m1) => Enumeratee S.ByteString [BamRec] m1 b)
-    -> Enumerator [BamRaw] m a
-maybe_read_two fp e1 = (\k -> liftIO (check_r2 fp) >>= maybe (rd1 k) (rd2 k)) $= mapStream encodeBamEntry
+    -> Enumerator [BamRec] m a
+maybe_read_two fp e1 = (\k -> liftIO (check_r2 fp) >>= maybe (rd1 k) (rd2 k))
   where
     rd1 k     = do liftIO (hPutStrLn stderr $ "Reading FastQ from " ++ fp)
                    enumFile defaultBufSize fp  $= e1 $ k
@@ -288,6 +288,7 @@ maybe_read_two fp e1 = (\k -> liftIO (check_r2 fp) >>= maybe (rd1 k) (rd2 k)) $=
                               (enumFile defaultBufSize fp' $= e1)
                               (convStream unite_pairs) k
 
+-- No, we don't need to 'removeWarts'.  This input is, of course, a special case.  :-(
 unzipFastq :: (MonadIO m, MonadMask m) => Enumeratee S.ByteString [BamRec] m b
 unzipFastq = ZLib.enumInflateAny ><> parseFastq
 

@@ -1,4 +1,4 @@
-{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE FlexibleContexts, OverloadedStrings #-}
 -- Reads multiple BAM files, melds them by keeping the best hit for
 -- every entry.  All input files must be parallel (same reads, same
 -- order, no omissions).  The best hit and the new mapq are calculated
@@ -12,11 +12,14 @@
 
 import Bio.Base
 import Bio.Bam.Header
+import Bio.Bam.Reader
 import Bio.Bam.Rec
+import Bio.Bam.Writer
 import Bio.Iteratee
 import Control.Monad                            ( unless, foldM )
 import Data.List                                ( sortBy )
 import Data.Monoid
+import Data.String                              ( fromString )
 import Data.Version                             ( showVersion )
 import Paths_biohazard                          ( version )
 import System.Console.GetOpt
@@ -25,7 +28,6 @@ import System.Exit                              ( exitSuccess, exitFailure )
 import System.IO                                ( hPutStrLn )
 
 import qualified Data.ByteString.Char8 as S
-import qualified Data.Map              as M
 import qualified Data.Sequence         as Z
 
 data Conf = Conf {
@@ -39,7 +41,7 @@ defaultConf = Conf Nothing (protectTerm . pipeBamOutput) iter_transpose
 defaultScore :: BamPair -> Int
 defaultScore r = 30 * getExt "XM" r + 45 * getExt "XO" r + 15 * getExt "XG" r
 
-getExt :: String -> BamPair -> Int
+getExt :: BamKey -> BamPair -> Int
 getExt k (Single a) = extAsInt 0 k a
 getExt k (Pair a b) = extAsInt 0 k a + extAsInt 0 k b
 
@@ -123,7 +125,7 @@ meld hdr score rs | all p_is_unmapped rs = head rs
 
     (xas1, xas2) = foldr enc_xas (foldr get_xas ([],[]) (best:rs')) rs'
 
-    add_xas xas b = b { b_exts = M.insert "XA" (Text (S.intercalate (S.singleton ';') xas)) (b_exts b) }
+    add_xas xas b = b { b_exts = updateE "XA" (Text (S.intercalate (S.singleton ';') xas)) (b_exts b) }
 
     best' = case best of Single a -> Single (add_xas xas1 a)
                          Pair a b -> Pair (add_xas xas1 a) (add_xas xas2 b)
@@ -178,7 +180,7 @@ set_sorted c = return $ c { c_merge = merge_by_name }
 set_weight :: String -> Conf -> IO Conf
 set_weight (a:b:':':rest) c = do
     w <- readIO rest
-    let f = \r -> getExt [a,b] r * w + maybe 0 ($ r) (c_score c)
+    let f = \r -> getExt (fromString [a,b]) r * w + maybe 0 ($ r) (c_score c)
     return $ c { c_score = Just f }
 set_weight s _ = error $ "illegal weight specification " ++ show s
 

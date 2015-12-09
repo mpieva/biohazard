@@ -7,7 +7,3 @@ Genotyper
 - store likelihoods somehow; needs a sensible file format
 - test on simulated data (MLE of heterozygosity, separately for
   transitions and transversions, especially on Denise)
-- for Kay: test on Altay, Ust-Ishim, Denise (Kay method: cull and count
-  to get heterozygosity)
-- 
-- 

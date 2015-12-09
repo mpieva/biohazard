@@ -28,8 +28,10 @@ import Foreign.Storable ( peek, poke )
 import GHC.Exts
 import System.IO.Unsafe ( unsafePerformIO )
 
-import qualified Data.ByteString as B
-import qualified Data.ByteString.Unsafe as B
+import qualified Data.ByteString            as B
+import qualified Data.ByteString.Unsafe     as B
+import qualified Data.ByteString.Builder    as B ( Builder, toLazyByteString )
+import qualified Data.ByteString.Lazy       as B ( foldrChunks )
 
 -- | The 'MutableByteArray' is garbage collected, so we don't get leaks.
 -- Once it has grown to a practical size (and the initial 128k should be
@@ -41,10 +43,15 @@ data BB = BB { buffer :: {-# UNPACK #-} !(MutableByteArray RealWorld)
              , mark   :: {-# UNPACK #-} !Int
              , mark2  :: {-# UNPACK #-} !Int }
 
+-- This still seems to have considerable overhead.  Don't know if this
+-- can be improved by effectively inlining IO and turning the BB into an
+-- unboxed tuple.  XXX
 newtype Push = Push (BB -> IO BB)
 
 instance Monoid Push where
+    {-# INLINE mempty #-}
     mempty                  = Push return
+    {-# INLINE mappend #-}
     Push a `mappend` Push b = Push (a >=> b)
 
 instance NullPoint Push where
@@ -123,6 +130,10 @@ unsafePushFloat f = unsafePushWord32 i
 {-# INLINE pushFloat #-}
 pushFloat :: Float -> Push
 pushFloat f = ensureBuffer 4 <> unsafePushFloat f
+
+{-# INLINE pushBuilder #-}
+pushBuilder :: B.Builder -> Push
+pushBuilder = B.foldrChunks ((<>) . pushByteString) mempty . B.toLazyByteString
 
 -- | Sets a mark.  This can later be filled in with a record length
 -- (used to create BAM records).

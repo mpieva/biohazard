@@ -1,81 +1,48 @@
-{-# LANGUAGE ExistentialQuantification, RecordWildCards, NamedFieldPuns, BangPatterns, FlexibleContexts #-}
+{-# LANGUAGE ExistentialQuantification, RecordWildCards, NamedFieldPuns #-}
+{-# LANGUAGE OverloadedStrings, BangPatterns, FlexibleContexts #-}
 module Bio.Bam.Rmdup(
             rmdup, Collapse, cons_collapse, cheap_collapse,
             cons_collapse_keep, cheap_collapse_keep,
             check_sort, normalizeTo, wrapTo
     ) where
 
-import Bio.Bam.Fastq                    ( removeWarts )
 import Bio.Bam.Header
-import Bio.Bam.Raw
 import Bio.Bam.Rec
 import Bio.Base
 import Bio.Iteratee
-import Control.Monad                    ( when )
+import Control.Applicative
 import Data.Bits
 import Data.List
 import Data.Ord                         ( comparing )
+import Data.String                      ( fromString )
 
 import qualified Data.ByteString        as B
-import qualified Data.ByteString.Unsafe as B
 import qualified Data.ByteString.Char8  as T
 import qualified Data.Iteratee          as I
 import qualified Data.Map               as M
 import qualified Data.Vector.Generic    as V
+import qualified Data.Vector.Storable   as VS
 import qualified Data.Vector.Unboxed    as U
 
--- | Uniform treatment of raw and parsed BAM records.  Might grow into
--- something even bigger.
+data Collapse = Collapse {
+        collapse  :: [BamRec] -> (Decision,[BamRec]),    -- cluster to consensus and stuff or representative and stuff
+        originals :: [BamRec] -> [BamRec] }              -- treatment of the redundant original reads
 
-class BAMREC a where
-    inject          :: BamRaw -> a              -- convert from BamRaw
-    project         :: a -> BamRaw              -- convert to BamRaw
-    is_mate_of      :: a -> a -> Bool           -- check if two records form a mate
-    make_singleton  :: a -> a                   -- remove all PE related flags
-    flag_dup        :: a -> a                   -- flag as duplicate
-    add_xp_of       :: a -> a -> a              -- add XP field of forst read to that of second
-
-data Collapse = forall a . BAMREC a => Collapse {
-                    collapse :: [a] -> (Politics a,[a]),    -- cluster to consensus and stuff or representative and stuff
-                    originals :: [a] -> [a] }               -- treatment of the redundant original reads
-
-data Politics a = Consensus a | Representative a
-
-fromPolitics :: Politics a -> a
-fromPolitics (Consensus      a) = a
-fromPolitics (Representative a) = a
-
+data Decision = Consensus      { fromDecision :: BamRec }
+              | Representative { fromDecision :: BamRec }
 
 cons_collapse :: Qual -> Collapse
 cons_collapse maxq = Collapse (do_collapse maxq) (const [])
 
 cons_collapse_keep :: Qual -> Collapse
-cons_collapse_keep maxq = Collapse (do_collapse maxq) (map flag_dup)
+cons_collapse_keep maxq = Collapse (do_collapse maxq) (map (\b -> b { b_flag = b_flag b .|. flagDuplicate }))
 
 cheap_collapse :: Collapse
 cheap_collapse = Collapse do_cheap_collapse (const [])
 
 cheap_collapse_keep :: Collapse
-cheap_collapse_keep = Collapse do_cheap_collapse (map flag_dup)
+cheap_collapse_keep = Collapse do_cheap_collapse (map (\b -> b { b_flag = b_flag b .|. flagDuplicate }))
 
-instance BAMREC BamRaw where
-    inject  = id
-    project = id
-    make_singleton b = mutateBamRaw b $ setFlag (br_flag b .&. complement pflags)
-    flag_dup       b = mutateBamRaw b $ setFlag (br_flag b .|. flagDuplicate)
-    add_xp_of    w v = replaceXP (br_extAsInt 1 "XP" w `oplus` br_extAsInt 1 "XP" v) v
-    is_mate_of   a b = br_qname a == br_qname b && br_isPaired a && br_isPaired b && br_isFirstMate a == br_isSecondMate b
-
-instance BAMREC BamRec where
-    inject  = removeWarts . decodeBamEntry
-    project = encodeBamEntry
-    make_singleton b = b { b_flag = b_flag b .&. complement pflags }
-    flag_dup       b = b { b_flag = b_flag b .|. flagDuplicate }
-    add_xp_of    w v = v { b_exts = M.insert "XP" (Int $ extAsInt 1 "XP" w `oplus` extAsInt 1 "XP" v) (b_exts v) }
-    is_mate_of   a b = b_qname a == b_qname b && isPaired a && isPaired b && isFirstMate a == isSecondMate b
-
-pflags :: Int
-pflags = flagPaired .|. flagProperlyPaired .|. flagMateUnmapped .|. flagMateReversed .|. flagFirstMate .|. flagSecondMate
 
 -- | Removes duplicates from an aligned, sorted BAM stream.
 --
@@ -142,7 +109,7 @@ pflags = flagPaired .|. flagProperlyPaired .|. flagMateUnmapped .|. flagMateReve
 -- duplicates of each other.  The typical label function would extract
 -- read groups, libraries or samples.
 
-rmdup :: (Monad m, Ord l) => (BamRaw -> l) -> Bool -> Collapse -> Enumeratee [BamRaw] [BamRaw] m r
+rmdup :: (Monad m, Ord l) => (BamRec -> l) -> Bool -> Collapse -> Enumeratee [BamRec] [BamRec] m r
 rmdup label strand_preserved collapse_cfg =
     -- Easiest way to go about this:  We simply collect everything that
     -- starts at some specific coordinate and group it appropriately.
@@ -152,10 +119,10 @@ rmdup label strand_preserved collapse_cfg =
     check_sort "internal error, output isn't sorted anymore"
   where
     rmdup_group = nice_sort . do_rmdup label strand_preserved collapse_cfg
-    same_pos u v = br_cpos u == br_cpos v
-    br_cpos br = (br_rname br, br_pos br)
+    same_pos u v = b_cpos u == b_cpos v
+    b_cpos u = (b_rname u, b_pos u)
 
-    nice_sort x = sortBy (comparing br_l_seq) x
+    nice_sort x = sortBy (comparing (V.length . b_seq)) x
 
     mapGroups f o = I.tryHead >>= maybe (return o) (\a -> eneeCheckIfDone (mg1 f a []) o)
     mg1 f a acc k = I.tryHead >>= \mb -> case mb of
@@ -163,11 +130,11 @@ rmdup label strand_preserved collapse_cfg =
                         Just b | same_pos a b -> mg1 f a (b:acc) k
                                | otherwise -> eneeCheckIfDone (mg1 f b []) . k . Chunk . f $ a:acc
 
-check_sort :: Monad m => String -> Enumeratee [BamRaw] [BamRaw] m a
+check_sort :: Monad m => String -> Enumeratee [BamRec] [BamRec] m a
 check_sort msg out = I.tryHead >>= maybe (return out) (\a -> eneeCheckIfDone (step a) out)
   where
     step a k = I.tryHead >>= maybe (return . k $ Chunk [a]) (step' a k)
-    step' a k b | (br_rname a, br_pos a) > (br_rname b, br_pos b) = fail $ "rmdup: " ++ msg
+    step' a k b | (b_rname a, b_pos a) > (b_rname b, b_pos b) = fail $ "rmdup: " ++ msg
                 | otherwise = eneeCheckIfDone (step b) . k $ Chunk [a]
 
 
@@ -232,32 +199,32 @@ check_sort msg out = I.tryHead >>= maybe (return out) (\a -> eneeCheckIfDone (st
    (4) See 'merge_singles' for how it's actually done.
 -}
 
-do_rmdup :: Ord l => (BamRaw -> l) -> Bool -> Collapse -> [BamRaw] -> [BamRaw]
+do_rmdup :: Ord l => (BamRec -> l) -> Bool -> Collapse -> [BamRec] -> [BamRec]
 do_rmdup label strand_preserved Collapse{..} =
     concatMap do_rmdup1 . M.elems . accumMap label id
   where
-    do_rmdup1 rds = map project $ results ++ originals (leftovers ++ r1 ++ r2 ++ r3)
+    do_rmdup1 rds = results ++ originals (leftovers ++ r1 ++ r2 ++ r3)
       where
         (results, leftovers) = merge_singles singles' unaligned' $
-                [ (str, fromPolitics br) | ((_,str  ),br) <- M.toList merged' ] ++
-                [ (str, fromPolitics br) | ((_,str,_),br) <- M.toList pairs' ]
+                [ (str, fromDecision b) | ((_,str  ),b) <- M.toList merged' ] ++
+                [ (str, fromDecision b) | ((_,str,_),b) <- M.toList pairs' ]
 
-        (raw_pairs, raw_singles)       = partition br_isPaired rds
-        (merged, true_singles)         = partition br_isMergeTrimmed raw_singles
+        (raw_pairs, raw_singles)       = partition isPaired rds
+        (merged, true_singles)         = partition (liftA2 (||) isMerged isTrimmed) raw_singles
 
-        (pairs, raw_half_pairs)        = partition br_totally_aligned raw_pairs
-        (half_unaligned, half_aligned) = partition br_isUnmapped raw_half_pairs
+        (pairs, raw_half_pairs)        = partition b_totally_aligned raw_pairs
+        (half_unaligned, half_aligned) = partition isUnmapped raw_half_pairs
 
-        mkMap f x = let m1 = M.map collapse $ accumMap f inject x
+        mkMap f x = let m1 = M.map collapse $ accumMap f id x
                     in (M.map fst m1, concatMap snd $ M.elems m1)
 
-        (pairs',r1)   = mkMap (\b -> (br_mate_pos b,   br_strand b, br_mate b)) pairs
-        (merged',r2)  = mkMap (\b -> (br_aln_length b, br_strand b))            merged
-        (singles',r3) = mkMap                          br_strand (true_singles++half_aligned)
-        unaligned'    = accumMap br_strand inject half_unaligned
+        (pairs',r1)   = mkMap (\b -> (b_mate_pos b,   b_strand b, b_mate b)) pairs
+        (merged',r2)  = mkMap (\b -> (alignedLength (b_cigar b), b_strand b))           merged
+        (singles',r3) = mkMap                         b_strand (true_singles++half_aligned)
+        unaligned'    = accumMap b_strand id half_unaligned
 
-        br_strand b = strand_preserved && br_isReversed   b
-        br_mate   b = strand_preserved && br_isFirstMate  b
+        b_strand b = strand_preserved && isReversed  b
+        b_mate   b = strand_preserved && isFirstMate b
 
 
 -- | Merging information about true singles, merged singles,
@@ -277,11 +244,10 @@ do_rmdup label strand_preserved Collapse{..} =
 -- everything(?).  Then we don't have a mate for the consensus... though
 -- we could decide to duplicate one mate read to get it.
 
-merge_singles :: BAMREC a
-              => M.Map Bool (Politics a)                -- strand --> true singles & half aligned
-              -> M.Map Bool [a]                         -- strand --> half unaligned
-              -> [ (Bool, a) ]                          -- strand --> paireds & mergeds
-              -> ([a],[a])                              -- results, leftovers
+merge_singles :: M.Map Bool Decision                    -- strand --> true singles & half aligned
+              -> M.Map Bool [BamRec]                    -- strand --> half unaligned
+              -> [ (Bool, BamRec) ]                     -- strand --> paireds & mergeds
+              -> ([BamRec],[BamRec])                    -- results, leftovers
 
 merge_singles singles unaligneds = go
   where
@@ -303,6 +269,7 @@ merge_singles singles unaligneds = go
     -- No more pairs, delegate the problem
     go [] = merge_halves unaligneds (M.toList singles)
 
+    add_xp_of w v = v { b_exts = updateE "XP" (Int $ extAsInt 1 "XP" w `oplus` extAsInt 1 "XP" v) (b_exts v) }
 
 -- | Merging of half-aligned reads.  The first argument is a map of
 -- unaligned reads (their mates are aligned to the current position),
@@ -319,28 +286,31 @@ merge_singles singles unaligneds = go
 -- singleton.  Duplication is ugly, so in this case, we force it to
 -- singleton.
 
-merge_halves :: BAMREC a
-             => M.Map Bool [a]                          -- strand --> half unaligned
-             -> [(Bool, Politics a)]                    -- strand --> true singles & half aligned
-             -> ([a],[a])                               -- results, leftovers
+merge_halves :: M.Map Bool [BamRec]                     -- strand --> half unaligned
+             -> [(Bool, Decision)]                      -- strand --> true singles & half aligned
+             -> ([BamRec],[BamRec])                     -- results, leftovers
 
 -- Emitting a consensus: make it a single.  Nothing goes to leftovers;
 -- we may still need it for something else to be emitted.  (While that
 -- would be strange, making sure the BAM file stays completely valid is
 -- probably better.)
 merge_halves unaligneds ((_, Consensus v) : singles) =
-    let (r,l) = merge_halves unaligneds singles
-    in (make_singleton v : r, l)
+    case merge_halves unaligneds singles of
+        (l,r) -> ( v { b_flag = b_flag v .&. complement pflags } : r, l )
+  where
+    pflags = flagPaired .|. flagProperlyPaired .|. flagMateUnmapped .|. flagMateReversed .|. flagFirstMate .|. flagSecondMate
+
 
 -- Emitting a representative:  find the mate in the list of unaligned
 -- reads (take up to one match to be robust), and emit that, too, as a
 -- result.  Everything else goes to leftovers.  If the representative
 -- happens to be unpaired, no mate is found and that case therefore is
 -- handled smoothly.
-merge_halves unaligneds ((str, Representative v) : singles) =
-    let (r,l) = merge_halves (M.delete str unaligneds) singles
-        (same,diff) = partition (is_mate_of v) $ M.findWithDefault [] str unaligneds
-    in (v : take 1 same ++ r, drop 1 same ++ diff ++ l)
+merge_halves unaligneds ((str, Representative v) : singles) = (v : take 1 same ++ r, drop 1 same ++ diff ++ l)
+  where
+    (r,l)          = merge_halves (M.delete str unaligneds) singles
+    (same,diff)    = partition (is_mate_of v) $ M.findWithDefault [] str unaligneds
+    is_mate_of a b = b_qname a == b_qname b && isPaired a && isPaired b && isFirstMate a == isSecondMate b
 
 -- No more singles, all unaligneds are leftovers.
 merge_halves unaligneds [] = ( [], concat $ M.elems unaligneds )
@@ -350,11 +320,11 @@ merge_halves unaligneds [] = ( [], concat $ M.elems unaligneds )
 
 type MPos = (Refseq, Int, Bool, Bool)
 
-br_mate_pos :: BamRaw -> MPos
-br_mate_pos br = (br_mrnm br, br_mpos br, br_isUnmapped br, br_isMateUnmapped br)
+b_mate_pos :: BamRec -> MPos
+b_mate_pos b = (b_mrnm b, b_mpos b, isUnmapped b, isMateUnmapped b)
 
-br_totally_aligned :: BamRaw -> Bool
-br_totally_aligned br = not (br_isUnmapped br || br_isMateUnmapped br)
+b_totally_aligned :: BamRec -> Bool
+b_totally_aligned b = not (isUnmapped b || isMateUnmapped b)
 
 
 accumMap :: Ord k => (a -> k) -> (a -> v) -> [a] -> M.Map k [v]
@@ -394,20 +364,20 @@ accumMap f g = go M.empty
    X0, X1, XT, XS, XF, XE, BC, LB, RG, XI, YI, XJ, YJ
          majority vote -}
 
-do_collapse :: Qual -> [BamRec] -> (Politics BamRec, [BamRec])
-do_collapse (Q maxq) [br] | B.all (<= maxq) (b_qual br) = ( Representative br, [  ] )     -- no modifcation, pass through
-                          | otherwise                   = ( Consensus   lq_br, [br] )     -- qualities reduced, must keep original
+do_collapse :: Qual -> [BamRec] -> (Decision, [BamRec])
+do_collapse maxq [br] | V.all (<= maxq) (b_qual br) = ( Representative br, [  ] )     -- no modifcation, pass through
+                      | otherwise                   = ( Consensus   lq_br, [br] )     -- qualities reduced, must keep original
   where
-    lq_br = br { b_qual  = B.map (min maxq) $ b_qual br
+    lq_br = br { b_qual  = V.map (min maxq) $ b_qual br
                , b_virtual_offset = 0
                , b_qname = b_qname br `B.snoc` c2w 'c' }
 
 do_collapse maxq  brs = ( Consensus b0 { b_exts  = modify_extensions $ b_exts b0
                                        , b_flag  = failflag .&. complement flagDuplicate
                                        , b_mapq  = Q $ rmsq $ map (unQ . b_mapq) $ good brs
-                                       , b_cigar = Cigar cigar'
+                                       , b_cigar = cigar'
                                        , b_seq   = V.fromList $ map fst cons_seq_qual
-                                       , b_qual  = B.pack $ map (unQ . snd) cons_seq_qual
+                                       , b_qual  = V.fromList $ map snd cons_seq_qual
                                        , b_qname = b_qname b0 `B.snoc` 99
                                        , b_virtual_offset = 0 }, brs )              -- many modifications, must keep everything
   where
@@ -423,17 +393,17 @@ do_collapse maxq  brs = ( Consensus b0 { b_exts  = modify_extensions $ b_exts b0
     nub' = concatMap head . group . sort
 
     -- majority vote on the cigar lines, then filter
-    !cigar' = maj $ map (unCigar . b_cigar) brs
-    good = filter ((==) cigar' . unCigar . b_cigar)
+    !cigar' = maj $ map b_cigar brs
+    good = filter ((==) cigar' . b_cigar)
 
-    cons_seq_qual = [ consensus maxq [ (V.unsafeIndex (b_seq b) i, Q q)
-                                     | b <- good brs, let q = if B.null (b_qual b) then 23 else B.unsafeIndex (b_qual b) i ]
+    cons_seq_qual = [ consensus maxq [ (V.unsafeIndex (b_seq b) i, q)
+                                     | b <- good brs, let q = if V.null (b_qual b) then Q 23 else b_qual b V.! i ]
                     | i <- [0 .. len - 1] ]
         where !len = V.length . b_seq . head $ good brs
 
     md' = case [ (b_seq b,md,b) | b <- good brs, Just md <- [ getMd b ] ] of
                 [               ] -> []
-                (seq1, md1,b) : _ -> case mk_new_md cigar' md1 (V.toList seq1) (map fst cons_seq_qual) of
+                (seq1, md1,b) : _ -> case mk_new_md' [] (V.toList cigar') md1 (V.toList seq1) (map fst cons_seq_qual) of
                     Right x -> x
                     Left (MdFail cigs ms osq nsq) -> error $ unlines
                                     [ "Broken MD field when trying to construct new MD!"
@@ -445,23 +415,23 @@ do_collapse maxq  brs = ( Consensus b0 { b_exts  = modify_extensions $ b_exts b0
                                     , "readseq: " ++ show nsq ]
 
 
-    nm' = sum $ [ n | (Ins,n) <- cigar' ] ++ [ n | (Del,n) <- cigar' ] ++ [ 1 | MdRep _ <- md' ]
-    xa' = nub' [ T.split ';' xas | Just (Text xas) <- map (M.lookup "XA" . b_exts) brs ]
+    nm' = sum $ [ n | Ins :* n <- VS.toList cigar' ] ++ [ n | Del :* n <- VS.toList cigar' ] ++ [ 1 | MdRep _ <- md' ]
+    xa' = nub' [ T.split ';' xas | Just (Text xas) <- map (lookup "XA" . b_exts) brs ]
 
     modify_extensions es = foldr ($!) es $
-        [ let vs = [ v | Just v <- map (M.lookup k . b_exts) brs ]
-          in if null vs then id else M.insert k $! maj vs | k <- do_maj ] ++
-        [ let vs = [ v | Just (Int v) <- map (M.lookup k . b_exts) brs ]
-          in if null vs then id else M.insert k $! Int (rmsq vs) | k <- do_rmsq ] ++
-        [ M.delete k | k <- useless ] ++
-        [ M.insert "NM" $! Int nm'
-        , M.insert "XP" $! Int (foldl' (\a b -> a `oplus` extAsInt 1 "XP" b) 0 brs)
-        , if null xa' then id else M.insert "XA" $! (Text $ T.intercalate (T.singleton ';') xa')
-        , if null md' then id else M.insert "MD" $! (Text $ showMd md') ]
+        [ let vs = [ v | Just v <- map (lookup k . b_exts) brs ]
+          in if null vs then id else updateE k $! maj vs | k <- do_maj ] ++
+        [ let vs = [ v | Just (Int v) <- map (lookup k . b_exts) brs ]
+          in if null vs then id else updateE k $! Int (rmsq vs) | k <- do_rmsq ] ++
+        [ deleteE k | k <- useless ] ++
+        [ updateE "NM" $! Int nm'
+        , updateE "XP" $! Int (foldl' (\a b -> a `oplus` extAsInt 1 "XP" b) 0 brs)
+        , if null xa' then id else updateE "XA" $! (Text $ T.intercalate (T.singleton ';') xa')
+        , if null md' then id else updateE "MD" $! (Text $ showMd md') ]
 
-    useless = words "BQ CM FZ Q2 R2 XM XO XG YQ EN CQ CS E2 FS OQ OP OC U2 H0 H1 H2 HI NH IH ZQ"
-    do_rmsq = words "AM AS MQ PQ SM UQ"
-    do_maj  = words "X0 X1 XT XS XF XE BC LB RG XI XJ YI YJ"
+    useless = map fromString $ words "BQ CM FZ Q2 R2 XM XO XG YQ EN CQ CS E2 FS OQ OP OC U2 H0 H1 H2 HI NH IH ZQ"
+    do_rmsq = map fromString $ words "AM AS MQ PQ SM UQ"
+    do_maj  = map fromString $ words "X0 X1 XT XS XF XE BC LB RG XI XJ YI YJ"
 
 minViewBy :: (a -> a -> Ordering) -> [a] -> (a,[a])
 minViewBy  _  [    ] = error "minViewBy on empty list"
@@ -471,12 +441,9 @@ minViewBy cmp (x:xs) = go x [] xs
     go m acc (a:as) = case m `cmp` a of GT -> go a (m:acc) as
                                         _  -> go m (a:acc) as
 
-data MdFail = MdFail [(CigOp, Int)] [MdOp] [Nucleotides] [Nucleotides]
+data MdFail = MdFail [Cigar] [MdOp] [Nucleotides] [Nucleotides]
 
-mk_new_md :: [(CigOp, Int)] -> [MdOp] -> [Nucleotides] -> [Nucleotides] -> Either MdFail [MdOp]
-mk_new_md = mk_new_md' []
-
-mk_new_md' :: [MdOp] -> [(CigOp, Int)] -> [MdOp] -> [Nucleotides] -> [Nucleotides] -> Either MdFail [MdOp]
+mk_new_md' :: [MdOp] -> [Cigar] -> [MdOp] -> [Nucleotides] -> [Nucleotides] -> Either MdFail [MdOp]
 mk_new_md' acc [] [] [] [] = Right $ normalize [] acc
     where
         normalize          a  (MdNum  0:os) = normalize               a  os
@@ -486,28 +453,28 @@ mk_new_md' acc [] [] [] [] = Right $ normalize [] acc
         normalize          a  (       o:os) = normalize            (o:a) os
         normalize          a  [           ] = a
 
-mk_new_md' acc (( _ , 0):cigs)  mds  osq nsq = mk_new_md' acc cigs mds osq nsq
+mk_new_md' acc ( _ :* 0 : cigs) mds  osq nsq = mk_new_md' acc cigs mds osq nsq
 mk_new_md' acc cigs (MdNum  0 : mds) osq nsq = mk_new_md' acc cigs mds osq nsq
 mk_new_md' acc cigs (MdDel [] : mds) osq nsq = mk_new_md' acc cigs mds osq nsq
 
-mk_new_md' acc ((Mat, u):cigs) (MdRep b : mds) (_:osq) (n:nsq)
-    | b == n    = mk_new_md' (MdNum 1 : acc) ((Mat, u-1):cigs) mds osq nsq
-    | otherwise = mk_new_md' (MdRep b : acc) ((Mat, u-1):cigs) mds osq nsq
+mk_new_md' acc (Mat :* u : cigs) (MdRep b : mds) (_:osq) (n:nsq)
+    | b == n    = mk_new_md' (MdNum 1 : acc) (Mat :* (u-1):cigs) mds osq nsq
+    | otherwise = mk_new_md' (MdRep b : acc) (Mat :* (u-1):cigs) mds osq nsq
 
-mk_new_md' acc ((Mat, u):cigs) (MdNum v : mds) (o:osq) (n:nsq)
-    | o == n    = mk_new_md' (MdNum 1 : acc) ((Mat, u-1):cigs) (MdNum (v-1) : mds) osq nsq
-    | otherwise = mk_new_md' (MdRep o : acc) ((Mat, u-1):cigs) (MdNum (v-1) : mds) osq nsq
+mk_new_md' acc (Mat :* u : cigs) (MdNum v : mds) (o:osq) (n:nsq)
+    | o == n    = mk_new_md' (MdNum 1 : acc) (Mat :* (u-1):cigs) (MdNum (v-1) : mds) osq nsq
+    | otherwise = mk_new_md' (MdRep o : acc) (Mat :* (u-1):cigs) (MdNum (v-1) : mds) osq nsq
 
-mk_new_md' acc ((Del, n):cigs) (MdDel bs : mds) osq nsq | n == length bs = mk_new_md' (MdDel bs : acc)    cigs               mds  osq nsq
-mk_new_md' acc ((Del, n):cigs) (MdDel (b:bs) : mds) osq nsq = mk_new_md' (MdDel     [b] : acc) ((Del,n-1):cigs) (MdDel    bs:mds) osq nsq
-mk_new_md' acc ((Del, n):cigs) (MdRep   b    : mds) osq nsq = mk_new_md' (MdDel     [b] : acc) ((Del,n-1):cigs)              mds  osq nsq
-mk_new_md' acc ((Del, n):cigs) (MdNum   m    : mds) osq nsq = mk_new_md' (MdDel [nucsN] : acc) ((Del,n-1):cigs) (MdNum (m-1):mds) osq nsq
+mk_new_md' acc (Del :* n : cigs) (MdDel bs : mds) osq nsq | n == length bs = mk_new_md' (MdDel bs : acc)         cigs               mds  osq nsq
+mk_new_md' acc (Del :* n : cigs) (MdDel (b:bs) : mds) osq nsq = mk_new_md' (MdDel     [b] : acc) (Del :* (n-1) : cigs) (MdDel    bs:mds) osq nsq
+mk_new_md' acc (Del :* n : cigs) (MdRep   b    : mds) osq nsq = mk_new_md' (MdDel     [b] : acc) (Del :* (n-1) : cigs)              mds  osq nsq
+mk_new_md' acc (Del :* n : cigs) (MdNum   m    : mds) osq nsq = mk_new_md' (MdDel [nucsN] : acc) (Del :* (n-1) : cigs) (MdNum (m-1):mds) osq nsq
 
-mk_new_md' acc ((Ins, n):cigs) md osq nsq = mk_new_md' acc cigs md (drop n osq) (drop n nsq)
-mk_new_md' acc ((SMa, n):cigs) md osq nsq = mk_new_md' acc cigs md (drop n osq) (drop n nsq)
-mk_new_md' acc ((HMa, _):cigs) md osq nsq = mk_new_md' acc cigs md         osq          nsq
-mk_new_md' acc ((Pad, _):cigs) md osq nsq = mk_new_md' acc cigs md         osq          nsq
-mk_new_md' acc ((Nop, _):cigs) md osq nsq = mk_new_md' acc cigs md         osq          nsq
+mk_new_md' acc (Ins :* n : cigs) md osq nsq = mk_new_md' acc cigs md (drop n osq) (drop n nsq)
+mk_new_md' acc (SMa :* n : cigs) md osq nsq = mk_new_md' acc cigs md (drop n osq) (drop n nsq)
+mk_new_md' acc (HMa :* _ : cigs) md osq nsq = mk_new_md' acc cigs md         osq          nsq
+mk_new_md' acc (Pad :* _ : cigs) md osq nsq = mk_new_md' acc cigs md         osq          nsq
+mk_new_md' acc (Nop :* _ : cigs) md osq nsq = mk_new_md' acc cigs md         osq          nsq
 
 mk_new_md' _acc cigs ms osq nsq = Left $ MdFail cigs ms osq nsq
 
@@ -522,29 +489,15 @@ consensus (Q maxq) nqs = if qr > 3 then (n0, Q qr) else (nucsN, Q 0)
 
 
 -- Cheap version: simply takes the lexically first record, adds XP field
-do_cheap_collapse :: [BamRaw] -> ( Politics BamRaw, [BamRaw] )
+do_cheap_collapse :: [BamRec] -> ( Decision, [BamRec] )
 do_cheap_collapse [b] = ( Representative                     b, [] )
 do_cheap_collapse  bs = ( Representative $ replaceXP new_xp b0, bx )
   where
-    (b0, bx) = minViewBy (comparing br_qname) bs
-    new_xp   = foldl' (\a b -> a `oplus` br_extAsInt 1 "XP" b) 0 bs
+    (b0, bx) = minViewBy (comparing b_qname) bs
+    new_xp   = foldl' (\a b -> a `oplus` extAsInt 1 "XP" b) 0 bs
 
-replaceXP :: Int -> BamRaw -> BamRaw
-replaceXP new_xp b0 = bamRaw 0 . xpcode . raw_data . mutateBamRaw b0 $ removeExt "XP"
-  where
-    xpcode r | new_xp == 1 = r
-             | -0x80 <= new_xp && new_xp < 0 = r `B.append` B.pack [ c2w 'X', c2w 'P', c2w 'c',
-                                                                     fromIntegral $ new_xp .&. 0xff ]
-             | new_xp < 0x100                = r `B.append` B.pack [ c2w 'X', c2w 'P', c2w 'C',
-                                                                     fromIntegral $ new_xp .&. 0xff ]
-             | new_xp < 0x10000              = r `B.append` B.pack [ c2w 'X', c2w 'P', c2w 'S',
-                                                                     fromIntegral $ (new_xp `shiftR`  0).&. 0xff,
-                                                                     fromIntegral $ (new_xp `shiftR`  8) .&. 0xff ]
-             | otherwise   = r `B.append` B.pack [ c2w 'X', c2w 'P', c2w 'i',
-                                                   fromIntegral $ (new_xp `shiftR`  0) .&. 0xff,
-                                                   fromIntegral $ (new_xp `shiftR`  8) .&. 0xff,
-                                                   fromIntegral $ (new_xp `shiftR` 16) .&. 0xff,
-                                                   fromIntegral $ (new_xp `shiftR` 24) .&. 0xff ]
+replaceXP :: Int -> BamRec -> BamRec
+replaceXP new_xp b0 = b0 { b_exts = updateE "XP" (Int new_xp) $ b_exts b0 }
 
 oplus :: Int -> Int -> Int
 _ `oplus` (-1) = -1
@@ -553,34 +506,33 @@ a `oplus` b = a + b
 
 -- | Normalize a read's alignment to fall into the canonical region
 -- of [0..l].  Takes the name of the reference sequence and its length.
-normalizeTo :: Seqid -> Int -> BamRaw -> BamRaw
-normalizeTo nm l br = mutateBamRaw br $ do setPos (br_pos br `mod` l)
-                                           setMpos (br_mpos br `mod` l)
-                                           setBin (br_pos br `mod` l) (br_aln_length br)
-                                           when dups_are_fine $ setMapq 37 >> removeExt "XA"
+normalizeTo :: Seqid -> Int -> BamRec -> BamRec
+normalizeTo nm l b = b { b_pos  = b_pos b `mod` l
+                       , b_mpos = b_mpos b `mod` l
+                       , b_mapq = if dups_are_fine then Q 37 else b_mapq b
+                       , b_exts = if dups_are_fine then deleteE "XA" (b_exts b) else b_exts b }
   where
-    dups_are_fine  = all_match_XA (br_extAsString "XA" br)
+    dups_are_fine  = all_match_XA (extAsString "XA" b)
     all_match_XA s = case T.split ';' s of [xa1, xa2] | T.null xa2 -> one_match_XA xa1
                                            [xa1]                   -> one_match_XA xa1
                                            _                       -> False
     one_match_XA s = case T.split ',' s of (sq:pos:_) | sq == nm   -> pos_match_XA pos ; _ -> False
     pos_match_XA s = case T.readInt s   of Just (p,z) | T.null z   -> int_match_XA p ;   _ -> False
-    int_match_XA p | p >= 0    =  (p-1) `mod` l == br_pos br `mod` l && not (br_isReversed br)
-                   | otherwise = (-p-1) `mod` l == br_pos br `mod` l && br_isReversed br
+    int_match_XA p | p >= 0    =  (p-1) `mod` l == b_pos b `mod` l && not (isReversed b)
+                   | otherwise = (-p-1) `mod` l == b_pos b `mod` l && isReversed b
 
 
 -- | Wraps a read to be fully contained in the canonical interval
 -- [0..l].  If the read overhangs, it is duplicated and both copies are
 -- suitably masked.
-wrapTo :: Int -> BamRaw -> [BamRaw]
-wrapTo l br = if overhangs then do_wrap else [br]
+wrapTo :: Int -> BamRec -> [BamRec]
+wrapTo l b = if overhangs then do_wrap else [b]
   where
-    overhangs = not (br_isUnmapped br) && br_pos br < l && l < br_pos br + br_aln_length br
+    overhangs = not (isUnmapped b) && b_pos b < l && l < b_pos b + alignedLength (b_cigar b)
 
-    do_wrap = let b = decodeBamEntry br in
-              case split_ecig (l - b_pos b) $ toECig (b_cigar b) (maybe [] id $ getMd b) of
-                  (left,right) -> [ encodeBamEntry $ b { b_cigar = toCigar  left }            `setMD` left
-                                  , encodeBamEntry $ b { b_cigar = toCigar right, b_pos = 0 } `setMD` right ]
+    do_wrap = case split_ecig (l - b_pos b) $ toECig (b_cigar b) (maybe [] id $ getMd b) of
+                  (left,right) -> [ b { b_cigar = toCigar  left }            `setMD` left
+                                  , b { b_cigar = toCigar right, b_pos = 0 } `setMD` right ]
 
 -- | Split an 'ECig' into two at some position.  The position is counted
 -- in terms of the reference (therefore, deletions count, insertions
@@ -638,74 +590,74 @@ data ECig = WithMD                      -- terminate, do generate MD field
           | Pad' Int ECig
 
 
-toECig :: Cigar -> [MdOp] -> ECig
-toECig (Cigar cig) md = go cig md
+toECig :: VS.Vector Cigar -> [MdOp] -> ECig
+toECig cig md = go (VS.toList cig) md
   where
     go        cs  (MdNum  0:mds) = go cs mds
     go        cs  (MdDel []:mds) = go cs mds
-    go ((_,0):cs)           mds  = go cs mds
+    go (_:*0 :cs)           mds  = go cs mds
     go [        ] [            ] = WithMD               -- all was fine to the very end
     go [        ]              _ = WithoutMD            -- here it wasn't fine
 
-    go ((Mat,n):cs) (MdRep x:mds)      = Rep'   x   $ go  ((Mat,n-1):cs)             mds
-    go ((Mat,n):cs) (MdNum m:mds)
-       | n < m                         = Mat'   n   $ go             cs (MdNum (m-n):mds)
-       | n > m                         = Mat'   m   $ go  ((Mat,n-m):cs)             mds
-       | otherwise                     = Mat'   n   $ go             cs              mds
-    go ((Mat,n):cs)            _       = Mat'   n   $ go'            cs
+    go (Mat :* n : cs) (MdRep x:mds)   = Rep'   x   $ go     (Mat :* (n-1) : cs)             mds
+    go (Mat :* n : cs) (MdNum m:mds)
+       | n < m                         = Mat'   n   $ go                     cs (MdNum (m-n):mds)
+       | n > m                         = Mat'   m   $ go     (Mat :* (n-m) : cs)             mds
+       | otherwise                     = Mat'   n   $ go                     cs              mds
+    go (Mat :* n : cs)            _    = Mat'   n   $ go'                    cs
 
-    go ((Ins,n):cs)               mds  = Ins'   n   $ go             cs              mds
-    go ((Del,n):cs) (MdDel (x:xs):mds) = Del'   x   $ go  ((Del,n-1):cs)   (MdDel xs:mds)
-    go ((Del,n):cs)                 _  = Del' nucsN $ go' ((Del,n-1):cs)
+    go (Ins :* n : cs)               mds  = Ins'   n   $ go                  cs              mds
+    go (Del :* n : cs) (MdDel (x:xs):mds) = Del'   x   $ go  (Del :* (n-1) : cs) (MdDel xs:mds)
+    go (Del :* n : cs)                 _  = Del' nucsN $ go' (Del :* (n-1) : cs)
 
-    go ((Nop,n):cs) mds = Nop' n $ go cs mds
-    go ((SMa,n):cs) mds = SMa' n $ go cs mds
-    go ((HMa,n):cs) mds = HMa' n $ go cs mds
-    go ((Pad,n):cs) mds = Pad' n $ go cs mds
+    go (Nop :* n : cs) mds = Nop' n $ go cs mds
+    go (SMa :* n : cs) mds = SMa' n $ go cs mds
+    go (HMa :* n : cs) mds = HMa' n $ go cs mds
+    go (Pad :* n : cs) mds = Pad' n $ go cs mds
 
     -- We jump here once the MD fiels ran out early or was messed up.
     -- We no longer bother with it (this also happens if the MD isn't
     -- present to begin with).
-    go' ((_,0):cs)   = go' cs
-    go' [        ]   = WithoutMD                        -- we didn't have MD or it was broken
+    go' (_ :* 0 : cs)   = go' cs
+    go' [           ]   = WithoutMD                        -- we didn't have MD or it was broken
 
-    go' ((Mat,n):cs) = Mat'   n   $ go'            cs
-    go' ((Ins,n):cs) = Ins'   n   $ go'            cs
-    go' ((Del,n):cs) = Del' nucsN $ go' ((Del,n-1):cs)
+    go' (Mat :* n : cs) = Mat'   n   $ go'                 cs
+    go' (Ins :* n : cs) = Ins'   n   $ go'                 cs
+    go' (Del :* n : cs) = Del' nucsN $ go' (Del :* (n-1) : cs)
 
-    go' ((Nop,n):cs) = Nop'   n   $ go' cs
-    go' ((SMa,n):cs) = SMa'   n   $ go' cs
-    go' ((HMa,n):cs) = HMa'   n   $ go' cs
-    go' ((Pad,n):cs) = Pad'   n   $ go' cs
+    go' (Nop :* n : cs) = Nop'   n   $ go' cs
+    go' (SMa :* n : cs) = SMa'   n   $ go' cs
+    go' (HMa :* n : cs) = HMa'   n   $ go' cs
+    go' (Pad :* n : cs) = Pad'   n   $ go' cs
 
 
 -- We normalize matches, deletions and soft masks, because these are the
 -- operations we generate.  Everything else is either already normalized
 -- or nobody really cares anyway.
-toCigar :: ECig -> Cigar
-toCigar = Cigar . go
+toCigar :: ECig -> VS.Vector Cigar
+toCigar = V.fromList . go
   where
     go       WithMD = []
     go    WithoutMD = []
 
-    go (Ins' n ecs) = (Ins,n) : go ecs
-    go (Nop' n ecs) = (Nop,n) : go ecs
-    go (HMa' n ecs) = (HMa,n) : go ecs
-    go (Pad' n ecs) = (Pad,n) : go ecs
+    go (Ins' n ecs) = Ins :* n : go ecs
+    go (Nop' n ecs) = Nop :* n : go ecs
+    go (HMa' n ecs) = HMa :* n : go ecs
+    go (Pad' n ecs) = Pad :* n : go ecs
     go (SMa' n ecs) = go_sma n ecs
     go (Mat' n ecs) = go_mat n ecs
     go (Rep' _ ecs) = go_mat 1 ecs
     go (Del' _ ecs) = go_del 1 ecs
 
     go_sma !n (SMa' m ecs) = go_sma (n+m) ecs
-    go_sma !n         ecs  = (SMa,n) : go ecs
+    go_sma !n         ecs  = SMa :* n : go ecs
 
     go_mat !n (Mat' m ecs) = go_mat (n+m) ecs
     go_mat !n (Rep' _ ecs) = go_mat (n+1) ecs
-    go_mat !n         ecs  = (Mat,n) : go ecs
+    go_mat !n         ecs  = Mat :* n : go ecs
 
     go_del !n (Del' _ ecs) = go_del (n+1) ecs
-    go_del !n         ecs  = (Del,n) : go ecs
+    go_del !n         ecs  = Del :* n : go ecs
 
 
 
@@ -716,8 +668,8 @@ toCigar = Cigar . go
 -- an MD field.
 setMD :: BamRec -> ECig -> BamRec
 setMD b ec = case go ec of
-    Just md -> b { b_exts = M.insert "MD" (Text $ showMd md) (b_exts b) }
-    Nothing -> b { b_exts = M.delete "MD"                    (b_exts b) }
+    Just md -> b { b_exts = updateE "MD" (Text $ showMd md) (b_exts b) }
+    Nothing -> b { b_exts = deleteE "MD"                    (b_exts b) }
   where
     go  WithMD      = Just []
     go  WithoutMD   = Nothing

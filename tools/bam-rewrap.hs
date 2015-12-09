@@ -24,6 +24,7 @@
 -- coordinates, we remove XA and set MAPQ to 37.
 
 import Bio.Bam
+import Bio.Bam.Rmdup
 import Control.Monad                    ( when )
 import Data.Foldable                    ( toList )
 import Data.Version                     ( showVersion )
@@ -52,8 +53,8 @@ main = getArgs >>= \args ->
        joinI $ decodeAnyBam $ \hdr -> do
            add_pg <- liftIO (addPG $ Just version)
            let (ltab, seqs') = parseArgs (meta_refs hdr) args
-           joinI $ mapChunks (concatMap (rewrap (M.fromList ltab)))
-                 $ protectTerm $ pipeRawBamOutput (add_pg hdr { meta_refs = seqs' })
+           joinI $ mapChunks (concatMap (rewrap (M.fromList ltab) . unpackBam))
+                 $ protectTerm $ pipeBamOutput (add_pg hdr { meta_refs = seqs' })
 
 parseArgs :: Refs -> [String] -> ([(Refseq,(Int,S.ByteString))], Refs)
 parseArgs refs | Z.null refs = error $ "no target sequences found (empty input?)"
@@ -76,7 +77,7 @@ parseArgs refs | Z.null refs = error $ "no target sequences found (empty input?)
 -- (POS must be in the canonical interval) and fix XA, MPOS, MAPQ where
 -- appropriate, then duplicate the read and softmask the noncanonical
 -- parts.  Rmdup fits in between the two, hence the split
-rewrap :: M.Map Refseq (Int,S.ByteString) -> BamRaw -> [BamRaw]
-rewrap m br = maybe [br] (\(l,nm) -> wrapTo l $ normalizeTo nm l br)
-              $ M.lookup (br_rname br) m
+rewrap :: M.Map Refseq (Int,S.ByteString) -> BamRec -> [BamRec]
+rewrap m b = maybe [b] (\(l,nm) -> wrapTo l $ normalizeTo nm l b)
+             $ M.lookup (b_rname b) m
 

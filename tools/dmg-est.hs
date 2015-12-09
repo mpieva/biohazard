@@ -39,7 +39,6 @@
 
 import Bio.Bam.Header
 import Bio.Bam.Index
-import Bio.Bam.Raw
 import Bio.Bam.Rec
 import Bio.Base
 import Bio.Genocall.Adna
@@ -49,6 +48,7 @@ import Control.Concurrent.Async
 import Data.Bits
 import Data.Foldable
 import Data.Ix
+import Data.Maybe
 import Numeric.Optimization.Algorithms.HagerZhang05
 import System.Environment
 
@@ -158,7 +158,7 @@ main :: IO ()
 main = do
     [fp] <- getArgs
     brs <- subsampleBam fp >=> run $ \_ ->
-           joinI $ filterStream (\b -> not (br_isUnmapped b) && br_l_seq b >= lmin) $
+           joinI $ filterStream (\b -> not (isUnmapped (unpackBam b)) && G.length (b_seq (unpackBam b)) >= lmin) $
            joinI $ takeStream 100000 $
            joinI $ mapStream pack_record $
            joinI $ filterStream (\u -> U.length (U.filter (<16) (unSeq u)) * 10 >= 9 * U.length (unSeq u)) $
@@ -200,34 +200,34 @@ main = do
 -- "Bio.Bam.Rmdup".
 
 pack_record :: BamRaw -> Seq
-pack_record br = if br_isReversed br then k (revcom u1) else k u1
+pack_record br = if isReversed b then k (revcom u1) else k u1
   where
-    cigar = map (br_cigar_at br) [0 .. br_n_cigar_op br-1]
-    sequ  = map (br_seq_at   br) [0 .. br_l_seq      br-1]
+    b@BamRec{..} = unpackBam br
 
-    k | br_isMergeTrimmed br = Merged
-      | br_isSecondMate   br = Second
-      | otherwise            = First
+    k | isMerged     b = Merged
+      | isTrimmed    b = Merged
+      | isSecondMate b = Second
+      | otherwise      = First
 
     revcom = U.reverse . U.map (\x -> if x > 15 then x else xor x 15)
+    u1 = U.fromList . map unNP $ go (G.toList b_cigar) (G.toList b_seq) (fromMaybe [] $ getMd b)
 
-    u1 = U.fromList . map unNP $ go cigar sequ (br_get_md br)
-    go :: [(CigOp,Int)] -> [Nucleotides] -> [MdOp] -> [NP]
+    go :: [Cigar] -> [Nucleotides] -> [MdOp] -> [NP]
 
-    go ((_,0):cs)   ns mds  = go cs ns mds
+    go (_:*0 :cs)   ns mds  = go cs ns mds
     go cs ns (MdNum  0:mds) = go cs ns mds
     go cs ns (MdDel []:mds) = go cs ns mds
     go  _ []              _ = []
     go []  _              _ = []
 
-    go ((Mat,nm):cs) (n:ns) (MdNum mm:mds) = mk_pair n n  : go ((Mat,nm-1):cs) ns (MdNum (mm-1):mds)
-    go ((Mat,nm):cs) (n:ns) (MdRep n':mds) = mk_pair n n' : go ((Mat,nm-1):cs) ns               mds
-    go ((Mat,nm):cs)    ns  (MdDel _ :mds) =                go ((Mat, nm ):cs) ns               mds
+    go (Mat:*nm :cs) (n:ns) (MdNum mm:mds) = mk_pair n n  : go (Mat:*(nm-1):cs) ns (MdNum (mm-1):mds)
+    go (Mat:*nm :cs) (n:ns) (MdRep n':mds) = mk_pair n n' : go (Mat:*(nm-1):cs) ns               mds
+    go (Mat:*nm :cs)    ns  (MdDel _ :mds) =                go (Mat:* nm   :cs) ns               mds
 
-    go ((Ins,nm):cs) ns mds = replicate nm esc ++ go cs (drop nm ns) mds
-    go ((SMa,nm):cs) ns mds = replicate nm esc ++ go cs (drop nm ns) mds
-    go ((Del,nm):cs) ns (MdDel (_:ds):mds) = go ((Del,nm-1):cs) ns (MdDel ds:mds)
-    go ((Del,nm):cs) ns (           _:mds) = go ((Del, nm ):cs) ns           mds
+    go (Ins:*nm :cs) ns mds = replicate nm esc ++ go cs (drop nm ns) mds
+    go (SMa:*nm :cs) ns mds = replicate nm esc ++ go cs (drop nm ns) mds
+    go (Del:*nm :cs) ns (MdDel (_:ds):mds) = go (Del:*(nm-1):cs) ns (MdDel ds:mds)
+    go (Del:*nm :cs) ns (           _:mds) = go (Del:* nm   :cs) ns           mds
 
     go (_:cs) nd mds = go cs nd mds
 

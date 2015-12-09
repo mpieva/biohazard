@@ -1,13 +1,14 @@
-{-# LANGUAGE BangPatterns, Rank2Types, RecordWildCards #-}
+{-# LANGUAGE BangPatterns, Rank2Types, RecordWildCards, OverloadedStrings #-}
 {-# OPTIONS_GHC -funbox-strict-fields #-}
 module Bio.Bam.Pileup where
 
 import Bio.Base
 import Bio.Bam.Header
-import Bio.Bam.Raw
+import Bio.Bam.Rec
 import Bio.Genocall.Adna
 import Bio.Iteratee
 
+import Control.Arrow ( (&&&) )
 import Control.Applicative
 import Control.Monad hiding ( mapM_ )
 import Control.Monad.Fix ( fix )
@@ -17,6 +18,7 @@ import Data.Ord
 import Data.Vec.Packed ( Mat44D, packMat )
 
 import qualified Data.ByteString        as B
+import qualified Data.Vector.Generic    as V
 import qualified Data.Vector.Unboxed    as U
 
 import Prelude hiding ( foldr, foldr1, concat, mapM_, all )
@@ -126,13 +128,14 @@ instance Show DamagedBase where
 
 decompose :: BamRaw -> [Mat44D] -> PrimChunks
 decompose br matrices
-    | br_isUnmapped br || br_rname br == invalidRefseq = EndOfRead
-    | otherwise = firstBase (br_pos br) 0 0 (br_get_md br) matrices
+    | isUnmapped b || b_rname == invalidRefseq = EndOfRead
+    | otherwise = firstBase b_pos 0 0 (maybe [] id $ getMd b) matrices
   where
-    !max_cig = br_n_cigar_op br
-    !max_seq = br_l_seq br
-    !mapq    = br_mapq br
-    !baq     = br_extAsString "BQ" br
+    b@BamRec{..} = unpackBam br
+
+    !max_cig = V.length b_cigar
+    !max_seq = V.length b_seq
+    !baq     = extAsString "BQ" b
 
     -- This will compute the effective quality.  As far as I can see
     -- from the BAM spec V1.4, the qualities that matter are QUAL, MAPQ,
@@ -140,30 +143,30 @@ decompose br matrices
     -- 23 (assuming a rather conservative error rate of ~0.5%), BAQ is
     -- added to QUAL, and MAPQ is an upper limit for effective quality.
     get_seq :: Int -> Nucleotides -> Mat44D -> DamagedBase
-    get_seq i = case br_seq_at br i of                              -- nucleotide
-            b | b == nucsA -> DB nucA qe
-              | b == nucsC -> DB nucC qe
-              | b == nucsG -> DB nucG qe
-              | b == nucsT -> DB nucT qe
+    get_seq i = case b_seq V.! i of                                 -- nucleotide
+            n | n == nucsA -> DB nucA qe
+              | n == nucsC -> DB nucC qe
+              | n == nucsG -> DB nucG qe
+              | n == nucsT -> DB nucT qe
               | otherwise  -> DB nucA (Q 0)
       where
-        !q = case br_qual_at br i of Q 0xff -> Q 30 ; x -> x        -- quality; invalid (0xff) becomes 30
+        !q = case b_qual V.! i of Q 0xff -> Q 30 ; x -> x           -- quality; invalid (0xff) becomes 30
         !q' | i >= B.length baq = q                                 -- no BAQ available
             | otherwise = Q (unQ q + (B.index baq i - 64))          -- else correct for BAQ
-        !qe = min q' mapq                                           -- use MAPQ as upper limit
+        !qe = min q' b_mapq                                         -- use MAPQ as upper limit
 
     get_seq' :: Int -> Mat44D -> DamagedBase
-    get_seq' i = case br_seq_at br i of                              -- nucleotide
-            b | b == nucsA -> DB nucA qe nucsA
-              | b == nucsC -> DB nucC qe nucsC
-              | b == nucsG -> DB nucG qe nucsG
-              | b == nucsT -> DB nucT qe nucsT
-              | otherwise  -> DB nucA (Q 0) b
+    get_seq' i = case b_seq V.! i of                                -- nucleotide
+            n | n == nucsA -> DB nucA qe nucsA
+              | n == nucsC -> DB nucC qe nucsC
+              | n == nucsG -> DB nucG qe nucsG
+              | n == nucsT -> DB nucT qe nucsT
+              | otherwise  -> DB nucA (Q 0) n
       where
-        !q = case br_qual_at br i of Q 0xff -> Q 30 ; x -> x        -- quality; invalid (0xff) becomes 30
+        !q = case b_qual V.! i of Q 0xff -> Q 30 ; x -> x           -- quality; invalid (0xff) becomes 30
         !q' | i >= B.length baq = q                                 -- no BAQ available
             | otherwise = Q (unQ q + (B.index baq i - 64))          -- else correct for BAQ
-        !qe = min q' mapq                                           -- use MAPQ as upper limit
+        !qe = min q' b_mapq                                         -- use MAPQ as upper limit
 
     -- Look for first base following the read's start or a gap (CIGAR
     -- code N).  Indels are skipped, since these are either bugs in the
@@ -173,22 +176,21 @@ decompose br matrices
     firstBase !_   !_  !_    _ [        ] = EndOfRead
     firstBase !pos !is !ic mds mms@(m:ms)
         | is >= max_seq || ic >= max_cig = EndOfRead
-        | otherwise = case br_cigar_at br ic of
-            (Ins,cl) ->            firstBase  pos (cl+is) (ic+1) mds mms
-            (SMa,cl) ->            firstBase  pos (cl+is) (ic+1) mds mms
-            (Del,cl) ->            firstBase (pos+cl) is  (ic+1) (drop_del cl mds) mms
-            (Nop,cl) ->            firstBase (pos+cl) is  (ic+1) mds mms
-            (HMa, _) ->            firstBase  pos     is  (ic+1) mds mms
-            (Pad, _) ->            firstBase  pos     is  (ic+1) mds mms
-            (Mat, 0) ->            firstBase  pos     is  (ic+1) mds mms
-            (Mat, _) -> Seek pos $ nextBase 0 pos     is   ic 0  mds m ms
+        | otherwise = case b_cigar V.! ic of
+            Ins :* cl ->            firstBase  pos (cl+is) (ic+1) mds mms
+            SMa :* cl ->            firstBase  pos (cl+is) (ic+1) mds mms
+            Del :* cl ->            firstBase (pos+cl) is  (ic+1) (drop_del cl mds) mms
+            Nop :* cl ->            firstBase (pos+cl) is  (ic+1) mds mms
+            HMa :*  _ ->            firstBase  pos     is  (ic+1) mds mms
+            Pad :*  _ ->            firstBase  pos     is  (ic+1) mds mms
+            Mat :*  0 ->            firstBase  pos     is  (ic+1) mds mms
+            Mat :*  _ -> Seek pos $ nextBase 0 pos     is   ic 0  mds m ms
       where
         drop_del n (MdDel ns : mds')
             | n < length ns = MdDel (drop n ns) : mds'
             | n > length ns = drop_del (n - length ns) mds'
             | otherwise     = mds'
         drop_del _ mds'     = mds'
-
 
     -- Generate likelihoods for the next base.  When this gets called,
     -- we are looking at an M CIGAR operation and all the subindices are
@@ -204,9 +206,8 @@ decompose br matrices
 
       where
         nextBase' ref mds' =
-            Base wt (maybe (get_seq' is) (get_seq is) ref m) mapq (br_isReversed br) $
+            Base wt (maybe (get_seq' is) (get_seq is) ref m) b_mapq (isReversed b) $
                 nextIndel  [] [] (pos+1) (is+1) ic (io+1) mds' ms
-
 
     -- Look for the next indel after a base.  We collect all indels (I
     -- and D codes) into one combined operation.  If we hit N or the
@@ -219,16 +220,16 @@ decompose br matrices
     nextIndel _   _   !_   !_  !_  !_   _  [        ] = EndOfRead
     nextIndel ins del !pos !is !ic !io mds mms@(m:ms)
         | is >= max_seq || ic >= max_cig = EndOfRead
-        | otherwise = case br_cigar_at br ic of
-            (Ins,cl) ->             nextIndel (isq cl) del   pos (cl+is) (ic+1) 0 mds (drop cl mms)
-            (SMa,cl) ->             nextIndel  ins     del   pos (cl+is) (ic+1) 0 mds (drop cl mms)
-            (Del,cl) ->             nextIndel  ins (del++dsq) (pos+cl) is  (ic+1) 0 mds' mms
+        | otherwise = case b_cigar V.! ic of
+            Ins :* cl ->             nextIndel (isq cl) del   pos (cl+is) (ic+1) 0 mds (drop cl mms)
+            SMa :* cl ->             nextIndel  ins     del   pos (cl+is) (ic+1) 0 mds (drop cl mms)
+            Del :* cl ->             nextIndel ins (del++dsq) (pos+cl) is (ic+1) 0 mds' mms
                 where (dsq,mds') = split_del cl mds
-            (Pad, _) ->             nextIndel  ins     del   pos     is  (ic+1) 0 mds mms
-            (HMa, _) ->             nextIndel  ins     del   pos     is  (ic+1) 0 mds mms
-            (Nop,cl) ->             firstBase               (pos+cl) is  (ic+1)   mds mms  -- ends up generating a 'Seek'
-            (Mat,cl) | io == cl  -> nextIndel  ins     del   pos     is  (ic+1) 0 mds mms
-                     | otherwise -> indel del out $ nextBase (length del) pos is   ic  io mds m ms  -- ends up generating a 'Base'
+            Pad :*  _ ->             nextIndel  ins     del   pos     is  (ic+1) 0 mds mms
+            HMa :*  _ ->             nextIndel  ins     del   pos     is  (ic+1) 0 mds mms
+            Nop :* cl ->             firstBase               (pos+cl) is  (ic+1)   mds mms  -- ends up generating a 'Seek'
+            Mat :* cl | io == cl  -> nextIndel  ins     del   pos     is  (ic+1) 0 mds mms
+                      | otherwise -> indel del out $ nextBase (length del) pos is ic io mds m ms -- ends up generating a 'Base'
       where
         indel d o k = rlist o `seq` Indel d o k
         out    = concat $ reverse ins
@@ -322,10 +323,10 @@ type Pile  = Pile' (BasePile, BasePile) IndelPile
 -- encountered or a t end of file.
 
 pileup :: Monad m => DamageModel Double -> Enumeratee [BamRaw] [Pile] m a
-pileup dm = takeWhileE (isValidRefseq . br_rname) ><> filterStream useable ><>
+pileup dm = takeWhileE (isValidRefseq . b_rname . unpackBam) ><> filterStream useable ><>
             eneeCheckIfDonePass (icont . runPileM pileup' finish (Refseq 0) 0 [] Empty dm)
   where
-    useable br = not (br_isUnmapped br || br_isDuplicate br)
+    useable = not . (\b -> isUnmapped b || isDuplicate b) . unpackBam
 
     finish () _r _p [] Empty _dm out inp = idone (liftI out) inp
     finish () _ _ _ _ _ _ _ = error "logic error: leftovers after pileup"
@@ -441,7 +442,7 @@ pileup' = do
     refseq       <- get_refseq
     active       <- get_active
     next_waiting <- fmap ((,) refseq) . getMinKey <$> get_waiting
-    next_input   <- fmap (\b -> (br_rname b, br_pos b)) <$> peek
+    next_input   <- fmap ((b_rname &&& b_pos) . unpackBam) <$> peek
 
     -- If /active/ contains something, continue here.  Else find the coordinate
     -- to continue from, which is the minimum of the next /waiting/ coordinate
@@ -489,9 +490,10 @@ p'feed_input = do
     dm <- get_damage_model
 
     fix $ \loop -> peek >>= mapM_ (\br ->
-            when (br_rname br == rs && br_pos br == po) $ do
+            let b = unpackBam br
+            in when (b_rname b == rs && b_pos b == po) $ do
                 bump
-                case decompose br $ map packMat $ toList $ dm (br_isReversed br) (br_l_seq br) of
+                case decompose br $ map packMat $ toList $ dm (isReversed b) (V.length (b_seq b)) of
                     Seek   !p !pb -> ins_waiting p pb
                     Indel _ _ !pb -> add_active pb
                     EndOfRead     -> return ()

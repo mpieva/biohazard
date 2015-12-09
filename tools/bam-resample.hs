@@ -8,7 +8,9 @@
 -- Usage: resample [NUM] [FILE...]
 
 import Bio.Bam.Header
-import Bio.Bam.Raw
+import Bio.Bam.Reader
+import Bio.Bam.Rec
+import Bio.Bam.Writer
 import Bio.Iteratee
 import Data.Version ( showVersion )
 import Paths_biohazard ( version )
@@ -38,16 +40,16 @@ main' num files = do
     hPutStr stderr "counting... "
     total <- enumInputs files >=> run $
              joinI $ decodeAnyBam $ \_hdr ->
-             joinI $ groupOn br_qname $
+             joinI $ groupOn (b_qname . unpackBam) $
              foldStream (\a _ -> 1+a) 0
     hPutStr stderr $ shows total " records.\n"
 
     add_pg <- addPG (Just version)
     enumInputs files >=> run $
              joinI $ decodeAnyBam $
-             joinI . groupOn br_qname .
+             joinI . groupOn (b_qname . unpackBam) .
              joinI . resample num total .
-             protectTerm . pipeRawBamOutput . add_pg
+             protectTerm . pipeBamOutput . add_pg
 
 
 resample :: MonadIO m => Int -> Int -> Enumeratee [[BamRaw]] [BamRaw] m a

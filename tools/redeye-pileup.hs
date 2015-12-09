@@ -33,8 +33,9 @@
 import AD
 import Bio.Base
 import Bio.Bam.Header
-import Bio.Bam.Raw
 import Bio.Bam.Pileup
+import Bio.Bam.Reader
+import Bio.Bam.Rec
 import Bio.Genocall
 import Bio.Genocall.Adna
 import Bio.Genocall.AvroFile
@@ -131,8 +132,8 @@ main = do
 
     (tab,()) <- conf_output $ \oiter ->
         mergeInputs combineCoordinates files >=> run $ \hdr ->
-            filterStream (not . br_isUnmapped)                      =$
-            filterStream (isValidRefseq . br_rname)                 =$
+            filterStream (not . isUnmapped . unpackBam)             =$
+            filterStream (isValidRefseq . b_rname . unpackBam)      =$
             progressPos "GT call at " conf_report (meta_refs hdr)   =$
             pileup dmg_model                                        =$
             mapStream (calls conf_theta)                            =$
