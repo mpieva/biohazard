@@ -23,6 +23,7 @@ module Bio.Iteratee (
     zipStreams,
     protectTerm,
     concatMapStream,
+    concatMapStreamM,
     mapMaybeStream,
     parMapChunksIO,
     progressNum,
@@ -35,7 +36,7 @@ module Bio.Iteratee (
     I.breakE,
 
     ($==),
-    ioBind, ioBind_,
+    mBind, mBind_, ioBind, ioBind_,
     ListLike,
     MonadIO, MonadMask,
     lift, liftIO,
@@ -232,21 +233,37 @@ iterGet = go . runGetIncremental
             Done rest _ a | S.null rest -> idone a (EOF mx)
                           | otherwise   -> idone a (Chunk rest)
 
+{-# INLINE mBind #-}
+-- | Lifts a monadic action and combines it with a continuation.
+-- @mBind m f@ is the same as @lift m >>= f@, but does not require a
+-- 'Nullable' constraint on the stream type.
+infixl 1 `mBind`
+mBind :: Monad m => m a -> (a -> Iteratee s m b) -> Iteratee s m b
+mBind m f = Iteratee $ \onDone onCont -> m >>= \a -> runIter (f a) onDone onCont
+
+{-# INLINE mBind_ #-}
+-- | Lifts a monadic action, ignored the result and combines it with a
+-- continuation.  @mBind_ m f@ is the same as @lift m >>= f@, but does
+-- not require a 'Nullable' constraint on the stream type.
+infixl 1 `mBind_`
+mBind_ :: Monad m => m a -> Iteratee s m b -> Iteratee s m b
+mBind_ m b = Iteratee $ \onDone onCont -> m >> runIter b onDone onCont
+
 {-# INLINE ioBind #-}
--- | Lifts an IO action and combines it with a continution.
--- @ioBind m f@ is the same as @liftIO m >>= f@, but does not create a
+-- | Lifts an IO action and combines it with a continuation.
+-- @ioBind m f@ is the same as @liftIO m >>= f@, but does not require a
 -- 'Nullable' constraint on the stream type.
 infixl 1 `ioBind`
 ioBind :: MonadIO m => IO a -> (a -> Iteratee s m b) -> Iteratee s m b
 ioBind m f = Iteratee $ \onDone onCont -> liftIO m >>= \a -> runIter (f a) onDone onCont
 
 {-# INLINE ioBind_ #-}
--- | Lifts an IO action, ignores its result, and combines it with a continution.
--- @ioBind_ m f@ is the same as @liftIO m >> f@, but does not create a
--- 'Nullable' constraint on the stream type.
+-- | Lifts an IO action, ignores its result, and combines it with a
+-- continuation.  @ioBind_ m f@ is the same as @liftIO m >> f@, but does
+-- not require a 'Nullable' constraint on the stream type.
 infixl 1 `ioBind_`
 ioBind_ :: MonadIO m => IO a -> Iteratee s m b -> Iteratee s m b
-ioBind_ m f = Iteratee $ \onDone onCont -> liftIO m >> runIter f onDone onCont
+ioBind_ m b = Iteratee $ \onDone onCont -> liftIO m >> runIter b onDone onCont
 
 infixl 1 $==
 {-# INLINE ($==) #-}
@@ -272,9 +289,26 @@ mergeEnums' :: (Nullable s2, Nullable s1, Monad m)
             -> Enumerator' hi s1 m a
 mergeEnums' e1 e2 etee i = e1 $ \hi -> e2 (\ho -> joinI . etee ho $ ilift lift (i hi)) >>= run
 
+-- | Apply a function to the elements of a stream, concatenate the
+-- results into a stream.  No giant intermediate list is produced.
 {-# INLINE concatMapStream #-}
 concatMapStream :: (Monad m, ListLike s a, NullPoint s, ListLike t b) => (a -> t) -> Enumeratee s t m r
-concatMapStream = mapChunks . LL.concatMap
+concatMapStream f = eneeCheckIfDone (liftI . go)
+  where
+    go k (EOF   mx)              = idone (liftI k) (EOF mx)
+    go k (Chunk xs) | LL.null xs = liftI (go k)
+                    | otherwise  = eneeCheckIfDone (flip go (Chunk (LL.tail xs))) . k . Chunk . f $ LL.head xs
+
+-- | Apply a monadic function to the elements of a stream, concatenate
+-- the results into a stream.  No giant intermediate list is produced.
+{-# INLINE concatMapStreamM #-}
+concatMapStreamM :: (Monad m, ListLike s a, NullPoint s, ListLike t b) => (a -> m t) -> Enumeratee s t m r
+concatMapStreamM f = eneeCheckIfDone (liftI . go)
+  where
+    go k (EOF   mx)              = idone (liftI k) (EOF mx)
+    go k (Chunk xs) | LL.null xs = liftI (go k)
+                    | otherwise  = f (LL.head xs) `mBind`
+                                   eneeCheckIfDone (flip go (Chunk (LL.tail xs))) . k . Chunk
 
 {-# INLINE mapMaybeStream #-}
 mapMaybeStream :: (Monad m, ListLike s a, NullPoint s, ListLike t b) => (a -> Maybe b) -> Enumeratee s t m r

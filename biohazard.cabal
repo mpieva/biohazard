@@ -1,5 +1,5 @@
 Name:                biohazard
-Version:             0.6
+Version:             0.6.1
 Synopsis:            bioinformatics support library
 Description:         This is a collection of modules I separated from
                      various bioinformatics tools.  The hope is to make
@@ -37,7 +37,7 @@ source-repository head
 source-repository this
   type:     git
   location: git://github.com/udo-stenzel/biohazard.git
-  tag:      0.6
+  tag:      0.6.1
 
 
 Library
