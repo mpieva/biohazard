@@ -54,7 +54,7 @@ import qualified Data.Attoparsec.ByteString.Char8   as P
 import qualified Data.ByteString                    as B
 import qualified Data.ByteString.Char8              as S
 import qualified Data.Foldable                      as F
-import qualified Data.Map.Strict                    as M
+import qualified Data.HashMap.Strict                as M
 import qualified Data.Sequence                      as Z
 import qualified Data.Vector.Generic                as V
 import qualified Data.Vector.Storable               as VS
@@ -105,7 +105,7 @@ decodeSam inner = joinI $ enumLinesBS $ do
 decodeSamLoop :: Monad m => Refs -> Enumeratee [ByteString] [BamRec] m a
 decodeSamLoop refs inner = convStream (liftI parse_record) inner
   where !refs' = M.fromList $ zip [ nm | BamSQ { sq_name = nm } <- F.toList refs ] [toEnum 0..]
-        ref x = M.findWithDefault invalidRefseq x refs'
+        ref x = M.lookupDefault invalidRefseq x refs'
 
         parse_record (EOF x) = icont parse_record x
         parse_record (Chunk []) = liftI parse_record

@@ -48,6 +48,8 @@ import Data.Bits
 import Data.ByteString.Internal     ( c2w, w2c )
 import Data.Char                    ( isAlpha, isSpace, ord, toUpper )
 import Data.Word                    ( Word8 )
+import Data.Vector.Generic          ( Vector(..) )
+import Data.Vector.Generic.Mutable  ( MVector(..) )
 import Data.Vector.Unboxed.Deriving
 import Foreign.Storable             ( Storable(..) )
 import Numeric                      ( showFFloat )
