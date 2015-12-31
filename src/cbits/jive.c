@@ -23,9 +23,9 @@ double c_unmix_total( const double *restrict v_
                     , unsigned *pi7, unsigned *pi5 )
 {
     unsigned n5 = n5_ * 32 ;
-    const double *restrict  v = __builtin_assume_aligned(  v_, 16 ) ;
-    const double *restrict p5 = __builtin_assume_aligned( p5_, 16 ) ;
-    const double *restrict p7 = __builtin_assume_aligned( p7_, 16 ) ;
+    const double *restrict  v = v_ ; // __builtin_assume_aligned(  v_, 16 ) ;
+    const double *restrict p5 = p5_ ; // __builtin_assume_aligned( p5_, 16 ) ;
+    const double *restrict p7 = p7_ ; // __builtin_assume_aligned( p7_, 16 ) ;
 
     double acc = 0 ;
     double max = 0 ;
@@ -73,10 +73,10 @@ double c_unmix_qual( double *restrict w_
                    , double total, unsigned mi7, unsigned mi5 )
 {
     unsigned n5 = n5_ * 32 ;
-    double        *restrict w = __builtin_assume_aligned(  w_, 16 ) ;
-    const double *restrict  v = __builtin_assume_aligned(  v_, 16 ) ;
-    const double *restrict p5 = __builtin_assume_aligned( p5_, 16 ) ;
-    const double *restrict p7 = __builtin_assume_aligned( p7_, 16 ) ;
+    double        *restrict w = w_ ; // __builtin_assume_aligned(  w_, 16 ) ;
+    const double *restrict  v = v_ ; // __builtin_assume_aligned(  v_, 16 ) ;
+    const double *restrict p5 = p5_ ; // __builtin_assume_aligned( p5_, 16 ) ;
+    const double *restrict p7 = p7_ ; // __builtin_assume_aligned( p7_, 16 ) ;
     double acc = 0 ;
 
     total = 1.0 / total ;
