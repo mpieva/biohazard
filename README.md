@@ -1,6 +1,8 @@
 biohazard
 =========
 
+[![Build Status](https://travis-ci.org/udo-stenzel/biohazard.svg?branch=master)](https://travis-ci.org/udo-stenzel/biohazard)
+
 This is a library for Bioinformatics, mostly centered on the BAM file
 format for Next Generation Sequencing data.  It comes with a small set
 of command line tools for operations on BAM files:
