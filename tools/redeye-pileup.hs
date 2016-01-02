@@ -234,7 +234,7 @@ rangeDs = ((0,0,0),(11,maxD,maxD))
 -- estimation afterwards.  Returns the product of the
 -- parameter-independent parts of the likehoods and the histogram
 -- indexed by D and H (see @genotyping.pdf@ for details).
-tabulateSingle :: MonadIO m => Iteratee [Calls] m (Double, U.Vector Int)
+tabulateSingle :: (Functor m, MonadIO m) => Iteratee [Calls] m (Double, U.Vector Int)
 tabulateSingle = do
     tab <- liftIO $ M.replicate (rangeSize rangeDs) (0 :: Int)
     (,) <$> foldStreamM (\acc -> accum tab acc . p_snp_pile) (0 :: Double)

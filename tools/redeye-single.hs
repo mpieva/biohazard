@@ -19,12 +19,13 @@ import Bio.Bam
 import Bio.Bam.Pileup
 import Bio.Genocall.AvroFile
 import Bio.Iteratee.Builder
+import Control.Applicative
 import Control.Exception ( bracket )
 import Control.Monad
 import Data.Avro
 import Data.Bits
-import Data.Foldable ( toList )
-import Data.List ( scanl' )
+import Data.Foldable ( toList, foldMap )
+import Data.List ( scanl )
 import Data.MiniFloat
 import Data.Monoid
 import Foreign.Marshal.Alloc        ( alloca )
@@ -109,7 +110,7 @@ main' Conf{..} infile = do
                      U.replicate (U.length lks) (conf_prior_het * prior / 3)
                      U.// [(0, 1-prior)]
                      U.// [ (i, (1-conf_prior_het) * prior / 3)
-                          | i <- takeWhile (< U.length lks) (scanl' (+) 2 [3..]) ]
+                          | i <- takeWhile (< U.length lks) (scanl (+) 2 [3..]) ]
 
 
 

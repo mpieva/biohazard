@@ -4,8 +4,10 @@ module Data.MiniFloat ( Mini(..), float2mini, mini2float ) where
 
 import Data.Bits
 import Data.Ix
-import Data.Word ( Word8 )
-import Data.Vector.Unboxed.Deriving
+import Data.Word                    ( Word8 )
+import Data.Vector.Generic          ( Vector(..) )
+import Data.Vector.Generic.Mutable  ( MVector(..) )
+import Data.Vector.Unboxed.Deriving ( derivingUnbox )
 
 data Mini = Mini { unMini :: Word8 } deriving ( Eq, Ord, Show, Ix, Bounded )
 
