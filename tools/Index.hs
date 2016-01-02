@@ -11,6 +11,8 @@ import Data.Hashable
 import Data.Vector.Unboxed.Deriving
 import Data.Word ( Word64 )
 import Foreign.Storable ( Storable )
+import Data.Vector.Generic          ( Vector(..) )
+import Data.Vector.Generic.Mutable  ( MVector(..) )
 
 -- | An index sequence must have at most eight bases.  We represent a
 -- base and its quality score in a single byte:  the top three bits are
