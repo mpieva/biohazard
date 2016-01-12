@@ -1,10 +1,10 @@
 {-# LANGUAGE OverloadedStrings #-}
-module Bio.Bam.Evan where
-
--- ^ This module contains stuff relating to conventions local to MPI
+-- | This module contains stuff relating to conventions local to MPI
 -- EVAN.  The code is needed regularly, but it can be harmful when
 -- applied to BAM files that follow different conventions.  Most
 -- importantly, no program should call these functions by default.
+
+module Bio.Bam.Evan where
 
 import Bio.Bam.Header
 import Bio.Bam.Rec
