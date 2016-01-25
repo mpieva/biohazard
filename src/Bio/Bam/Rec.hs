@@ -361,8 +361,9 @@ isSecondMate     = flip testBit  7 . b_flag
 isAuxillary      = flip testBit  8 . b_flag
 isFailsQC        = flip testBit  9 . b_flag
 isDuplicate      = flip testBit 10 . b_flag
-isTrimmed        = flip testBit 16 . b_flag
-isMerged         = flip testBit 17 . b_flag
+
+isTrimmed        = flip testBit 0 . extAsInt 0 "FF"
+isMerged         = flip testBit 1 . extAsInt 0 "FF"
 
 type_mask :: Int
 type_mask = flagFirstMate .|. flagSecondMate .|. flagPaired

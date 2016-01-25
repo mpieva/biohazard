@@ -3,9 +3,12 @@ language: haskell
 git:
     depth: 3
 
+before_install:
+    - cabal sandbox init
+
 cache:
     directories:
-        - $HOME/.cabal
+        - .cabal-sandbox
 
 ghc:
     # '7.10' doesn't seem to be available
