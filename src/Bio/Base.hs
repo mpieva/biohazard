@@ -1,4 +1,4 @@
-{-# LANGUAGE GeneralizedNewtypeDeriving, TypeFamilies, FlexibleInstances #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving, TypeFamilies, FlexibleInstances, CPP #-}
 {-# LANGUAGE MultiParamTypeClasses, BangPatterns, TemplateHaskell, RankNTypes #-}
 -- | Common data types used everywhere.  This module is a collection of
 -- very basic "bioinformatics" data types that are simple, but don't
@@ -48,8 +48,6 @@ import Data.Bits
 import Data.ByteString.Internal     ( c2w, w2c )
 import Data.Char                    ( isAlpha, isSpace, ord, toUpper )
 import Data.Word                    ( Word8 )
-import Data.Vector.Generic          ( Vector(..) )
-import Data.Vector.Generic.Mutable  ( MVector(..) )
 import Data.Vector.Unboxed          ( Unbox )
 import Data.Vector.Unboxed.Deriving ( derivingUnbox )
 import Foreign.Storable             ( Storable(..) )
@@ -60,6 +58,10 @@ import System.Environment           ( getEnvironment )
 
 import qualified Data.ByteString.Char8 as S
 
+#if __GLASGOW_HASKELL__ == 704
+import Data.Vector.Generic          ( Vector(..) )
+import Data.Vector.Generic.Mutable  ( MVector(..) )
+#endif
 
 -- | A nucleotide base.  We only represent A,C,G,T.  The contained
 -- 'Word8' ist guaranteed to be 0..3.
