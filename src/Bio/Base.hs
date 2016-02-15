@@ -80,7 +80,7 @@ everything = range (minBound, maxBound)
 -- Experience says we're dealing with Ns and gaps all the type, so
 -- purity be damned, they are included as if they were real bases.
 --
--- To allow @Nucleotides@s to be unpacked and incorparated into
+-- To allow @Nucleotides@s to be unpacked and incorporated into
 -- containers, we choose to represent them the same way as the BAM file
 -- format:  as a 4 bit wide field.  Gaps are encoded as 0 where they
 -- make sense, N is 15.  The contained 'Word8' is guaranteed to be
