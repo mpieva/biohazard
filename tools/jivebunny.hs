@@ -308,7 +308,8 @@ data Conf = Conf {
         cf_loudness   :: Loudness,
         cf_single     :: Bool,
         cf_samplesize :: Int,
-        cf_readgroups :: [FilePath] }
+        cf_readgroups :: [FilePath],
+        cf_implied    :: [T.Text] }
 
 defaultConf :: IO Conf
 defaultConf = do ixdb <- getDataFileName "index_db.json"
@@ -321,7 +322,8 @@ defaultConf = do ixdb <- getDataFileName "index_db.json"
                         cf_loudness   = Normal,
                         cf_single     = False,
                         cf_samplesize = 50000,
-                        cf_readgroups = [] }
+                        cf_readgroups = [],
+                        cf_implied    = [default_rgs] }
 
 options :: [OptDescr (Conf -> IO Conf)]
 options = [
@@ -332,6 +334,7 @@ options = [
     Option [ ] ["threshold"]      (ReqArg set_thresh   "FRAC") "Iterate till uncertainty is below FRAC",
     Option [ ] ["sample"]         (ReqArg set_sample    "NUM") "Sample NUM reads for mixture estimation",
     Option [ ] ["components"]     (ReqArg set_compo     "NUM") "Print NUM components of the mixture",
+    Option [ ] ["nocontrol"]      (NoArg       set_no_control) "Suppress implied read groups for controls",
     Option "v" ["verbose"]        (NoArg             set_loud) "Print more diagnostic messages",
     Option "q" ["quiet"]          (NoArg            set_quiet) "Print fewer diagnostic messages",
     Option "h?" ["help", "usage"] (NoArg        (const usage)) "Print this message and exit",
@@ -344,6 +347,7 @@ options = [
     set_loud        c = return $ c { cf_loudness = Loud }
     set_quiet       c = return $ c { cf_loudness = Quiet }
     set_single      c = return $ c { cf_single = True }
+    set_no_control  c = return $ c { cf_implied = [] }
     set_thresh    a c = readIO a >>= \x -> return $ c { cf_threshold = x }
     set_sample    a c = readIO a >>= \x -> return $ c { cf_samplesize = x }
     set_compo     a c = readIO a >>= \x -> return $ c { cf_num_stats = const x }
@@ -381,7 +385,7 @@ main = do
                     Just  x | cf_single -> return $ x { p5is = single_placeholder }
                             | otherwise -> return   x
 
-    rgdefs <- concatMap (readRGdefns (alias_names p7is) (alias_names p5is)) . (:) default_rgs <$> mapM T.readFile cf_readgroups
+    rgdefs <- concatMap (readRGdefns (alias_names p7is) (alias_names p5is)) . (++) cf_implied <$> mapM T.readFile cf_readgroups
     notice $ "Got " ++ showNum (U.length (unique_indices p7is)) ++ " unique P7 indices and "
                     ++ showNum (U.length (unique_indices p5is)) ++ " unique P5 indices.\n"
     notice $ "Declared " ++ showNum (length rgdefs) ++ " read groups.\n"
