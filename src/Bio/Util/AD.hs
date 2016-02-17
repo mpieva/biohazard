@@ -1,5 +1,6 @@
 {-# LANGUAGE BangPatterns #-}
-module AD ( AD(..), paramVector, minimize
+module Bio.Util.AD
+          ( AD(..), paramVector, minimize
           , module Numeric.Optimization.Algorithms.HagerZhang05
           , debugParameters, quietParameters
           ) where

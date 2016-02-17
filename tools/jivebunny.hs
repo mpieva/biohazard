@@ -23,7 +23,7 @@
 --    assignment rates (Done.)
 
 import Bio.Bam
-import Bio.Util ( showNum )
+import Bio.Util.Numeric ( showNum )
 import Control.Applicative
 import Control.Arrow ( (&&&) )
 import Control.Monad ( when, unless, forM_, foldM )

@@ -1,4 +1,4 @@
-module Bio.Util (
+module Bio.Util.Numeric (
     wilson, invnormcdf, choose,
     estimateComplexity, showNum, showOOM,
     log1p, expm1, (<#>),

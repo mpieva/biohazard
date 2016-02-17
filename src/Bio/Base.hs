@@ -41,7 +41,7 @@ module Bio.Base(
     findAuxFile
 ) where
 
-import Bio.Util                     ( log1p )
+import Bio.Util.Numeric             ( log1p )
 import Data.Bits
 import Data.ByteString.Internal     ( c2w, w2c )
 import Data.Char                    ( isAlpha, isSpace, ord, toUpper )

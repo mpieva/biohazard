@@ -28,18 +28,15 @@ import Data.Foldable ( toList, foldMap )
 import Data.List ( scanl )
 import Data.MiniFloat
 import Data.Monoid
-import Foreign.Marshal.Alloc        ( alloca )
 import Foreign.Ptr ( castPtr )
 import System.Console.GetOpt
 import System.Environment
 import System.Exit
-import System.IO.Unsafe             ( unsafePerformIO )
 import System.Posix.IO
 
 import qualified Data.ByteString.Char8          as S
 import qualified Data.ByteString.Unsafe         as S
 import qualified Data.Vector.Unboxed            as U
-import qualified Foreign.Storable               as FS
 import qualified System.IO                      as IO
 
 data Conf = Conf {

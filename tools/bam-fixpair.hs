@@ -35,7 +35,7 @@ import Bio.Bam.Rec
 import Bio.Bam.Writer
 import Bio.Iteratee
 import Bio.PriorityQueue
-import Bio.Util                                 ( showNum )
+import Bio.Util.Numeric                         ( showNum )
 import Control.Arrow                            ( (&&&) )
 import Control.Applicative
 import Control.Monad

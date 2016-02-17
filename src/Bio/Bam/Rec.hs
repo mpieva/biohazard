@@ -62,7 +62,7 @@ module Bio.Bam.Rec (
 import Bio.Base
 import Bio.Bam.Header
 import Bio.Iteratee
-import Bio.Util                     ( showNum )
+import Bio.Util.Numeric             ( showNum )
 
 import Control.Monad
 import Control.Monad.Primitive      ( unsafePrimToPrim, unsafeInlineIO )

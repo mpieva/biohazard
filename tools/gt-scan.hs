@@ -12,20 +12,17 @@ import Bio.Bam.Header
 import Bio.Genocall.AvroFile
 import Bio.Iteratee
 import Bio.TwoBit
-import Bio.Util
-import Control.Monad.Primitive
+import Bio.Util.AD
+import Bio.Util.Numeric
 import Data.Avro
 import Data.List ( intercalate )
 import Data.MiniFloat ( mini2float )
 import Data.Strict.Tuple ( Pair((:!:)) )
 import Numeric ( showFFloat )
-import Numeric.Optimization.Algorithms.HagerZhang05
 
 import qualified Data.Vector.Storable as S
 import qualified Data.Vector.Unboxed as U
 import qualified Data.Vector.Unboxed.Mutable as UM
-
-import AD
 
 main :: IO ()
 main = do hg19 <- openTwoBit "/mnt/datengrab/hg19.2bit"
@@ -35,8 +32,6 @@ main = do hg19 <- openTwoBit "/mnt/datengrab/hg19.2bit"
 
           p0 :!: pe <- enumDefaultInputs >=> run $
                     joinI $ readAvroContainer $ \meta -> do
-                        -- liftIO . F.forM_ (H.toList meta) $ \(k,v) ->
-                            -- putStrLn $ unpack k ++ ": " ++ unpack (decodeUtf8 v)
                         foldStreamM (lk_block (getRefseqs meta) (all_lk mtbl) hg19) (1 :!: 1)
 
           tbl  <- U.unsafeFreeze mtbl

@@ -14,8 +14,6 @@ module Bio.Iteratee.Builder where
 
 import Bio.Iteratee
 import Bio.Iteratee.Bgzf
-import Control.Monad
-import Control.Monad.IO.Class
 import Data.Bits
 import Data.Monoid
 import Data.Primitive.Addr

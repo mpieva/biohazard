@@ -2,7 +2,7 @@
 import Bio.Bam
 import Bio.Bam.Rmdup
 import Bio.Base
-import Bio.Util ( showNum, showOOM, estimateComplexity )
+import Bio.Util.Numeric ( showNum, showOOM, estimateComplexity )
 import Control.Monad
 import Control.Monad.ST ( runST )
 import Data.Bits

@@ -43,20 +43,19 @@ import Bio.Bam.Rec
 import Bio.Base
 import Bio.Genocall.Adna
 import Bio.Iteratee
-import Bio.Util
+import Bio.Util.AD
+import Bio.Util.Numeric
 import Control.Concurrent.Async
 import Data.Bits
 import Data.Foldable
 import Data.Ix
 import Data.Maybe
-import Numeric.Optimization.Algorithms.HagerZhang05
 import System.Environment
 
 import qualified Data.Vector                as V
 import qualified Data.Vector.Generic        as G
 import qualified Data.Vector.Unboxed        as U
 
-import AD
 import Prelude hiding ( sequence_, mapM, mapM_, concatMap, sum, minimum, foldr1 )
 
 -- | Roughly @Maybe (Nucleotide, Nucleotide)@, encoded compactly
