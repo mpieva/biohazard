@@ -6,11 +6,7 @@ module Data.Avro where
 import Bio.Iteratee
 import Control.Applicative
 import Control.Monad
-import Control.Monad.ST ( runST, ST )
 import Data.Aeson
-import Data.Array.MArray
-import Data.Array.ST ( STUArray )
-import Data.Array.Unsafe ( castSTUArray )
 import Data.Binary.Get
 import Data.Bits
 import Data.Binary.Builder
@@ -21,9 +17,11 @@ import Data.Monoid
 import Data.Scientific
 import Data.Text.Encoding
 import Data.Word ( Word8, Word32, Word64 )
-import Foreign.Storable ( Storable, sizeOf )
+import Foreign.Marshal.Alloc ( alloca )
+import Foreign.Storable ( Storable, sizeOf, peek, pokeByteOff )
 import Language.Haskell.TH
 import System.Random
+import System.IO.Unsafe ( unsafeDupablePerformIO )
 
 import qualified Data.ByteString            as B
 import qualified Data.ByteString.Lazy       as BL
@@ -171,23 +169,27 @@ instance Avro T.Text where
 
 {-# INLINE wordToFloat #-}
 wordToFloat :: Word32 -> Float
-wordToFloat x = runST (cast x)
+wordToFloat x = cast x
 
 {-# INLINE wordToDouble #-}
 wordToDouble :: Word64 -> Double
-wordToDouble x = runST (cast x)
+wordToDouble x = cast x
 
 {-# INLINE floatToWord #-}
 floatToWord :: Float -> Word32
-floatToWord x = runST (cast x)
+floatToWord x = cast x
 
 {-# INLINE doubleToWord #-}
 doubleToWord :: Double -> Word64
-doubleToWord x = runST (cast x)
+doubleToWord x = cast x
 
 {-# INLINE cast #-}
-cast :: ( MArray (STUArray s) b (ST s), MArray (STUArray s) a (ST s) ) => a -> ST s b
-cast x = (newArray (0 :: Int, 0) x >>= castSTUArray >>= flip readArray 0)
+cast :: ( Storable a, Storable b ) => a -> b
+cast x | sizeOf x == sizeOf y = y
+       | otherwise = error "cannot cast: size mismatch"
+  where
+    y = unsafeDupablePerformIO $ alloca $ \buf ->
+        pokeByteOff buf 0 x >> peek buf
 
 -- | Implements Zig-Zag-Coding like in Protocol Buffers and Avro.
 zig :: (Storable a, Bits a) => a -> a

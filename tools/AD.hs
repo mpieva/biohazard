@@ -1,21 +1,15 @@
 {-# LANGUAGE BangPatterns #-}
-module AD ( AD(..), lsum, llerp
-          , paramVector, minimize
+module AD ( AD(..), paramVector, minimize
           , module Numeric.Optimization.Algorithms.HagerZhang05
           , debugParameters, quietParameters
           ) where
 
-import Bio.Util ( log1p )
-import Data.List ( foldl1' )
 import Numeric.Optimization.Algorithms.HagerZhang05
 import qualified Data.Vector.Unboxed as U
 import qualified Data.Vector.Storable as V
 
--- Simple forward-mode AD to get a scalar valued function and a
--- gradient.
-
-data AD = C !Double | D !Double !(U.Vector Double)
-  deriving Show
+-- | Simple forward-mode AD to get a scalar valued function with gradient.
+data AD = C !Double | D !Double !(U.Vector Double) deriving Show
 
 instance Eq AD where
     C x   == C y   = x == y
@@ -91,17 +85,22 @@ instance Floating AD where
 
     {-# INLINE sqrt #-}
     sqrt (C x)   = C (sqrt x)
-    sqrt (D x u) = D (sqrt x) (U.map (*w) u) where w = recip $ 2 * sqrt x
+    sqrt (D x u) = D (sqrt x) (U.map (* w) u) where w = recip $ 2 * sqrt x
 
     {-# INLINE log #-}
     log (C x)   = C (log x)
-    log (D x u) = D (log x) (U.map (*w) u) where w = recip x
+    log (D x u) = D (log x) (U.map (* recip x) u)
 
-    {- (**) = undefined -- :: a -> a -> a
-    logBase = undefined -- :: a -> a -> a
-    sin = undefined -- :: a -> a
+    {-# INLINE sin #-}
+    sin (C x)   = C (sin x)
+    sin (D x u) = D (sin x) (U.map (* cos x) u)
+
+    {-# INLINE cos #-}
+    cos (C x)   = C (cos x)
+    cos (D x u) = D (cos x) (U.map (* negate (sin x)) u)
+
+    {-
     tan = undefined -- :: a -> a
-    cos = undefined -- :: a -> a
     asin = undefined -- :: a -> a
     atan = undefined -- :: a -> a
     acos = undefined -- :: a -> a
@@ -128,21 +127,6 @@ minimize params eps func v0 =
     combofn parms = case func $ paramVector $ U.toList parms of
                 D x g -> ( x, g )
                 C x   -> ( x, U.replicate (U.length parms) 0 )
-
--- | Computes \( \log ( \sum_i e^{x_i} ) \) sensibly.  The list must be
--- sorted in descending(!) order.
-{-# INLINE lsum #-}
-lsum :: [AD] -> AD
-lsum xs = foldl1' (\x y -> if x >= y then x + log1p (exp (y-x)) else err) xs
-    where err = error $ "lsum: argument list must be in descending order: " ++ show xs
-
--- | Computes \( \log \left( c e^x + (1-c) e^y \right) \).
-{-# INLINE llerp #-}
-llerp :: AD -> AD -> AD -> AD
-llerp c x y | c == 0.0  = y
-            | c == 1.0  = x
-            | x >= y    = log     c  + x + log1p ( (1-c)/c * exp (y-x) )
-            | otherwise = log1p (-c) + y + log1p ( c/(1-c) * exp (x-y) )
 
 
 quietParameters :: Parameters

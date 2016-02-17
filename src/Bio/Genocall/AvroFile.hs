@@ -13,7 +13,7 @@ import Data.List ( intersperse )
 import Data.Monoid
 import Data.MiniFloat
 import Data.Scientific ( toBoundedInteger )
-import Data.Text.Encoding ( decodeUtf8, encodeUtf8 )
+import Data.Text.Encoding ( encodeUtf8 )
 
 import qualified Data.ByteString                as B
 import qualified Data.HashMap.Strict            as H

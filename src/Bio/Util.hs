@@ -2,9 +2,11 @@ module Bio.Util (
     wilson, invnormcdf, choose,
     estimateComplexity, showNum, showOOM,
     log1p, expm1, (<#>),
+    lsum, llerp,
     sigmoid2, isigmoid2
                 ) where
 
+import Data.List ( foldl1' )
 import Data.Char ( intToDigit )
 
 -- ^ Random useful stuff I didn't know where to put.
@@ -165,6 +167,20 @@ expm1 :: (Floating a, Ord a) => a -> a
 expm1 x | x > -0.00001 && x < 0.00001 = (1 + 0.5 * x) * x       -- Taylor approx
         | otherwise                   = exp x - 1               -- direct eval
 
+-- | Computes \( \log ( \sum_i e^{x_i} ) \) sensibly.  The list must be
+-- sorted in descending(!) order.
+{-# INLINE lsum #-}
+lsum :: (Floating a, Ord a) => [a] -> a
+lsum xs = foldl1' (\x y -> if x >= y then x + log1p (exp (y-x)) else err) xs
+    where err = error $ "lsum: argument list must be in descending order"
+
+-- | Computes \( \log \left( c e^x + (1-c) e^y \right) \).
+{-# INLINE llerp #-}
+llerp :: (Floating a, Ord a) => a -> a -> a -> a
+llerp c x y | c <= 0.0  = y
+            | c >= 1.0  = x
+            | x >= y    = log     c  + x + log1p ( (1-c)/c * exp (y-x) )
+            | otherwise = log1p (-c) + y + log1p ( c/(1-c) * exp (x-y) )
 
 -- | Binomial coefficient:  @n `choose` k == n! / ((n-k)! k!)@
 {-# INLINE choose #-}

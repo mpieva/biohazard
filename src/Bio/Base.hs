@@ -19,7 +19,6 @@ module Bio.Base(
     isProperBase,
     properBases,
     compl, compls,
-    everything,
 
     Seqid,
     unpackSeqid,
@@ -43,12 +42,11 @@ module Bio.Base(
 ) where
 
 import Bio.Util                     ( log1p )
-import Data.Array.Unboxed
 import Data.Bits
 import Data.ByteString.Internal     ( c2w, w2c )
 import Data.Char                    ( isAlpha, isSpace, ord, toUpper )
+import Data.Ix                      ( Ix )
 import Data.Word                    ( Word8 )
-import Data.Vector.Unboxed          ( Unbox )
 import Data.Vector.Unboxed.Deriving ( derivingUnbox )
 import Foreign.Storable             ( Storable(..) )
 import Numeric                      ( showFFloat )
@@ -57,6 +55,7 @@ import System.FilePath              ( (</>), isAbsolute, splitSearchPath )
 import System.Environment           ( getEnvironment )
 
 import qualified Data.ByteString.Char8 as S
+import qualified Data.Vector.Unboxed   as U
 
 #if __GLASGOW_HASKELL__ == 704
 import Data.Vector.Generic          ( Vector(..) )
@@ -72,9 +71,6 @@ derivingUnbox "Nucleotide" [t| Nucleotide -> Word8 |] [| unN |] [| N |]
 instance Bounded Nucleotide where
     minBound = N 0
     maxBound = N 3
-
-everything :: (Bounded a, Ix a) => [a]
-everything = range (minBound, maxBound)
 
 -- | A nucleotide base in an alignment.
 -- Experience says we're dealing with Ns and gaps all the type, so
@@ -127,7 +123,7 @@ newtype Prob' a = Pr { unPr :: a } deriving ( Eq, Ord, Storable )
 -- | Common way of using 'Prob''.
 type Prob = Prob' Double
 
-derivingUnbox "Prob'" [t| forall a . Unbox a => Prob' a -> a |] [| unPr |] [| Pr |]
+derivingUnbox "Prob'" [t| forall a . U.Unbox a => Prob' a -> a |] [| unPr |] [| Pr |]
 
 instance RealFloat a => Show (Prob' a) where
     showsPrec _ (Pr p) = (:) 'q' . showFFloat (Just 1) q
@@ -229,10 +225,9 @@ data Range = Range {
 -- The usual codes for A,C,G,T and U are understood, '-' and '.' become
 -- gaps and everything else is an N.
 toNucleotide :: Char -> Nucleotide
-toNucleotide c = if inRange (bounds arr) (ord c) then N (arr ! ord c) else N 0
+toNucleotide c = if ord c < 128 then N (arr `U.unsafeIndex` ord c) else N 0
   where
-    arr :: UArray Int Word8
-    arr = listArray (0,127) (repeat 0) //
+    arr = U.replicate 128 0 U.//
           ( [ (ord          x,  n) | (x, N n) <- pairs ] ++
             [ (ord (toUpper x), n) | (x, N n) <- pairs ] )
 
@@ -243,10 +238,9 @@ toNucleotide c = if inRange (bounds arr) (ord c) then N (arr ! ord c) else N 0
 -- The usual codes for A,C,G,T and U are understood, '-' and '.' become
 -- gaps and everything else is an N.
 toNucleotides :: Char -> Nucleotides
-toNucleotides c = if inRange (bounds arr) (ord c) then Ns (arr ! ord c) else nucsN
+toNucleotides c = if ord c < 128 then Ns (arr `U.unsafeIndex` ord c) else nucsN
   where
-    arr :: UArray Int Word8
-    arr = listArray (0,127) (repeat (unNs nucsN)) //
+    arr = U.replicate 128 (unNs nucsN) U.//
           ( [ (ord          x,  n) | (x, Ns n) <- pairs ] ++
             [ (ord (toUpper x), n) | (x, Ns n) <- pairs ] )
 
@@ -336,10 +330,9 @@ compl (N n) = N $ n `xor` 3
 -- | Complements a Nucleotides.
 {-# INLINE compls #-}
 compls :: Nucleotides -> Nucleotides
-compls (Ns x) = Ns $ arr ! (x .&. 15)
+compls (Ns x) = Ns $ arr `U.unsafeIndex` fromIntegral (x .&. 15)
   where
-    arr :: UArray Word8 Word8
-    !arr = listArray (0,15) [ 0, 8, 4, 12, 2, 10, 6, 14, 1, 9, 5, 13, 3, 11, 7, 15 ]
+    !arr = U.fromListN 16 [ 0, 8, 4, 12, 2, 10, 6, 14, 1, 9, 5, 13, 3, 11, 7, 15 ]
 
 
 -- | Moves a @Position@.  The position is moved forward according to the
