@@ -44,6 +44,7 @@ import Bio.Base
 import Bio.Genocall.Adna
 import Bio.Iteratee
 import Bio.Util.AD
+import Bio.Util.AD2
 import Bio.Util.Numeric
 import Control.Concurrent.Async
 import Data.Bits
@@ -146,6 +147,12 @@ l_epq e p q (NP x) = case x of {
 lkfun :: Int -> V.Vector Seq -> U.Vector Double -> Double
 lkfun lmax brs parms = lk_fun1 lmax (U.toList parms) brs
 
+lkfun' :: Int -> V.Vector Seq -> [Double] -> AD
+lkfun' lmax brs parms = lk_fun1 lmax (paramVector parms) brs
+
+lkfun'' :: Int -> V.Vector Seq -> [Double] -> AD2
+lkfun'' lmax brs parms = lk_fun1 lmax (paramVector2 parms) brs
+
 combofn :: Int -> V.Vector Seq -> U.Vector Double -> (Double, U.Vector Double)
 combofn lmax brs parms = (x,g)
   where D x g = lk_fun1 lmax (paramVector $ U.toList parms) brs
@@ -187,6 +194,16 @@ main = do
 
     putStrLn $ "p_{ss} = " ++ show p_ss ++ ", p_{ds} = " ++ show p_ds
     putStrLn $ show DP{..}
+
+    -- Trying to get confidence intervals.  Right now, just get the
+    -- gradient and Hessian at the ML point.  Gradient should be nearly
+    -- zero, Hessian should be symmetric and positive definite.
+    -- (Remember, we minimized.)
+    mapM_ print [ (r,s) | (_,r,s) <- results ]
+    putStrLn ""
+    mapM_ print [ lkfun' lmax brs (G.toList xs) | (xs,_,_) <- results ]
+    putStrLn ""
+    mapM_ print [ lkfun'' lmax brs (G.toList xs) | (xs,_,_) <- results ]
 
 -- We'll require the MD field to be present.  Then we cook each read
 -- into a list of paired bases.  Deleted bases are dropped, inserted
@@ -361,3 +378,18 @@ instance Memorable AD where
         unpack (D a da) = a : U.toList da
 
     bang (d, v) i = D (v U.! (d*i+0)) (U.slice (d*i+1) (d-1) v)
+
+instance Memorable AD2 where
+    type Memo AD2 = (Int, U.Vector Double)
+
+    fromListN n xs@(D2 _ v _ : _) = (d, U.fromListN (n * (1+d+d*d)) $ concatMap unpack xs)
+      where
+        !d = U.length v
+        unpack (C2 a)        = a : replicate (d+d*d) 0
+        unpack (D2 a da dda) = a : U.toList da ++ U.toList dda
+
+    bang (d, v) i = D2 (v U.! (stride*i))
+                       (U.slice (stride*i+1) d v)
+                       (U.slice (stride*i+1+d) (d*d) v)
+      where
+        stride = 1 + d + d*d

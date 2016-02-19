@@ -69,8 +69,7 @@ instance Fractional AD where
         where z = recip y ; w = x * z * z
 
     {-# INLINE recip #-}
-    recip (C x)   = C (recip x)
-    recip (D x u) = D (recip x) (U.map (y*) u) where y = negate $ recip $ x*x
+    recip = liftF recip (\x -> - recip (x*x))
 
     {-# INLINE fromRational #-}
     fromRational = C . fromRational
@@ -81,27 +80,21 @@ instance Floating AD where
     pi = C pi
 
     {-# INLINE exp #-}
-    exp (C x)   = C (exp x)
-    exp (D x u) = D (exp x) (U.map (* exp x) u)
+    exp = liftF exp exp
 
     {-# INLINE sqrt #-}
-    sqrt (C x)   = C (sqrt x)
-    sqrt (D x u) = D (sqrt x) (U.map (* w) u) where w = recip $ 2 * sqrt x
+    sqrt = liftF sqrt (\x -> recip $ 2 * sqrt x)
 
     {-# INLINE log #-}
-    log (C x)   = C (log x)
-    log (D x u) = D (log x) (U.map (* recip x) u)
+    log = liftF log recip
 
     {-# INLINE sin #-}
-    sin (C x)   = C (sin x)
-    sin (D x u) = D (sin x) (U.map (* cos x) u)
+    sin = liftF sin cos
 
     {-# INLINE cos #-}
-    cos (C x)   = C (cos x)
-    cos (D x u) = D (cos x) (U.map (* negate (sin x)) u)
+    cos = liftF cos (negate . sin)
 
-    {-
-    tan = undefined -- :: a -> a
+ {- tan = undefined -- :: a -> a
     asin = undefined -- :: a -> a
     atan = undefined -- :: a -> a
     acos = undefined -- :: a -> a
@@ -112,6 +105,10 @@ instance Floating AD where
     atanh = undefined -- :: a -> a
     acosh = undefined -- :: a -> a -}
 
+{-# INLINE liftF #-}
+liftF :: (Double -> Double) -> (Double -> Double) -> AD -> AD
+liftF f _ (C x) = C (f x)
+liftF f g (D x u) = D (f x) (U.map (* g x) u)
 
 {-# INLINE paramVector #-}
 paramVector :: [Double] -> [AD]
@@ -131,7 +128,7 @@ minimize params eps func v0 =
 
 
 quietParameters :: Parameters
-quietParameters = defaultParameters { printFinal = False, verbose = Quiet, maxItersFac = 20 }
+quietParameters = defaultParameters { printFinal = False, verbose = Quiet, maxItersFac = 123 }
 
 debugParameters :: Parameters
 debugParameters = defaultParameters { verbose = Verbose }

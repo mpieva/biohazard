@@ -67,6 +67,7 @@ Library
                        Bio.PriorityQueue,
                        Bio.TwoBit,
                        Bio.Util.AD,
+                       Bio.Util.AD2,
                        Bio.Util.Numeric,
                        Data.MiniFloat,
                        Data.Avro
