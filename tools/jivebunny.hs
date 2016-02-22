@@ -510,10 +510,11 @@ main = do
                                             (take num $ U.foldr fmt_one [] v')
 
 inspect' :: HM.HashMap (Int,Int) (B.ByteString, t) -> V.Vector T.Text -> V.Vector T.Text -> Handle -> Int -> Mix -> IO ()
-inspect' rgs n7 n5 hdl num mix = do
-    v <- U.unsafeThaw $ U.fromListN (VS.length mix) $
-                -- Due to padding, we get invalid indices here.  Better
-                -- filter them out, because we sure can't print them later.
+inspect' rgs n7 n5 hdl num_ mix = do
+    -- Due to padding, we get invalid indices here.  Better filter them
+    -- out, because we sure can't print them later.
+    let num = min num_ $ V.length n5 * V.length n7
+    v <- U.unsafeThaw $ U.fromListN (V.length n5 * V.length n7) $
                 filter (\(i,_) -> i `rem` stride' (V.length n5) < V.length n5) $
                 zip [0..] $ VS.toList mix
     V.partialSortBy (\(_,a) (_,b) -> compare b a) v num         -- meh.
