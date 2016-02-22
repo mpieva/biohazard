@@ -27,7 +27,7 @@ import           Data.Binary.Get
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Lazy as L
 import           Data.Char (toLower)
-import qualified Data.IntMap as I
+import qualified Data.IntMap.Strict as I
 import qualified Data.Map as M
 import           Data.Maybe
 import           Numeric
@@ -45,10 +45,11 @@ import           System.Random
 -- genome), which can be interpreted in whatever way fits.  And that's why
 -- we have 'Mask' and 'getSubseqWith'.
 --
--- TODO:  use binary search for the Int->Int mappings?
+-- TODO:  use binary search for the Int->Int mappings on the raw data?
 
 data TwoBitFile = TBF {
     tbf_raw :: B.ByteString,
+    -- This map is intentionally lazy.  May or may not be important.
     tbf_seqs :: !(M.Map Seqid TwoBitSequence)
 }
 
@@ -92,7 +93,8 @@ mkBlockIndex raw getWord32 ofs = runGet getBlock $ L.fromChunks [B.drop ofs raw]
 
     readBlockList = getWord32 >>= \n -> liftM2 zip (repM n getWord32) (repM n getWord32)
 
--- | Repeat monadic action 'n' times.  Returns result in reverse(!) order.
+-- | Repeat monadic action 'n' times.  Returns result in reverse(!)
+-- order, but doesn't build a huge list of thunks in memory.
 repM :: Monad m => Int -> m a -> m [a]
 repM n0 m = go [] n0
   where
