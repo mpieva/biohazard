@@ -27,7 +27,9 @@ import           Data.Binary.Get
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Lazy as L
 import           Data.Char (toLower)
-import qualified Data.IntMap.Strict as I
+-- can't be strict to remain compatible with containers-0.4.1 and
+-- therefore ghc 7.4
+import qualified Data.IntMap as I
 import qualified Data.Map as M
 import           Data.Maybe
 import           Numeric

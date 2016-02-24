@@ -40,12 +40,12 @@ import Bio.Genocall.Adna
 import Bio.Genocall.AvroFile
 import Bio.Iteratee
 import Bio.Util.AD
+import Bio.Util.AD2
 import Bio.Util.Numeric             ( log1p )
 import Control.Applicative
 import Control.Monad
 import Data.Aeson
 import Data.Avro
-import Data.Ix
 import System.Console.GetOpt
 import System.Environment
 import System.Exit
@@ -139,6 +139,7 @@ main = do
             mapStream (calls conf_theta)                            =$
             zipStreams tabulateSingle (oiter conf $ meta_refs hdr)
 
+    conf_report $ "Estimating divergence parameters..."
     uncurry estimateSingle tab
 
 
@@ -224,10 +225,10 @@ output_avro hdl _cfg refs = compileBlocks =$
 
 
 maxD :: Int
-maxD = 63
+maxD = 64
 
-rangeDs :: ((Int,Int,Int), (Int,Int,Int))
-rangeDs = ((0,0,0),(11,maxD,maxD))
+-- rangeDs :: ((Int,Int,Int), (Int,Int,Int))
+-- rangeDs = ((0,0,0),(11,maxD,maxD))
 
 -- | Parameter estimation for a single sample.  The parameters are
 -- divergence and heterozygosity.  We tabulate the data here and do the
@@ -236,7 +237,7 @@ rangeDs = ((0,0,0),(11,maxD,maxD))
 -- indexed by D and H (see @genotyping.pdf@ for details).
 tabulateSingle :: (Functor m, MonadIO m) => Iteratee [Calls] m (Double, U.Vector Int)
 tabulateSingle = do
-    tab <- liftIO $ M.replicate (rangeSize rangeDs) (0 :: Int)
+    tab <- liftIO $ M.replicate (12 * maxD * maxD) (0 :: Int)
     (,) <$> foldStreamM (\acc -> accum tab acc . p_snp_pile) (0 :: Double)
         <*> liftIO (U.unsafeFreeze tab)
   where
@@ -268,52 +269,53 @@ tabulateSingle = do
         g_RA = unPr $ (U.unsafeIndex gls 1 + U.unsafeIndex gls 3 + U.unsafeIndex gls 6) / 3
         g_AA = unPr $ (U.unsafeIndex gls 2 + U.unsafeIndex gls 5 + U.unsafeIndex gls 9) / 3
 
-        store t a b c = do let d1 = min maxD . round $ a - b
-                               d2 = min maxD . round $ b - c
-                               ix = index rangeDs (t + refix,d1,d2)
+        store t a b c = do let d1 = min (maxD-1) . round $ a - b
+                               d2 = min (maxD-1) . round $ b - c
+                               ix = (t + refix) * maxD * maxD + d1 * maxD + d2
                            liftIO $ M.read tab ix >>= M.write tab ix . succ
                            return $! acc + a
 
 estimateSingle :: Double -> U.Vector Int -> IO ()
 estimateSingle llk_rr tab = do
-    putStrLn $ "Estimating divergence parameters..."
-    hFlush stdout
-    (fit, res, stats) <- minimize quietParameters 0.0001 llk (U.fromList [0,0,0])
+    (fit, res, stats) <- minimize quietParameters 0.0001 (llk tab) (U.fromList [0,0,0])
     let [delta, eta, eta2] = VS.toList fit
-        dv = exp delta / (1 + exp delta)
-        ht = exp eta / (1 + exp eta) -- * dv
+        dv  = exp delta / (1 + exp delta)
+        ht  = exp eta  / (1 + exp eta) -- * dv
         ht' = exp eta2 / (1 + exp eta2) -- * dv
-        lk = finalValue stats - llk_rr
+        lk  = finalValue stats - llk_rr
     putStrLn $ show res ++ ", " ++ show stats
     putStrLn $ "Divergence      = " ++ show dv
     putStrLn $ "Heterozygosity  = " ++ show ht
     putStrLn $ "Heterozygosity' = " ++ show ht'
     putStrLn $ "Log-Likelihood  = " ++ shows lk " ("
             ++ shows (finalValue stats) " - " ++ shows llk_rr ")"
-  where
-    llk :: [AD] -> AD
-    llk [delta,eta,eta2] = llk' 0 delta eta + llk' 6 delta eta2
 
-    llk' base delta eta = sum [ fromIntegral num * unPr (w_RR + w_AA * Pr (fromIntegral (d1+d2)) + w_RA * Pr (fromIntegral d1))
-                              | i@(_,d1,d2) <- range ((base+0,0,0), (base+0,maxD,maxD))         -- g_RR g_RA g_AA
-                              , let num = tab `U.unsafeIndex` index rangeDs i ]
-                        + sum [ fromIntegral num * unPr (w_RR + w_AA * Pr (fromIntegral d1) + w_RA * Pr (fromIntegral (d1+d2)))
-                              | i@(_,d1,d2) <- range ((base+1,0,0), (base+1,maxD,maxD))         -- g_RR g_AA g_RA
-                              , let num = tab `U.unsafeIndex` index rangeDs i ]
-                        + sum [ fromIntegral num * unPr (w_RR * Pr (fromIntegral d1) + w_AA * Pr (fromIntegral (d1+d2)) + w_RA)
-                              | i@(_,d1,d2) <- range ((base+2,0,0), (base+2,maxD,maxD))         --  g_RA g_RR g_AA
-                              , let num = tab `U.unsafeIndex` index rangeDs i ]
-                        + sum [ fromIntegral num * unPr (w_RR * Pr (fromIntegral (d1+d2)) + w_AA * Pr (fromIntegral d1) + w_RA)
-                              | i@(_,d1,d2) <- range ((base+3,0,0), (base+3,maxD,maxD))         --  g_RA g_AA g_RR
-                              , let num = tab `U.unsafeIndex` index rangeDs i ]
-                        + sum [ fromIntegral num * unPr (w_RR * Pr (fromIntegral d1) + w_AA + w_RA * Pr (fromIntegral (d1+d2)))
-                              | i@(_,d1,d2) <- range ((base+4,0,0), (base+4,maxD,maxD))         --  g_AA g_RR g_RA
-                              , let num = tab `U.unsafeIndex` index rangeDs i ]
-                        + sum [ fromIntegral num * unPr (w_RR * Pr (fromIntegral (d1+d2)) + w_AA + w_RA * Pr (fromIntegral d1))
-                              | i@(_,d1,d2) <- range ((base+5,0,0), (base+5,maxD,maxD))         --  g_AA g_RA g_RR
-                              , let num = tab `U.unsafeIndex` index rangeDs i ]
+    let rr@(D2 val grad hess) = llk2 tab (paramVector2 $ VS.toList fit)
+    print rr
+
+llk :: U.Vector Int -> [AD] -> AD
+llk tab [delta,eta,eta2] = llk' tab 0 delta eta + llk' tab 6 delta eta2
+
+llk2 :: U.Vector Int -> [AD2] -> AD2
+llk2 tab [delta,eta,eta2] = llk' tab 0 delta eta + llk' tab 6 delta eta2
+
+{-# INLINE llk' #-}
+llk' :: (Ord a, Floating a) => U.Vector Int -> Int -> a -> a -> a
+llk' tab base delta eta = block (base+0) g_RR g_RA g_AA
+                        + block (base+1) g_RR g_AA g_RA
+                        + block (base+2) g_RA g_RR g_AA
+                        + block (base+3) g_RA g_AA g_RR
+                        + block (base+4) g_AA g_RR g_RA
+                        + block (base+5) g_AA g_RA g_RR
+  where
+    !g_RR =        1 / Pr (log1p (exp delta))
+    !g_AA = Pr delta / Pr (log1p (exp delta)) *      1 / Pr (log1p (exp eta))
+    !g_RA = Pr delta / Pr (log1p (exp delta)) * Pr eta / Pr (log1p (exp eta))
+
+    block ix g1 g2 g3 = U.ifoldl' step 0 $ U.slice (ix * maxD * maxD) (maxD * maxD) tab
       where
-        !w_RR =        1 / Pr (log1p (exp delta))
-        !w_AA = Pr delta / Pr (log1p (exp delta)) *      1 / Pr (log1p (exp eta))
-        !w_RA = Pr delta / Pr (log1p (exp delta)) * Pr eta / Pr (log1p (exp eta))
+        step !acc !i !num = acc - fromIntegral num * unPr p
+          where
+            (!d1,!d2) = i `quotRem` maxD
+            p = g1 + Pr (- fromIntegral d1) * g2 + Pr (- fromIntegral (d1+d2)) * g3
 
