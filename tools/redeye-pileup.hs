@@ -41,11 +41,13 @@ import Bio.Genocall.AvroFile
 import Bio.Iteratee
 import Bio.Util.AD
 import Bio.Util.AD2
-import Bio.Util.Numeric             ( log1p )
+import Bio.Util.Numeric              ( log1p )
 import Control.Applicative
 import Control.Monad
 import Data.Aeson
 import Data.Avro
+import Numeric                       ( showFFloat )
+import Numeric.LinearAlgebra.HMatrix ( eigSH', (><), toRows, scale )
 import System.Console.GetOpt
 import System.Environment
 import System.Exit
@@ -153,8 +155,10 @@ main = do
 calls :: Maybe Double -> Pile -> Calls
 calls Nothing pile = pile { p_snp_pile = s, p_indel_pile = i }
   where
-    !s = simple_snp_call 2 $ uncurry (++) $ p_snp_pile pile
+    !s = simple_snp_call fq 2 $ uncurry (++) $ p_snp_pile pile
     !i = simple_indel_call 2 $ p_indel_pile pile
+    -- fq = min 1 . (*) 1.333 . fromQual
+    fq = fromQual
 
 calls (Just theta) pile = pile { p_snp_pile = s, p_indel_pile = i }
   where
@@ -278,20 +282,33 @@ tabulateSingle = do
 estimateSingle :: Double -> U.Vector Int -> IO ()
 estimateSingle llk_rr tab = do
     (fit, res, stats) <- minimize quietParameters 0.0001 (llk tab) (U.fromList [0,0,0])
-    let [delta, eta, eta2] = VS.toList fit
-        dv  = exp delta / (1 + exp delta)
-        ht  = exp eta  / (1 + exp eta) -- * dv
-        ht' = exp eta2 / (1 + exp eta2) -- * dv
-        lk  = finalValue stats - llk_rr
-    putStrLn $ show res ++ ", " ++ show stats
-    putStrLn $ "Divergence      = " ++ show dv
-    putStrLn $ "Heterozygosity  = " ++ show ht
-    putStrLn $ "Heterozygosity' = " ++ show ht'
-    putStrLn $ "Log-Likelihood  = " ++ shows lk " ("
-            ++ shows (finalValue stats) " - " ++ shows llk_rr ")"
+    putStrLn $ show res ++ ", " ++ show stats { finalValue = finalValue stats - llk_rr }
 
-    let rr@(D2 val grad hess) = llk2 tab (paramVector2 $ VS.toList fit)
-    print rr
+    let showRes xx =
+          case VS.toList xx of
+            [delta, eta, eta2] ->
+              let dv  = exp delta / (1 + exp delta)
+                  ht  = exp eta  / (1 + exp eta) -- * dv
+                  ht' = exp eta2 / (1 + exp eta2) -- * dv
+              in "D = " ++ showFFloat (Just 3) dv ", " ++
+                 "H1 = " ++ showFFloat (Just 3) ht ", " ++
+                 "H2 = " ++ showFFloat (Just 3) ht' []
+
+    -- confidence interval:  PCA on Hessian matrix, then for each
+    -- eigenvalue λ add/subtract 1.96 / sqrt λ times the corresponding
+    -- eigenvalue to the estimate.  That should describe a nice
+    -- spheroid.
+
+    let D2 _val grd hss = llk2 tab (paramVector2 $ VS.toList fit)
+        d               = U.length grd
+        (evals, evecs)  = eigSH' $ (d >< d) (U.toList hss)
+
+    putStrLn $ showRes fit
+    sequence_ [ putStrLn $ "[ " ++ showRes (fit + scale lam evec)
+                      ++ " .. " ++ showRes (fit + scale (-lam) evec) ++ " ]"
+              | (eval, evec) <- zip (VS.toList evals) (toRows evecs)
+              , let lam = 1.96 / sqrt eval ]
+
 
 llk :: U.Vector Int -> [AD] -> AD
 llk tab [delta,eta,eta2] = llk' tab 0 delta eta + llk' tab 6 delta eta2

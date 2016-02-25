@@ -10,6 +10,12 @@ cache:
     directories:
         - .cabal-sandbox
 
+addons:
+    apt:
+        packages:
+            - liblapack-dev
+            - libblas-dev
+
 ghc:
     # '7.10' doesn't seem to be available
     - '7.8'

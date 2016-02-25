@@ -130,6 +130,7 @@ Executable redeye-pileup
                        biohazard,
                        bytestring,
                        containers,
+                       hmatrix == 0.16.*,
                        iteratee,
                        text,
                        unordered-containers,

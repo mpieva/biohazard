@@ -59,14 +59,14 @@ simple_indel_call ploidy vars = ( simple_call ploidy mkpls vars, vars' )
 -- call.  Since everything is so straight forward, this works even in
 -- the face of damage.
 
-simple_snp_call :: Int -> BasePile -> Snp_GLs
-simple_snp_call ploidy vars = snp_gls (simple_call ploidy mkpls vars) ref
+simple_snp_call :: (Qual -> Double) -> Int -> BasePile -> Snp_GLs
+simple_snp_call from_qual ploidy vars = snp_gls (simple_call ploidy mkpls vars) ref
   where
     ref = case vars of (_, DB _ _ r _) : _ -> r ; _ -> nucsN
     mkpls (q, DB b qq _ m) = [ toProb $ x + pe*(s-x) | n <- [0..3], let x = m ! N n :-> b ]
       where
-        !p1 = fromQual q
-        !p2 = fromQual qq
+        !p1 = from_qual q
+        !p2 = from_qual qq
         !pe = p1 + p2 - p1*p2
         !s  = sum [ m ! N n :-> b | n <- [0..3] ] / 4
 
