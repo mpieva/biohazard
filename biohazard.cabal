@@ -197,7 +197,8 @@ Executable bam-fixpair
                        biohazard,
                        bytestring,
                        hashable >= 1.0 && < 1.3,
-                       transformers
+                       transformers,
+                       vector
 
 Executable bam-meld
   Main-is:             bam-meld.hs

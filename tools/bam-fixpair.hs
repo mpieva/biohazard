@@ -32,6 +32,7 @@ import Bio.Base
 import Bio.Bam.Header
 import Bio.Bam.Reader hiding ( mergeInputs, combineCoordinates )
 import Bio.Bam.Rec
+import Bio.Bam.Trim
 import Bio.Bam.Writer
 import Bio.Iteratee
 import Bio.PriorityQueue
@@ -53,6 +54,7 @@ import System.IO                                ( hPutStrLn )
 import Text.Printf
 
 import qualified Data.ByteString as S
+import qualified Data.Vector.Generic as V
 
 data Verbosity = Silent | Errors | Warnings | Notices deriving (Eq, Ord)
 data KillMode  = KillNone | KillUu | KillAll deriving (Eq, Ord)
@@ -65,10 +67,11 @@ data Config = CF { report_mrnm :: !Bool
                  , report_ixs :: !Bool
                  , verbosity :: Verbosity
                  , killmode :: KillMode
-                 , output :: BamMeta -> Iteratee [BamRec] IO () }
+                 , output :: BamMeta -> Iteratee [BamRec] IO ()
+                 , fixsven :: Maybe Int }
 
 config0 :: IO Config
-config0 = return $ CF True True False True False True Errors KillNone (protectTerm . pipeBamOutput)
+config0 = return $ CF True True False True False True Errors KillNone (protectTerm . pipeBamOutput) Nothing
 
 options :: [OptDescr (Config -> IO Config)]
 options = [
@@ -96,13 +99,15 @@ options = [
     Option "" ["no-report-fflag"] (NoArg (\c -> return $ c { report_fflag = False })) "Do not report commonly inconsistent flags",
     Option "" ["no-report-fflag"] (NoArg (\c -> return $ c { report_ixs = False })) "Do not report mismatched index fields",
 
+    Option "" ["fix-sven"] (ReqArg set_fixsven "QUAL") "Trim 3' ends of avg qual lower than QUAL",
+
     Option "h?" ["help","usage"] (NoArg usage) "Print this helpful message and exit",
     Option "V"  ["version"]      (NoArg  vrsn) "Print version number and exit" ]
   where
     usage _ = do pn <- getProgName
-                 let blah = "Usage: " ++ pn ++ " [OPTION...] [FILE...]\n\
-                            \Merge BAM files, rearrange them to move mate pairs together, \
-                            \output a file with consistent mate pair information."
+                 let blah = "Usage: " ++ pn ++ " [OPTION...] [FILE...]\n" ++
+                            "Merge BAM files, rearrange them to move mate pairs together, " ++
+                            "output a file with consistent mate pair information."
                  hPutStrLn stderr $ usageInfo blah options
                  exitSuccess
 
@@ -113,6 +118,7 @@ options = [
     set_output "-" c = return $ c { output = pipeBamOutput }
     set_output  f  c = return $ c { output = writeBamFile f }
     set_validate   c = return $ c { output = \_ -> skipToEof }
+    set_fixsven  a c = readIO a >>= \q -> return $ c { fixsven = Just q }
 
 
 -- XXX placeholder...
@@ -127,6 +133,7 @@ main = do (opts, files, errors) <- getOpt Permute options `fmap` getArgs
           withQueues                                           $ \queues ->
             mergeInputs files >=> run                          $ \hdr ->
             re_pair queues config (meta_refs hdr)             =$
+            mapChunks (maybe id do_trim (fixsven config))     =$
             (output config) (add_pg hdr)
 
 
@@ -591,4 +598,30 @@ bp_pos :: BamPair -> Int
 bp_pos (Singleton u) = b_pos $ unpackBam u
 bp_pos (Pair    u _) = b_pos $ unpackBam u
 bp_pos (LoneMate  u) = b_pos $ unpackBam u
+
+
+do_trim :: Int -> [BamRec] -> [BamRec]
+do_trim q = scan_empties . map trim1
+  where
+    trim1 b = case [ l | l <- [0 .. V.length (b_qual b) -1], avquallow (V.drop l qs) ] of
+                [ ] -> b
+                l:_ -> trim_3 l b
+      where
+        qs | isReversed b = V.reverse (b_qual b)
+           | otherwise    =            b_qual b
+
+    scan_empties (x:y:z)
+        | b_qname x == b_qname y
+            = if V.null (b_qual x) || V.null (b_qual y)
+                then scan_empties z
+                else x : y : scan_empties z
+
+    scan_empties (x:z)
+        = if V.null (b_qual x)
+           then scan_empties z
+           else x : scan_empties z
+
+    scan_empties [] = []
+
+    avquallow vec = V.sum (V.map (fromIntegral . unQ) vec) <= q * V.length vec
 
