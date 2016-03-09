@@ -42,6 +42,7 @@ import Bio.Bam.Index
 import Bio.Bam.Rec
 import Bio.Base
 import Bio.Genocall.Adna
+import Bio.Genocall.Metadata
 import Bio.Iteratee
 import Bio.Util.AD
 import Bio.Util.AD2
@@ -51,8 +52,10 @@ import Data.Bits
 import Data.Foldable
 import Data.Ix
 import Data.Maybe
+import Data.String ( fromString )
 import System.Environment
 
+import qualified Data.HashMap.Strict        as M
 import qualified Data.Vector                as V
 import qualified Data.Vector.Generic        as G
 import qualified Data.Vector.Unboxed        as U
@@ -162,7 +165,10 @@ lmin = 25
 
 main :: IO ()
 main = do
-    [fp] <- getArgs
+    [config, fp] <- getArgs
+    -- make sure the config is there and our file is in it
+    _:_ <- filter (fromString fp ==) . map library_file . concatMap sample_libraries . M.elems <$> readMetadata (fromString config)
+
     brs <- subsampleBam fp >=> run $ \_ ->
            joinI $ filterStream (\b -> not (isUnmapped (unpackBam b)) && G.length (b_seq (unpackBam b)) >= lmin) $
            joinI $ takeStream 100000 $
@@ -194,6 +200,7 @@ main = do
 
     putStrLn $ "p_{ss} = " ++ show p_ss ++ ", p_{ds} = " ++ show p_ds
     putStrLn $ show DP{..}
+    updateMetadata (store_dp fp DP{..}) (fromString config)
 
     -- Trying to get confidence intervals.  Right now, just get the
     -- gradient and Hessian at the ML point.  Gradient should be nearly
@@ -393,3 +400,13 @@ instance Memorable AD2 where
                        (U.slice (stride*i+1+d) (d*d) v)
       where
         stride = 1 + d + d*d
+
+
+store_dp :: FilePath -> DamageParameters Double -> Metadata -> Metadata
+store_dp fp dp = M.map go1
+  where
+    go1 (Sample ls dv) = Sample (map go2 ls) dv
+    go2 (Library fn dmg)
+        | fn == fromString fp = Library fn (Just dp)
+        | otherwise           = Library fn dmg
+

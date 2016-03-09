@@ -9,11 +9,9 @@ import Control.Exception
 import Data.Text ( Text )
 import Data.HashMap.Strict ( HashMap )
 import Data.Aeson
-import Data.Aeson.Types
 import Data.ByteString.Char8 ( readFile, unpack )
 import Data.ByteString.Lazy ( writeFile )
 import Data.Monoid
-import Data.Vector ( fromList )
 import System.IO.Error ( isAlreadyExistsErrorType, ioeGetErrorType )
 import System.Posix.Files.ByteString
 import System.Posix.ByteString.FilePath
@@ -30,7 +28,7 @@ data Library = Library {
     library_damage :: Maybe (DamageParameters Double) }
         deriving Show
 
-type MetaData = HashMap Text Sample
+type Metadata = HashMap Text Sample
 
 
 instance ToJSON float => ToJSON (DamageParameters float) where
@@ -59,6 +57,7 @@ instance ToJSON Library where
 instance FromJSON Library where
     parseJSON (String file) = return $ Library file Nothing
     parseJSON (Object o) = Library <$> o .: "file" <*> o .:? "damage"
+    parseJSON _ = fail "String or Object expected for library"
 
 instance ToJSON Sample where
     toJSON v = case v of
@@ -69,9 +68,10 @@ instance FromJSON Sample where
     parseJSON (String s) = pure $ Sample [Library s Nothing] Nothing
     parseJSON (Array ls) = Sample <$> parseJSON (Array ls) <*> pure Nothing
     parseJSON (Object o) = Sample <$> o .: "libraries" <*> o .:? "divergence"
+    parseJSON _ = fail "String, Array or Object expected for Sample"
 
 -- | Read the configuration file.  Nothing special.
-readMetadata :: RawFilePath -> IO MetaData
+readMetadata :: RawFilePath -> IO Metadata
 readMetadata fn = either error return . eitherDecodeStrict =<< readFile (unpack fn)
 
 -- | Update the configuration file.  First make a hard link to the
@@ -80,7 +80,7 @@ readMetadata fn = either error return . eitherDecodeStrict =<< readFile (unpack 
 -- to a very long wait).  Else, we have exclusive access.  Read the
 -- file, update the data, write a new file (fn++"~new"), atomically
 -- rename it and unlink the old file.
-updateMetadata :: (MetaData -> MetaData) -> RawFilePath -> IO ()
+updateMetadata :: (Metadata -> Metadata) -> RawFilePath -> IO ()
 updateMetadata f fp = go (36::Int)     -- retry every 5 secs for 3 minutes
   where
     go n = catchJust

@@ -279,7 +279,7 @@ Executable dmg-est
   Build-depends:       async,
                        base,
                        biohazard,
-                       -- nonlinear-optimization == 0.3.*,
+                       unordered-containers,
                        vector
 
 Executable fastq2bam
