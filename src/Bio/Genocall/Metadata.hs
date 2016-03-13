@@ -4,6 +4,7 @@ module Bio.Genocall.Metadata where
 -- ^ Metadata necessary for a sensible genotyping workflow.
 
 import Bio.Genocall.Adna
+import Control.Applicative
 import Control.Concurrent ( threadDelay )
 import Control.Exception
 import Data.Text ( Text )
@@ -24,7 +25,8 @@ data Sample = Sample {
         deriving Show
 
 data Library = Library {
-    library_file :: Text,
+    library_name :: Text,
+    library_files :: [Text],
     library_damage :: Maybe (DamageParameters Double) }
         deriving Show
 
@@ -51,12 +53,15 @@ instance FromJSON float => FromJSON (DamageParameters float) where
                        <*> o .: "ds-lambda"
 
 instance ToJSON Library where
-    toJSON (Library file Nothing) = String file
-    toJSON (Library file (Just dp)) = object [ "file" .= file, "damage" .= toJSON dp ]
+    toJSON (Library name files dp) = object ( maybe id ((:) . ("damage" .=)) dp
+                                            $ [ "name" .= name, "files" .= files ] )
 
 instance FromJSON Library where
-    parseJSON (String file) = return $ Library file Nothing
-    parseJSON (Object o) = Library <$> o .: "file" <*> o .:? "damage"
+    parseJSON (String name) = return $ Library name [name <> ".bam"] Nothing
+    parseJSON (Object o) = Library <$> o .: "name"
+                                   <*> (maybe id (:) <$> o .:? "file"
+                                                     <*> o .:? "files" .!= [])
+                                   <*> o .:? "damage"
     parseJSON _ = fail "String or Object expected for library"
 
 instance ToJSON Sample where
@@ -65,7 +70,7 @@ instance ToJSON Sample where
         Sample ls (Just d) -> object [ "libraries" .= toJSON ls , "divergence" .= toJSON d ]
 
 instance FromJSON Sample where
-    parseJSON (String s) = pure $ Sample [Library s Nothing] Nothing
+    parseJSON (String s) = pure $ Sample [Library s [s <> ".bam"] Nothing] Nothing
     parseJSON (Array ls) = Sample <$> parseJSON (Array ls) <*> pure Nothing
     parseJSON (Object o) = Sample <$> o .: "libraries" <*> o .:? "divergence"
     parseJSON _ = fail "String, Array or Object expected for Sample"

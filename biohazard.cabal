@@ -136,6 +136,7 @@ Executable redeye-pileup
                        iteratee,
                        text,
                        unordered-containers,
+                       Vec,
                        vector
 
 Executable redeye-single
@@ -270,6 +271,7 @@ Executable count-coverage
                        biohazard,
                        iteratee
 
+-- XXX shall we call this redeye-dar?
 Executable dmg-est
   Main-is:             dmg-est.hs
   Ghc-options:         -Wall -auto-all
@@ -280,6 +282,7 @@ Executable dmg-est
                        base,
                        biohazard,
                        unordered-containers,
+                       text,
                        vector
 
 Executable fastq2bam

@@ -38,6 +38,7 @@ import Bio.Bam.Rec
 import Bio.Genocall
 import Bio.Genocall.Adna
 import Bio.Genocall.AvroFile
+import Bio.Genocall.Metadata
 import Bio.Iteratee
 import Bio.Util.AD
 import Bio.Util.AD2
@@ -46,6 +47,8 @@ import Control.Applicative
 import Control.Monad
 import Data.Aeson
 import Data.Avro
+import Data.String                   ( fromString )
+import Data.Vec.Packed               ( packMat )
 import Numeric                       ( showFFloat )
 import Numeric.LinearAlgebra.HMatrix ( eigSH', (><), toRows, scale )
 import System.Console.GetOpt
@@ -57,43 +60,37 @@ import qualified Data.ByteString.Char8          as S
 import qualified Data.ByteString.Lazy           as BL
 import qualified Data.Foldable                  as F
 import qualified Data.HashMap.Strict            as H
+import qualified Data.Text                      as T
 import qualified Data.Text.Encoding             as T
 import qualified Data.Vector.Storable           as VS
 import qualified Data.Vector                    as V
 import qualified Data.Vector.Unboxed            as U
 import qualified Data.Vector.Unboxed.Mutable    as M
 
-type OIter = Conf -> Refs -> Iteratee [Calls] IO ()
+-- type OIter = Conf -> Refs -> Iteratee [Calls] IO ()
 
 data Conf = Conf {
-    conf_output      :: forall r . (OIter -> IO r) -> IO r,
-    conf_damage      :: Maybe (DamageParameters Double),
-    conf_loverhang   :: Maybe Double,
-    conf_roverhang   :: Maybe Double,
-    conf_ds_deam     :: Double,
-    conf_ss_deam     :: Double,
+    -- conf_output      :: forall r . (OIter -> IO r) -> IO r,
+    conf_metadata    :: FilePath,
+    -- conf_damage      :: Maybe (DamageParameters Double),
+    -- conf_loverhang   :: Maybe Double,
+    -- conf_roverhang   :: Maybe Double,
+    -- conf_ds_deam     :: Double,
+    -- conf_ss_deam     :: Double,
     conf_theta       :: Maybe Double,
     conf_report      :: String -> IO () }
 
 defaultConf :: Conf
-defaultConf = Conf ($ output_avro stdout) Nothing Nothing Nothing 0.02 0.45 Nothing (\_ -> return ())
+defaultConf = Conf (error "no metadata file specified") Nothing (\_ -> return ())
+-- defaultConf = Conf ($ output_avro stdout) Nothing Nothing Nothing 0.02 0.45 Nothing (\_ -> return ())
 
 options :: [OptDescr (Conf -> IO Conf)]
 options = [
-    Option "o" ["output"]        (ReqArg set_avro_out  "FILE") "Write AVRO output to FILE",
-    Option "D" ["damage"]        (ReqArg set_damage   "PARMS") "Set universal damage parameters",
-    Option "l" lover_param       (ReqArg set_loverhang "PROB") "Parameter for 5' overhang length is PROB",
-    Option "r" rover_param       (ReqArg set_roverhang "PROB") "Parameter for 3' overhang length is PROB, assume single-strand prep",
-    Option "d" ds_param          (ReqArg set_ds_deam   "FRAC") "Deamination rate in double stranded section is FRAC",
-    Option "s" ss_param          (ReqArg set_ss_deam   "FRAC") "Deamination rate in single stranded section is FRAC",
-    Option "t" dep_param         (ReqArg set_theta     "FRAC") "Set dependency coefficient to FRAC (\"N\" to turn off)",
-    Option "v" ["verbose"]       (NoArg            be_verbose) "Print more diagnostics",
-    Option "h?" ["help","usage"] (NoArg            disp_usage) "Display this message" ]
+    Option "t" dep_param  (ReqArg set_theta "FRAC") "Set dependency coefficient to FRAC (\"N\" to turn off)",
+    Option "c" ["config"] (ReqArg set_conf  "FILE") "Set name of json config file to FILE",
+    Option "v" ["verbose"]       (NoArg be_verbose) "Print more diagnostics",
+    Option "h?" ["help","usage"] (NoArg disp_usage) "Display this message" ]
   where
-    lover_param = ["overhang-param","left-overhang-param"]
-    rover_param = ["right-overhang-param"]
-    ds_param    = ["deamination-rate","ds-deamination-rate","double-strand-deamination-rate"]
-    ss_param    = ["ss-deamination-rate","single-strand-deamination-rate"]
     dep_param   = ["theta","dependency-coefficient"]
 
     disp_usage _ = do pn <- getProgName
@@ -102,48 +99,56 @@ options = [
                       exitFailure
 
     be_verbose       c = return $ c { conf_report = hPutStrLn stderr }
-    set_avro_out "-" c = return $ c { conf_output = \k -> k $ output_avro stdout }
-    set_avro_out  fn c = return $ c { conf_output = \k -> withFile fn WriteMode $ k . output_avro }
+    set_conf      fn c = return $ c { conf_metadata = fn }
 
     set_theta    "N" c = return $ c { conf_theta  = Nothing }
     set_theta      a c = (\t -> c { conf_theta       = Just   t }) <$> readIO a
 
-    set_loverhang  a c = (\l -> c { conf_loverhang   = Just   l }) <$> readIO a
-    set_roverhang  a c = (\l -> c { conf_roverhang   = Just   l }) <$> readIO a
-    set_ss_deam    a c = (\r -> c { conf_ss_deam     =        r }) <$> readIO a
-    set_ds_deam    a c = (\r -> c { conf_ds_deam     =        r }) <$> readIO a
-    set_damage     a c = (\u -> c { conf_damage      = Just   u }) <$> readIO a
-
 main :: IO ()
 main = do
-    (opts, files, errs) <- getOpt Permute options <$> getArgs
+    (opts, samples, errs) <- getOpt Permute options <$> getArgs
     unless (null errs) $ mapM_ (hPutStrLn stderr) errs >> exitFailure
-    conf@Conf{..} <- foldl (>>=) (return defaultConf) opts
+    when (null samples) $ hPutStrLn stderr "need (at least) one sample name" >> exitFailure
+    Conf{..} <- foldl (>>=) (return defaultConf) opts
 
-    let no_damage   = conf_report "using no damage model" >> return noDamage
-        ss_damage p = conf_report ("using single strand damage model with " ++ show p) >> return (univDamage p)
-        ds_damage p = conf_report ("using double strand damage model with " ++ show p) >> return (univDamage p)
-        u_damage  p = conf_report ("using universal damage parameters " ++ show p) >> return (univDamage p)
+    forM_ samples $ \sample -> do
+        meta <- readMetadata (fromString conf_metadata)
 
-    dmg_model <- case (conf_damage, conf_loverhang, conf_roverhang) of
-            (Just u,        _, _) -> u_damage u
-            (_, Nothing, Nothing) -> no_damage
-            (_, Just pl, Nothing) -> ds_damage $ DP 0 0 0 0 conf_ss_deam conf_ds_deam pl
-            (_, Nothing, Just pr) -> ss_damage $ DP conf_ss_deam conf_ds_deam pr pr 0 0 0
-            (_, Just pl, Just pr) -> ss_damage $ DP conf_ss_deam conf_ds_deam pl pr 0 0 0
+        case H.lookup (fromString sample) meta of
+            Nothing -> hPutStrLn stderr $ "unknown sample " ++ show sample
 
-    (tab,()) <- conf_output $ \oiter ->
-        mergeInputs combineCoordinates files >=> run $ \hdr ->
-            filterStream (not . isUnmapped . unpackBam)             =$
-            filterStream (isValidRefseq . b_rname . unpackBam)      =$
-            progressPos "GT call at " conf_report (meta_refs hdr)   =$
-            pileup dmg_model                                        =$
-            mapStream (calls conf_theta)                            =$
-            zipStreams tabulateSingle (oiter conf $ meta_refs hdr)
+            Just (Sample libs _) -> do
+                (tab,()) <- withFile (sample ++ ".av") WriteMode $ \ohdl ->
+                            mergeLibraries conf_report libs >=> run $ \hdr ->
+                            progressPos (\(rs, Seek p _) -> (rs, p))
+                                        "GT call at " conf_report (meta_refs hdr)   =$
+                            pileup                                                  =$
+                            mapStream (calls conf_theta)                            =$
+                            zipStreams tabulateSingle (output_avro ohdl $ meta_refs hdr)
 
-    conf_report $ "Estimating divergence parameters..."
-    uncurry estimateSingle tab
+                conf_report $ "Estimating divergence parameters for " ++ sample ++ "..."
+                est <- uncurry estimateSingle tab
+                updateMetadata (H.adjust (\smp -> smp { sample_divergences = Just est })
+                               (fromString sample)) (fromString conf_metadata)
 
+mergeLibraries :: (MonadIO m, MonadMask m) => (String -> IO ())
+               -> [Library] -> Enumerator' BamMeta [(Refseq, PrimChunks)] m b
+mergeLibraries _report [    ] = \it -> return (it mempty)
+mergeLibraries  report (l:ls) = mergeEnums' (mergeLibraries report ls) (enumLibrary report l) mm
+  where
+    mm _ = mergeSortStreams $ \(rs1, Seek p1 _) (rs2, Seek p2 _) -> if (rs1, p1) < (rs2, p2) then Less else NotLess
+
+enumLibrary :: (MonadIO m, MonadMask m) => (String -> IO ()) -> Library -> Enumerator' BamMeta [(Refseq, PrimChunks)] m b
+enumLibrary report (Library nm fs mdp) it = do
+    let (msg, dmg) = case mdp of Nothing -> ("no damage model", noDamage)
+                                 Just dp -> ("universal damage parameters" ++ show dp, univDamage dp)
+
+    liftIO . report $ "using " ++ msg ++ " for " ++ T.unpack nm
+    mergeInputs combineCoordinates (map T.unpack fs) >=> run >=> run $ \hdr ->
+        takeWhileE (isValidRefseq . b_rname . unpackBam) $
+        mapStream (\br -> let b = unpackBam br
+                              m = dmg (isReversed b) (VS.length (b_qual b))
+                          in decompose (map packMat $ V.toList m) br) (it hdr)
 
 -- | Ploidy is hardcoded as two here.  Can be changed if the need
 -- arises.
@@ -157,6 +162,7 @@ calls Nothing pile = pile { p_snp_pile = s, p_indel_pile = i }
   where
     !s = simple_snp_call fq 2 $ uncurry (++) $ p_snp_pile pile
     !i = simple_indel_call 2 $ p_indel_pile pile
+    -- XXX this should be a cmdline option
     -- fq = min 1 . (*) 1.333 . fromQual
     fq = fromQual
 
@@ -188,7 +194,7 @@ compileBlocks = convStream $ do
     tailBlock !rs !p0 !po acc = do
         mc <- peekStream
         case mc of
-            Just c1 | rs == p_refseq c1 && po+1 == p_pos c1 && po - p0 < 496 -> do
+            Just c1 | rs == p_refseq c1 && po+1 == p_pos c1 && po - p0 < 65536 -> do
                     _ <- headStream
                     tailBlock rs p0 (po+1) . (:acc) $! pack c1
 
@@ -211,12 +217,11 @@ compileBlocks = convStream $ do
         rlist (x:xs) = x `seq` rlist xs
 
 
-output_avro :: Handle -> Conf -> Refs -> Iteratee [Calls] IO ()
-output_avro hdl _cfg refs = compileBlocks =$
-                            writeAvroContainer ContainerOpts{..} =$
-                            mapChunksM_ (S.hPut hdl)
+output_avro :: Handle -> Refs -> Iteratee [Calls] IO ()
+output_avro hdl refs = compileBlocks =$
+                       writeAvroContainer ContainerOpts{..} =$
+                       mapChunksM_ (S.hPut hdl)
   where
-    objects_per_block = 16      -- XXX should be more?
     filetype_label = "Genotype Likelihoods V0.1"
     initial_schemas = H.singleton "Refseq" $
         object [ "type" .= String "enum"
@@ -230,9 +235,6 @@ output_avro hdl _cfg refs = compileBlocks =$
 
 maxD :: Int
 maxD = 64
-
--- rangeDs :: ((Int,Int,Int), (Int,Int,Int))
--- rangeDs = ((0,0,0),(11,maxD,maxD))
 
 -- | Parameter estimation for a single sample.  The parameters are
 -- divergence and heterozygosity.  We tabulate the data here and do the
@@ -265,8 +267,8 @@ tabulateSingle = do
         | g_RR >= g_AA && g_AA >= g_RA = store 1 g_RR g_AA g_RA
         | g_RA >= g_RR && g_RR >= g_AA = store 2 g_RA g_RR g_AA
         | g_RA >= g_AA && g_AA >= g_RR = store 3 g_RA g_AA g_RR
-        | g_AA >= g_RR && g_RR >= g_RA = store 4 g_AA g_RR g_RA
-        | g_AA >= g_RA && g_RA >= g_RR = store 5 g_AA g_RA g_RR
+        | g_RR >= g_RA                 = store 4 g_AA g_RR g_RA
+        | otherwise                    = store 5 g_AA g_RA g_RR
 
       where
         g_RR = unPr $  U.unsafeIndex gls 0
@@ -279,7 +281,8 @@ tabulateSingle = do
                            liftIO $ M.read tab ix >>= M.write tab ix . succ
                            return $! acc + a
 
-estimateSingle :: Double -> U.Vector Int -> IO ()
+-- XXX need to think about what to return or store and why...
+estimateSingle :: Double -> U.Vector Int -> IO [Double]
 estimateSingle llk_rr tab = do
     (fit, res, stats) <- minimize quietParameters 0.0001 (llk tab) (U.fromList [0,0,0])
     putStrLn $ show res ++ ", " ++ show stats { finalValue = finalValue stats - llk_rr }
@@ -293,6 +296,7 @@ estimateSingle llk_rr tab = do
               in "D = " ++ showFFloat (Just 3) dv ", " ++
                  "H1 = " ++ showFFloat (Just 3) ht ", " ++
                  "H2 = " ++ showFFloat (Just 3) ht' []
+            _ -> error "Wtf? (1)"
 
     -- confidence interval:  PCA on Hessian matrix, then for each
     -- eigenvalue λ add/subtract 1.96 / sqrt λ times the corresponding
@@ -309,12 +313,22 @@ estimateSingle llk_rr tab = do
               | (eval, evec) <- zip (VS.toList evals) (toRows evecs)
               , let lam = 1.96 / sqrt eval ]
 
+    case VS.toList fit of
+        [delta, eta, eta2] ->
+              let dv  = exp delta / (1 + exp delta)
+                  ht  = exp eta  / (1 + exp eta) -- * dv
+                  ht' = exp eta2 / (1 + exp eta2) -- * dv
+              in return [ dv, ht * dv, ht' * dv ]
+        _ -> error "Wtf? (2)"
+
 
 llk :: U.Vector Int -> [AD] -> AD
 llk tab [delta,eta,eta2] = llk' tab 0 delta eta + llk' tab 6 delta eta2
+llk _ _ = error "Wtf? (3)"
 
 llk2 :: U.Vector Int -> [AD2] -> AD2
 llk2 tab [delta,eta,eta2] = llk' tab 0 delta eta + llk' tab 6 delta eta2
+llk2 _ _ = error "Wtf? (4)"
 
 {-# INLINE llk' #-}
 llk' :: (Ord a, Floating a) => U.Vector Int -> Int -> a -> a -> a

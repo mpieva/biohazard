@@ -53,6 +53,7 @@ import Data.Foldable
 import Data.Ix
 import Data.Maybe
 import Data.String ( fromString )
+import Data.Text ( unpack )
 import System.Environment
 
 import qualified Data.HashMap.Strict        as M
@@ -165,11 +166,12 @@ lmin = 25
 
 main :: IO ()
 main = do
-    [config, fp] <- getArgs
-    -- make sure the config is there and our file is in it
-    _:_ <- filter (fromString fp ==) . map library_file . concatMap sample_libraries . M.elems <$> readMetadata (fromString config)
+    [config, lname] <- getArgs
+    [Library _ fs _] <- filter ((fromString lname ==) . library_name) . concatMap sample_libraries . M.elems
+                        <$> readMetadata (fromString config)
 
-    brs <- subsampleBam fp >=> run $ \_ ->
+    -- XXX  meh.  subsampling from multiple files is not yet supported :(
+    brs <- subsampleBam (unpack $ head fs) >=> run $ \_ ->
            joinI $ filterStream (\b -> not (isUnmapped (unpackBam b)) && G.length (b_seq (unpackBam b)) >= lmin) $
            joinI $ takeStream 100000 $
            joinI $ mapStream pack_record $
@@ -200,7 +202,7 @@ main = do
 
     putStrLn $ "p_{ss} = " ++ show p_ss ++ ", p_{ds} = " ++ show p_ds
     putStrLn $ show DP{..}
-    updateMetadata (store_dp fp DP{..}) (fromString config)
+    updateMetadata (store_dp lname DP{..}) (fromString config)
 
     -- Trying to get confidence intervals.  Right now, just get the
     -- gradient and Hessian at the ML point.  Gradient should be nearly
@@ -402,11 +404,11 @@ instance Memorable AD2 where
         stride = 1 + d + d*d
 
 
-store_dp :: FilePath -> DamageParameters Double -> Metadata -> Metadata
-store_dp fp dp = M.map go1
+store_dp :: String -> DamageParameters Double -> Metadata -> Metadata
+store_dp lname dp = M.map go1
   where
     go1 (Sample ls dv) = Sample (map go2 ls) dv
-    go2 (Library fn dmg)
-        | fn == fromString fp = Library fn (Just dp)
-        | otherwise           = Library fn dmg
+    go2 (Library nm fs dmg)
+        | nm == fromString lname = Library nm fs (Just dp)
+        | otherwise              = Library nm fs dmg
 

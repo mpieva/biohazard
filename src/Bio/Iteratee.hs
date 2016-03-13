@@ -27,6 +27,7 @@ module Bio.Iteratee (
     mapMaybeStream,
     parMapChunksIO,
     progressNum,
+    progressPos,
 
     I.mapStream,
     I.takeWhileE,
@@ -76,6 +77,7 @@ module Bio.Iteratee (
         ) where
 
 import Bio.Base                             ( findAuxFile )
+import Bio.Bam.Header
 import Bio.Util.Numeric                     ( showNum )
 import Control.Concurrent.Async             ( Async, async, wait, cancel )
 import Control.Monad
@@ -96,7 +98,7 @@ import System.Mem                           ( performGC )
 import System.Posix                         ( Fd, openFd, closeFd, OpenMode(..), defaultFileFlags )
 
 import qualified Data.Attoparsec.ByteString     as A
-import qualified Data.ByteString                as S
+import qualified Data.ByteString.Char8          as S
 import qualified Data.Iteratee                  as I
 import qualified Data.ListLike                  as LL
 import qualified Data.Vector.Generic            as VG
@@ -449,6 +451,18 @@ progressNum msg put = eneeCheckIfDonePass (icont . go 0)
                                     put $ "\27[K" ++ msg ++ showNum n ++ "\r"
                             eneeCheckIfDonePass (icont . go n') . k $ Chunk as
 
+-- | A simple progress indicator that prints a position.
+progressPos :: (MonadIO m, ListLike s a, NullPoint s)
+            => (a -> (Refseq, Int)) -> String -> (String -> IO ()) -> Refs -> Enumeratee s s m b
+progressPos f msg put refs = eneeCheckIfDonePass (icont . go 0)
+  where
+    go !_ k   (EOF   mx) = idone (liftI k) (EOF mx)
+    go !n k c@(Chunk as) = let !n' = n + LL.length as
+                           in (when (n `div` 65536 /= n' `div` 65536) $
+                                  let (rs, po) = f (LL.head as)
+                                      nm = S.unpack (sq_name (getRef refs rs)) ++ ":"
+                                  in put $ "\27[K" ++ msg ++ nm ++ showNum po ++ "\r")
+                              `ioBind_` eneeCheckIfDonePass (icont . go n') (k c)
 
 -- A very simple queue data type.
 -- Invariants: q = QQ l f b --> l == length f + length b

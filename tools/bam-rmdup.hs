@@ -202,7 +202,7 @@ main = do
                 debug "mapping of read groups to libraries:\n"
                 mapM_ debug [ unpackSeqid k ++ " --> " ++ unpackSeqid v ++ "\n" | (k,v) <- M.toList tbl ]
 
-       let filters = progressPos "Rmdup at " debug refs' ><>
+       let filters = progressBam "Rmdup at " debug refs' ><>
                      mapChunks (mapMaybe (transform . unpackBam)) ><>
                      mapChunksM (mapMM clean_multimap) ><>
                      filterStream (\br -> (keep_unaligned || is_aligned br) &&

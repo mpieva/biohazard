@@ -55,7 +55,7 @@ module Bio.Bam.Rec (
     isMerged,
     type_mask,
 
-    progressPos,
+    progressBam,
     Word32
 ) where
 
@@ -384,14 +384,6 @@ setQualFlag c br = br { b_exts = updateE "ZQ" (Text s') $ b_exts br }
     s' = if c `S.elem` s then s else c `S.cons` s
 
 -- | A simple progress indicator that prints sequence id and position.
-progressPos :: MonadIO m => String -> (String -> IO ()) -> Refs -> Enumeratee [BamRaw] [BamRaw] m a
-progressPos msg put refs = eneeCheckIfDonePass (icont . go 0)
-  where
-    go !_ k (EOF         mx) = idone (liftI k) (EOF mx)
-    go !n k (Chunk    [   ]) = liftI $ go n k
-    go !n k (Chunk as@(a:_)) = do let !n' = n + length as
-                                  when (n `div` 65536 /= n' `div` 65536) $ liftIO $ do
-                                      let BamRec{..} = unpackBam a
-                                          nm = unpackSeqid (sq_name (getRef refs b_rname)) ++ ":"
-                                      put $ "\27[K" ++ msg ++ nm ++ showNum b_pos ++ "\r"
-                                  eneeCheckIfDonePass (icont . go n') . k $ Chunk as
+progressBam :: MonadIO m => String -> (String -> IO ()) -> Refs -> Enumeratee [BamRaw] [BamRaw] m a
+progressBam = progressPos (\br -> case unpackBam br of b -> (b_rname b, b_pos b))
+
