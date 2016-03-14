@@ -50,7 +50,6 @@ import Bio.Bam hiding ( Unknown )
 import Control.Applicative
 import Control.Monad
 import Data.Bits
-import Data.Monoid
 import Data.List
 import Numeric
 import System.Console.GetOpt

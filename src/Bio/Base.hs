@@ -38,7 +38,8 @@ module Bio.Base(
     w2c,
     c2w,
 
-    findAuxFile
+    findAuxFile,
+    module Data.Monoid
 ) where
 
 import Bio.Util.Numeric             ( log1p )
@@ -46,6 +47,7 @@ import Data.Bits
 import Data.ByteString.Internal     ( c2w, w2c )
 import Data.Char                    ( isAlpha, isSpace, ord, toUpper )
 import Data.Ix                      ( Ix )
+import Data.Monoid
 import Data.Word                    ( Word8 )
 import Data.Vector.Unboxed.Deriving ( derivingUnbox )
 import Foreign.Storable             ( Storable(..) )

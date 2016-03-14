@@ -22,7 +22,6 @@ import Control.Monad
 import Data.Bits
 import Data.Char
 import Data.List ( isSuffixOf )
-import Data.Monoid
 import Numeric
 import Prelude hiding ( round )
 import System.Console.GetOpt
@@ -34,7 +33,6 @@ import System.IO
 import qualified Bio.Iteratee.ZLib          as ZLib
 import qualified Data.ByteString.Char8      as S
 import qualified Data.ByteString.Lazy.Char8 as L
-import qualified Data.Foldable              as F
 import qualified Data.Iteratee              as I
 import qualified Data.Sequence              as Z
 import qualified Data.Vector.Generic        as V

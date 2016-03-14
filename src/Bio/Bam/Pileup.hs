@@ -11,7 +11,6 @@ import Control.Applicative
 import Control.Monad hiding ( mapM_ )
 import Control.Monad.Fix ( fix )
 import Data.Foldable hiding ( sum, product )
-import Data.Monoid
 import Data.Ord
 import Data.Vec.Packed ( Mat44D )
 

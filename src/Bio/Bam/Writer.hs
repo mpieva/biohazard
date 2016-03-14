@@ -15,12 +15,10 @@ import Bio.Bam.Rec
 import Bio.Iteratee
 import Bio.Iteratee.Builder
 
-import Control.Applicative
 import Data.ByteString.Builder      ( toLazyByteString )
 import Data.Bits
 import Data.Char                    ( ord, chr )
-import Data.Foldable		    ( foldMap )
-import Data.Monoid
+import Data.Foldable		        ( foldMap )
 import Foreign.Marshal.Alloc        ( alloca )
 import Foreign.Storable             ( pokeByteOff, peek )
 import System.IO

@@ -7,7 +7,7 @@
 -- not family).  In this case, the prior is the allele frequency
 -- spectrum, the call would be the set(!) of genotypes that has maximum
 -- posterior probability.  Computation is possible in quadratic time and
--- linear space usind a DP scheme; see Heng Li's paper for details.)
+-- linear space using a DP scheme; see Heng Li's paper for details.)
 --
 -- What's the output format?  Fasta or Fastq could be useful in limited
 -- circumstances, else BCF (not VCF) would be canonical.  Or maybe BCF
@@ -25,9 +25,7 @@ import Control.Monad
 import Data.Avro
 import Data.Bits
 import Data.Foldable ( toList, foldMap )
-import Data.List ( scanl )
 import Data.MiniFloat
-import Data.Monoid
 import Foreign.Ptr ( castPtr )
 import System.Console.GetOpt
 import System.Environment

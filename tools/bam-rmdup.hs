@@ -9,7 +9,6 @@ import Data.Bits
 import Data.Foldable ( toList )
 import Data.List ( intercalate )
 import Data.Maybe
-import Data.Monoid ( mempty )
 import Data.Ord ( comparing )
 import Data.Vector.Algorithms.Intro ( sortBy )
 import Data.Version ( showVersion )
@@ -46,7 +45,7 @@ data Conf = Conf {
     circulars :: Refs -> IO (IM.IntMap (Seqid,Int), Refs) }
 
 -- | Which reference sequences to scan
-data Which = All | Some Refseq Refseq | Unaln deriving Show
+data Which = Allrefs | Some Refseq Refseq | Unaln deriving Show
 
 defaults :: Conf
 defaults = Conf { output = Nothing
@@ -62,7 +61,7 @@ defaults = Conf { output = Nothing
                 , get_label = get_library
                 , putResult = putStr
                 , debug = \_ -> return ()
-                , which = All
+                , which = Allrefs
                 , circulars = \rs -> return (IM.empty, rs) }
 
 options :: [OptDescr (Conf -> IO Conf)]
@@ -106,7 +105,7 @@ options = [
     set_multi      c =                    return $ c { clean_multimap = clean_multi_flags }
 
     set_range    a c
-        | a == "A" || a == "a" = return $ c { which = All }
+        | a == "A" || a == "a" = return $ c { which = Allrefs }
         | a == "U" || a == "u" = return $ c { which = Unaln }
         | otherwise = case reads a of
                 [ (x,"")    ] -> return $ c { which = Some (Refseq $ x-1) (Refseq $ x-1) }
@@ -305,11 +304,11 @@ make_single b | isPaired b && isSecondMate b = Nothing
 
 mergeInputRanges :: (MonadIO m, MonadMask m)
                  => Which -> [FilePath] -> Enumerator' BamMeta [BamRaw] m a
-mergeInputRanges All      fps   = mergeInputs combineCoordinates fps
+mergeInputRanges Allrefs  fps   = mergeInputs combineCoordinates fps
 mergeInputRanges  _  [        ] = \k -> return $ k mempty
 mergeInputRanges rng (fp0:fps0) = go fp0 fps0
   where
-    enum1  fp k1 = case rng of All      -> decodeAnyBamFile                 fp k1
+    enum1  fp k1 = case rng of Allrefs  -> decodeAnyBamFile                 fp k1
                                Some x y -> decodeBamFileRange           x y fp k1
                                Unaln    -> decodeWithIndex eneeBamUnaligned fp k1
 

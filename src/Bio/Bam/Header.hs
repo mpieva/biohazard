@@ -54,7 +54,6 @@ import Data.Char                    ( isDigit, ord, chr )
 import Data.ByteString.Builder
 import Data.Ix
 import Data.List                    ( (\\), foldl' )
-import Data.Monoid
 import Data.Sequence                ( (><), (|>) )
 import Data.String
 import Data.Version                 ( Version, showVersion )

@@ -66,8 +66,8 @@ import Prelude hiding ( sequence_, mapM, mapM_, concatMap, sum, minimum, foldr1 
 -- | Roughly @Maybe (Nucleotide, Nucleotide)@, encoded compactly
 newtype NP = NP { unNP :: Word8 } deriving (Eq, Ord, Ix)
 data Seq = Merged { unSeq :: U.Vector Word8 }
-         | First  { unSeq :: U.Vector Word8 }
-         | Second { unSeq :: U.Vector Word8 }
+         | Mate1st  { unSeq :: U.Vector Word8 }
+         | Mate2nd { unSeq :: U.Vector Word8 }
 
 instance Show NP where
     show (NP w)
@@ -127,8 +127,8 @@ lk_fun1 lmax parms = case length parms of
     -- table ahead of time, which maps length, index and base pair to a
     -- likelihood.
     lk tab_m     _     _ (Merged b) = U.ifoldl' (\a i np -> a * tab_m `bang` index' my_bounds (U.length b, i, NP np)) 1 b
-    lk     _ tab_f     _ (First  b) = U.ifoldl' (\a i np -> a * tab_f `bang` index' my_bounds (U.length b, i, NP np)) 1 b
-    lk     _     _ tab_s (Second b) = U.ifoldl' (\a i np -> a * tab_s `bang` index' my_bounds (U.length b, i, NP np)) 1 b
+    lk     _ tab_f     _ (Mate1st  b) = U.ifoldl' (\a i np -> a * tab_f `bang` index' my_bounds (U.length b, i, NP np)) 1 b
+    lk     _     _ tab_s (Mate2nd b) = U.ifoldl' (\a i np -> a * tab_s `bang` index' my_bounds (U.length b, i, NP np)) 1 b
 
     index' bnds x | inRange bnds x = index bnds x
                   | otherwise = error $ "Huh? " ++ show x ++ " \\nin " ++ show bnds
@@ -167,8 +167,8 @@ lmin = 25
 main :: IO ()
 main = do
     [config, lname] <- getArgs
-    [Library _ fs _] <- filter ((fromString lname ==) . library_name) . concatMap sample_libraries . M.elems
-                        <$> readMetadata (fromString config)
+    [Library _ fs _] <- return . filter ((fromString lname ==) . library_name) . concatMap sample_libraries . M.elems
+                        =<< readMetadata (fromString config)
 
     -- XXX  meh.  subsampling from multiple files is not yet supported :(
     brs <- subsampleBam (unpack $ head fs) >=> run $ \_ ->
@@ -231,8 +231,8 @@ pack_record br = if isReversed b then k (revcom u1) else k u1
 
     k | isMerged     b = Merged
       | isTrimmed    b = Merged
-      | isSecondMate b = Second
-      | otherwise      = First
+      | isSecondMate b = Mate2nd
+      | otherwise      = Mate1st
 
     revcom = U.reverse . U.map (\x -> if x > 15 then x else xor x 15)
     u1 = U.fromList . map unNP $ go (G.toList b_cigar) (G.toList b_seq) (fromMaybe [] $ getMd b)
@@ -380,22 +380,22 @@ instance Memorable Double where
 instance Memorable AD where
     type Memo AD = (Int, U.Vector Double)
 
-    fromListN n xs@(D _ v:_) = (1+d, U.fromListN (n * (1+d)) $ concatMap unpack xs)
+    fromListN n xs@(D _ v:_) = (1+d, U.fromListN (n * (1+d)) $ concatMap unp xs)
       where
         !d = U.length v
-        unpack (C a)    = a : replicate d 0
-        unpack (D a da) = a : U.toList da
+        unp (C a)    = a : replicate d 0
+        unp (D a da) = a : U.toList da
 
     bang (d, v) i = D (v U.! (d*i+0)) (U.slice (d*i+1) (d-1) v)
 
 instance Memorable AD2 where
     type Memo AD2 = (Int, U.Vector Double)
 
-    fromListN n xs@(D2 _ v _ : _) = (d, U.fromListN (n * (1+d+d*d)) $ concatMap unpack xs)
+    fromListN n xs@(D2 _ v _ : _) = (d, U.fromListN (n * (1+d+d*d)) $ concatMap unp xs)
       where
         !d = U.length v
-        unpack (C2 a)        = a : replicate (d+d*d) 0
-        unpack (D2 a da dda) = a : U.toList da ++ U.toList dda
+        unp (C2 a)        = a : replicate (d+d*d) 0
+        unp (D2 a da dda) = a : U.toList da ++ U.toList dda
 
     bang (d, v) i = D2 (v U.! (stride*i))
                        (U.slice (stride*i+1) d v)

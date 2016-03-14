@@ -5,7 +5,6 @@ import Bio.Bam.Evan ( removeWarts )
 import Bio.Iteratee.ZLib
 import Control.Monad
 import Data.Bits
-import Data.Monoid ( mempty )
 import System.Console.GetOpt
 import System.Environment
 import System.Exit
