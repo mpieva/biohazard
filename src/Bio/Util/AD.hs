@@ -80,30 +80,28 @@ instance Floating AD where
     pi = C pi
 
     {-# INLINE exp #-}
-    exp = liftF exp exp
+    exp   = liftF exp exp
 
     {-# INLINE sqrt #-}
-    sqrt = liftF sqrt (\x -> recip $ 2 * sqrt x)
+    sqrt  = liftF sqrt $ \x -> recip (2 * sqrt x)
 
     {-# INLINE log #-}
-    log = liftF log recip
+    log   = liftF log recip
 
-    {-# INLINE sin #-}
-    sin = liftF sin cos
+    sin   = liftF sin cos
+    cos   = liftF cos (negate . sin)
+    sinh  = liftF sinh cosh
+    cosh  = liftF cosh sinh
 
-    {-# INLINE cos #-}
-    cos = liftF cos (negate . sin)
+    tan   = liftF tan   $ \x ->   recip (cos x * cos x)
+    tanh  = liftF tanh  $ \x ->   recip (cosh x * cosh x)
+    asin  = liftF asin  $ \x ->   recip (sqrt (1 - x * x))
+    acos  = liftF acos  $ \x -> - recip (sqrt (1 - x * x))
+    atan  = liftF atan  $ \x ->   recip (1 + x * x)
+    asinh = liftF asinh $ \x ->   recip (sqrt (x * x + 1))
+    acosh = liftF acosh $ \x -> - recip (sqrt (x * x - 1))
+    atanh = liftF atanh $ \x ->   recip (1 - x * x)
 
- {- tan = undefined -- :: a -> a
-    asin = undefined -- :: a -> a
-    atan = undefined -- :: a -> a
-    acos = undefined -- :: a -> a
-    sinh = undefined -- :: a -> a
-    tanh = undefined -- :: a -> a
-    cosh = undefined -- :: a -> a
-    asinh = undefined -- :: a -> a
-    atanh = undefined -- :: a -> a
-    acosh = undefined -- :: a -> a -}
 
 {-# INLINE liftF #-}
 liftF :: (Double -> Double) -> (Double -> Double) -> AD -> AD

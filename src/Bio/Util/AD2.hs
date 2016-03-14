@@ -72,7 +72,7 @@ instance Fractional AD2 where
     x / y = x * recip y
 
     {-# INLINE recip #-}
-    recip = liftF recip (\x -> - recip (x*x)) (\x -> 2 * recip (x*x*x))
+    recip = liftF recip (\x -> - recip (sqr x)) (\x -> 2 * recip (cube x))
 
     {-# INLINE fromRational #-}
     fromRational = C2 . fromRational
@@ -85,27 +85,33 @@ instance Floating AD2 where
     exp = liftF exp exp exp
 
     {-# INLINE sqrt #-}
-    sqrt = liftF sqrt (\x -> recip $ 2 * sqrt x) (\x -> - recip (sqrt (x*x*x)))
+    sqrt = liftF sqrt (\x -> recip $ 2 * sqrt x) (\x -> - recip (sqrt (cube x)))
 
     {-# INLINE log #-}
-    log = liftF log recip (\x -> - recip (x*x))
+    log = liftF log recip (\x -> - recip (sqr x))
 
-    {-# INLINE sin #-}
-    sin = liftF sin cos (negate . sin)
+    sin   = liftF sin cos (negate . sin)
+    cos   = liftF cos (negate . sin) (negate . cos)
+    sinh  = liftF sinh cosh sinh
+    cosh  = liftF cosh sinh cosh
 
-    {-# INLINE cos #-}
-    cos = liftF cos (negate . sin) (negate . cos)
+    tan   = liftF tan   (\x ->   recip (sqr (cos  x))) (\x ->  2 * tan  x / sqr (cos  x))
+    tanh  = liftF tanh  (\x ->   recip (sqr (cosh x))) (\x -> -2 * tanh x / sqr (cosh x))
+    
+    asin  = liftF asin  (\x ->   recip (sqrt (1 - sqr x))) (\x ->      x / sqrt (cube (1 - sqr x)))
+    acos  = liftF acos  (\x -> - recip (sqrt (1 - sqr x))) (\x ->     -x / sqrt (cube (1 - sqr x)))
+    asinh = liftF asinh (\x ->   recip (sqrt (sqr x + 1))) (\x ->     -x / sqrt (cube (sqr x + 1)))
+    acosh = liftF acosh (\x -> - recip (sqrt (sqr x - 1))) (\x ->      x / sqrt (cube (sqr x - 1)))
+    atan  = liftF atan  (\x ->   recip       (1 + sqr x))  (\x -> -2 * x / sqr (1 + sqr x))
+    atanh = liftF atanh (\x ->   recip       (1 - sqr x))  (\x ->  2 * x / sqr (1 - sqr x))
 
- {- tan = undefined -- :: a -> a
-    asin = undefined -- :: a -> a
-    atan = undefined -- :: a -> a
-    acos = undefined -- :: a -> a
-    sinh = undefined -- :: a -> a
-    tanh = undefined -- :: a -> a
-    cosh = undefined -- :: a -> a
-    asinh = undefined -- :: a -> a
-    atanh = undefined -- :: a -> a
-    acosh = undefined -- :: a -> a -}
+{-# INLINE sqr #-}
+sqr :: Double -> Double
+sqr x = x * x
+
+{-# INLINE cube #-}
+cube :: Double -> Double
+cube x = x * x * x
 
 {-# INLINE liftF #-}
 liftF :: (Double -> Double) -> (Double -> Double) -> (Double -> Double) -> AD2 -> AD2
