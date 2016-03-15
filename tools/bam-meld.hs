@@ -18,7 +18,6 @@ import Bio.Bam.Writer
 import Bio.Iteratee
 import Control.Monad                            ( unless, foldM )
 import Data.List                                ( sortBy )
-import Data.Monoid
 import Data.String                              ( fromString )
 import Data.Version                             ( showVersion )
 import Paths_biohazard                          ( version )

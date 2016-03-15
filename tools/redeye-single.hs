@@ -18,15 +18,18 @@ import Bio.Base
 import Bio.Bam
 import Bio.Bam.Pileup
 import Bio.Genocall.AvroFile
+import Bio.Genocall.Metadata
 import Bio.Iteratee.Builder
 import Control.Applicative
-import Control.Exception ( bracket )
+import Control.Exception                ( bracket )
 import Control.Monad
 import Data.Avro
 import Data.Bits
-import Data.Foldable ( toList, foldMap )
+import Data.Foldable                    ( toList, foldMap )
 import Data.MiniFloat
-import Foreign.Ptr ( castPtr )
+import Data.String
+import Data.Text                        ( unpack )
+import Foreign.Ptr                      ( castPtr )
 import System.Console.GetOpt
 import System.Environment
 import System.Exit
@@ -34,33 +37,28 @@ import System.Posix.IO
 
 import qualified Data.ByteString.Char8          as S
 import qualified Data.ByteString.Unsafe         as S
+import qualified Data.HashMap.Strict            as H
 import qualified Data.Vector.Unboxed            as U
 import qualified System.IO                      as IO
 
 data Conf = Conf {
-    conf_output      :: Output (),
-    conf_sample      :: S.ByteString,
+    conf_metadata    :: FilePath,
     conf_ploidy      :: S.ByteString -> Int,
-    conf_report      :: String -> IO (),
-    conf_prior_div   :: Prob' Float,
-    conf_prior_het   :: Prob' Float,
-    conf_prior_indel :: Prob' Float }
+    conf_report      :: String -> IO () }
+    -- conf_prior_indel :: Prob' Float
 
 defaultConf :: Conf
-defaultConf = Conf ($ bcf_to_fd stdOutput) "John_Doe" (const 2) (\_ -> return ())
-                   (qualToProb $ Q 30) (2/3) (qualToProb $ Q 45)
+defaultConf = Conf (error "no metadata file specified") (const 2) (\_ -> return ())
+              -- (qualToProb $ Q 30) (2/3) (qualToProb $ Q 45)
 
 options :: [OptDescr (Conf -> IO Conf)]
-options = [ -- Maybe add FastQ output?  Or FastA?  Or padded FastA?  Or Nick FastA?
-    Option "o" ["output", "bcf-output"]             (ReqArg set_bcf_out "FILE") "Write BCF output to FILE",
-    Option "N" ["name","sample-name"]               (ReqArg  set_sample "NAME") "Set sample name to NAME",
-    Option "1" ["haploid-chromosomes"]              (ReqArg     set_hap  "PRF") "Targets starting with PRF are haploid",
-    Option "2" ["diploid-chromosomes"]              (ReqArg     set_dip  "PRF") "Targets starting with PRF are diploid",
-    Option "D" ["prior-variant", "divergence"]      (ReqArg     set_div "PROB") "Set prior for a SNP variant to PROB",
-    Option "I" ["prior-indel", "indel-rate"]        (ReqArg   set_indel "PROB") "Set prior for an indel variant to PROB",
-    Option "H" ["prior-heterozygous", "heterozygosity"] (ReqArg set_het "PROB") "Set prior for a heterozygous variant to PROB",
-    Option "v" ["verbose"]                          (NoArg          be_verbose) "Print more diagnostics",
-    Option "h?" ["help","usage"]                    (NoArg          disp_usage) "Display this message" ]
+options = [
+    Option "c"  ["config"]              (ReqArg set_conf "FILE") "Set name of json config file to FILE",
+    Option "1"  ["haploid-chromosomes"] (ReqArg   set_hap "PRF") "Targets starting with PRF are haploid",
+    Option "2"  ["diploid-chromosomes"] (ReqArg   set_dip "PRF") "Targets starting with PRF are diploid",
+    Option "v"  ["verbose"]             (NoArg       be_verbose) "Print more diagnostics",
+    Option "h?" ["help","usage"]        (NoArg       disp_usage) "Display this message" ]
+    -- Option "I"  ["prior-indel", "indel-rate"]        (ReqArg   set_indel "PROB") "Set prior for an indel variant to PROB",
   where
     disp_usage _ = do pn <- getProgName
                       let blah = "Usage: " ++ pn ++ " [OPTION...] [AVRO-FILE]"
@@ -68,46 +66,50 @@ options = [ -- Maybe add FastQ output?  Or FastA?  Or padded FastA?  Or Nick Fas
                       exitFailure
 
     be_verbose       c = return $ c { conf_report = IO.hPutStrLn stderr }
-    set_sample     a c = return $ c { conf_sample = S.pack a }
-    set_bcf_out  "-" c = return $ c { conf_output = ($ bcf_to_fd stdOutput) }
-    set_bcf_out   fn c = return $ c { conf_output = \k -> withFd fn WriteOnly (k . bcf_to_fd) }
+    set_conf      fn c = return $ c { conf_metadata = fn }
 
     set_hap a c = return $ c { conf_ploidy = \chr -> if S.pack a `S.isPrefixOf` chr then 1 else conf_ploidy c chr }
     set_dip a c = return $ c { conf_ploidy = \chr -> if S.pack a `S.isPrefixOf` chr then 2 else conf_ploidy c chr }
 
-    set_div        a c = (\p -> c { conf_prior_div   = toProb p }) <$> readIO a
-    set_indel      a c = (\p -> c { conf_prior_indel = toProb p }) <$> readIO a
-    set_het        a c = (\p -> c { conf_prior_het   = toProb p }) <$> readIO a
-
-    withFd fp mode = bracket (openFd fp mode (Just 0o666) defaultFileFlags) closeFd
+    -- set_indel      a c = (\p -> c { conf_prior_indel = toProb p }) <$> readIO a
 
 
 main :: IO ()
 main = do
-    (opts, files, errs) <- getOpt Permute options <$> getArgs
+    (opts, samples, errs) <- getOpt Permute options <$> getArgs
     unless (null errs) $ mapM_ (IO.hPutStrLn stderr) errs >> exitFailure
+    when (null samples) $ IO.hPutStrLn stderr "need (at least) one sample name" >> exitFailure
     conf <- foldl (>>=) (return defaultConf) opts
-    case files of [f] -> main' conf f
-                  _   -> IO.hPutStrLn IO.stderr "expected exactly one input file" >> exitFailure
+    forM_ samples $ \sample -> do
+        meta <- readMetadata (fromString (conf_metadata conf))
 
-main' :: Conf -> FilePath -> IO ()
-main' Conf{..} infile = do
-    conf_output $ \oiter ->
-        (if infile == "-"
-         then enumHandle defaultBufSize stdin
-         else enumFile defaultBufSize infile) >=> run $
-            joinI $ readAvroContainer $ \av_meta ->
-                oiter (getRefseqs av_meta) [conf_sample] (snp_call, indel_call)
+        case H.lookup (fromString sample) meta of
+            Nothing -> IO.hPutStrLn stderr $ "unknown sample " ++ show sample
+            Just smp -> main' conf sample smp
+
+
+main' :: Conf -> String -> Sample -> IO ()
+main' Conf{..} sample_name Sample{..} =
+    case sample_divergences of
+        Just (prior_div : prior_het : _) ->
+            bracket (openFd (unpack sample_bcf_file) WriteOnly (Just 0o666) defaultFileFlags) closeFd $ \ofd ->
+            enumFile defaultBufSize (unpack sample_avro_file) >=> run                                 $
+            joinI $ readAvroContainer                                                                 $ \av_meta ->
+            bcf_to_fd ofd (getRefseqs av_meta) [fromString sample_name]
+                          (call prior_div prior_het, call (prior_div * 0.1) prior_het) -- XXX prior_indel
+
+
+        _ -> fail $ show sample_name ++ " is missing divergence information"
   where
-    snp_call   = call conf_prior_div
-    indel_call = call conf_prior_indel
-    call prior lks = U.maxIndex . U.zipWith (*) lks $
-                     U.replicate (U.length lks) (conf_prior_het * prior / 3)
-                     U.// [(0, 1-prior)]
-                     U.// [ (i, (1-conf_prior_het) * prior / 3)
-                          | i <- takeWhile (< U.length lks) (scanl (+) 2 [3..]) ]
+    call :: Double -> Double -> U.Vector (Prob' Float) -> Int
+    call prior prior_h lks = U.maxIndex . U.zipWith (*) lks $
+                             U.replicate (U.length lks) (toProb . realToFrac $ prior_h * prior / 3)
+                             U.// [ (0, toProb . realToFrac $ 1-prior) ]
+                             U.// [ (i, toProb . realToFrac $ (1-prior_h) * prior / 3)
+                                  | i <- takeWhile (< U.length lks) (scanl (+) 2 [3..]) ]
 
 
+type CallFuncs = (U.Vector (Prob' Float) -> Int, U.Vector (Prob' Float) -> Int)
 
 -- | Generates BCF and writes it to a 'Handle'.  For the necessary VCF
 -- header, we get the /names/ of the reference sequences from the Avro
@@ -227,80 +229,4 @@ toBcf refs smps (snp_call, indel_call) = eneeCheckIfDone go
         g = callidx - h * (h+1) `div` 2
 
 
-type CallFuncs = (U.Vector (Prob' Float) -> Int, U.Vector (Prob' Float) -> Int)
-type OIter = Refs -> [S.ByteString] -> CallFuncs -> Iteratee [GenoCallBlock] IO ()
-type Output a = (OIter -> IO a) -> IO a
 
-{-
-output_fasta :: FilePath -> (OIter -> IO r) -> IO r
-output_fasta fn k = if fn == "-" then k (fa_out stdout)
-                                 else withFile fn WriteMode $ k . fa_out
-  where
-    fa_out :: Handle -> Conf -> Refs -> Iteratee [Calls] IO ()
-    fa_out hdl Conf{..} refs =
-            by_groups p_refseq (\rs out -> do
-                    let sname = sq_name $ getRef refs rs
-                    out' <- lift $ enumPure1Chunk [S.concat [">", conf_sample, "--", sname]] out
-                    convStream (do callz <- headStream
-                                   let s1 = format_snp_call conf_prior_het callz
-                                   S.append s1 <$> format_indel_call conf_prior_indel callz)
-                          =$ collect_lines out') =$
-            mapStreamM_ (S.hPut hdl . (flip S.snoc '\n'))
--}
-
--- | Formatting a SNP call.  If this was a haplopid call (four GL
--- values), we pick the most likely base and pass it on.  If it was
--- diploid, we pick the most likely dinucleotide and pass it on.
-{-
-format_snp_call :: Prob -> Calls -> S.ByteString
-format_snp_call p cs
-    | U.length gl ==  4 = S.take 1 $ S.drop (maxQualIndex gl) hapbases
-    | U.length gl == 10 = S.take 1 $ S.drop (maxQualIndex $ U.zipWith (*) ps gl) dipbases
-    | otherwise = error "Thou shalt not try to format_snp_call unless thou madeth a haploid or diploid call!"
-  where
-    gl = p_snp_pile cs
-    ps = U.fromListN 10 [p,1,p,1,1,p,1,1,1,p]
-    dipbases = "NAMCRSGWYKT"
-    hapbases = "NACGT"
--}
-
--- | Formatting an Indel call.  We pick the most likely variant and
--- pass its sequence on.  Then we drop incoming calls that should be
--- deleted according to the chosen variant.  Note that this will blow up
--- unless the call was done assuming a haploid genome (which is
--- guaranteeed /in this program/)!
-
-{-
-format_indel_call :: Monad m => Prob -> Calls -> Iteratee [Calls] m S.ByteString
-format_indel_call p cs
-    | U.length gl0 == nv                  = go gl0
-    | U.length gl0 == nv * (nv+1) `div` 2 = go homs
-    | otherwise = error "Thou shalt not try to format_indel_call unless thou madeth a haploid or diploid call!"
-  where
-    (gl0,vars) = p_indel_pile cs
-    !nv   = length vars
-    !homs = U.fromListN nv [ gl0 U.! (i*(i+1) `div` 2 -1) | i <- [1..nv] ]
-
-    go gl = I.dropWhile skip >> return (S.pack $ show $ U.toList ins)
-      where
-        eff_gl = U.fromList $ zipWith adjust (U.toList gl) vars
-        adjust q (IndelVariant ds (V_Nuc is)) = if ds == 0 && U.null is then q else p * q
-
-        IndelVariant del (V_Nuc ins) = ( IndelVariant 0 (V_Nuc U.empty) : vars ) !! maxQualIndex eff_gl
-        skip ocs  = p_refseq ocs == p_refseq cs && p_pos ocs < p_pos cs + del
-
-maxQualIndex :: U.Vector Prob -> Int
-maxQualIndex vec = case U.ifoldl' step (0, 0, 0) vec of
-    (!i, !m, !m2) -> if m / m2 > 2 then i else 0
-  where
-    step (!i,!m,!m2) j v = if v >= m then (j+1,v,m) else (i,m,m2)
-
-collect_lines :: Monad m => Enumeratee S.ByteString [S.ByteString] m r
-collect_lines = eneeCheckIfDone (liftI . go S.empty)
-  where
-    go acc k (EOF  mx) = idone (k $ Chunk [acc]) $ EOF mx
-    go acc k (Chunk s) = case S.splitAt 60 (acc `S.append` s) of
-                            (left, right) | S.null right -> liftI $ go left k
-                                          | otherwise    -> eneeCheckIfDone (liftI . go right) . k $ Chunk [left]
-
--}

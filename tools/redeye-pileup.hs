@@ -117,9 +117,9 @@ main = do
         case H.lookup (fromString sample) meta of
             Nothing -> hPutStrLn stderr $ "unknown sample " ++ show sample
 
-            Just (Sample libs _) -> do
-                (tab,()) <- withFile (sample ++ ".av") WriteMode $ \ohdl ->
-                            mergeLibraries conf_report libs >=> run $ \hdr ->
+            Just Sample{..} -> do
+                (tab,()) <- withFile (T.unpack sample_avro_file) WriteMode          $ \ohdl ->
+                            mergeLibraries conf_report sample_libraries >=> run     $ \hdr ->
                             progressPos (\(rs, Seek p _) -> (rs, p))
                                         "GT call at " conf_report (meta_refs hdr)   =$
                             pileup                                                  =$
@@ -222,6 +222,7 @@ output_avro hdl refs = compileBlocks =$
                        writeAvroContainer ContainerOpts{..} =$
                        mapChunksM_ (S.hPut hdl)
   where
+    objects_per_block = 1024
     filetype_label = "Genotype Likelihoods V0.1"
     initial_schemas = H.singleton "Refseq" $
         object [ "type" .= String "enum"

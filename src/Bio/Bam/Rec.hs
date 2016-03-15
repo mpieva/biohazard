@@ -1,7 +1,5 @@
-{-# LANGUAGE OverloadedStrings, PatternGuards, BangPatterns #-}
-{-# LANGUAGE NoMonomorphismRestriction, FlexibleContexts, FlexibleInstances #-}
-{-# LANGUAGE RecordWildCards, TypeFamilies, MultiParamTypeClasses #-}
-{-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE RecordWildCards, BangPatterns, TypeFamilies, FlexibleContexts #-}
+{-# LANGUAGE OverloadedStrings, FlexibleInstances, MultiParamTypeClasses   #-}
 
 -- | Parsers and Printers for BAM and SAM.  We employ an @Iteratee@
 -- interface, and we strive to support everything possible in BAM.  So
@@ -62,7 +60,6 @@ module Bio.Bam.Rec (
 import Bio.Base
 import Bio.Bam.Header
 import Bio.Iteratee
-import Bio.Util.Numeric             ( showNum )
 
 import Control.Monad
 import Control.Monad.Primitive      ( unsafePrimToPrim, unsafeInlineIO )

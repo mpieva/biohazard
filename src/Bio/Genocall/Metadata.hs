@@ -5,22 +5,23 @@ module Bio.Genocall.Metadata where
 
 import Bio.Genocall.Adna
 import Control.Applicative
-import Control.Concurrent ( threadDelay )
+import Control.Concurrent                   ( threadDelay )
 import Control.Exception
-import Data.Text ( Text )
-import Data.HashMap.Strict ( HashMap )
+import Data.Text                            ( Text )
+import Data.HashMap.Strict                  ( HashMap, traverseWithKey )
 import Data.Aeson
-import Data.ByteString.Char8 ( readFile, unpack )
-import Data.ByteString.Lazy ( writeFile )
+import Data.ByteString.Char8                ( readFile, unpack )
+import Data.ByteString.Lazy                 ( writeFile )
 import Data.Monoid
-import System.IO.Error ( isAlreadyExistsErrorType, ioeGetErrorType )
+import Prelude                       hiding ( writeFile, readFile )
+import System.IO.Error                      ( isAlreadyExistsErrorType, ioeGetErrorType )
 import System.Posix.Files.ByteString
 import System.Posix.ByteString.FilePath
 
-import Prelude hiding ( writeFile, readFile )
-
 data Sample = Sample {
     sample_libraries :: [Library],
+    sample_avro_file :: Text,
+    sample_bcf_file :: Text,
     sample_divergences :: Maybe [Double] }
         deriving Show
 
@@ -30,6 +31,7 @@ data Library = Library {
     library_damage :: Maybe (DamageParameters Double) }
         deriving Show
 
+newtype Metadata' = Metadata' Metadata
 type Metadata = HashMap Text Sample
 
 
@@ -65,19 +67,23 @@ instance FromJSON Library where
     parseJSON _ = fail "String or Object expected for library"
 
 instance ToJSON Sample where
-    toJSON v = case v of
-        Sample ls Nothing  -> toJSON ls
-        Sample ls (Just d) -> object [ "libraries" .= toJSON ls , "divergence" .= toJSON d ]
+    toJSON (Sample ls avf bcf d) = object $ maybe id ((:) . ("divergence" .=)) d $
+                                          [ "libraries" .= ls, "avro-file" .= avf, "bcf-file"  .= bcf ]
 
-instance FromJSON Sample where
-    parseJSON (String s) = pure $ Sample [Library s [s <> ".bam"] Nothing] Nothing
-    parseJSON (Array ls) = Sample <$> parseJSON (Array ls) <*> pure Nothing
-    parseJSON (Object o) = Sample <$> o .: "libraries" <*> o .:? "divergence"
-    parseJSON _ = fail "String, Array or Object expected for Sample"
+instance FromJSON Metadata' where
+    parseJSON = withObject "metadata must be an object" $ fmap Metadata' . traverseWithKey p_sample
+      where
+        p_sample nm (String s) = pure $ Sample [Library s [s <> ".bam"] Nothing] (nm <> ".av") (nm <> ".bcf") Nothing
+        p_sample nm (Array ls) = (\ll -> Sample ll (nm <> ".av") (nm <> ".bcf") Nothing) <$> parseJSON (Array ls)
+        p_sample nm (Object o) = Sample <$> o .: "libraries"
+                                        <*> o .:? "avro-file" .!= (nm <> ".av")
+                                        <*> o .:? "bcf-file" .!= (nm <> ".bcf")
+                                        <*> o .:? "divergence"
+        p_sample nm _ = fail $ "String, Array or Object expected for Sample " ++ show nm
 
 -- | Read the configuration file.  Nothing special.
 readMetadata :: RawFilePath -> IO Metadata
-readMetadata fn = either error return . eitherDecodeStrict =<< readFile (unpack fn)
+readMetadata fn = either error (\(Metadata' m) -> return m) . eitherDecodeStrict =<< readFile (unpack fn)
 
 -- | Update the configuration file.  First make a hard link to the
 -- configuration file under a well known name (fn++"~old").  This can
