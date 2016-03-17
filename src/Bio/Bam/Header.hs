@@ -298,8 +298,8 @@ noRefs = Z.empty
 
 getRef :: Refs -> Refseq -> BamSQ
 getRef refs (Refseq i)
-    | 0 <= i && fromIntegral i <= Z.length refs = Z.index refs (fromIntegral i)
-    | otherwise                                 = BamSQ "*" 0 []
+    | 0 <= i && fromIntegral i < Z.length refs = Z.index refs (fromIntegral i)
+    | otherwise                                = BamSQ "*" 0 []
 
 
 flagPaired, flagProperlyPaired, flagUnmapped, flagMateUnmapped, flagReversed, flagMateReversed, flagFirstMate, flagSecondMate,

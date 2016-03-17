@@ -74,7 +74,6 @@ import Prelude hiding ( foldr, foldr1, concat, mapM_, all )
 -- *TODO*
 --
 -- * A whole lot of testing.
--- * Actual genotype calling.
 -- * ML fitting and evaluation of parameters for different possible
 --   error and damage models.
 -- * Maybe specialize to ploidy one and two.
@@ -96,6 +95,7 @@ data PrimBase = Base { _pb_wait   :: Int                        -- ^ number of b
                      , _pb_chunks :: PrimChunks }               -- ^ more chunks
   deriving Show
 
+type PosPrimChunks = (Refseq, Int, PrimChunks)
 
 -- | Represents our knowledge about a certain base, which consists of
 -- the base itself (A,C,G,T, encoded as 0..3; no Ns), the quality score
@@ -123,13 +123,13 @@ instance Show DamagedBase where
 -- appropriate.  We also do apply a substitution matrix to each base,
 -- which must be supplied along with the read.
 
-decompose :: [Mat44D] -> BamRaw -> (Refseq, PrimChunks)
+decompose :: [Mat44D] -> BamRaw -> Maybe PosPrimChunks
 decompose matrices br =
     if isUnmapped b || isDuplicate b || not (isValidRefseq b_rname)
-    then (b_rname, EndOfRead)
-    else (b_rname, firstBase b_pos 0 0 (maybe [] id $ getMd b) matrices)
+    then Nothing else Just (b_rname, b_pos, pchunks)
   where
     b@BamRec{..} = unpackBam br
+    pchunks = firstBase b_pos 0 0 (maybe [] id $ getMd b) matrices
 
     !max_cig = V.length b_cigar
     !max_seq = V.length b_seq
@@ -320,7 +320,7 @@ type Pile  = Pile' (BasePile, BasePile) IndelPile
 -- Processing stops when the first read with invalid 'br_rname' is
 -- encountered or a t end of file.
 
-pileup :: Monad m => Enumeratee [(Refseq,PrimChunks)] [Pile] m a
+pileup :: Monad m => Enumeratee [PosPrimChunks] [Pile] m a
 pileup = eneeCheckIfDonePass (icont . runPileM pileup' finish (Refseq 0) 0 [] Empty)
   where
     finish () _r _p [] Empty out inp = idone (liftI out) inp
@@ -352,61 +352,83 @@ type PileF m r = Refseq -> Int ->                               -- current posit
                  [PrimBase] ->                                  -- active queue
                  Heap ->                                        -- waiting queue
                  (Stream [Pile] -> Iteratee [Pile] m r) ->      -- output function
-                 Stream [(Refseq, PrimChunks)] ->               -- pending input
-                 Iteratee [(Refseq, PrimChunks)] m (Iteratee [Pile] m r)
+                 Stream [PosPrimChunks] ->                      -- pending input
+                 Iteratee [PosPrimChunks] m (Iteratee [Pile] m r)
 
 instance Functor (PileM m) where
+    {-# INLINE fmap #-}
     fmap f (PileM m) = PileM $ \k -> m (k . f)
 
 instance Applicative (PileM m) where
+    {-# INLINE pure #-}
     pure a = PileM $ \k -> k a
+    {-# INLINE (<*>) #-}
     u <*> v = PileM $ \k -> runPileM u (\a -> runPileM v (k . a))
 
 instance Monad (PileM m) where
+    {-# INLINE return #-}
     return a = PileM $ \k -> k a
+    {-# INLINE (>>=) #-}
     m >>=  k = PileM $ \k' -> runPileM m (\a -> runPileM (k a) k')
 
+{-# INLINE get_refseq #-}
 get_refseq :: PileM m Refseq
 get_refseq = PileM $ \k r -> k r r
 
+{-# INLINE get_pos #-}
 get_pos :: PileM m Int
 get_pos = PileM $ \k r p -> k p r p
 
+{-# INLINE upd_pos #-}
 upd_pos :: (Int -> Int) -> PileM m ()
 upd_pos f = PileM $ \k r p -> k () r $! f p
 
+{-# INLINE set_pos #-}
 set_pos :: (Refseq, Int) -> PileM m ()
 set_pos (!r,!p) = PileM $ \k _ _ -> k () r p
 
+{-# INLINE get_active #-}
 get_active :: PileM m [PrimBase]
 get_active = PileM $ \k r p a -> k a r p a
 
+{-# INLINE upd_active #-}
 upd_active :: ([PrimBase] -> [PrimBase]) -> PileM m ()
 upd_active f = PileM $ \k r p a -> k () r p $! f a
 
+{-# INLINE add_active #-}
 add_active :: PrimBase -> PileM m ()
 add_active !pb = PileM $ \k r p a -> k () r p (pb:a)
 
+{-# INLINE clr_active #-}
 clr_active :: PileM m [PrimBase]
 clr_active = PileM $ \k r p a -> k a r p []
 
+{-# INLINE ins_waiting #-}
 ins_waiting :: Int -> PrimBase -> PileM m ()
 ins_waiting !q !v = PileM $ \ k r p a w -> k () r p a $! Node q v Empty Empty `union` w
 
+{-# INLINE get_waiting #-}
 get_waiting :: PileM m Heap
 get_waiting = PileM $ \k r p a w -> k w r p a w
 
+{-# INLINE set_waiting #-}
 set_waiting :: Heap -> PileM m ()
 set_waiting !w = PileM $ \k r p a _ -> k () r p a w
 
+{-# INLINE yield #-}
 yield :: Monad m => Pile -> PileM m ()
-yield x = PileM $ \k r p a w out inp ->
-    eneeCheckIfDone (\out' -> k () r p a w out' inp) . out $ Chunk [x]
+yield x = PileM $ \ !kont !r !p !a !w !out !inp -> Iteratee $ \od oc ->
+      let loop              = kont () r p a w
+          onDone a s        = od (idone a s) inp
+          onCont k Nothing  = runIter (loop k inp) od oc
+          onCont k (Just e) = runIter (throwRecoverableErr e (loop k . (<>) inp)) od oc
+      in runIter (out (Chunk [x])) onDone onCont
 
 -- | Inspect next input element, if any.  Returns @Just b@ if @b@ is the
 -- next input element, @Nothing@ if no such element exists.  Waits for
 -- more input if nothing is available immediately.
-peek :: PileM m (Maybe (Refseq, PrimChunks))
+{-# INLINE peek #-}
+peek :: PileM m (Maybe PosPrimChunks)
 peek = PileM $ \k r p a w out inp -> case inp of
         EOF     _   -> k Nothing r p a w out inp
         Chunk [   ] -> liftI $ runPileM peek k r p a w out
@@ -415,6 +437,7 @@ peek = PileM $ \k r p a w out inp -> case inp of
 -- | Discard next input element, if any.  Does nothing if input has
 -- already ended.  Waits for input to discard if nothing is available
 -- immediately.
+{-# INLINE bump #-}
 bump :: PileM m ()
 bump = PileM $ \k r p a w out inp -> case inp of
         EOF     _   -> k () r p a w out inp
@@ -422,29 +445,33 @@ bump = PileM $ \k r p a w out inp -> case inp of
         Chunk (_:x) -> k () r p a w out (Chunk x)
 
 
+{-# INLINE consume_active #-}
 consume_active :: a -> (a -> PrimBase -> PileM m a) -> PileM m a
 consume_active nil cons = do ac <- get_active
                              upd_active (const [])
                              foldM cons nil ac
 
--- | The actual pileup algorithm.
+-- | The actual pileup algorithm.  If /active/ contains something,
+-- continue here.  Else find the coordinate to continue from, which is
+-- the minimum of the next /waiting/ coordinate and the next coordinate
+-- in input; if found, continue there, else we're all done.
 pileup' :: Monad m => PileM m ()
-pileup' = do
-    refseq       <- get_refseq
-    active       <- get_active
-    next_waiting <- fmap ((,) refseq) . getMinKey <$> get_waiting
-    next_input   <- fmap (\(r, Seek p _) -> (r,p)) <$> peek
+pileup' = PileM $ \ !k !refseq !pos !active !waiting !out !inp ->
 
-    -- If /active/ contains something, continue here.  Else find the coordinate
-    -- to continue from, which is the minimum of the next /waiting/ coordinate
-    -- and the next coordinate in input; if found, continue there, else we're
-    -- all done.
-    case (active, next_waiting, next_input) of
-        ( (_:_),       _,       _ ) ->                        pileup''
-        ( [   ], Just nw, Nothing ) -> set_pos      nw     >> pileup''
-        ( [   ], Nothing, Just ni ) -> set_pos         ni  >> pileup''
-        ( [   ], Just nw, Just ni ) -> set_pos (min nw ni) >> pileup''
-        ( [   ], Nothing, Nothing ) -> return ()
+    let recurse     = runPileM pileup'  k refseq pos active waiting out
+        cont2 rs po = runPileM pileup'' k     rs po  active waiting out inp
+        leave       =                k () refseq pos active waiting out inp
+
+    in case (active, getMinKey waiting, inp) of
+        ( _:_,       _,                _  ) -> cont2 refseq pos
+        ( [ ], Just nw, EOF            _  ) -> cont2 refseq nw
+        ( [ ], Nothing, EOF            _  ) -> leave
+        (   _,       _, Chunk [         ] ) -> liftI recurse
+        ( [ ], Nothing, Chunk ((r,p,_):_) ) -> cont2 r p
+        ( [ ], Just nw, Chunk ((r,p,_):_) )
+                     | (refseq,nw) <= (r,p) -> cont2 refseq nw
+                     | otherwise            -> cont2 r p
+
 
 pileup'' :: Monad m => PileM m ()
 pileup'' = do
@@ -479,23 +506,13 @@ p'feed_input = do
     rs <- get_refseq
     po <- get_pos
 
-    fix $ \loop -> peek >>= mapM_ (\(rs', prim) -> case prim of
-            -- XXX
-            -- let b = unpackBam br in
-            -- case decompose br $ map packMat $ toList $ dm (isReversed b) (V.length (b_seq b)) of
-                _             | rs /= rs' -> return ()
-                Seek   !p !pb | po /= p   -> return ()
-                              | otherwise -> bump >> ins_waiting p pb >> loop
-                Indel _ _ !pb             -> bump >>    add_active pb >> loop
-                EndOfRead                 -> bump                     >> loop )
-
-            {- in when (b_rname b == rs && b_pos b == po) $ do
-                bump
-                case decompose br $ map packMat $ toList $ dm (isReversed b) (V.length (b_seq b)) of
-                    Seek   !p !pb -> ins_waiting p pb
-                    Indel _ _ !pb -> add_active pb
-                    EndOfRead     -> return ()
-                loop) -}
+    fix $ \loop -> peek >>= mapM_ (\(rs', po', prim) ->
+                        when (rs == rs' && po == po') $ do
+                            bump
+                            case prim of Seek   !p !pb -> ins_waiting p pb
+                                         Indel _ _ !pb ->    add_active pb
+                                         EndOfRead     ->        return ()
+                            loop)
 
 -- | Checks /waiting/ queue.  If there is anything waiting for the
 -- current position, moves it to /active/ queue.

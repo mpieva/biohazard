@@ -78,8 +78,9 @@ simple_snp_call from_qual ploidy vars = snp_gls (simple_call ploidy mkpls vars) 
 -- getting the current read, for every variant assuming that variant was
 -- sampled.
 --
--- NOTE, this may warrant specialization to diploidy and four alleles
--- (common SNPs) and diploidy and two alleles (common indels).
+-- XXX  This eats up ~40% of total runtime; it *screams out* for
+-- specialization to diploidy and four alleles (common SNPs) and maybe
+-- diploidy and two alleles (common indels).
 
 simple_call :: Int -> (a -> [Prob]) -> [a] -> GL
 simple_call ploidy pls = foldl1' (V.zipWith (*)) . map step

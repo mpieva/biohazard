@@ -107,9 +107,9 @@ options = [
 main :: IO ()
 main = do
     (opts, samples, errs) <- getOpt Permute options <$> getArgs
+    Conf{..} <- foldl (>>=) (return defaultConf) opts
     unless (null errs) $ mapM_ (hPutStrLn stderr) errs >> exitFailure
     when (null samples) $ hPutStrLn stderr "need (at least) one sample name" >> exitFailure
-    Conf{..} <- foldl (>>=) (return defaultConf) opts
 
     forM_ samples $ \sample -> do
         meta <- readMetadata (fromString conf_metadata)
@@ -118,12 +118,12 @@ main = do
             Nothing -> hPutStrLn stderr $ "unknown sample " ++ show sample
 
             Just Sample{..} -> do
-                (tab,()) <- withFile (T.unpack sample_avro_file) WriteMode          $ \ohdl ->
-                            mergeLibraries conf_report sample_libraries >=> run     $ \hdr ->
-                            progressPos (\(rs, Seek p _) -> (rs, p))
-                                        "GT call at " conf_report (meta_refs hdr)   =$
-                            pileup                                                  =$
-                            mapStream (calls conf_theta)                            =$
+                (tab,()) <- withFile (T.unpack sample_avro_file) WriteMode                   $ \ohdl ->
+                            mergeLibraries conf_report sample_libraries >=> run              $ \hdr ->
+                            progressPos (\(rs, p, _) -> (rs, p))
+                                        "GT call at " conf_report (meta_refs hdr)           =$
+                            pileup                                                          =$
+                            mapStream (calls conf_theta)                                    =$
                             zipStreams tabulateSingle (output_avro ohdl $ meta_refs hdr)
 
                 conf_report $ "Estimating divergence parameters for " ++ sample ++ "..."
@@ -132,23 +132,25 @@ main = do
                                (fromString sample)) (fromString conf_metadata)
 
 mergeLibraries :: (MonadIO m, MonadMask m) => (String -> IO ())
-               -> [Library] -> Enumerator' BamMeta [(Refseq, PrimChunks)] m b
-mergeLibraries _report [    ] = \it -> return (it mempty)
+               -> [Library] -> Enumerator' BamMeta [PosPrimChunks] m b
+mergeLibraries  report [ l  ] = enumLibrary report l
 mergeLibraries  report (l:ls) = mergeEnums' (mergeLibraries report ls) (enumLibrary report l) mm
   where
-    mm _ = mergeSortStreams $ \(rs1, Seek p1 _) (rs2, Seek p2 _) -> if (rs1, p1) < (rs2, p2) then Less else NotLess
+    mm _ = mergeSortStreams $ \(rs1, p1, _) (rs2, p2, _) -> if (rs1, p1) < (rs2, p2) then Less else NotLess
 
-enumLibrary :: (MonadIO m, MonadMask m) => (String -> IO ()) -> Library -> Enumerator' BamMeta [(Refseq, PrimChunks)] m b
-enumLibrary report (Library nm fs mdp) it = do
+enumLibrary :: (MonadIO m, MonadMask m) => (String -> IO ()) -> Library -> Enumerator' BamMeta [PosPrimChunks] m b
+enumLibrary report (Library nm fs mdp) output = do
     let (msg, dmg) = case mdp of Nothing -> ("no damage model", noDamage)
                                  Just dp -> ("universal damage parameters" ++ show dp, univDamage dp)
 
     liftIO . report $ "using " ++ msg ++ " for " ++ T.unpack nm
-    mergeInputs combineCoordinates (map T.unpack fs) >=> run >=> run $ \hdr ->
-        takeWhileE (isValidRefseq . b_rname . unpackBam) $
-        mapStream (\br -> let b = unpackBam br
-                              m = dmg (isReversed b) (VS.length (b_qual b))
-                          in decompose (map packMat $ V.toList m) br) (it hdr)
+    mergeInputs combineCoordinates (map T.unpack fs)
+        $== takeWhileE (isValidRefseq . b_rname . unpackBam)
+        $== mapMaybeStream (\br ->
+                let b = unpackBam br
+                    m = dmg (isReversed b) (VS.length (b_qual b))
+                in decompose (map packMat $ V.toList m) br)
+        $ output
 
 -- | Ploidy is hardcoded as two here.  Can be changed if the need
 -- arises.
@@ -222,7 +224,7 @@ output_avro hdl refs = compileBlocks =$
                        writeAvroContainer ContainerOpts{..} =$
                        mapChunksM_ (S.hPut hdl)
   where
-    objects_per_block = 1024
+    objects_per_block = 16
     filetype_label = "Genotype Likelihoods V0.1"
     initial_schemas = H.singleton "Refseq" $
         object [ "type" .= String "enum"
