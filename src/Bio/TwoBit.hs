@@ -1,17 +1,19 @@
-{-# LANGUAGE BangPatterns #-}
+{-# LANGUAGE BangPatterns, NamedFieldPuns, RecordWildCards #-}
 module Bio.TwoBit (
         module Bio.Base,
 
         TwoBitFile,
+        TwoBitSequence,
         openTwoBit,
 
+        getFwdSubseqWith,
         getSubseq,
         getSubseqWith,
         getSubseqAscii,
         getSubseqMasked,
         getLazySubseq,
         getSeqnames,
-        hasSequence,
+        lookupSequence,
         getSeqLength,
         clampPosition,
         getRandomSeq,
@@ -30,7 +32,7 @@ import           Data.Char (toLower)
 -- can't be strict to remain compatible with containers-0.4.1 and
 -- therefore ghc 7.4
 import qualified Data.IntMap as I
-import qualified Data.Map as M
+import qualified Data.HashMap.Lazy as M
 import           Data.Maybe
 import           Numeric
 import           System.IO.Posix.MMap
@@ -52,13 +54,13 @@ import           System.Random
 data TwoBitFile = TBF {
     tbf_raw :: B.ByteString,
     -- This map is intentionally lazy.  May or may not be important.
-    tbf_seqs :: !(M.Map Seqid TwoBitSequence)
+    tbf_seqs :: !(M.HashMap Seqid TwoBitSequence)
 }
 
-data TwoBitSequence = Indexed { tbs_n_blocks   :: !(I.IntMap Int)
-                              , tbs_m_blocks   :: !(I.IntMap Int)
-                              , tbs_dna_offset :: {-# UNPACK #-} !Int
-                              , tbs_dna_size   :: {-# UNPACK #-} !Int }
+data TwoBitSequence = TBS { tbs_n_blocks   :: !(I.IntMap Int)
+                          , tbs_m_blocks   :: !(I.IntMap Int)
+                          , tbs_dna_offset :: {-# UNPACK #-} !Int
+                          , tbs_dna_size   :: {-# UNPACK #-} !Int }
 
 -- | Brings a 2bit file into memory.  The file is mmap'ed, so it will
 -- not work on streams that are not actual files.  It's also unsafe if
@@ -91,7 +93,7 @@ mkBlockIndex raw getWord32 ofs = runGet getBlock $ L.fromChunks [B.drop ofs raw]
                   nb <- readBlockList
                   mb <- readBlockList
                   len <- getWord32 >> bytesRead
-                  return $! Indexed (I.fromList nb) (I.fromList mb) (ofs + fromIntegral len) ds
+                  return $! TBS (I.fromList nb) (I.fromList mb) (ofs + fromIntegral len) ds
 
     readBlockList = getWord32 >>= \n -> liftM2 zip (repM n getWord32) (repM n getWord32)
 
@@ -114,15 +116,14 @@ takeOverlap k m = dropWhile far_left $
 
 data Mask = None | Soft | Hard | Both deriving (Eq, Ord, Enum, Show)
 
-getFwdSubseqWith :: B.ByteString -> Int                         -- raw data, dna offset
-                 -> I.IntMap Int -> I.IntMap Int                -- N blocks, M blocks
+getFwdSubseqWith :: TwoBitFile -> TwoBitSequence                -- raw data, sequence
                  -> (Word8 -> Mask -> a)                        -- mask function
                  -> Int -> [a]                                  -- start, lazy result
-getFwdSubseqWith raw ofs n_blocks m_blocks nt start =
-    do_mask (takeOverlap start n_blocks `mergeblocks` takeOverlap start m_blocks) start .
+getFwdSubseqWith TBF{..} TBS{..} nt start =
+    do_mask (takeOverlap start tbs_n_blocks `mergeblocks` takeOverlap start tbs_m_blocks) start .
     drop (start .&. 3) .
     B.foldr toDNA [] .
-    B.drop (fromIntegral $ ofs + (start `shiftR` 2)) $ raw
+    B.drop (fromIntegral $ tbs_dna_offset + (start `shiftR` 2)) $ tbf_raw
   where
     toDNA b = (++) [ 3 .&. (b `shiftR` x) | x <- [6,4,2,0] ]
 
@@ -157,7 +158,7 @@ mergeblocks [     ] [     ] = []
 getSubseqWith :: (Nucleotide -> Mask -> a) -> TwoBitFile -> Range -> [a]
 getSubseqWith maskf tbf (Range { r_pos = Pos { p_seq = chr, p_start = start }, r_length = len }) = do
     let sq1 = maybe (error $ unpackSeqid chr ++ " doesn't exist") id $ M.lookup chr (tbf_seqs tbf)
-    let go = getFwdSubseqWith (tbf_raw tbf) (tbs_dna_offset sq1) (tbs_n_blocks sq1) (tbs_m_blocks sq1)
+    let go = getFwdSubseqWith tbf sq1
     if start < 0
         then reverse $ take len $ go (maskf . cmp_nt) (-start-len)
         else           take len $ go (maskf . fwd_nt)   start
@@ -169,7 +170,7 @@ getSubseqWith maskf tbf (Range { r_pos = Pos { p_seq = chr, p_start = start }, r
 getLazySubseq :: TwoBitFile -> Position -> [Nucleotide]
 getLazySubseq tbf (Pos { p_seq = chr, p_start = start }) = do
     let sq1 = maybe (error $ unpackSeqid chr ++ " doesn't exist") id $ M.lookup chr (tbf_seqs tbf)
-    let go  = getFwdSubseqWith (tbf_raw tbf) (tbs_dna_offset sq1) (tbs_n_blocks sq1) (tbs_m_blocks sq1)
+    let go  = getFwdSubseqWith tbf sq1
     if start < 0
         then error "sorry, can't go backwards"
         -- then reverse $ take len $ go (maskf . cmp_nt) (-start-len)
@@ -206,8 +207,8 @@ getSubseqAscii = getSubseqWith mymask
 getSeqnames :: TwoBitFile -> [Seqid]
 getSeqnames = M.keys . tbf_seqs
 
-hasSequence :: TwoBitFile -> Seqid -> Bool
-hasSequence tbf sq = isJust . M.lookup sq . tbf_seqs $ tbf
+lookupSequence :: TwoBitFile -> Seqid -> Maybe TwoBitSequence
+lookupSequence tbf sq = M.lookup sq . tbf_seqs $ tbf
 
 getSeqLength :: TwoBitFile -> Seqid -> Int
 getSeqLength tbf chr =

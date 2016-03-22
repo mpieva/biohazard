@@ -8,6 +8,7 @@
 -- Second iteration:  Mitochondrion only, but with a divergence
 -- parameter.  Needs to be scanned in parallel with a TwoBit file.
 
+import Bio.Base
 import Bio.Bam.Header
 import Bio.Genocall.AvroFile
 import Bio.Iteratee
