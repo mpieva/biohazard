@@ -32,9 +32,8 @@
 -- overhang at all (probability 1/2) at each end, then deaminate it.
 --
 -- TODO
---   - needs better packaging, better output
---   - needs support for multiple input files(?)
---   - needs read group awareness(?)
+--   - needs better output
+--   - needs support for multiple input files
 --   - needs to deal with long (unmerged) reads (by ignoring them?)
 
 import Bio.Bam.Header
@@ -48,14 +47,18 @@ import Bio.Util.AD
 import Bio.Util.AD2
 import Bio.Util.Numeric
 import Control.Concurrent.Async
+import Control.Monad                ( unless )
 import Data.Bits
 import Data.Foldable
 import Data.Ix
 import Data.Maybe
-import Data.String ( fromString )
-import Data.Text ( unpack )
-import System.FilePath
+import Data.String                  ( fromString )
+import Data.Text                    ( unpack )
+import System.Console.GetOpt
 import System.Environment
+import System.Exit
+import System.FilePath
+import System.IO                    ( hPutStrLn, stderr )
 
 import qualified Data.HashMap.Strict        as M
 import qualified Data.Vector                as V
@@ -66,9 +69,9 @@ import Prelude hiding ( sequence_, mapM, mapM_, concatMap, sum, minimum, foldr1 
 
 -- | Roughly @Maybe (Nucleotide, Nucleotide)@, encoded compactly
 newtype NP = NP { unNP :: Word8 } deriving (Eq, Ord, Ix)
-data Seq = Merged { unSeq :: U.Vector Word8 }
+data Seq = Merged   { unSeq :: U.Vector Word8 }
          | Mate1st  { unSeq :: U.Vector Word8 }
-         | Mate2nd { unSeq :: U.Vector Word8 }
+         | Mate2nd  { unSeq :: U.Vector Word8 }
 
 instance Show NP where
     show (NP w)
@@ -79,8 +82,9 @@ instance Show NP where
 
 
 {-# INLINE lk_fun1 #-}
-lk_fun1 :: (Num a, Show a, Fractional a, Floating a, Memorable a) => Int -> [a] -> V.Vector Seq -> a
-lk_fun1 lmax parms = case length parms of
+lk_fun1 :: (Num a, Show a, Fractional a, Floating a, Memorable a)
+        => Int -> Int -> [a] -> V.Vector Seq -> a
+lk_fun1 lmin lmax parms = case length parms of
     1 -> V.foldl' (\a b -> a - log (lk tab00 tab00 tab00 b)) 0 . guardV           -- undamaged case
       where
         !tab00 = fromListN (rangeSize my_bounds) [ l_epq p_subst 0 0 x
@@ -149,31 +153,60 @@ l_epq e p q (NP x) = case x of {
      _ -> 1 } where s = 1 - 3 * e
 
 
-lkfun :: Int -> V.Vector Seq -> U.Vector Double -> Double
-lkfun lmax brs parms = lk_fun1 lmax (U.toList parms) brs
+lkfun :: Int -> Int -> V.Vector Seq -> U.Vector Double -> Double
+lkfun lmin lmax brs parms = lk_fun1 lmin lmax (U.toList parms) brs
 
-lkfun' :: Int -> V.Vector Seq -> [Double] -> AD
-lkfun' lmax brs parms = lk_fun1 lmax (paramVector parms) brs
+lkfun' :: Int -> Int -> V.Vector Seq -> [Double] -> AD
+lkfun' lmin lmax brs parms = lk_fun1 lmin lmax (paramVector parms) brs
 
-lkfun'' :: Int -> V.Vector Seq -> [Double] -> AD2
-lkfun'' lmax brs parms = lk_fun1 lmax (paramVector2 parms) brs
+lkfun'' :: Int -> Int -> V.Vector Seq -> [Double] -> AD2
+lkfun'' lmin lmax brs parms = lk_fun1 lmin lmax (paramVector2 parms) brs
 
-combofn :: Int -> V.Vector Seq -> U.Vector Double -> (Double, U.Vector Double)
-combofn lmax brs parms = (x,g)
-  where D x g = lk_fun1 lmax (paramVector $ U.toList parms) brs
+combofn :: Int -> Int -> V.Vector Seq -> U.Vector Double -> (Double, U.Vector Double)
+combofn lmin lmax brs parms = (x,g)
+  where D x g = lk_fun1 lmin lmax (paramVector $ U.toList parms) brs
 
-lmin :: Int
-lmin = 25
+
+data Conf = Conf {
+    conf_lmin :: Int,
+    conf_metadata :: FilePath,
+    conf_report :: String -> IO (),
+    conf_params :: Parameters }
+
+defaultConf :: Conf
+defaultConf = Conf 25 (error "no config file specified") (\_ -> return ()) quietParameters
+
+options :: [OptDescr (Conf -> IO Conf)]
+options = [
+    Option "m"  ["min-length"]   (ReqArg set_lmin  "LEN") "Set minimum length to LEN (25)",
+    Option "c"  ["config"]       (ReqArg set_conf "FILE") "Configuiration is stored in FILE",
+    Option "v"  ["verbose"]      (NoArg      set_verbose) "Print progress reports",
+    Option "h?" ["help","usage"] (NoArg       disp_usage) "Print this message and exit" ]
+  where
+    set_lmin  a c = readIO a >>= \l -> return $ c { conf_lmin     = l }
+    set_conf  f c = return $ c { conf_metadata = f }
+    set_verbose c = return $ c { conf_report   = hPutStrLn stderr, conf_params = debugParameters }
+
+    disp_usage  _ = do pn <- getProgName
+                       let blah = "Usage: " ++ pn ++ " [OPTION...] [LIBRARY-NAME...]"
+                       putStrLn $ usageInfo blah options
+                       exitSuccess
 
 main :: IO ()
 main = do
-    [config, lname] <- getArgs
+    (opts, lnames, errors) <- getOpt Permute options <$> getArgs
+    unless (null errors) $ mapM_ (hPutStrLn stderr) errors >> exitFailure
+    conf <- foldl (>>=) (return defaultConf) opts
+    mapM_ (main' conf) lnames
+
+main' :: Conf -> String -> IO ()
+main' Conf{..} lname = do
     [Library _ fs _] <- return . filter ((fromString lname ==) . library_name) . concatMap sample_libraries . M.elems
-                        =<< readMetadata (fromString config)
+                        =<< readMetadata (fromString conf_metadata)
 
     -- XXX  meh.  subsampling from multiple files is not yet supported :(
-    brs <- subsampleBam (takeDirectory config </> unpack (head fs)) >=> run $ \_ ->
-           joinI $ filterStream (\b -> not (isUnmapped (unpackBam b)) && G.length (b_seq (unpackBam b)) >= lmin) $
+    brs <- subsampleBam (takeDirectory conf_metadata </> unpack (head fs)) >=> run $ \_ ->
+           joinI $ filterStream (\b -> not (isUnmapped (unpackBam b)) && G.length (b_seq (unpackBam b)) >= conf_lmin) $
            joinI $ takeStream 100000 $
            joinI $ mapStream pack_record $
            joinI $ filterStream (\u -> U.length (U.filter (<16) (unSeq u)) * 10 >= 9 * U.length (unSeq u)) $
@@ -181,10 +214,10 @@ main = do
 
     let lmax = V.maximum $ V.map (U.length . unSeq) brs
         v0 = crude_estimate brs
-        opt v = optimize quietParameters 0.0001 v
-                         (VFunction $ lkfun lmax brs)
-                         (VGradient $ snd . combofn lmax brs)
-                         (Just . VCombined $ combofn lmax brs)
+        opt v = optimize conf_params 0.0001 v
+                         (VFunction $ lkfun conf_lmin lmax brs)
+                         (VGradient $ snd . combofn conf_lmin lmax brs)
+                         (Just . VCombined $ combofn conf_lmin lmax brs)
 
     results <- mapConcurrently opt [ v0, U.take 4 v0, U.take 1 v0 ]
 
@@ -203,7 +236,7 @@ main = do
 
     putStrLn $ "p_{ss} = " ++ show p_ss ++ ", p_{ds} = " ++ show p_ds
     putStrLn $ show DP{..}
-    updateMetadata (store_dp lname DP{..}) (fromString config)
+    updateMetadata (store_dp lname DP{..}) (fromString conf_metadata)
 
     -- Trying to get confidence intervals.  Right now, just get the
     -- gradient and Hessian at the ML point.  Gradient should be nearly
@@ -211,9 +244,9 @@ main = do
     -- (Remember, we minimized.)
     mapM_ print [ (r,s) | (_,r,s) <- results ]
     putStrLn ""
-    mapM_ print [ lkfun' lmax brs (G.toList xs) | (xs,_,_) <- results ]
+    mapM_ print [ lkfun' conf_lmin lmax brs (G.toList xs) | (xs,_,_) <- results ]
     putStrLn ""
-    mapM_ print [ lkfun'' lmax brs (G.toList xs) | (xs,_,_) <- results ]
+    mapM_ print [ lkfun'' conf_lmin lmax brs (G.toList xs) | (xs,_,_) <- results ]
 
 -- We'll require the MD field to be present.  Then we cook each read
 -- into a list of paired bases.  Deleted bases are dropped, inserted

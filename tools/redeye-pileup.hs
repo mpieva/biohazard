@@ -97,7 +97,7 @@ options = [
     disp_usage _ = do pn <- getProgName
                       let blah = "Usage: " ++ pn ++ " [OPTION...] [BAM-FILE...]"
                       putStrLn $ usageInfo blah options
-                      exitFailure
+                      exitSuccess
 
     be_verbose       c = return $ c { conf_report = hPutStrLn stderr }
     set_conf      fn c = return $ c { conf_metadata = fn }
@@ -286,6 +286,7 @@ tabulateSingle = do
                            return $! acc + a
 
 -- XXX need to think about what to return or store and why...
+-- XXX we should estimate an indel rate, to be appended as the fourth result
 estimateSingle :: Double -> U.Vector Int -> IO [Double]
 estimateSingle llk_rr tab = do
     (fit, res, stats) <- minimize quietParameters 0.0001 (llk tab) (U.fromList [0,0,0])

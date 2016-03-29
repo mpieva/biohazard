@@ -122,6 +122,20 @@ Library
   -- Type:                exitcode-stdio-1.0
   -- Main-is:             test-biohazard.hs
 
+Executable redeye-dar
+  Main-is:             redeye-dar.hs
+  Ghc-options:         -Wall -auto-all
+  Hs-Source-Dirs:      tools
+  -- Ghc-options:         -Wall -auto-all -threaded -rtsopts -with-rtsopts=-N
+  Ghc-options:         -Wall -auto-all -rtsopts
+  Build-depends:       async,
+                       base,
+                       biohazard,
+                       filepath,
+                       unordered-containers,
+                       text,
+                       vector
+
 Executable redeye-pileup
   Main-is:             redeye-pileup.hs
   Ghc-options:         -Wall -auto-all -threaded -rtsopts -with-rtsopts=-N
@@ -271,21 +285,6 @@ Executable count-coverage
   Build-depends:       base,
                        biohazard,
                        iteratee
-
--- XXX shall we call this redeye-dar?
-Executable dmg-est
-  Main-is:             dmg-est.hs
-  Ghc-options:         -Wall -auto-all
-  Hs-Source-Dirs:      tools
-  -- Ghc-options:         -Wall -auto-all -threaded -rtsopts -with-rtsopts=-N
-  Ghc-options:         -Wall -auto-all -rtsopts
-  Build-depends:       async,
-                       base,
-                       biohazard,
-                       filepath,
-                       unordered-containers,
-                       text,
-                       vector
 
 Executable fastq2bam
   Main-is:             fastq2bam.hs

@@ -92,21 +92,22 @@ main = do
 main' :: Conf -> String -> Sample -> IO ()
 main' Conf{..} sample_name Sample{..} =
     case sample_divergences of
-        Just (prior_div : prior_het : _) ->
+        Just (prior_div : prior_het : _prior_het2 : more) ->
+            let prior_indel = case more of [] -> prior_div * 0.1 ; p : _ -> p in
             bracket (openFd (mkpath sample_bcf_file) WriteOnly (Just 0o666) defaultFileFlags) closeFd $ \ofd ->
             enumFile defaultBufSize (mkpath sample_avro_file) >=> run                                 $
             joinI $ readAvroContainer                                                                 $ \av_meta ->
             bcf_to_fd ofd (getRefseqs av_meta) [fromString sample_name]
-                          (call prior_div prior_het, call (prior_div * 0.1) prior_het) -- XXX prior_indel
+                          (call (prior_div/3) prior_het, call prior_indel prior_het)
 
 
         _ -> fail $ show sample_name ++ " is missing divergence information"
   where
     call :: Double -> Double -> U.Vector (Prob' Float) -> Int
     call prior prior_h lks = U.maxIndex . U.zipWith (*) lks $
-                             U.replicate (U.length lks) (toProb . realToFrac $ prior_h * prior / 3)
+                             U.replicate (U.length lks) (toProb . realToFrac $ prior_h * prior)
                              U.// [ (0, toProb . realToFrac $ 1-prior) ]
-                             U.// [ (i, toProb . realToFrac $ (1-prior_h) * prior / 3)
+                             U.// [ (i, toProb . realToFrac $ (1-prior_h) * prior)
                                   | i <- takeWhile (< U.length lks) (scanl (+) 2 [3..]) ]
 
     mkpath :: Text -> FilePath
