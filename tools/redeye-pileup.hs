@@ -54,6 +54,7 @@ import Numeric.LinearAlgebra.HMatrix ( eigSH', (><), toRows, scale )
 import System.Console.GetOpt
 import System.Environment
 import System.Exit
+import System.FilePath
 import System.IO
 
 import qualified Data.ByteString.Char8          as S
@@ -118,12 +119,11 @@ main = do
             Nothing -> hPutStrLn stderr $ "unknown sample " ++ show sample
 
             Just Sample{..} -> do
-                (tab,()) <- withFile (T.unpack sample_avro_file) WriteMode                   $ \ohdl ->
-                            mergeLibraries conf_report sample_libraries >=> run              $ \hdr ->
-                            progressPos (\(rs, p, _) -> (rs, p))
-                                        "GT call at " conf_report (meta_refs hdr)           =$
-                            pileup                                                          =$
-                            mapStream (calls conf_theta)                                    =$
+                (tab,()) <- withFile (takeDirectory conf_metadata </> T.unpack sample_avro_file) WriteMode  $ \ohdl ->
+                            mergeLibraries conf_report conf_metadata sample_libraries >=> run               $ \hdr ->
+                            progressPos (\(rs, p, _) -> (rs, p)) "GT call at " conf_report (meta_refs hdr) =$
+                            pileup                                                                         =$
+                            mapStream (calls conf_theta)                                                   =$
                             zipStreams tabulateSingle (output_avro ohdl $ meta_refs hdr)
 
                 conf_report $ "Estimating divergence parameters for " ++ sample ++ "..."
@@ -131,20 +131,21 @@ main = do
                 updateMetadata (H.adjust (\smp -> smp { sample_divergences = Just est })
                                (fromString sample)) (fromString conf_metadata)
 
-mergeLibraries :: (MonadIO m, MonadMask m) => (String -> IO ())
+mergeLibraries :: (MonadIO m, MonadMask m)
+               => (String -> IO ()) -> FilePath
                -> [Library] -> Enumerator' BamMeta [PosPrimChunks] m b
-mergeLibraries  report [ l  ] = enumLibrary report l
-mergeLibraries  report (l:ls) = mergeEnums' (mergeLibraries report ls) (enumLibrary report l) mm
+mergeLibraries  report cfg [ l  ] = enumLibrary report cfg l
+mergeLibraries  report cfg (l:ls) = mergeEnums' (mergeLibraries report cfg ls) (enumLibrary report cfg l) mm
   where
     mm _ = mergeSortStreams $ \(rs1, p1, _) (rs2, p2, _) -> if (rs1, p1) < (rs2, p2) then Less else NotLess
 
-enumLibrary :: (MonadIO m, MonadMask m) => (String -> IO ()) -> Library -> Enumerator' BamMeta [PosPrimChunks] m b
-enumLibrary report (Library nm fs mdp) output = do
+enumLibrary :: (MonadIO m, MonadMask m) => (String -> IO ()) -> FilePath -> Library -> Enumerator' BamMeta [PosPrimChunks] m b
+enumLibrary report cfg (Library nm fs mdp) output = do
     let (msg, dmg) = case mdp of Nothing -> ("no damage model", noDamage)
                                  Just dp -> ("universal damage parameters" ++ show dp, univDamage dp)
 
     liftIO . report $ "using " ++ msg ++ " for " ++ T.unpack nm
-    mergeInputs combineCoordinates (map T.unpack fs)
+    mergeInputs combineCoordinates (map ((</>) (takeDirectory cfg) . T.unpack) fs)
         $== takeWhileE (isValidRefseq . b_rname . unpackBam)
         $== mapMaybeStream (\br ->
                 let b = unpackBam br

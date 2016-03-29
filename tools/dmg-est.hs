@@ -54,6 +54,7 @@ import Data.Ix
 import Data.Maybe
 import Data.String ( fromString )
 import Data.Text ( unpack )
+import System.FilePath
 import System.Environment
 
 import qualified Data.HashMap.Strict        as M
@@ -171,7 +172,7 @@ main = do
                         =<< readMetadata (fromString config)
 
     -- XXX  meh.  subsampling from multiple files is not yet supported :(
-    brs <- subsampleBam (unpack $ head fs) >=> run $ \_ ->
+    brs <- subsampleBam (takeDirectory config </> unpack (head fs)) >=> run $ \_ ->
            joinI $ filterStream (\b -> not (isUnmapped (unpackBam b)) && G.length (b_seq (unpackBam b)) >= lmin) $
            joinI $ takeStream 100000 $
            joinI $ mapStream pack_record $

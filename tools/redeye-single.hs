@@ -28,11 +28,12 @@ import Data.Bits
 import Data.Foldable                    ( toList, foldMap )
 import Data.MiniFloat
 import Data.String
-import Data.Text                        ( unpack )
+import Data.Text                        ( Text, unpack )
 import Foreign.Ptr                      ( castPtr )
 import System.Console.GetOpt
 import System.Environment
 import System.Exit
+import System.FilePath
 import System.Posix.IO
 
 import qualified Data.ByteString.Char8          as S
@@ -92,8 +93,8 @@ main' :: Conf -> String -> Sample -> IO ()
 main' Conf{..} sample_name Sample{..} =
     case sample_divergences of
         Just (prior_div : prior_het : _) ->
-            bracket (openFd (unpack sample_bcf_file) WriteOnly (Just 0o666) defaultFileFlags) closeFd $ \ofd ->
-            enumFile defaultBufSize (unpack sample_avro_file) >=> run                                 $
+            bracket (openFd (mkpath sample_bcf_file) WriteOnly (Just 0o666) defaultFileFlags) closeFd $ \ofd ->
+            enumFile defaultBufSize (mkpath sample_avro_file) >=> run                                 $
             joinI $ readAvroContainer                                                                 $ \av_meta ->
             bcf_to_fd ofd (getRefseqs av_meta) [fromString sample_name]
                           (call prior_div prior_het, call (prior_div * 0.1) prior_het) -- XXX prior_indel
@@ -107,6 +108,9 @@ main' Conf{..} sample_name Sample{..} =
                              U.// [ (0, toProb . realToFrac $ 1-prior) ]
                              U.// [ (i, toProb . realToFrac $ (1-prior_h) * prior / 3)
                                   | i <- takeWhile (< U.length lks) (scanl (+) 2 [3..]) ]
+
+    mkpath :: Text -> FilePath
+    mkpath t = takeDirectory conf_metadata </> unpack t
 
 
 type CallFuncs = (U.Vector (Prob' Float) -> Int, U.Vector (Prob' Float) -> Int)

@@ -131,6 +131,7 @@ Executable redeye-pileup
                        biohazard,
                        bytestring,
                        containers,
+                       filepath,
                        hmatrix == 0.16.*,
                        iteratee,
                        text,
@@ -148,6 +149,7 @@ Executable redeye-single
                        bytestring,
                        containers,
                        iteratee,
+                       filepath,
                        text,
                        unix,
                        unordered-containers,
@@ -280,6 +282,7 @@ Executable dmg-est
   Build-depends:       async,
                        base,
                        biohazard,
+                       filepath,
                        unordered-containers,
                        text,
                        vector
