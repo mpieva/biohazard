@@ -90,4 +90,17 @@ trim_low_quality :: Qual -> a -> [Qual] -> Bool
 trim_low_quality q = const $ all (< q)
 
 
-
+-- | Overlap-merging of read pairs.  We shall compute the likelihood
+-- for every possible overlap, the select the most likely one (unless it
+-- looks completely random), compute a quality from the second best
+-- merge, then merge and clamp the quality accordingly.  Output should
+-- be the pair *and* the merged representation, suitably flagged.
+-- We might try looking for chimaera after completing the merge, if only
+-- we knew which ones to expect.
+--
+-- Likelihoods are straight forward; for adapters we have to assume a
+-- realistic error rate (Q30 sounds good).  To make it robust, we reduce
+-- the adapters to their invariant prefix (about 20nt long), and try to
+-- trim all adapters known to us (should be only two or three).
+--
+-- Single-end reads are treated as pairs with an empty second read.
