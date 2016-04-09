@@ -42,9 +42,9 @@ data Mode = Globally  -- ^ align globally, without gaps at either end
 --
 -- The algorithm is the O(nd) algorithm by Myers, implemented in C.  A
 -- gap and a mismatch score the same.  The strings are supposed to code
--- for DNA, the code understands IUPAC ambiguity codes.  Two characters
--- match iff there is at least one nucleotide both can code for.  Note
--- that N is a wildcard, while X matches nothing.
+-- for DNA, the code understands IUPAC-IUB ambiguity codes.  Two
+-- characters match iff there is at least one nucleotide both can code
+-- for.  Note that N is a wildcard, while X matches nothing.
 
 myersAlign :: Int -> S.ByteString -> Mode -> S.ByteString -> (Int, S.ByteString, S.ByteString)
 myersAlign maxd seqA mode seqB =

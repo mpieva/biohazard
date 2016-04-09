@@ -1,8 +1,6 @@
 {-# LANGUAGE BangPatterns #-}
 module Bio.Genocall where
 
-import Debug.Trace
-
 import Bio.Bam.Pileup
 import Bio.Base
 import Bio.Genocall.Adna

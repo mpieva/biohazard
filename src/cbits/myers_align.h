@@ -9,12 +9,12 @@ enum myers_align_mode {
 //! \brief aligns two sequences in O(nd) time
 //! This alignment algorithm following Eugene W. Myers: "An O(ND)
 //! Difference Algorithm and Its Variations".
-//! Both input sequences are ASCIIZ-encoded with IUPAC ambiguity codes.
-//! By definition, if ambiguity codes overlap, that's a match, else a
-//! mismatch.  Mismatches and gaps count a unit penalty.  If mode is
-//! myers_align_globally, both sequences must align completely.  If mode
-//! is myers_align_is_prefix, seq_a must align completely as prefix of
-//! seq_b.  If mode is myers_align_has_prefix, seq_b must align
+//! Both input sequences are ASCIIZ-encoded with IUPAC-IUB ambiguity
+//! codes.  By definition, if ambiguity codes overlap, that's a match,
+//! else a mismatch.  Mismatches and gaps count a unit penalty.  If mode
+//! is myers_align_globally, both sequences must align completely.  If
+//! mode is myers_align_is_prefix, seq_a must align completely as prefix
+//! of seq_b.  If mode is myers_align_has_prefix, seq_b must align
 //! completely as prefix of seq_a.  
 //!
 //! Note that the calculation time is O(nd) where n is the length of the
@@ -37,9 +37,8 @@ unsigned myers_diff(
         const char* seq_b, int len_b, int maxd,
         char *bt_a, char *bt_b ) ;
 
-//! \brief converts an IUPAC ambiguity code to a bitmap
-//! Each base is represented by a bit, makes checking for matches
-//! easier.
+//! \brief converts an IUPAC-IUB ambiguity code to a bitmap Each base is
+//! represented by a bit, makes checking for matches easier.
 inline int char_to_bitmap( char x ) 
 {
     switch( x & ~32 )

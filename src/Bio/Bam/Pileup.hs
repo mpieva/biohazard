@@ -415,11 +415,13 @@ get_waiting = PileM $ \k r p a w -> k w r p a w
 set_waiting :: Heap -> PileM m ()
 set_waiting !w = PileM $ \k r p a _ -> k () r p a w
 
+-- | Sends one piece of output downstream.  You are not expected to
+-- understand how this works, but at last it doesn't leak memory.
 {-# INLINE yield #-}
 yield :: Monad m => Pile -> PileM m ()
 yield x = PileM $ \ !kont !r !p !a !w !out !inp -> Iteratee $ \od oc ->
       let loop              = kont () r p a w
-          onDone a s        = od (idone a s) inp
+          onDone y s        = od (idone y s) inp
           onCont k Nothing  = runIter (loop k inp) od oc
           onCont k (Just e) = runIter (throwRecoverableErr e (loop k . (<>) inp)) od oc
       in runIter (out (Chunk [x])) onDone onCont

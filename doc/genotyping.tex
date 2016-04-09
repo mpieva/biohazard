@@ -371,10 +371,12 @@ heterozygosity.}
 damaged reads from these.  I estimated damage from the reads, and the
 estimate is nearly spot on.  On a dataset with 20\% divergence, the
 estimated divergence and heterozygosity are unaffected by damage,
-probably because damage is a minor effect here.  On a 0.1\% divergent
-dataset, naive genotype calling overestimates heterozygosity by a factor
-of 15, but gets homozygous divergence right.  Running with the estimated
-damage parameters gives a practically perfect result.} 
+probably because damage is a minor effect compared to divergence here.
+On a 0.1\% divergent dataset, naive genotype calling overestimates
+heterozygosity by a factor of 15, but gets homozygous divergence right
+(estimated $D=1.56\%, H/D=0.93$, but should be $D=0.3\%, H/D=0.67$.
+Running with the estimated damage parameters gives a practically perfect
+result.} 
 
 
 \subsection{Real Sequencing Data}
@@ -570,6 +572,23 @@ a contaminated sample, every position has two allele frequencies (or two
 sets of three allele frequencies).  We need to assign a contaminant
 probability to each read, which should derive from the alignment score
 given the currently estimated allele frequencies.}
+
+\subsection{Principal Component Analysis}
+
+\beware{I personally think PCA is not an analysis, it barely(!) serves
+as visualisation method.  Nonetheless, it is frequently requested.}
+
+``Modern'' PCA starts with a matrix where rows correspond to $m$
+individuals and columns to $n$ markers, such as allele frequencies.
+Means are subtracted from each column, then each column is divided by
+its empirical standard deviation $\sqrt{f_j (1 - f_j)}$.  For
+multiallelic sites, one frequency is used per variant.  
+
+Since $m < n$, matrix $X = \frac{1}{n} M M^T$ is small and \sc{Lapack}
+can trivially perform PCA on it.  It just so happens that $X$ is the
+same covariance matrix we estimated above.  (Before David and Nick got
+involved, everybody PCA's $\frac{1}{m} M^T M$ instead, which is much
+bigger.  I don't know why.)
 
 
 

@@ -58,12 +58,13 @@ import qualified Data.Vector.Generic                as V
 -- start with @\>@ or @\@@, we treat both equally.  The first word of
 -- the header becomes the read name, the remainder of the header is
 -- ignored.  The sequence can be split across multiple lines;
--- whitespace, dashes and dots are ignored, IUPAC ambiguity codes are
--- accepted as bases, anything else causes an error.  The sequence ends
--- at a line that is either a header or starts with @\+@, in the latter
--- case, that line is ignored and must be followed by quality scores.
--- There must be exactly as many Q-scores as there are bases, followed
--- immediately by a header or end-of-file.  Whitespace is ignored.
+-- whitespace, dashes and dots are ignored, IUPAC-IUB ambiguity codes
+-- are accepted as bases, anything else causes an error.  The sequence
+-- ends at a line that is either a header or starts with @\+@, in the
+-- latter case, that line is ignored and must be followed by quality
+-- scores.  There must be exactly as many Q-scores as there are bases,
+-- followed immediately by a header or end-of-file.  Whitespace is
+-- ignored.
 
 {-# WARNING parseFastq "parseFastq no longer removes syntactic warts!" #-}
 parseFastq :: Monad m => Enumeratee S.ByteString [ BamRec ] m a

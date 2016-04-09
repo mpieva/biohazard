@@ -46,11 +46,9 @@ data Conf = Conf {
     conf_metadata    :: FilePath,
     conf_ploidy      :: S.ByteString -> Int,
     conf_report      :: String -> IO () }
-    -- conf_prior_indel :: Prob' Float
 
 defaultConf :: Conf
 defaultConf = Conf (error "no metadata file specified") (const 2) (\_ -> return ())
-              -- (qualToProb $ Q 30) (2/3) (qualToProb $ Q 45)
 
 options :: [OptDescr (Conf -> IO Conf)]
 options = [
@@ -59,7 +57,6 @@ options = [
     Option "2"  ["diploid-chromosomes"] (ReqArg   set_dip "PRF") "Targets starting with PRF are diploid",
     Option "v"  ["verbose"]             (NoArg       be_verbose) "Print more diagnostics",
     Option "h?" ["help","usage"]        (NoArg       disp_usage) "Display this message" ]
-    -- Option "I"  ["prior-indel", "indel-rate"]        (ReqArg   set_indel "PROB") "Set prior for an indel variant to PROB",
   where
     disp_usage _ = do pn <- getProgName
                       let blah = "Usage: " ++ pn ++ " [OPTION...] [AVRO-FILE]"
@@ -71,8 +68,6 @@ options = [
 
     set_hap a c = return $ c { conf_ploidy = \chr -> if S.pack a `S.isPrefixOf` chr then 1 else conf_ploidy c chr }
     set_dip a c = return $ c { conf_ploidy = \chr -> if S.pack a `S.isPrefixOf` chr then 2 else conf_ploidy c chr }
-
-    -- set_indel      a c = (\p -> c { conf_prior_indel = toProb p }) <$> readIO a
 
 
 main :: IO ()
@@ -97,9 +92,9 @@ main' Conf{..} sample_name Sample{..} =
             bracket (openFd (mkpath sample_bcf_file) WriteOnly (Just 0o666) defaultFileFlags) closeFd $ \ofd ->
             enumFile defaultBufSize (mkpath sample_avro_file) >=> run                                 $
             joinI $ readAvroContainer                                                                 $ \av_meta ->
+            joinI $ progressPos getpos "calling at " conf_report (getRefseqs av_meta)                 $
             bcf_to_fd ofd (getRefseqs av_meta) [fromString sample_name]
                           (call (prior_div/3) prior_het, call prior_indel prior_het)
-
 
         _ -> fail $ show sample_name ++ " is missing divergence information"
   where
@@ -112,6 +107,9 @@ main' Conf{..} sample_name Sample{..} =
 
     mkpath :: Text -> FilePath
     mkpath t = takeDirectory conf_metadata </> unpack t
+
+    getpos :: GenoCallBlock -> (Refseq, Int)
+    getpos b = (reference_name b, start_position b)
 
 
 type CallFuncs = (U.Vector (Prob' Float) -> Int, U.Vector (Prob' Float) -> Int)
