@@ -46,6 +46,7 @@ import Bio.Iteratee
 import Bio.Util.AD
 import Bio.Util.AD2
 import Bio.Util.Numeric
+import Control.Applicative
 import Control.Concurrent.Async
 import Control.Monad                ( unless )
 import Data.Bits
@@ -65,7 +66,7 @@ import qualified Data.Vector                as V
 import qualified Data.Vector.Generic        as G
 import qualified Data.Vector.Unboxed        as U
 
-import Prelude hiding ( sequence_, mapM, mapM_, concatMap, sum, minimum, foldr1 )
+import Prelude hiding ( sequence_, mapM, mapM_, concatMap, sum, minimum, foldr1, foldl )
 
 -- | Roughly @Maybe (Nucleotide, Nucleotide)@, encoded compactly
 newtype NP = NP { unNP :: Word8 } deriving (Eq, Ord, Ix)
