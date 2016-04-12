@@ -1,4 +1,4 @@
-{-# LANGUAGE RecordWildCards, BangPatterns, OverloadedStrings, FlexibleContexts, RankNTypes #-}
+{-# LANGUAGE RecordWildCards, BangPatterns, OverloadedStrings, FlexibleContexts #-}
 -- Command line driver for simple genotype calling.  We have three
 -- separate steps:  Pileup from a BAM file (or multiple merged files) to
 -- produce likelihoods (and some auxillary statistics).  These are
@@ -32,6 +32,7 @@
 
 import Bio.Base
 import Bio.Bam.Header
+import Bio.Bam.Index
 import Bio.Bam.Pileup
 import Bio.Bam.Reader
 import Bio.Bam.Rec
@@ -40,17 +41,12 @@ import Bio.Genocall.Adna
 import Bio.Genocall.AvroFile
 import Bio.Genocall.Metadata
 import Bio.Iteratee
-import Bio.Util.AD
-import Bio.Util.AD2
-import Bio.Util.Numeric              ( log1p )
 import Control.Applicative
 import Control.Monad
 import Data.Aeson
 import Data.Avro
 import Data.String                   ( fromString )
 import Data.Vec.Packed               ( packMat )
-import Numeric                       ( showFFloat )
-import Numeric.LinearAlgebra.HMatrix ( eigSH', (><), toRows, scale )
 import System.Console.GetOpt
 import System.Environment
 import System.Exit
@@ -67,35 +63,36 @@ import qualified Data.Vector.Storable           as VS
 import qualified Data.Vector                    as V
 import qualified Data.Vector.Unboxed            as U
 import qualified Data.Vector.Unboxed.Mutable    as M
-
--- type OIter = Conf -> Refs -> Iteratee [Calls] IO ()
+import qualified Data.Sequence                  as Z
 
 data Conf = Conf {
-    -- conf_output      :: forall r . (OIter -> IO r) -> IO r,
+    -- Generator for output file name.  Receives sample name and
+    -- (optional) region as arguments.
+    conf_output      :: String -> Maybe String -> FilePath,
     conf_metadata    :: FilePath,
-    -- conf_damage      :: Maybe (DamageParameters Double),
-    -- conf_loverhang   :: Maybe Double,
-    -- conf_roverhang   :: Maybe Double,
-    -- conf_ds_deam     :: Double,
-    -- conf_ss_deam     :: Double,
     conf_theta       :: Maybe Double,
     conf_report      :: String -> IO () }
 
 defaultConf :: Conf
-defaultConf = Conf (error "no metadata file specified") Nothing (\_ -> return ())
+defaultConf = Conf default_out (error "no metadata file specified") Nothing (\_ -> return ())
+  where
+    default_out smp   Nothing  = smp <> ".av"
+    default_out smp (Just rgn) = smp <> "-" <> rgn <> ".av"
+
 -- defaultConf = Conf ($ output_avro stdout) Nothing Nothing Nothing 0.02 0.45 Nothing (\_ -> return ())
 
 options :: [OptDescr (Conf -> IO Conf)]
 options = [
-    Option "t" dep_param  (ReqArg set_theta "FRAC") "Set dependency coefficient to FRAC (\"N\" to turn off)",
-    Option "c" ["config"] (ReqArg set_conf  "FILE") "Set name of json config file to FILE",
-    Option "v" ["verbose"]       (NoArg be_verbose) "Print more diagnostics",
-    Option "h?" ["help","usage"] (NoArg disp_usage) "Display this message" ]
+    Option "c" ["config"] (ReqArg set_conf   "FILE") "Set name of json config file to FILE",
+    Option "o" ["output"] (ReqArg set_output "FILE") "Set out file schema to FILE",
+    Option "t" dep_param  (ReqArg set_theta  "FRAC") "Set dependency coefficient to FRAC (\"N\" to turn off)",
+    Option "v" ["verbose"]        (NoArg be_verbose) "Print more diagnostics",
+    Option "h?" ["help","usage"]  (NoArg disp_usage) "Display this message" ]
   where
     dep_param   = ["theta","dependency-coefficient"]
 
     disp_usage _ = do pn <- getProgName
-                      let blah = "Usage: " ++ pn ++ " [OPTION...] [BAM-FILE...]"
+                      let blah = "Usage: " ++ pn ++ " [OPTION...] [SAMPLE [REGION...] ...]"
                       putStrLn $ usageInfo blah options
                       exitSuccess
 
@@ -105,53 +102,90 @@ options = [
     set_theta    "N" c = return $ c { conf_theta  = Nothing }
     set_theta      a c = (\t -> c { conf_theta       = Just   t }) <$> readIO a
 
+    set_output    fn c = return $ c { conf_output = mkoutput fn }
+
+mkoutput :: FilePath -> String -> Maybe String -> FilePath
+mkoutput str smp rgn = go str
+  where
+    go ('%':'s':s) = smp ++ go s
+    go ('%':'r':s) = maybe id (++) rgn $ go s
+    go ('%':'%':s) = '%' : go s
+    go ('%': c :s) =  c  : go s
+    go (     c :s) =  c  : go s
+    go [         ] = [ ]
+
 main :: IO ()
 main = do
-    (opts, samples, errs) <- getOpt Permute options <$> getArgs
+    (opts, samprgns, errs) <- getOpt Permute options <$> getArgs
     Conf{..} <- foldl (>>=) (return defaultConf) opts
     unless (null errs) $ mapM_ (hPutStrLn stderr) errs >> exitFailure
+
+    -- samprgns contains samples and regions.  We define anything found in the metadata as sample,
+    -- anything else as region to apply to the previous sample.  Name a sample "chr1" and you get
+    -- what you deserve.
+
+    samples <- flip split_sam_rgns samprgns <$> readMetadata (fromString conf_metadata)
     when (null samples) $ hPutStrLn stderr "need (at least) one sample name" >> exitFailure
 
-    forM_ samples $ \sample -> do
+    forM_ samples $ \(sample, rgns) -> do
         meta <- readMetadata (fromString conf_metadata)
 
         case H.lookup (fromString sample) meta of
             Nothing -> hPutStrLn stderr $ "unknown sample " ++ show sample
 
-            Just Sample{..} -> do
-                (tab,()) <- withFile (takeDirectory conf_metadata </> T.unpack sample_avro_file) WriteMode  $ \ohdl ->
-                            mergeLibraries conf_report conf_metadata sample_libraries >=> run               $ \hdr ->
+            Just smp -> forM_ rgns $ \rgn -> do
+                (tab,()) <- withFile (takeDirectory conf_metadata </> conf_output sample rgn) WriteMode     $ \ohdl ->
+                            mergeLibraries conf_report conf_metadata (sample_libraries smp) rgn >=> run     $ \hdr ->
                             progressPos (\(rs, p, _) -> (rs, p)) "GT call at " conf_report (meta_refs hdr) =$
                             pileup                                                                         =$
                             mapStream (calls conf_theta)                                                   =$
                             zipStreams tabulateSingle (output_avro ohdl $ meta_refs hdr)
 
-                conf_report $ "Estimating divergence parameters for " ++ sample ++ "..."
-                est <- uncurry estimateSingle tab
-                updateMetadata (H.adjust (\smp -> smp { sample_divergences = Just est })
-                               (fromString sample)) (fromString conf_metadata)
+                let upd_div_tables f s = s { sample_div_tables = f $ sample_div_tables s }
+                updateMetadata (H.adjust (upd_div_tables $ H.insert (maybe T.empty T.pack rgn) tab)
+                                         (fromString sample)) (fromString conf_metadata)
 
 mergeLibraries :: (MonadIO m, MonadMask m)
                => (String -> IO ()) -> FilePath
-               -> [Library] -> Enumerator' BamMeta [PosPrimChunks] m b
-mergeLibraries  report cfg [ l  ] = enumLibrary report cfg l
-mergeLibraries  report cfg (l:ls) = mergeEnums' (mergeLibraries report cfg ls) (enumLibrary report cfg l) mm
+               -> [Library] -> Maybe String -> Enumerator' BamMeta [PosPrimChunks] m b
+mergeLibraries  report cfg [ l  ] mrgn = enumLibrary report cfg l mrgn
+mergeLibraries  report cfg (l:ls) mrgn = mergeEnums' (mergeLibraries report cfg ls mrgn) (enumLibrary report cfg l mrgn) mm
   where
     mm _ = mergeSortStreams $ \(rs1, p1, _) (rs2, p2, _) -> if (rs1, p1) < (rs2, p2) then Less else NotLess
 
-enumLibrary :: (MonadIO m, MonadMask m) => (String -> IO ()) -> FilePath -> Library -> Enumerator' BamMeta [PosPrimChunks] m b
-enumLibrary report cfg (Library nm fs mdp) output = do
+enumLibrary :: (MonadIO m, MonadMask m)
+            => (String -> IO ()) -> FilePath
+            -> Library -> Maybe String -> Enumerator' BamMeta [PosPrimChunks] m b
+enumLibrary report cfg (Library nm fs mdp) mrgn output = do
     let (msg, dmg) = case mdp of Nothing -> ("no damage model", noDamage)
                                  Just dp -> ("universal damage parameters" ++ show dp, univDamage dp)
 
     liftIO . report $ "using " ++ msg ++ " for " ++ T.unpack nm
-    mergeInputs combineCoordinates (map ((</>) (takeDirectory cfg) . T.unpack) fs)
+    mergeInputRgns mrgn combineCoordinates (map ((</>) (takeDirectory cfg) . T.unpack) fs)
         $== takeWhileE (isValidRefseq . b_rname . unpackBam)
         $== mapMaybeStream (\br ->
                 let b = unpackBam br
                     m = dmg (isReversed b) (VS.length (b_qual b))
                 in decompose (map packMat $ V.toList m) br)
         $ output
+
+mergeInputRgns :: (MonadIO m, MonadMask m)
+    => Maybe String
+    -> (BamMeta -> Enumeratee [BamRaw] [BamRaw] (Iteratee [BamRaw] m) a)
+    -> [FilePath] -> Enumerator' BamMeta [BamRaw] m a
+mergeInputRgns     _      _  [        ] = \k -> return (k mempty)
+mergeInputRgns  Nothing  (?)      fps   = mergeInputs (?) fps
+mergeInputRgns (Just rs) (?) (fp0:fps0) = go fp0 fps0
+  where
+    enum1  fp k1 = do idx <- liftIO $ readBamIndex fp
+                      enumFileRandom defaultBufSize fp >=> run >=> run $
+                            decodeAnyBam $ \hdr ->
+                            let Just ri = Z.findIndexL ((==) rs . unpackSeqid . sq_name) (meta_refs hdr)
+                            in eneeBamRefseq idx (Refseq $ fromIntegral ri) $ k1 hdr
+
+    go fp [       ] = enum1 fp
+    go fp (fp1:fps) = mergeEnums' (go fp1 fps) (enum1 fp) (?)
+
 
 -- | Ploidy is hardcoded as two here.  Can be changed if the need
 -- arises.
@@ -284,74 +318,4 @@ tabulateSingle = do
                                ix = (t + refix) * maxD * maxD + d1 * maxD + d2
                            liftIO $ M.read tab ix >>= M.write tab ix . succ
                            return $! acc + a
-
--- XXX need to think about what to return or store and why...
--- XXX we should estimate an indel rate, to be appended as the fourth result
-estimateSingle :: Double -> U.Vector Int -> IO [Double]
-estimateSingle llk_rr tab = do
-    (fit, res, stats) <- minimize quietParameters 0.0001 (llk tab) (U.fromList [0,0,0])
-    putStrLn $ show res ++ ", " ++ show stats { finalValue = finalValue stats - llk_rr }
-
-    let showRes xx =
-          case VS.toList xx of
-            [delta, eta, eta2] ->
-              let dv  = exp delta / (1 + exp delta)
-                  ht  = exp eta  / (1 + exp eta) -- * dv
-                  ht' = exp eta2 / (1 + exp eta2) -- * dv
-              in "D = " ++ showFFloat (Just 3) dv ", " ++
-                 "H1 = " ++ showFFloat (Just 3) ht ", " ++
-                 "H2 = " ++ showFFloat (Just 3) ht' []
-            _ -> error "Wtf? (1)"
-
-    -- confidence interval:  PCA on Hessian matrix, then for each
-    -- eigenvalue λ add/subtract 1.96 / sqrt λ times the corresponding
-    -- eigenvalue to the estimate.  That should describe a nice
-    -- spheroid.
-
-    let D2 _val grd hss = llk2 tab (paramVector2 $ VS.toList fit)
-        d               = U.length grd
-        (evals, evecs)  = eigSH' $ (d >< d) (U.toList hss)
-
-    putStrLn $ showRes fit
-    sequence_ [ putStrLn $ "[ " ++ showRes (fit + scale lam evec)
-                      ++ " .. " ++ showRes (fit + scale (-lam) evec) ++ " ]"
-              | (eval, evec) <- zip (VS.toList evals) (toRows evecs)
-              , let lam = 1.96 / sqrt eval ]
-
-    case VS.toList fit of
-        [delta, eta, eta2] ->
-              let dv  = exp delta / (1 + exp delta)
-                  ht  = exp eta  / (1 + exp eta) -- * dv
-                  ht' = exp eta2 / (1 + exp eta2) -- * dv
-              in return [ dv, ht * dv, ht' * dv ]
-        _ -> error "Wtf? (2)"
-
-
-llk :: U.Vector Int -> [AD] -> AD
-llk tab [delta,eta,eta2] = llk' tab 0 delta eta + llk' tab 6 delta eta2
-llk _ _ = error "Wtf? (3)"
-
-llk2 :: U.Vector Int -> [AD2] -> AD2
-llk2 tab [delta,eta,eta2] = llk' tab 0 delta eta + llk' tab 6 delta eta2
-llk2 _ _ = error "Wtf? (4)"
-
-{-# INLINE llk' #-}
-llk' :: (Ord a, Floating a) => U.Vector Int -> Int -> a -> a -> a
-llk' tab base delta eta = block (base+0) g_RR g_RA g_AA
-                        + block (base+1) g_RR g_AA g_RA
-                        + block (base+2) g_RA g_RR g_AA
-                        + block (base+3) g_RA g_AA g_RR
-                        + block (base+4) g_AA g_RR g_RA
-                        + block (base+5) g_AA g_RA g_RR
-  where
-    !g_RR =        1 / Pr (log1p (exp delta))
-    !g_AA = Pr delta / Pr (log1p (exp delta)) *      1 / Pr (log1p (exp eta))
-    !g_RA = Pr delta / Pr (log1p (exp delta)) * Pr eta / Pr (log1p (exp eta))
-
-    block ix g1 g2 g3 = U.ifoldl' step 0 $ U.slice (ix * maxD * maxD) (maxD * maxD) tab
-      where
-        step !acc !i !num = acc - fromIntegral num * unPr p
-          where
-            (!d1,!d2) = i `quotRem` maxD
-            p = g1 + Pr (- fromIntegral d1) * g2 + Pr (- fromIntegral (d1+d2)) * g3
 

@@ -28,7 +28,7 @@ import Data.Bits
 import Data.Foldable                    ( toList, foldMap )
 import Data.MiniFloat
 import Data.String
-import Data.Text                        ( Text, unpack )
+import Data.Text                        ( unpack )
 import Foreign.Ptr                      ( castPtr )
 import System.Console.GetOpt
 import System.Environment
@@ -44,57 +44,80 @@ import qualified System.IO                      as IO
 
 data Conf = Conf {
     conf_metadata    :: FilePath,
+    conf_output      :: String -> Maybe String -> FilePath,
     conf_ploidy      :: S.ByteString -> Int,
     conf_report      :: String -> IO () }
 
 defaultConf :: Conf
-defaultConf = Conf (error "no metadata file specified") (const 2) (\_ -> return ())
+defaultConf = Conf (error "no metadata file specified") default_out (const 2) (\_ -> return ())
+  where
+    default_out smp   Nothing  = smp <> ".bcf"
+    default_out smp (Just rgn) = smp <> "-" <> rgn <> ".bcf"
 
 options :: [OptDescr (Conf -> IO Conf)]
 options = [
-    Option "c"  ["config"]              (ReqArg set_conf "FILE") "Set name of json config file to FILE",
-    Option "1"  ["haploid-chromosomes"] (ReqArg   set_hap "PRF") "Targets starting with PRF are haploid",
-    Option "2"  ["diploid-chromosomes"] (ReqArg   set_dip "PRF") "Targets starting with PRF are diploid",
-    Option "v"  ["verbose"]             (NoArg       be_verbose) "Print more diagnostics",
-    Option "h?" ["help","usage"]        (NoArg       disp_usage) "Display this message" ]
+    Option "c"  ["config"]          (ReqArg   set_conf "FILE") "Set name of json config file to FILE",
+    Option "o"  ["output"]          (ReqArg set_output "FILE") "Set output file pattern to FILE",
+    Option "1"  ["haploid-chromosomes"] (ReqArg set_hap "PRF") "Targets starting with PRF are haploid",
+    Option "2"  ["diploid-chromosomes"] (ReqArg set_dip "PRF") "Targets starting with PRF are diploid",
+    Option "v"  ["verbose"]             (NoArg     be_verbose) "Print more diagnostics",
+    Option "h?" ["help","usage"]        (NoArg     disp_usage) "Display this message" ]
   where
     disp_usage _ = do pn <- getProgName
-                      let blah = "Usage: " ++ pn ++ " [OPTION...] [AVRO-FILE]"
+                      let blah = "Usage: " ++ pn ++ " [OPTION...] [SAMPLE [REGION...] ...]"
                       putStrLn $ usageInfo blah options
                       exitFailure
 
     be_verbose       c = return $ c { conf_report = IO.hPutStrLn stderr }
     set_conf      fn c = return $ c { conf_metadata = fn }
 
-    set_hap a c = return $ c { conf_ploidy = \chr -> if S.pack a `S.isPrefixOf` chr then 1 else conf_ploidy c chr }
-    set_dip a c = return $ c { conf_ploidy = \chr -> if S.pack a `S.isPrefixOf` chr then 2 else conf_ploidy c chr }
+    set_hap        a c = return $ c { conf_ploidy = \chr -> if S.pack a `S.isPrefixOf` chr then 1 else conf_ploidy c chr }
+    set_dip        a c = return $ c { conf_ploidy = \chr -> if S.pack a `S.isPrefixOf` chr then 2 else conf_ploidy c chr }
 
+    set_output    fn c = return $ c { conf_output = mkoutput fn }
+
+mkoutput :: FilePath -> String -> Maybe String -> FilePath
+mkoutput str smp rgn = go str
+  where
+    go ('%':'s':s) = smp ++ go s
+    go ('%':'r':s) = maybe id (++) rgn $ go s
+    go ('%':'%':s) = '%' : go s
+    go ('%': c :s) =  c  : go s
+    go (     c :s) =  c  : go s
+    go [         ] = [ ]
 
 main :: IO ()
 main = do
-    (opts, samples, errs) <- getOpt Permute options <$> getArgs
+    (opts, samprgns, errs) <- getOpt Permute options <$> getArgs
     unless (null errs) $ mapM_ (IO.hPutStrLn stderr) errs >> exitFailure
-    when (null samples) $ IO.hPutStrLn stderr "need (at least) one sample name" >> exitFailure
+
     conf <- foldl (>>=) (return defaultConf) opts
-    forM_ samples $ \sample -> do
+    samples <- flip split_sam_rgns samprgns <$> readMetadata (fromString (conf_metadata conf))
+    when (null samples) $ IO.hPutStrLn stderr "need (at least) one sample name" >> exitFailure
+
+    forM_ samples $ \(sample, rgns) -> do
         meta <- readMetadata (fromString (conf_metadata conf))
 
         case H.lookup (fromString sample) meta of
             Nothing -> IO.hPutStrLn stderr $ "unknown sample " ++ show sample
-            Just smp -> main' conf sample smp
+            Just smp -> main' conf sample smp rgns
 
-
-main' :: Conf -> String -> Sample -> IO ()
-main' Conf{..} sample_name Sample{..} =
-    case sample_divergences of
+main' :: Conf -> String -> Sample -> [Maybe String] -> IO ()
+main' Conf{..} sample_name smp rgns =
+    case sample_divergences smp of
         Just (prior_div : prior_het : _prior_het2 : more) ->
-            let prior_indel = case more of [] -> prior_div * 0.1 ; p : _ -> p in
-            bracket (openFd (mkpath sample_bcf_file) WriteOnly (Just 0o666) defaultFileFlags) closeFd $ \ofd ->
-            enumFile defaultBufSize (mkpath sample_avro_file) >=> run                                 $
-            joinI $ readAvroContainer                                                                 $ \av_meta ->
-            joinI $ progressPos getpos "calling at " conf_report (getRefseqs av_meta)                 $
-            bcf_to_fd ofd (getRefseqs av_meta) [fromString sample_name]
-                          (call (prior_div/3) prior_het, call prior_indel prior_het)
+            let prior_indel = case more of [] -> prior_div * 0.1 ; p : _ -> p
+            in forM_ rgns                                                                       $ \rgn -> do
+                bracket (openFd (mkpath rgn) WriteOnly (Just 0o666) defaultFileFlags) closeFd   $ \ofd ->
+                    enumFile defaultBufSize (bcfpath rgn) >=> run $
+                    joinI $ readAvroContainer                                                   $ \av_meta ->
+                    joinI $ progressPos getpos "calling at " conf_report (getRefseqs av_meta)   $
+                    bcf_to_fd ofd (getRefseqs av_meta) [fromString sample_name]
+                                  (call (prior_div/3) prior_het, call prior_indel prior_het)
+
+                let upd_bcf_files f s = s { sample_bcf_files = f $ sample_bcf_files s }
+                updateMetadata (H.adjust (upd_bcf_files $ H.insert (maybe "" fromString rgn) (fromString $ mkpath rgn))
+                                         (fromString sample_name)) (fromString conf_metadata)
 
         _ -> fail $ show sample_name ++ " is missing divergence information"
   where
@@ -105,8 +128,11 @@ main' Conf{..} sample_name Sample{..} =
                              U.// [ (i, toProb . realToFrac $ (1-prior_h) * prior)
                                   | i <- takeWhile (< U.length lks) (scanl (+) 2 [3..]) ]
 
-    mkpath :: Text -> FilePath
-    mkpath t = takeDirectory conf_metadata </> unpack t
+    mkpath :: Maybe String -> FilePath
+    mkpath rgn = takeDirectory conf_metadata </> conf_output sample_name rgn
+
+    bcfpath :: Maybe String -> FilePath
+    bcfpath r = takeDirectory conf_metadata </> unpack (sample_avro_files smp H.! maybe "" fromString r)
 
     getpos :: GenoCallBlock -> (Refseq, Int)
     getpos b = (reference_name b, start_position b)
@@ -230,6 +256,5 @@ toBcf refs smps (snp_call, indel_call) = eneeCheckIfDone go
         callidx = do_call lks
         h = length $ takeWhile (<= callidx) $ scanl (+) 1 [2..]
         g = callidx - h * (h+1) `div` 2
-
 
 

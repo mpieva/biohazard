@@ -442,7 +442,7 @@ instance Memorable AD2 where
 store_dp :: String -> DamageParameters Double -> Metadata -> Metadata
 store_dp lname dp = M.map go1
   where
-    go1 (Sample     ls af bf dv) = Sample (map go2 ls) af bf dv
+    go1 (Sample  ls af bf ts dv) = Sample (map go2 ls) af bf ts dv
     go2 (Library      nm fs dmg)
         | nm == fromString lname = Library nm fs (Just dp)
         | otherwise              = Library nm fs dmg

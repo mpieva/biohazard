@@ -126,8 +126,7 @@ Executable redeye-dar
   Main-is:             redeye-dar.hs
   Ghc-options:         -Wall -auto-all
   Hs-Source-Dirs:      tools
-  -- Ghc-options:         -Wall -auto-all -threaded -rtsopts -with-rtsopts=-N
-  Ghc-options:         -Wall -auto-all -rtsopts
+  Ghc-options:         -Wall -auto-all -threaded -rtsopts -with-rtsopts=-N
   Build-depends:       async,
                        base,
                        biohazard,
@@ -135,6 +134,19 @@ Executable redeye-dar
                        unordered-containers,
                        text,
                        vector
+
+-- Executable redeye-div
+  -- Main-is:             redeye-div.hs
+  -- Ghc-options:         -Wall -auto-all
+  -- Hs-Source-Dirs:      tools
+  -- Build-depends:       async,
+                       -- base,
+                       -- biohazard,
+                       -- filepath,
+                       -- hmatrix == 0.16.*,
+                       -- unordered-containers,
+                       -- text,
+                       -- vector
 
 Executable redeye-pileup
   Main-is:             redeye-pileup.hs
@@ -146,7 +158,6 @@ Executable redeye-pileup
                        bytestring,
                        containers,
                        filepath,
-                       hmatrix == 0.16.*,
                        iteratee,
                        text,
                        unordered-containers,

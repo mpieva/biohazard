@@ -4,36 +4,36 @@ module Bio.Genocall.Metadata where
 -- ^ Metadata necessary for a sensible genotyping workflow.
 
 import Bio.Genocall.Adna
-import Control.Applicative
+import Control.Applicative           hiding ( empty )
 import Control.Concurrent                   ( threadDelay )
 import Control.Exception
-import Data.Text                            ( Text )
-import Data.HashMap.Strict                  ( HashMap, traverseWithKey )
+import Data.Text                            ( Text, pack )
+import Data.HashMap.Strict                  ( HashMap, empty, singleton, member )
 import Data.Aeson
 import Data.ByteString.Char8                ( readFile, unpack )
 import Data.ByteString.Lazy                 ( writeFile )
 import Data.Monoid
+import Data.Vector.Unboxed                  ( Vector )
 import Prelude                       hiding ( writeFile, readFile )
 import System.IO.Error                      ( isAlreadyExistsErrorType, ioeGetErrorType )
 import System.Posix.Files.ByteString
 import System.Posix.ByteString.FilePath
 
 data Sample = Sample {
-    sample_libraries :: [Library],
-    sample_avro_file :: Text,
-    sample_bcf_file :: Text,
-    sample_divergences :: Maybe [Double] }
-        deriving Show
+    sample_libraries   :: [Library],
+    sample_avro_files  :: HashMap Text Text,                    -- ^ maps a region to the av file
+    sample_bcf_files   :: HashMap Text Text,                    -- ^ maps a region to the bcf file
+    sample_div_tables  :: HashMap Text (Double, Vector Int),    -- ^ maps a region to the table needed for div. estimation
+    sample_divergences :: Maybe [Double]
+  } deriving Show
 
 data Library = Library {
     library_name :: Text,
     library_files :: [Text],
-    library_damage :: Maybe (DamageParameters Double) }
-        deriving Show
+    library_damage :: Maybe (DamageParameters Double)
+  } deriving Show
 
-newtype Metadata' = Metadata' Metadata
 type Metadata = HashMap Text Sample
-
 
 instance ToJSON float => ToJSON (DamageParameters float) where
     toJSON DP{..} = object [ "ss-sigma"  .= ssd_sigma
@@ -67,23 +67,27 @@ instance FromJSON Library where
     parseJSON _ = fail "String or Object expected for library"
 
 instance ToJSON Sample where
-    toJSON (Sample ls avf bcf d) = object $ maybe id ((:) . ("divergence" .=)) d $
-                                          [ "libraries" .= ls, "avro-file" .= avf, "bcf-file"  .= bcf ]
-
-instance FromJSON Metadata' where
-    parseJSON = withObject "metadata must be an object" $ fmap Metadata' . traverseWithKey p_sample
+    toJSON (Sample ls avfs bcfs dts d) = object $ maybe id ((:) . ("divergence" .=)) d $
+                                                  hashToJson "libraries" ls $
+                                                  hashToJson "avro-files" avfs $
+                                                  hashToJson "bcf-files" bcfs $
+                                                  hashToJson "div-tables" dts []
       where
-        p_sample nm (String s) = pure $ Sample [Library s [s <> ".bam"] Nothing] (nm <> ".av") (nm <> ".bcf") Nothing
-        p_sample nm (Array ls) = (\ll -> Sample ll (nm <> ".av") (nm <> ".bcf") Nothing) <$> parseJSON (Array ls)
-        p_sample nm (Object o) = Sample <$> o .: "libraries"
-                                        <*> o .:? "avro-file" .!= (nm <> ".av")
-                                        <*> o .:? "bcf-file" .!= (nm <> ".bcf")
-                                        <*> o .:? "divergence"
-        p_sample nm _ = fail $ "String, Array or Object expected for Sample " ++ show nm
+        hashToJson k vs = if null vs then id else (:) (k .= vs)
+
+instance FromJSON Sample where
+    parseJSON (String s) = pure $ Sample [Library s [s <> ".bam"] Nothing] empty empty empty Nothing
+    parseJSON (Array ls) = (\ll -> Sample ll empty empty empty Nothing) <$> parseJSON (Array ls)
+    parseJSON (Object o) = Sample <$> o .: "libraries"
+                                  <*> (singleton "" <$> o .: "avro-file" <|> o .:? "avro-files" .!= empty)
+                                  <*> (singleton "" <$> o .: "bcf-file"  <|> o .:? "bcf-files"  .!= empty)
+                                  <*> o .:? "div-tables" .!= empty
+                                  <*> o .:? "divergence"
+    parseJSON _ = fail $ "String, Array or Object expected for Sample"
 
 -- | Read the configuration file.  Nothing special.
 readMetadata :: RawFilePath -> IO Metadata
-readMetadata fn = either error (\(Metadata' m) -> return m) . eitherDecodeStrict =<< readFile (unpack fn)
+readMetadata fn = either error return . eitherDecodeStrict =<< readFile (unpack fn)
 
 -- | Update the configuration file.  First make a hard link to the
 -- configuration file under a well known name (fn++"~old").  This can
@@ -102,3 +106,10 @@ updateMetadata f fp = go (36::Int)     -- retry every 5 secs for 3 minutes
                     rename (fp <> "~new") fp
                 `finally` removeLink (fp <> "~old"))
                 (\_ -> threadDelay 5000000 >> go (n-1))
+
+split_sam_rgns :: Metadata -> [String] -> [( String, [Maybe String] )]
+split_sam_rgns _meta [    ] = []
+split_sam_rgns  meta (s:ss) = (s, if null rgns then [Nothing] else map Just rgns) : split_sam_rgns meta rest
+    where (rgns, rest) = break (\x -> pack x `member` meta) ss
+
+
