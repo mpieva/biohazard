@@ -8,7 +8,7 @@ import Control.Applicative           hiding ( empty )
 import Control.Concurrent                   ( threadDelay )
 import Control.Exception
 import Data.Text                            ( Text, pack )
-import Data.HashMap.Strict                  ( HashMap, empty, singleton, member )
+import Data.HashMap.Strict                  ( HashMap )
 import Data.Aeson
 import Data.ByteString.Char8                ( readFile, unpack )
 import Data.ByteString.Lazy                 ( writeFile )
@@ -18,6 +18,8 @@ import Prelude                       hiding ( writeFile, readFile )
 import System.IO.Error                      ( isAlreadyExistsErrorType, ioeGetErrorType )
 import System.Posix.Files.ByteString
 import System.Posix.ByteString.FilePath
+
+import qualified Data.HashMap.Strict as M
 
 data Sample = Sample {
     sample_libraries   :: [Library],
@@ -68,20 +70,21 @@ instance FromJSON Library where
 
 instance ToJSON Sample where
     toJSON (Sample ls avfs bcfs dts d) = object $ maybe id ((:) . ("divergence" .=)) d $
-                                                  hashToJson "libraries" ls $
+                                                  listToJson "libraries"  ls   $
                                                   hashToJson "avro-files" avfs $
-                                                  hashToJson "bcf-files" bcfs $
-                                                  hashToJson "div-tables" dts []
+                                                  hashToJson "bcf-files"  bcfs $
+                                                  hashToJson "div-tables" dts  []
       where
-        hashToJson k vs = if null vs then id else (:) (k .= vs)
+        hashToJson k vs = if M.null vs then id else (:) (k .= vs)
+        listToJson k vs = if   null vs then id else (:) (k .= vs)
 
 instance FromJSON Sample where
-    parseJSON (String s) = pure $ Sample [Library s [s <> ".bam"] Nothing] empty empty empty Nothing
-    parseJSON (Array ls) = (\ll -> Sample ll empty empty empty Nothing) <$> parseJSON (Array ls)
+    parseJSON (String s) = pure $ Sample [Library s [s <> ".bam"] Nothing] M.empty M.empty M.empty Nothing
+    parseJSON (Array ls) = (\ll -> Sample ll M.empty M.empty M.empty Nothing) <$> parseJSON (Array ls)
     parseJSON (Object o) = Sample <$> o .: "libraries"
-                                  <*> (singleton "" <$> o .: "avro-file" <|> o .:? "avro-files" .!= empty)
-                                  <*> (singleton "" <$> o .: "bcf-file"  <|> o .:? "bcf-files"  .!= empty)
-                                  <*> o .:? "div-tables" .!= empty
+                                  <*> (M.singleton "" <$> o .: "avro-file" <|> o .:? "avro-files" .!= M.empty)
+                                  <*> (M.singleton "" <$> o .: "bcf-file"  <|> o .:? "bcf-files"  .!= M.empty)
+                                  <*> o .:? "div-tables" .!= M.empty
                                   <*> o .:? "divergence"
     parseJSON _ = fail $ "String, Array or Object expected for Sample"
 
@@ -110,6 +113,6 @@ updateMetadata f fp = go (36::Int)     -- retry every 5 secs for 3 minutes
 split_sam_rgns :: Metadata -> [String] -> [( String, [Maybe String] )]
 split_sam_rgns _meta [    ] = []
 split_sam_rgns  meta (s:ss) = (s, if null rgns then [Nothing] else map Just rgns) : split_sam_rgns meta rest
-    where (rgns, rest) = break (\x -> pack x `member` meta) ss
+    where (rgns, rest) = break (\x -> pack x `M.member` meta) ss
 
 
