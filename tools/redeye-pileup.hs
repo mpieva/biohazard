@@ -48,6 +48,7 @@ import Data.Avro
 import Data.String                   ( fromString )
 import Data.Vec.Packed               ( packMat )
 import System.Console.GetOpt
+import System.Directory              ( renameFile )
 import System.Environment
 import System.Exit
 import System.FilePath
@@ -134,7 +135,9 @@ main = do
             Nothing -> hPutStrLn stderr $ "unknown sample " ++ show sample
 
             Just smp -> forM_ rgns $ \rgn -> do
-                (tab,()) <- withFile (takeDirectory conf_metadata </> conf_output sample rgn) WriteMode     $ \ohdl ->
+                let outfile = takeDirectory conf_metadata </> conf_output sample rgn
+                    tmpfile = outfile ++ ".#"
+                (tab,()) <- withFile tmpfile WriteMode                                                      $ \ohdl ->
                             mergeLibraries conf_report conf_metadata (sample_libraries smp) rgn >=> run     $ \hdr ->
                             progressPos (\(rs, p, _) -> (rs, p)) "GT call at " conf_report (meta_refs hdr) =$
                             pileup                                                                         =$
@@ -144,6 +147,7 @@ main = do
                 let upd_div_tables f s = s { sample_div_tables = f $ sample_div_tables s }
                 updateMetadata (H.adjust (upd_div_tables $ H.insert (maybe T.empty T.pack rgn) tab)
                                          (fromString sample)) (fromString conf_metadata)
+                renameFile tmpfile outfile
 
 mergeLibraries :: (MonadIO m, MonadMask m)
                => (String -> IO ()) -> FilePath

@@ -31,6 +31,7 @@ import Data.String
 import Data.Text                        ( unpack )
 import Foreign.Ptr                      ( castPtr )
 import System.Console.GetOpt
+import System.Directory                 ( renameFile )
 import System.Environment
 import System.Exit
 import System.FilePath
@@ -108,16 +109,22 @@ main' Conf{..} sample_name smp rgns =
         Just (prior_div : prior_het : _prior_het2 : more) ->
             let prior_indel = case more of [] -> prior_div * 0.1 ; p : _ -> p
             in forM_ rgns                                                                       $ \rgn -> do
-                bracket (openFd (mkpath rgn) WriteOnly (Just 0o666) defaultFileFlags) closeFd   $ \ofd ->
-                    enumFile defaultBufSize (bcfpath rgn) >=> run $
+                let infile  = takeDirectory conf_metadata </> unpack
+                                    (sample_avro_files smp H.! maybe "" fromString rgn)
+                    outfile = takeDirectory conf_metadata </> conf_output sample_name rgn
+                    tmpfile = outfile ++ ".#"
+
+                bracket (openFd tmpfile WriteOnly (Just 0o666) defaultFileFlags) closeFd        $ \ofd ->
+                    enumFile defaultBufSize infile >=> run $
                     joinI $ readAvroContainer                                                   $ \av_meta ->
                     joinI $ progressPos getpos "calling at " conf_report (getRefseqs av_meta)   $
                     bcf_to_fd ofd (getRefseqs av_meta) [fromString sample_name]
                                   (call (prior_div/3) prior_het, call prior_indel prior_het)
 
                 let upd_bcf_files f s = s { sample_bcf_files = f $ sample_bcf_files s }
-                updateMetadata (H.adjust (upd_bcf_files $ H.insert (maybe "" fromString rgn) (fromString $ mkpath rgn))
+                updateMetadata (H.adjust (upd_bcf_files $ H.insert (maybe "" fromString rgn) (fromString outfile))
                                          (fromString sample_name)) (fromString conf_metadata)
+                renameFile tmpfile outfile
 
         _ -> fail $ show sample_name ++ " is missing divergence information"
   where
@@ -127,12 +134,6 @@ main' Conf{..} sample_name smp rgns =
                              U.// [ (0, toProb . realToFrac $ 1-prior) ]
                              U.// [ (i, toProb . realToFrac $ (1-prior_h) * prior)
                                   | i <- takeWhile (< U.length lks) (scanl (+) 2 [3..]) ]
-
-    mkpath :: Maybe String -> FilePath
-    mkpath rgn = takeDirectory conf_metadata </> conf_output sample_name rgn
-
-    bcfpath :: Maybe String -> FilePath
-    bcfpath r = takeDirectory conf_metadata </> unpack (sample_avro_files smp H.! maybe "" fromString r)
 
     getpos :: GenoCallBlock -> (Refseq, Int)
     getpos b = (reference_name b, start_position b)
