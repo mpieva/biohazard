@@ -415,6 +415,8 @@ instance Memorable Double where
 instance Memorable AD where
     type Memo AD = (Int, U.Vector Double)
 
+    fromListN _    [       ] = error "unexpected: tried to memorize an empty list"
+    fromListN _    (C _  :_) = error "unexpected: tried to memorize a value without derivatives"
     fromListN n xs@(D _ v:_) = (1+d, U.fromListN (n * (1+d)) $ concatMap unp xs)
       where
         !d = U.length v
@@ -426,6 +428,8 @@ instance Memorable AD where
 instance Memorable AD2 where
     type Memo AD2 = (Int, U.Vector Double)
 
+    fromListN _    [            ] = error "unexpected: tried to memorize an empty list"
+    fromListN _    (C2 _     : _) = error "unexpected: tried to memorize a value without derivatives"
     fromListN n xs@(D2 _ v _ : _) = (d, U.fromListN (n * (1+d+d*d)) $ concatMap unp xs)
       where
         !d = U.length v
