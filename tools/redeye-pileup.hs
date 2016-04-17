@@ -125,11 +125,11 @@ main = do
     -- anything else as region to apply to the previous sample.  Name a sample "chr1" and you get
     -- what you deserve.
 
-    samples <- flip split_sam_rgns samprgns <$> readMetadata (fromString conf_metadata)
+    samples <- flip split_sam_rgns samprgns <$> readMetadata conf_metadata
     when (null samples) $ hPutStrLn stderr "need (at least) one sample name" >> exitFailure
 
     forM_ samples $ \(sample, rgns) -> do
-        meta <- readMetadata (fromString conf_metadata)
+        meta <- readMetadata conf_metadata
 
         case H.lookup (fromString sample) meta of
             Nothing -> hPutStrLn stderr $ "unknown sample " ++ show sample
@@ -146,7 +146,7 @@ main = do
 
                 let upd_div_tables f s = s { sample_div_tables = f $ sample_div_tables s }
                 updateMetadata (H.adjust (upd_div_tables $ H.insert (maybe T.empty T.pack rgn) tab)
-                                         (fromString sample)) (fromString conf_metadata)
+                                         (fromString sample)) conf_metadata
                 renameFile tmpfile outfile
 
 mergeLibraries :: (MonadIO m, MonadMask m)

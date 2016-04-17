@@ -3,21 +3,24 @@ module Bio.Genocall.Metadata where
 
 -- ^ Metadata necessary for a sensible genotyping workflow.
 
-import Bio.Genocall.Adna
+import Bio.Genocall.Adna                    ( DamageParameters(..) )
 import Control.Applicative           hiding ( empty )
 import Control.Concurrent                   ( threadDelay )
-import Control.Exception
+import Control.Exception                    ( bracket, onException, handleJust )
+import Control.Monad                        ( forM_ )
 import Data.Text                            ( Text, pack )
 import Data.HashMap.Strict                  ( HashMap )
 import Data.Aeson
-import Data.ByteString.Char8                ( readFile, unpack )
-import Data.ByteString.Lazy                 ( writeFile )
+import Data.ByteString.Char8                ( readFile )
+import Data.ByteString.Lazy                 ( toChunks )
+import Data.ByteString.Unsafe               ( unsafeUseAsCStringLen )
 import Data.Monoid
 import Data.Vector.Unboxed                  ( Vector )
+import Foreign.Ptr                          ( castPtr )
 import Prelude                       hiding ( writeFile, readFile )
 import System.IO.Error                      ( isAlreadyExistsErrorType, ioeGetErrorType )
-import System.Posix.Files.ByteString
-import System.Posix.ByteString.FilePath
+import System.Posix.Files                   ( rename, removeLink )
+import System.Posix.IO
 
 import qualified Data.HashMap.Strict as M
 
@@ -89,26 +92,44 @@ instance FromJSON Sample where
     parseJSON _ = fail $ "String, Array or Object expected for Sample"
 
 -- | Read the configuration file.  Nothing special.
-readMetadata :: RawFilePath -> IO Metadata
-readMetadata fn = either error return . eitherDecodeStrict =<< readFile (unpack fn)
+readMetadata :: FilePath -> IO Metadata
+readMetadata fn = either error return . eitherDecodeStrict =<< readFile fn
 
--- | Update the configuration file.  First make a hard link to the
--- configuration file under a well known name (fn++"~old").  This can
--- only succeed once.  If it fails, we back off and try again later (up
--- to a very long wait).  Else, we have exclusive access.  Read the
--- file, update the data, write a new file (fn++"~new"), atomically
--- rename it and unlink the old file.
-updateMetadata :: (Metadata -> Metadata) -> RawFilePath -> IO ()
+-- | Update the configuration file.  Open a new file (fn++"~new") in
+-- exclusive mode.  Then read the old file, write the update to the new
+-- file, rename it atomically, then close it.  Use of O_EXCL should
+-- ensure that nobody interferes.  This is atomic even on NFS, provided
+-- NFS and kernel are new enough.  For older NFS, I cannot be bothered.
+--
+-- (The first idea was to base this on the supposed fact that link(2) is
+-- atomic and fails if the new filename exists.  This approach does seem
+-- to contain a race condition, though.)
+updateMetadata :: (Metadata -> Metadata) -> FilePath -> IO ()
 updateMetadata f fp = go (36::Int)     -- retry every 5 secs for 3 minutes
   where
-    go n = catchJust
+    fpn = fp <> "~new"
+
+    go n = handleJust
+                (\e -> if isAlreadyExistsErrorType (ioeGetErrorType e) && n > 0 then Just () else Nothing)
+                (\_ -> threadDelay 5000000 >> go (n-1)) $ do
+                bracket 
+                    (openFd fpn WriteOnly (Just 0o666) defaultFileFlags{ exclusive = True })
+                    (closeFd) $ \fd ->
+                        (do mdata <- readMetadata fp
+                            forM_ (toChunks . encode . toJSON $ f mdata) $ \ch ->
+                                unsafeUseAsCStringLen ch $ \(p,l) ->
+                                    fdWriteBuf fd (castPtr p) (fromIntegral l)
+                            rename fpn fp)
+                        `onException` removeLink fpn
+
+    {- go n = catchJust
                 (\e -> if isAlreadyExistsErrorType (ioeGetErrorType e) && n > 0 then Just () else Nothing)
                 (do createLink fp (fp <> "~old")
                     mdata <- readMetadata fp
                     writeFile (unpack $ fp <> "~new") . encode . toJSON $ f mdata
                     rename (fp <> "~new") fp
                 `finally` removeLink (fp <> "~old"))
-                (\_ -> threadDelay 5000000 >> go (n-1))
+                (\_ -> threadDelay 5000000 >> go (n-1))  -}
 
 split_sam_rgns :: Metadata -> [String] -> [( String, [Maybe String] )]
 split_sam_rgns _meta [    ] = []

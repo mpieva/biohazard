@@ -59,7 +59,7 @@ import System.Console.GetOpt
 import System.Environment
 import System.Exit
 import System.FilePath
-import System.IO                    ( hPutStrLn, stderr )
+import System.IO                    ( hPutStrLn )
 
 import qualified Data.HashMap.Strict        as M
 import qualified Data.Vector                as V
@@ -203,7 +203,7 @@ main = do
 main' :: Conf -> String -> IO ()
 main' Conf{..} lname = do
     [Library _ fs _] <- return . filter ((fromString lname ==) . library_name) . concatMap sample_libraries . M.elems
-                        =<< readMetadata (fromString conf_metadata)
+                        =<< readMetadata conf_metadata
 
     -- XXX  meh.  subsampling from multiple files is not yet supported :(
     brs <- subsampleBam (takeDirectory conf_metadata </> unpack (head fs)) >=> run $ \_ ->
@@ -237,7 +237,7 @@ main' Conf{..} lname = do
 
     putStrLn $ "p_{ss} = " ++ show p_ss ++ ", p_{ds} = " ++ show p_ds
     putStrLn $ show DP{..}
-    updateMetadata (store_dp lname DP{..}) (fromString conf_metadata)
+    updateMetadata (store_dp lname DP{..}) conf_metadata
 
     -- Trying to get confidence intervals.  Right now, just get the
     -- gradient and Hessian at the ML point.  Gradient should be nearly

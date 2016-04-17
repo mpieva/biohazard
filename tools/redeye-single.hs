@@ -93,11 +93,11 @@ main = do
     unless (null errs) $ mapM_ (IO.hPutStrLn stderr) errs >> exitFailure
 
     conf <- foldl (>>=) (return defaultConf) opts
-    samples <- flip split_sam_rgns samprgns <$> readMetadata (fromString (conf_metadata conf))
+    samples <- flip split_sam_rgns samprgns <$> readMetadata (conf_metadata conf)
     when (null samples) $ IO.hPutStrLn stderr "need (at least) one sample name" >> exitFailure
 
     forM_ samples $ \(sample, rgns) -> do
-        meta <- readMetadata (fromString (conf_metadata conf))
+        meta <- readMetadata (conf_metadata conf)
 
         case H.lookup (fromString sample) meta of
             Nothing -> IO.hPutStrLn stderr $ "unknown sample " ++ show sample
@@ -123,7 +123,7 @@ main' Conf{..} sample_name smp rgns =
 
                 let upd_bcf_files f s = s { sample_bcf_files = f $ sample_bcf_files s }
                 updateMetadata (H.adjust (upd_bcf_files $ H.insert (maybe "" fromString rgn) (fromString outfile))
-                                         (fromString sample_name)) (fromString conf_metadata)
+                                         (fromString sample_name)) conf_metadata
                 renameFile tmpfile outfile
 
         _ -> fail $ show sample_name ++ " is missing divergence information"
