@@ -1,4 +1,4 @@
-{-# LANGUAGE OverloadedStrings, RecordWildCards #-}
+{-# LANGUAGE OverloadedStrings, RecordWildCards, FlexibleContexts #-}
 module Bio.Genocall.Metadata where
 
 -- ^ Metadata necessary for a sensible genotyping workflow.
@@ -29,7 +29,7 @@ data Sample = Sample {
     sample_avro_files  :: HashMap Text Text,                    -- ^ maps a region to the av file
     sample_bcf_files   :: HashMap Text Text,                    -- ^ maps a region to the bcf file
     sample_div_tables  :: HashMap Text (Double, Vector Int),    -- ^ maps a region to the table needed for div. estimation
-    sample_divergences :: Maybe [Double]
+    sample_divergences :: HashMap Text DivEst
   } deriving Show
 
 data Library = Library {
@@ -38,7 +38,26 @@ data Library = Library {
     library_damage :: Maybe (DamageParameters Double)
   } deriving Show
 
+-- | Divergence estimate.  Lists contain three or four floats, these are
+-- divergence, heterozygosity at W sites, heterozygosity at S sites, and
+-- optionally gappiness in this order.
+data DivEst = DivEst {
+    point_est :: [Double],
+    conf_region :: [( [Double], [Double] )]
+  } deriving Show
+
+
 type Metadata = HashMap Text Sample
+
+instance ToJSON DivEst where
+    toJSON DivEst{..} = object $ [ "estimate" .= point_est
+                                 , "confidence-region" .= conf_region ]
+
+instance FromJSON DivEst where
+    parseJSON (Object o) = DivEst <$> o .: "estimate" <*> o .:? "confidence-region" .!= []
+    parseJSON (Array a) = flip DivEst [] <$> parseJSON (Array a)
+    parseJSON _ = fail $ "divergence estimate should be an array or an object"
+
 
 instance ToJSON float => ToJSON (DamageParameters float) where
     toJSON DP{..} = object [ "ss-sigma"  .= ssd_sigma
@@ -72,23 +91,23 @@ instance FromJSON Library where
     parseJSON _ = fail "String or Object expected for library"
 
 instance ToJSON Sample where
-    toJSON (Sample ls avfs bcfs dts d) = object $ maybe id ((:) . ("divergence" .=)) d $
-                                                  listToJson "libraries"  ls   $
-                                                  hashToJson "avro-files" avfs $
-                                                  hashToJson "bcf-files"  bcfs $
-                                                  hashToJson "div-tables" dts  []
+    toJSON (Sample ls avfs bcfs dts ds) = object $ hashToJson "divergences" ds   $
+                                                   listToJson "libraries"   ls   $
+                                                   hashToJson "avro-files"  avfs $
+                                                   hashToJson "bcf-files"   bcfs $
+                                                   hashToJson "div-tables"  dts  []
       where
         hashToJson k vs = if M.null vs then id else (:) (k .= vs)
         listToJson k vs = if   null vs then id else (:) (k .= vs)
 
 instance FromJSON Sample where
-    parseJSON (String s) = pure $ Sample [Library s [s <> ".bam"] Nothing] M.empty M.empty M.empty Nothing
-    parseJSON (Array ls) = (\ll -> Sample ll M.empty M.empty M.empty Nothing) <$> parseJSON (Array ls)
+    parseJSON (String s) = pure $ Sample [Library s [s <> ".bam"] Nothing] M.empty M.empty M.empty M.empty
+    parseJSON (Array ls) = (\ll -> Sample ll M.empty M.empty M.empty M.empty) <$> parseJSON (Array ls)
     parseJSON (Object o) = Sample <$> o .: "libraries"
                                   <*> (M.singleton "" <$> o .: "avro-file" <|> o .:? "avro-files" .!= M.empty)
                                   <*> (M.singleton "" <$> o .: "bcf-file"  <|> o .:? "bcf-files"  .!= M.empty)
                                   <*> o .:? "div-tables" .!= M.empty
-                                  <*> o .:? "divergence"
+                                  <*> (M.singleton "" <$> o .: "divergence" <|> o.:? "divergences" .!= M.empty)
     parseJSON _ = fail $ "String, Array or Object expected for Sample"
 
 -- | Read the configuration file.  Nothing special.
@@ -112,7 +131,7 @@ updateMetadata f fp = go (36::Int)     -- retry every 5 secs for 3 minutes
     go n = handleJust
                 (\e -> if isAlreadyExistsErrorType (ioeGetErrorType e) && n > 0 then Just () else Nothing)
                 (\_ -> threadDelay 5000000 >> go (n-1)) $ do
-                bracket 
+                bracket
                     (openFd fpn WriteOnly (Just 0o666) defaultFileFlags{ exclusive = True })
                     (closeFd) $ \fd ->
                         (do mdata <- readMetadata fp

@@ -80,30 +80,28 @@ defaultConf = Conf default_out (error "no metadata file specified") Nothing (\_ 
     default_out smp   Nothing  = smp <> ".av"
     default_out smp (Just rgn) = smp <> "-" <> rgn <> ".av"
 
--- defaultConf = Conf ($ output_avro stdout) Nothing Nothing Nothing 0.02 0.45 Nothing (\_ -> return ())
-
 options :: [OptDescr (Conf -> IO Conf)]
 options = [
-    Option "c" ["config"] (ReqArg set_conf   "FILE") "Set name of json config file to FILE",
-    Option "o" ["output"] (ReqArg set_output "FILE") "Set out file schema to FILE",
-    Option "t" dep_param  (ReqArg set_theta  "FRAC") "Set dependency coefficient to FRAC (\"N\" to turn off)",
-    Option "v" ["verbose"]        (NoArg be_verbose) "Print more diagnostics",
-    Option "h?" ["help","usage"]  (NoArg disp_usage) "Display this message" ]
+    Option "c"  ["config"] (ReqArg set_conf   "FILE") "Set name of json config file to FILE",
+    Option "o"  ["output"] (ReqArg set_output "FILE") "Set out file schema to FILE",
+    Option "t"  dep_param  (ReqArg set_theta  "FRAC") "Set dependency coefficient to FRAC (\"N\" to turn off)",
+    Option "v"  ["verbose"]        (NoArg be_verbose) "Print more diagnostics",
+    Option "h?" ["help","usage"]   (NoArg disp_usage) "Display this message" ]
   where
-    dep_param   = ["theta","dependency-coefficient"]
+    dep_param = ["theta","dependency-coefficient"]
 
-    disp_usage _ = do pn <- getProgName
-                      let blah = "Usage: " ++ pn ++ " [OPTION...] [SAMPLE [REGION...] ...]"
-                      putStrLn $ usageInfo blah options
-                      exitSuccess
+    disp_usage    _ = do pn <- getProgName
+                         let blah = "Usage: " ++ pn ++ " [OPTION...] [SAMPLE [REGION...] ...]"
+                         putStrLn $ usageInfo blah options
+                         exitSuccess
 
-    be_verbose       c = return $ c { conf_report = hPutStrLn stderr }
-    set_conf      fn c = return $ c { conf_metadata = fn }
+    be_verbose    c = return $ c { conf_report = hPutStrLn stderr }
+    set_conf   fn c = return $ c { conf_metadata = fn }
 
-    set_theta    "N" c = return $ c { conf_theta  = Nothing }
-    set_theta      a c = (\t -> c { conf_theta       = Just   t }) <$> readIO a
+    set_theta "N" c = return $ c { conf_theta  = Nothing }
+    set_theta   a c = (\t -> c { conf_theta       = Just   t }) <$> readIO a
 
-    set_output    fn c = return $ c { conf_output = mkoutput fn }
+    set_output fn c = return $ c { conf_output = mkoutput fn }
 
 mkoutput :: FilePath -> String -> Maybe String -> FilePath
 mkoutput str smp rgn = go str
@@ -135,7 +133,8 @@ main = do
             Nothing -> hPutStrLn stderr $ "unknown sample " ++ show sample
 
             Just smp -> forM_ rgns $ \rgn -> do
-                let outfile = takeDirectory conf_metadata </> conf_output sample rgn
+                let outstem = conf_output sample rgn
+                    outfile = takeDirectory conf_metadata </> outstem
                     tmpfile = outfile ++ ".#"
                 (tab,()) <- withFile tmpfile WriteMode                                                      $ \ohdl ->
                             mergeLibraries conf_report conf_metadata (sample_libraries smp) rgn >=> run     $ \hdr ->
@@ -144,9 +143,10 @@ main = do
                             mapStream (calls conf_theta)                                                   =$
                             zipStreams tabulateSingle (output_avro ohdl $ meta_refs hdr)
 
-                let upd_div_tables f s = s { sample_div_tables = f $ sample_div_tables s }
-                updateMetadata (H.adjust (upd_div_tables $ H.insert (maybe T.empty T.pack rgn) tab)
-                                         (fromString sample)) conf_metadata
+                let upd_sample s = s { sample_div_tables = H.insert (maybe T.empty T.pack rgn)                 tab  (sample_div_tables s)
+                                     , sample_avro_files = H.insert (maybe T.empty T.pack rgn) (fromString outstem) (sample_avro_files s) }
+
+                updateMetadata (H.adjust upd_sample (fromString sample)) conf_metadata
                 renameFile tmpfile outfile
 
 mergeLibraries :: (MonadIO m, MonadMask m)

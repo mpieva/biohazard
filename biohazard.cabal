@@ -70,6 +70,7 @@ Library
                        Bio.Util.AD,
                        Bio.Util.AD2,
                        Bio.Util.Numeric,
+                       Bio.Util.Regex,
                        Data.MiniFloat,
                        Data.Avro
 
@@ -135,18 +136,18 @@ Executable redeye-dar
                        text,
                        vector
 
--- Executable redeye-div
-  -- Main-is:             redeye-div.hs
-  -- Ghc-options:         -Wall -auto-all
-  -- Hs-Source-Dirs:      tools
-  -- Build-depends:       async,
-                       -- base,
-                       -- biohazard,
-                       -- filepath,
-                       -- hmatrix == 0.16.*,
-                       -- unordered-containers,
-                       -- text,
-                       -- vector
+Executable redeye-div
+  Main-is:             redeye-div.hs
+  Ghc-options:         -Wall -auto-all -threaded -rtsopts -with-rtsopts=-N
+  Hs-Source-Dirs:      tools
+  Build-depends:       async,
+                       base,
+                       biohazard,
+                       filepath,
+                       hmatrix == 0.16.*,
+                       unordered-containers,
+                       text,
+                       vector
 
 Executable redeye-pileup
   Main-is:             redeye-pileup.hs

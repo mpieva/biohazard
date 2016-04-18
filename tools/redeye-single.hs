@@ -103,9 +103,11 @@ main = do
             Nothing -> IO.hPutStrLn stderr $ "unknown sample " ++ show sample
             Just smp -> main' conf sample smp rgns
 
+-- XXX  We need to find a set of divergence parameters that match the region.  Needs the regex
+-- engine, needs to traverse the object.
 main' :: Conf -> String -> Sample -> [Maybe String] -> IO ()
 main' Conf{..} sample_name smp rgns =
-    case sample_divergences smp of
+    case undefined {- sample_divergences smp -} of
         Just (prior_div : prior_het : _prior_het2 : more) ->
             let prior_indel = case more of [] -> prior_div * 0.1 ; p : _ -> p
             in forM_ rgns                                                                       $ \rgn -> do
