@@ -85,6 +85,7 @@ import Control.Monad.Catch
 import Control.Monad.IO.Class
 import Control.Monad.Trans.Class
 import Data.Binary.Get
+import Data.Bits                            ( shiftR )
 import Data.Iteratee.Binary
 import Data.Iteratee.Char
 import Data.Iteratee.IO              hiding ( defaultBufSize )
@@ -454,15 +455,16 @@ progressNum msg put = eneeCheckIfDonePass (icont . go 0)
 -- | A simple progress indicator that prints a position.
 progressPos :: (MonadIO m, ListLike s a, NullPoint s)
             => (a -> (Refseq, Int)) -> String -> (String -> IO ()) -> Refs -> Enumeratee s s m b
-progressPos f msg put refs = eneeCheckIfDonePass (icont . go 0)
+progressPos f msg put refs = eneeCheckIfDonePass (icont . go invalidRefseq 0)
   where
-    go !_ k   (EOF   mx) = idone (liftI k) (EOF mx)
-    go !n k c@(Chunk as) = let !n' = n + LL.length as
-                           in (when (n `div` 65536 /= n' `div` 65536) $
-                                  let (rs, po) = f (LL.head as)
-                                      nm = S.unpack (sq_name (getRef refs rs)) ++ ":"
-                                  in put $ "\27[K" ++ msg ++ nm ++ showNum po ++ "\r")
-                              `ioBind_` eneeCheckIfDonePass (icont . go n') (k c)
+    go !_   !_   k   (EOF   mx) = idone (liftI k) (EOF mx)
+    go !rs0 !po0 k c@(Chunk as)
+        | LL.null as = liftI $ go rs0 po0 k
+        | otherwise  = when (rs1 /= rs0 || po1 `shiftR` 19 /= po0 `shiftR` 19)
+                            (let nm = S.unpack (sq_name (getRef refs rs1)) ++ ":"
+                             in put $ "\27[K" ++ msg ++ nm ++ showNum po1 ++ "\r")
+                       `ioBind_` eneeCheckIfDonePass (icont . go rs1 po1) (k c)
+          where (!rs1, !po1) = f (LL.head as)
 
 -- A very simple queue data type.
 -- Invariants: q = QQ l f b --> l == length f + length b

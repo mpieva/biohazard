@@ -20,6 +20,7 @@ import Bio.Bam.Pileup
 import Bio.Genocall.AvroFile
 import Bio.Genocall.Metadata
 import Bio.Iteratee.Builder
+import Bio.Util.Regex                   ( Regex, regComp, regMatch )
 import Control.Applicative
 import Control.Exception                ( bracket )
 import Control.Monad
@@ -28,7 +29,7 @@ import Data.Bits
 import Data.Foldable                    ( toList, foldMap )
 import Data.MiniFloat
 import Data.String
-import Data.Text                        ( unpack )
+import Data.Text                        ( Text, unpack )
 import Foreign.Ptr                      ( castPtr )
 import System.Console.GetOpt
 import System.Directory                 ( renameFile )
@@ -45,24 +46,28 @@ import qualified System.IO                      as IO
 
 data Conf = Conf {
     conf_metadata    :: FilePath,
-    conf_output      :: String -> Maybe String -> FilePath,
-    conf_ploidy      :: S.ByteString -> Int,
+    -- | Generator for output file name.  Receives sample name and
+    -- (optional) region as arguments.
+    conf_output      :: String -> Text -> FilePath,
+    conf_regions     :: Regex,
+    conf_ploidy      :: String -> Int,
     conf_report      :: String -> IO () }
 
 defaultConf :: Conf
-defaultConf = Conf (error "no metadata file specified") default_out (const 2) (\_ -> return ())
+defaultConf = Conf (error "no metadata file specified") default_out (regComp "") (const 2) (\_ -> return ())
   where
-    default_out smp   Nothing  = smp <> ".bcf"
-    default_out smp (Just rgn) = smp <> "-" <> rgn <> ".bcf"
+    default_out smp  "" = smp <> ".bcf"
+    default_out smp rgn = smp <> "-" <> unpack rgn <> ".bcf"
 
 options :: [OptDescr (Conf -> IO Conf)]
 options = [
-    Option "c"  ["config"]          (ReqArg   set_conf "FILE") "Set name of json config file to FILE",
-    Option "o"  ["output"]          (ReqArg set_output "FILE") "Set output file pattern to FILE",
-    Option "1"  ["haploid-chromosomes"] (ReqArg set_hap "PRF") "Targets starting with PRF are haploid",
-    Option "2"  ["diploid-chromosomes"] (ReqArg set_dip "PRF") "Targets starting with PRF are diploid",
-    Option "v"  ["verbose"]             (NoArg     be_verbose) "Print more diagnostics",
-    Option "h?" ["help","usage"]        (NoArg     disp_usage) "Display this message" ]
+    Option "c"  ["config"]            (ReqArg   set_conf "FILE") "Set name of json config file to FILE",
+    Option "o"  ["output"]            (ReqArg set_output "FILE") "Set output file pattern to FILE",
+    Option "r"  ["regions"]         (ReqArg set_regions "REGEX") "Process only regions matching REGEX",
+    Option "1"  ["haploid-chromosomes"] (ReqArg set_hap "REGEX") "Targets matching REGEX are haploid",
+    Option "2"  ["diploid-chromosomes"] (ReqArg set_dip "REGEX") "Targets matching REGEX are diploid",
+    Option "v"  ["verbose"]             (NoArg       be_verbose) "Print more diagnostics",
+    Option "h?" ["help","usage"]        (NoArg       disp_usage) "Display this message" ]
   where
     disp_usage _ = do pn <- getProgName
                       let blah = "Usage: " ++ pn ++ " [OPTION...] [SAMPLE [REGION...] ...]"
@@ -72,16 +77,17 @@ options = [
     be_verbose       c = return $ c { conf_report = IO.hPutStrLn stderr }
     set_conf      fn c = return $ c { conf_metadata = fn }
 
-    set_hap        a c = return $ c { conf_ploidy = \chr -> if S.pack a `S.isPrefixOf` chr then 1 else conf_ploidy c chr }
-    set_dip        a c = return $ c { conf_ploidy = \chr -> if S.pack a `S.isPrefixOf` chr then 2 else conf_ploidy c chr }
+    set_hap        a c = return $ c { conf_ploidy = \chr -> if regMatch (regComp a) chr then 1 else conf_ploidy c chr }
+    set_dip        a c = return $ c { conf_ploidy = \chr -> if regMatch (regComp a) chr then 2 else conf_ploidy c chr }
+    set_regions    a c = return $ c { conf_regions = regComp $ "^" ++ a ++ "$" }
 
     set_output    fn c = return $ c { conf_output = mkoutput fn }
 
-mkoutput :: FilePath -> String -> Maybe String -> FilePath
+mkoutput :: FilePath -> String -> Text -> FilePath
 mkoutput str smp rgn = go str
   where
     go ('%':'s':s) = smp ++ go s
-    go ('%':'r':s) = maybe id (++) rgn $ go s
+    go ('%':'r':s) = unpack rgn ++ go s
     go ('%':'%':s) = '%' : go s
     go ('%': c :s) =  c  : go s
     go (     c :s) =  c  : go s
@@ -89,32 +95,35 @@ mkoutput str smp rgn = go str
 
 main :: IO ()
 main = do
-    (opts, samprgns, errs) <- getOpt Permute options <$> getArgs
+    (opts, samples, errs) <- getOpt Permute options <$> getArgs
     unless (null errs) $ mapM_ (IO.hPutStrLn stderr) errs >> exitFailure
 
     conf <- foldl (>>=) (return defaultConf) opts
-    samples <- flip split_sam_rgns samprgns <$> readMetadata (conf_metadata conf)
     when (null samples) $ IO.hPutStrLn stderr "need (at least) one sample name" >> exitFailure
 
-    forM_ samples $ \(sample, rgns) -> do
+    forM_ samples $ \sample -> do
         meta <- readMetadata (conf_metadata conf)
 
         case H.lookup (fromString sample) meta of
-            Nothing -> IO.hPutStrLn stderr $ "unknown sample " ++ show sample
-            Just smp -> main' conf sample smp rgns
+            Nothing  -> IO.hPutStrLn stderr $ "unknown sample " ++ show sample
+            Just smp -> main' conf sample smp (conf_regions conf)
 
--- XXX  We need to find a set of divergence parameters that match the region.  Needs the regex
--- engine, needs to traverse the object.
-main' :: Conf -> String -> Sample -> [Maybe String] -> IO ()
-main' Conf{..} sample_name smp rgns =
-    case undefined {- sample_divergences smp -} of
-        Just (prior_div : prior_het : _prior_het2 : more) ->
-            let prior_indel = case more of [] -> prior_div * 0.1 ; p : _ -> p
-            in forM_ rgns                                                                       $ \rgn -> do
-                let infile  = takeDirectory conf_metadata </> unpack
-                                    (sample_avro_files smp H.! maybe "" fromString rgn)
-                    outfile = takeDirectory conf_metadata </> conf_output sample_name rgn
-                    tmpfile = outfile ++ ".#"
+-- | Call for a given sample and a set of regions defined by a regex.
+-- Input are the av files whose keys match the region regex, output is
+-- generated schematically from the keys so that we get one bcf output
+-- for every av input.  Divergence parameters for each av file are the
+-- first set whose key interpreted as a regex matches the key for the av
+-- file.
+main' :: Conf -> String -> Sample -> Regex -> IO ()
+main' Conf{..} sample_name smp rgnex =
+    forM_ (filter (regMatch rgnex . unpack . fst) . H.toList $ sample_avro_files smp) $ \(rgn, avfile) ->
+        case fmap point_est $ H.foldrWithKey (ifMatch rgn) Nothing (sample_divergences smp) of
+            Just (prior_div : prior_het : _prior_het2 : more) -> do
+                liftIO $ conf_report $ "Calling " ++ sample_name ++ "/" ++ unpack rgn ++ "."
+                let prior_indel = case more of [] -> prior_div * 0.1 ; p : _ -> p
+                    infile      = takeDirectory conf_metadata </> unpack avfile
+                    outfile     = takeDirectory conf_metadata </> conf_output sample_name rgn
+                    tmpfile     = outfile ++ ".#"
 
                 bracket (openFd tmpfile WriteOnly (Just 0o666) defaultFileFlags) closeFd        $ \ofd ->
                     enumFile defaultBufSize infile >=> run $
@@ -124,11 +133,11 @@ main' Conf{..} sample_name smp rgns =
                                   (call (prior_div/3) prior_het, call prior_indel prior_het)
 
                 let upd_bcf_files f s = s { sample_bcf_files = f $ sample_bcf_files s }
-                updateMetadata (H.adjust (upd_bcf_files $ H.insert (maybe "" fromString rgn) (fromString outfile))
-                                         (fromString sample_name)) conf_metadata
+                    ins_bcf_file      = upd_bcf_files $ H.insert rgn (fromString outfile)
+                updateMetadata (H.adjust ins_bcf_file (fromString sample_name)) conf_metadata
                 renameFile tmpfile outfile
 
-        _ -> fail $ show sample_name ++ " is missing divergence information"
+            _ -> fail $ sample_name ++ "/" ++ unpack rgn ++ " is missing divergence information"
   where
     call :: Double -> Double -> U.Vector (Prob' Float) -> Int
     call prior prior_h lks = U.maxIndex . U.zipWith (*) lks $
@@ -140,18 +149,23 @@ main' Conf{..} sample_name smp rgns =
     getpos :: GenoCallBlock -> (Refseq, Int)
     getpos b = (reference_name b, start_position b)
 
+    ifMatch :: Text -> Text -> a -> Maybe a -> Maybe a
+    ifMatch r k v a = if regMatch (regComp (unpack k)) (unpack r) then Just v else a
 
-type CallFuncs = (U.Vector (Prob' Float) -> Int, U.Vector (Prob' Float) -> Int)
 
 -- | Generates BCF and writes it to a 'Handle'.  For the necessary VCF
 -- header, we get the /names/ of the reference sequences from the Avro
 -- schema and the /lengths/ from the biohazard.refseq_length entry in
 -- the meta data.
 bcf_to_fd :: MonadIO m => Fd -> Refs -> [S.ByteString] -> CallFuncs -> Iteratee [GenoCallBlock] m ()
-bcf_to_fd hdl refs smps call_fns = toBcf refs smps call_fns ><> encodeBgzfWith 9 =$ mapChunksM_ (liftIO . put)
-  where
-    put s = S.unsafeUseAsCStringLen s $ \(p,l) ->
-            fdWriteBuf hdl (castPtr p) (fromIntegral l)
+bcf_to_fd hdl refs name callz =
+    toBcf refs name callz ><> encodeBgzfWith 9 =$
+    mapChunksM_ (\s -> liftIO $ S.unsafeUseAsCStringLen s $ \(p,l) ->
+                                fdWriteBuf hdl (castPtr p) (fromIntegral l))
+
+
+
+type CallFuncs = (U.Vector (Prob' Float) -> Int, U.Vector (Prob' Float) -> Int)
 
 vcf_header :: Refs -> [S.ByteString] -> Push
 vcf_header refs smps = foldr (\a b -> pushByteString a <> pushByte 10 <> b) mempty $
