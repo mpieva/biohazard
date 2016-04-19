@@ -1,4 +1,4 @@
-{-# LANGUAGE OverloadedStrings, RecordWildCards, FlexibleContexts #-}
+{-# LANGUAGE OverloadedStrings, RecordWildCards, FlexibleContexts, BangPatterns #-}
 module Bio.Genocall.Metadata where
 
 -- ^ Metadata necessary for a sensible genotyping workflow.
@@ -17,6 +17,7 @@ import Data.ByteString.Unsafe               ( unsafeUseAsCStringLen )
 import Data.Monoid
 import Data.Vector.Unboxed                  ( Vector )
 import Foreign.Ptr                          ( castPtr )
+import GHC.IO.Exception                     ( IOErrorType(..) )
 import Prelude                       hiding ( writeFile, readFile )
 import System.IO.Error                      ( isAlreadyExistsErrorType, ioeGetErrorType )
 import System.Posix.Files                   ( rename, removeLink )
@@ -110,9 +111,16 @@ instance FromJSON Sample where
                                   <*> (M.singleton "" <$> o .: "divergence" <|> o.:? "divergences" .!= M.empty)
     parseJSON _ = fail $ "String, Array or Object expected for Sample"
 
--- | Read the configuration file.  Nothing special.
+
+-- | Read the configuration file.  Retries, because NFS tends to result
+-- in 'ResourceVanished' if the file is replaced while we try to read it.
 readMetadata :: FilePath -> IO Metadata
-readMetadata fn = either error return . eitherDecodeStrict =<< readFile fn
+readMetadata fn = either error return . eitherDecodeStrict =<< go (15::Int)
+  where
+    go !n = handleJust     -- retry every sec for 15 seconds
+                (\e -> case ioeGetErrorType e of ResourceVanished | n > 0 -> Just () ; _ -> Nothing)
+                (\_ -> threadDelay 1000000 >> go (n-1))
+                (readFile fn)
 
 -- | Update the configuration file.  Open a new file (fn++"~new") in
 -- exclusive mode.  Then read the old file, write the update to the new
@@ -128,7 +136,7 @@ updateMetadata f fp = go (36::Int)     -- retry every 5 secs for 3 minutes
   where
     fpn = fp <> "~new"
 
-    go n = handleJust
+    go !n = handleJust
                 (\e -> if isAlreadyExistsErrorType (ioeGetErrorType e) && n > 0 then Just () else Nothing)
                 (\_ -> threadDelay 5000000 >> go (n-1)) $ do
                 bracket
@@ -141,18 +149,8 @@ updateMetadata f fp = go (36::Int)     -- retry every 5 secs for 3 minutes
                             rename fpn fp)
                         `onException` removeLink fpn
 
-    {- go n = catchJust
-                (\e -> if isAlreadyExistsErrorType (ioeGetErrorType e) && n > 0 then Just () else Nothing)
-                (do createLink fp (fp <> "~old")
-                    mdata <- readMetadata fp
-                    writeFile (unpack $ fp <> "~new") . encode . toJSON $ f mdata
-                    rename (fp <> "~new") fp
-                `finally` removeLink (fp <> "~old"))
-                (\_ -> threadDelay 5000000 >> go (n-1))  -}
 
 split_sam_rgns :: Metadata -> [String] -> [( String, [Maybe String] )]
 split_sam_rgns _meta [    ] = []
 split_sam_rgns  meta (s:ss) = (s, if null rgns then [Nothing] else map Just rgns) : split_sam_rgns meta rest
     where (rgns, rest) = break (\x -> pack x `M.member` meta) ss
-
-
