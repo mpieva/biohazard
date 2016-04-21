@@ -165,7 +165,8 @@ bcf_to_fd hdl refs name callz =
 
 
 
-type CallFuncs = (U.Vector (Prob' Float) -> Int, U.Vector (Prob' Float) -> Int)
+type CallFunc = U.Vector (Prob' Float) -> Int
+type CallFuncs = (CallFunc, CallFunc)
 
 vcf_header :: Refs -> [S.ByteString] -> Push
 vcf_header refs smps = foldr (\a b -> pushByteString a <> pushByte 10 <> b) mempty $
@@ -192,86 +193,90 @@ toBcf refs smps (snp_call, indel_call) = eneeCheckIfDone go
     encode :: GenoCallBlock -> Push
     encode GenoCallBlock{..} = mconcat $ zipWith (encode1 reference_name) [start_position..] called_sites
 
+    encode1 :: Refseq -> Int -> GenoCallSite -> Push
     encode1 ref pos site =
-        encodesnp ref pos site <>
+        encodeSNP site ref pos snp_call <>
         case indel_variants site of [ ] -> mempty
                                     [_] -> mempty
-                                    _   -> encodeindel ref pos site
+                                    _   -> encodeIndel site ref pos indel_call
 
-    encodesnp ref pos site = encode' ref pos (map S.singleton alleles) site (snp_stats site) snp_call
-      where
-        -- Permuting the reference allele to the front sucks.  Since
-        -- there are only four possibilities, I'm not going to bother
-        -- with an algorithm and just open-code it.
-        alleles | ref_allele site == nucsT = "TACG"
-                | ref_allele site == nucsG = "GACT"
-                | ref_allele site == nucsC = "CAGT"
-                | otherwise                = "ACGT"
+encodeSNP :: GenoCallSite -> Refseq -> Int -> CallFunc -> Push
+encodeSNP site = encodeVar (map S.singleton alleles) (snp_likelihoods site) (snp_stats site)
+  where
+    -- Permuting the reference allele to the front sucks.  Since
+    -- there are only four possibilities, I'm not going to bother
+    -- with an algorithm and just open-code it.
+    alleles | ref_allele site == nucsT = "TACG"
+            | ref_allele site == nucsG = "GACT"
+            | ref_allele site == nucsC = "CAGT"
+            | otherwise                = "ACGT"
 
-    encodeindel ref pos site = encode' ref pos alleles site (indel_stats site) indel_call
-      where
-        -- We're looking at the indel /after/ the current position.
-        -- That's sweet, because we can just prepend the current
-        -- reference base and make bcftools and friends happy.  Longest
-        -- reported deletion becomes the reference allele.  Others may
-        -- need padding.
-        rallele = snd $ maximum [ (U.length r, r) | IndelVariant (V_Nucs r) _ <- indel_variants site ]
-        alleles = [ S.pack $ show (ref_allele site) ++ show (U.toList a) ++ show (U.toList $ U.drop (U.length r) rallele)
-                  | IndelVariant (V_Nucs r) (V_Nuc a) <- indel_variants site ]
+encodeIndel :: GenoCallSite -> Refseq -> Int -> CallFunc -> Push
+encodeIndel site = encodeVar alleles (indel_likelihoods site) (indel_stats site)
+  where
+    -- We're looking at the indel /after/ the current position.
+    -- That's sweet, because we can just prepend the current
+    -- reference base and make bcftools and friends happy.  Longest
+    -- reported deletion becomes the reference allele.  Others may
+    -- need padding.
+    rallele = snd $ maximum [ (U.length r, r) | IndelVariant (V_Nucs r) _ <- indel_variants site ]
+    alleles = [ S.pack $ show (ref_allele site) ++ show (U.toList a) ++ show (U.toList $ U.drop (U.length r) rallele)
+              | IndelVariant (V_Nucs r) (V_Nuc a) <- indel_variants site ]
 
-    encode' ref pos alleles GenoCallSite{..} CallStats{..} do_call =
-        setMark <> setMark <>           -- remember space for two marks
-        b_share <> endRecordPart1 <>    -- store 1st length and 2nd mark
-        b_indiv <> endRecordPart2       -- store 2nd length
-      where
-        b_share = pushWord32 (unRefseq ref) <>
-                  pushWord32 (fromIntegral pos) <>
-                  pushWord32 0 <>                                   -- rlen?!  WTF?!
-                  pushFloat gq <>                                   -- QUAL
-                  pushWord16 2 <>                                   -- ninfo
-                  pushWord16 (fromIntegral $ length alleles) <>     -- n_allele
-                  pushWord32 0x04000001 <>                          -- n_fmt, n_sample
-                  pushByte 0x07 <>                                  -- variant name (empty)
-                  foldMap typed_string alleles <>                   -- alleles
-                  pushByte 0x01 <>                                  -- FILTER (an empty vector)
+encodeVar :: [S.ByteString] -> U.Vector Mini -> CallStats -> Refseq -> Int -> CallFunc -> Push
+encodeVar alleles likelihoods CallStats{..} ref pos do_call =
+    setMark <> setMark <>           -- remember space for two marks
+    b_share <> endRecordPart1 <>    -- store 1st length and 2nd mark
+    b_indiv <> endRecordPart2       -- store 2nd length
+  where
+    b_share = pushWord32 (unRefseq ref) <>
+              pushWord32 (fromIntegral pos) <>
+              pushWord32 0 <>                                   -- rlen?!  WTF?!
+              pushFloat gq <>                                   -- QUAL
+              pushWord16 2 <>                                   -- ninfo
+              pushWord16 (fromIntegral $ length alleles) <>     -- n_allele
+              pushWord32 0x04000001 <>                          -- n_fmt, n_sample
+              pushByte 0x07 <>                                  -- variant name (empty)
+              foldMap typed_string alleles <>                   -- alleles
+              pushByte 0x01 <>                                  -- FILTER (an empty vector)
 
-                  pushByte 0x11 <> pushByte 0x01 <>                 -- INFO key 0 (MQ)
-                  pushByte 0x11 <> pushByte rms_mapq <>             -- MQ, typed word8
-                  pushByte 0x11 <> pushByte 0x02 <>                 -- INFO key 0 (MQ0)
-                  pushByte 0x12 <> pushWord16 (fromIntegral reads_mapq0)   -- MQ0
+              pushByte 0x11 <> pushByte 0x01 <>                 -- INFO key 0 (MQ)
+              pushByte 0x11 <> pushByte rms_mapq <>             -- MQ, typed word8
+              pushByte 0x11 <> pushByte 0x02 <>                 -- INFO key 0 (MQ0)
+              pushByte 0x12 <> pushWord16 (fromIntegral reads_mapq0)   -- MQ0
 
-        b_indiv = pushByte 0x01 <> pushByte 0x03 <>                 -- FORMAT key GT
-                  pushByte 0x21 <>                                  -- two uint8s for GT
-                  pushByte (2 + 2 * fromIntegral g) <>              -- actual GT
-                  pushByte (2 + 2 * fromIntegral h) <>
+    b_indiv = pushByte 0x01 <> pushByte 0x03 <>                 -- FORMAT key GT
+              pushByte 0x21 <>                                  -- two uint8s for GT
+              pushByte (2 + 2 * fromIntegral g) <>              -- actual GT
+              pushByte (2 + 2 * fromIntegral h) <>
 
-                  pushByte 0x01 <> pushByte 0x04 <>                 -- FORMAT key DP
-                  pushByte 0x12 <>                                  -- one uint16 for DP
-                  pushWord16 (fromIntegral read_depth) <>           -- depth
+              pushByte 0x01 <> pushByte 0x04 <>                 -- FORMAT key DP
+              pushByte 0x12 <>                                  -- one uint16 for DP
+              pushWord16 (fromIntegral read_depth) <>           -- depth
 
-                  pushByte 0x01 <> pushByte 0x05 <>                 -- FORMAT key PL
-                  ( let l = U.length lks in if l < 15
-                    then pushByte (fromIntegral l `shiftL` 4 .|. 2)
-                    else pushWord16 0x03F2 <> pushWord16 (fromIntegral l) ) <>
-                  pl_vals <>                                        -- vector of uint16s for PLs
+              pushByte 0x01 <> pushByte 0x05 <>                 -- FORMAT key PL
+              ( let l = U.length lks in if l < 15
+                then pushByte (fromIntegral l `shiftL` 4 .|. 2)
+                else pushWord16 0x03F2 <> pushWord16 (fromIntegral l) ) <>
+              pl_vals <>                                        -- vector of uint16s for PLs
 
-                  pushByte 0x01 <> pushByte 0x06 <>                 -- FORMAT key GQ
-                  pushByte 0x11 <> pushByte gq'                     -- uint8, genotype
+              pushByte 0x01 <> pushByte 0x06 <>                 -- FORMAT key GQ
+              pushByte 0x11 <> pushByte gq'                     -- uint8, genotype
 
-        rms_mapq = round $ sqrt (fromIntegral sum_mapq_squared / fromIntegral read_depth :: Double)
-        typed_string s | S.length s < 15 = pushByte (fromIntegral $ (S.length s `shiftL` 4) .|. 0x7) <> pushByteString s
-                       | otherwise       = pushByte 0xF7 <> pushByte 0x03 <> pushWord32 (fromIntegral $ S.length s) <> pushByteString s
+    rms_mapq = round $ sqrt (fromIntegral sum_mapq_squared / fromIntegral read_depth :: Double)
+    typed_string s | S.length s < 15 = pushByte (fromIntegral $ (S.length s `shiftL` 4) .|. 0x7) <> pushByteString s
+                   | otherwise       = pushByte 0xF7 <> pushByte 0x03 <> pushWord32 (fromIntegral $ S.length s) <> pushByteString s
 
-        pl_vals = U.foldr ((<>) . pushWord16 . round . max 0 . min 0x7fff . (*) (-10/log 10) . unPr . (/ lks U.! maxidx)) mempty lks
+    pl_vals = U.foldr ((<>) . pushWord16 . round . max 0 . min 0x7fff . (*) (-10/log 10) . unPr . (/ lks U.! maxidx)) mempty lks
 
-        lks = U.map (Pr . negate . mini2float) snp_likelihoods :: U.Vector (Prob' Float)
-        maxidx = U.maxIndex lks
+    lks = U.map (Pr . negate . mini2float) likelihoods :: U.Vector (Prob' Float)
+    maxidx = U.maxIndex lks
 
-        gq = -10 * unPr (U.sum (U.ifilter (\i _ -> i /= maxidx) lks) / U.sum lks) / log 10
-        gq' = round . max 0 . min 127 $ gq
+    gq = -10 * unPr (U.sum (U.ifilter (\i _ -> i /= maxidx) lks) / U.sum lks) / log 10
+    gq' = round . max 0 . min 127 $ gq
 
-        callidx = do_call lks
-        h = length $ takeWhile (<= callidx) $ scanl (+) 1 [2..]
-        g = callidx - h * (h+1) `div` 2
+    callidx = do_call lks
+    h = length $ takeWhile (<= callidx) $ scanl (+) 1 [2..]
+    g = callidx - h * (h+1) `div` 2
 
 
