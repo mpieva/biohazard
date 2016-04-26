@@ -60,7 +60,6 @@ Library
                        Bio.Genocall.Adna,
                        Bio.Genocall.AvroFile,
                        Bio.Genocall.Metadata,
-                       Bio.Glf,
                        Bio.Iteratee,
                        Bio.Iteratee.Bgzf,
                        Bio.Iteratee.Builder,
@@ -290,16 +289,6 @@ Executable bam-trim
                        biohazard,
                        bytestring
 
-Executable count-coverage
-  Main-is:             count-coverage.hs
-  Ghc-options:         -Wall -auto-all
-  Hs-Source-Dirs:      tools
-  -- Ghc-options:         -Wall -auto-all -threaded -rtsopts -with-rtsopts=-N
-  Ghc-options:         -Wall -auto-all -rtsopts
-  Build-depends:       base,
-                       biohazard,
-                       iteratee
-
 Executable fastq2bam
   Main-is:             fastq2bam.hs
   Ghc-options:         -Wall -auto-all
@@ -312,19 +301,6 @@ Executable fastq2bam
                        containers,
                        iteratee,
                        vector
-
-Executable glf-consensus
-  Main-is:             glf-consensus.hs
-  Ghc-options:         -Wall -auto-all
-  Hs-Source-Dirs:      tools
-  -- Ghc-options:         -Wall -auto-all -threaded -rtsopts -with-rtsopts=-N
-  Ghc-options:         -Wall -auto-all -rtsopts
-  Build-depends:       base,
-                       biohazard,
-                       bytestring,
-                       containers,
-                       exceptions,
-                       iteratee
 
 Executable jivebunny
   Main-is:             jivebunny.hs
@@ -372,14 +348,5 @@ Executable mt-ccheck
                        biohazard,
                        containers,
                        unordered-containers
-
-executable wiggle-coverage
-  Main-is:             wiggle-coverage.hs
-  Ghc-options:         -Wall -auto-all
-  Hs-Source-Dirs:      tools
-  -- Ghc-options:         -Wall -auto-all -threaded -rtsopts -with-rtsopts=-N
-  Ghc-options:         -Wall -auto-all -rtsopts
-  Build-depends:       base,
-                       biohazard
 
 -- :vim:tw=132:
