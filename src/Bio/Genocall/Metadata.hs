@@ -1,7 +1,6 @@
 {-# LANGUAGE OverloadedStrings, RecordWildCards, FlexibleContexts, BangPatterns #-}
+-- | Metadata necessary for a sensible genotyping workflow.
 module Bio.Genocall.Metadata where
-
--- ^ Metadata necessary for a sensible genotyping workflow.
 
 import Bio.Genocall.Adna                    ( DamageParameters(..) )
 import Control.Applicative           hiding ( empty )

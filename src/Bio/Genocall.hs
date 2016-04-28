@@ -37,10 +37,12 @@ simple_indel_call      _  [ ] = ( V.empty, [] )
 simple_indel_call      _  [_] = ( V.empty, [] )
 simple_indel_call ploidy vars = ( simple_call ploidy mkpls vars, vars' )
   where
-    vars' = Set.toList $ Set.fromList
+    vars' = IndelVariant (V_Nucs V.empty) (V_Nuc V.empty) :
+            (Set.toList . Set.fromList)
                 [ IndelVariant (V_Nucs $ V.fromList d)
                                (V_Nuc  $ V.fromList $ map db_call i)
-                | (_q,(d,i)) <- vars ]
+                | (_q,(d,i)) <- vars
+                , not (null d) || not (null i) ]
 
     match = zipWith $ \(DB b q _ m) n -> let p  = m ! n :-> b
                                              p' = fromQual q
