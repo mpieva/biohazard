@@ -58,7 +58,6 @@ instance FromJSON DivEst where
     parseJSON (Array a) = flip DivEst [] <$> parseJSON (Array a)
     parseJSON _ = fail $ "divergence estimate should be an array or an object"
 
-
 instance ToJSON float => ToJSON (DamageParameters float) where
     toJSON DP{..} = object [ "ss-sigma"  .= ssd_sigma
                            , "ss-delta"  .= ssd_delta
