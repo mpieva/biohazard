@@ -184,28 +184,34 @@ decompose matrices br =
             Mat :*  0 ->            firstBase  pos     is  (ic+1) mds mms
             Mat :*  _ -> Seek pos $ nextBase 0 pos     is   ic 0  mds m ms
       where
+        -- We have to treat (MdNum 0), because samtools actually
+        -- generates(!) it all over the place and if not handled as a
+        -- special case, it looks like an incinsistend MD field.
         drop_del n (MdDel ns : mds')
             | n < length ns = MdDel (drop n ns) : mds'
             | n > length ns = drop_del (n - length ns) mds'
             | otherwise     = mds'
+        drop_del n (MdNum 0 : mds') = drop_del n mds'
         drop_del _ mds'     = mds'
 
     -- Generate likelihoods for the next base.  When this gets called,
     -- we are looking at an M CIGAR operation and all the subindices are
     -- valid.
+    -- I don't think we can ever get (MdDel []), but then again, who
+    -- knows what crazy shit samtools decides to generate.  There is
+    -- little harm in special-casing it.
     nextBase :: Int -> Int -> Int -> Int -> Int -> [MdOp] -> Mat44D -> [Mat44D] -> PrimBase
     nextBase !wt !pos !is !ic !io mds m ms = case mds of
-        [              ] -> nextBase' (Just nucsN) [ ]
-        MdRep ref : mds' -> nextBase' (Just ref)   mds'
         MdNum   0 : mds' -> nextBase wt pos is ic io mds' m ms
-        MdNum   1 : mds' -> nextBase'  Nothing     mds'
-        MdNum   n : mds' -> nextBase'  Nothing    (MdNum (n-1) : mds')
-        MdDel   _ : _    -> nextBase' (Just nucsN) mds
-
+        MdDel  [] : mds' -> nextBase wt pos is ic io mds' m ms
+        MdNum   1 : mds' -> nextBase' (get_seq' is       m) mds'
+        MdNum   n : mds' -> nextBase' (get_seq' is       m) (MdNum (n-1) : mds')
+        MdRep ref : mds' -> nextBase' (get_seq  is ref   m) mds'
+        MdDel   _ : _    -> nextBase' (get_seq  is nucsN m) mds
+        [              ] -> nextBase' (get_seq  is nucsN m) [ ]
       where
-        nextBase' ref mds' =
-            Base wt (maybe (get_seq' is) (get_seq is) ref m) b_mapq (isReversed b) $
-                nextIndel  [] [] (pos+1) (is+1) ic (io+1) mds' ms
+        nextBase' ref mds' = Base wt ref b_mapq (isReversed b)
+                           $ nextIndel  [] [] (pos+1) (is+1) ic (io+1) mds' ms
 
     -- Look for the next indel after a base.  We collect all indels (I
     -- and D codes) into one combined operation.  If we hit N or the
@@ -235,10 +241,14 @@ decompose matrices br =
         rlist [] = ()
         rlist (a:as) = a `seq` rlist as
 
+        -- We have to treat (MdNum 0), because samtools actually
+        -- generates(!) it all over the place and if not handled as a
+        -- special case, it looks like an incinsistend MD field.
         split_del n (MdDel ns : mds')
             | n < length ns = (take n ns, MdDel (drop n ns) : mds')
             | n > length ns = let (ns', mds'') = split_del (n - length ns) mds' in (ns++ns', mds'')
             | otherwise     = (ns, mds')
+        split_del n (MdNum 0 : mds') = split_del n mds'
         split_del n mds'    = (replicate n nucsN, mds')
 
 -- | Statistics about a genotype call.  Probably only useful for
