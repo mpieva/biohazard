@@ -2,8 +2,8 @@
 module Bio.TwoBit (
         module Bio.Base,
 
-        TwoBitFile,
-        TwoBitSequence,
+        TwoBitFile(..),
+        TwoBitSequence(..),
         openTwoBit,
 
         getFwdSubseqWith,
@@ -18,6 +18,8 @@ module Bio.TwoBit (
         clampPosition,
         getRandomSeq,
 
+        takeOverlap,
+        mergeBlocks,
         Mask(..)
     ) where
 
@@ -29,8 +31,8 @@ import           Data.Binary.Get
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Lazy as L
 import           Data.Char (toLower)
--- can't be strict to remain compatible with containers-0.4.1 and
--- therefore ghc 7.4
+-- can't use Data.IntMap.Strict to remain compatible with
+-- containers-0.4.1 and therefore ghc 7.4  :-(
 import qualified Data.IntMap as I
 import qualified Data.HashMap.Lazy as M
 import           Data.Maybe
@@ -120,7 +122,7 @@ getFwdSubseqWith :: TwoBitFile -> TwoBitSequence                -- raw data, seq
                  -> (Word8 -> Mask -> a)                        -- mask function
                  -> Int -> [a]                                  -- start, lazy result
 getFwdSubseqWith TBF{..} TBS{..} nt start =
-    do_mask (takeOverlap start tbs_n_blocks `mergeblocks` takeOverlap start tbs_m_blocks) start .
+    do_mask (takeOverlap start tbs_n_blocks `mergeBlocks` takeOverlap start tbs_m_blocks) start .
     drop (start .&. 3) .
     B.foldr toDNA [] .
     B.drop (fromIntegral $ tbs_dna_offset + (start `shiftR` 2)) $ tbf_raw
@@ -135,19 +137,19 @@ getFwdSubseqWith TBF{..} TBS{..} nt start =
 
 -- | Merge blocks of Ns and blocks of Ms into single list of blocks with
 -- masking annotation.  Gaps remain.  Used internally only.
-mergeblocks :: [(Int,Int)] -> [(Int,Int)] -> [(Int,Int,Mask)]
-mergeblocks ((_,0):nbs) mbs = mergeblocks nbs mbs
-mergeblocks nbs ((_,0):mbs) = mergeblocks nbs mbs
+mergeBlocks :: [(Int,Int)] -> [(Int,Int)] -> [(Int,Int,Mask)]
+mergeBlocks ((_,0):nbs) mbs = mergeBlocks nbs mbs
+mergeBlocks nbs ((_,0):mbs) = mergeBlocks nbs mbs
 
-mergeblocks ((ns,nl):nbs) ((ms,ml):mbs)
-    | ns < ms   = let l = min (ms-ns) nl in (ns,l, Hard) : mergeblocks ((ns+l,nl-l):nbs) ((ms,ml):mbs)
-    | ms < ns   = let l = min (ns-ms) ml in (ms,l, Soft) : mergeblocks ((ns,nl):nbs) ((ms+l,ml-l):mbs)
-    | otherwise = let l = min nl ml in (ns,l, Both) : mergeblocks ((ns+l,nl-l):nbs) ((ms+l,ml-l):mbs)
+mergeBlocks ((ns,nl):nbs) ((ms,ml):mbs)
+    | ns < ms   = let l = min (ms-ns) nl in (ns,l, Hard) : mergeBlocks ((ns+l,nl-l):nbs) ((ms,ml):mbs)
+    | ms < ns   = let l = min (ns-ms) ml in (ms,l, Soft) : mergeBlocks ((ns,nl):nbs) ((ms+l,ml-l):mbs)
+    | otherwise = let l = min nl ml in (ns,l, Both) : mergeBlocks ((ns+l,nl-l):nbs) ((ms+l,ml-l):mbs)
 
-mergeblocks ((ns,nl):nbs) [] = (ns,nl, Hard) : mergeblocks nbs []
-mergeblocks [] ((ms,ml):mbs) = (ms,ml, Soft) : mergeblocks [] mbs
+mergeBlocks ((ns,nl):nbs) [] = (ns,nl, Hard) : mergeBlocks nbs []
+mergeBlocks [] ((ms,ml):mbs) = (ms,ml, Soft) : mergeBlocks [] mbs
 
-mergeblocks [     ] [     ] = []
+mergeBlocks [     ] [     ] = []
 
 
 -- | Extract a subsequence and apply masking.  TwoBit file can represent

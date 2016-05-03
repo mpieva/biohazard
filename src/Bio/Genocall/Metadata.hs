@@ -130,7 +130,7 @@ readMetadata fn = either error return . eitherDecodeStrict =<< go (15::Int)
 -- atomic and fails if the new filename exists.  This approach does seem
 -- to contain a race condition, though.)
 updateMetadata :: (Metadata -> Metadata) -> FilePath -> IO ()
-updateMetadata f fp = go (36::Int)     -- retry every 5 secs for 3 minutes
+updateMetadata f fp = go (360::Int)     -- retry every 5 secs for 30 minutes
   where
     fpn = fp <> "~new"
 

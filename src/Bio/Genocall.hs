@@ -212,21 +212,6 @@ smoke_test =
     show_indel (d, ins) = shows ins $ '-' : show d
 -}
 
-{- showCall :: (a -> ShowS) -> VarCall (GL,a) -> ShowS
-showCall f vc = shows (vc_refseq vc) . (:) ':' .
-                shows (vc_pos vc) . (:) '\t' .
-                f (snd $ vc_vars vc) . (++) "\tDP=" .
-                shows (vc_depth vc) . (++) ":MQ0=" .
-                shows (vc_mapq0 vc) . (++) ":MAPQ=" .
-                shows mapq . (:) '\t' .
-                show_pl (fst $ vc_vars vc)
-  where
-    show_pl :: Vector Prob -> ShowS
-    show_pl = (++) . intercalate "," . map show . V.toList
-
-    mapq = vc_sum_mapq vc `div` vc_depth vc -}
-
-
 --  Error model with dependency parameter.  Since both strands are
 -- supposed to still be independent, we feed in only one pile, and
 -- later combine both calls.  XXX What's that doing HERE?!
@@ -237,6 +222,7 @@ type Calls = Pile' Snp_GLs (GL, [IndelVariant])
 -- constructing it, we make sure the GL values are in the correct order
 -- if the reference allele is listed first.
 data Snp_GLs = Snp_GLs !GL !Nucleotides
+    deriving Show
 
 snp_gls :: GL -> Nucleotides -> Snp_GLs
 snp_gls pls ref | ref == nucsT = Snp_GLs (pls `V.backpermute` V.fromList [9,6,0,7,1,2,8,3,4,5]) ref

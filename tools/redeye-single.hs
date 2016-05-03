@@ -196,9 +196,14 @@ toBcf refs smps (snp_call, indel_call) = eneeCheckIfDone go
     encode1 :: Refseq -> Int -> GenoCallSite -> Push
     encode1 ref pos site =
         encodeSNP site ref pos snp_call <>
-        case indel_variants site of [ ] -> mempty
-                                    [_] -> mempty
-                                    _   -> encodeIndel site ref pos indel_call
+        case indel_variants site of
+            [ ] -> mempty
+            [_] -> mempty
+            v:_ | U.null d && U.null i -> encodeIndel site ref pos indel_call
+                | otherwise            -> error "First indel variant should always be the reference."
+              where
+                IndelVariant (V_Nucs d) (V_Nuc i) = v
+
 
 encodeSNP :: GenoCallSite -> Refseq -> Int -> CallFunc -> Push
 encodeSNP site = encodeVar (map S.singleton alleles) (snp_likelihoods site) (snp_stats site)
@@ -220,7 +225,7 @@ encodeIndel site = encodeVar alleles (indel_likelihoods site) (indel_stats site)
     -- reported deletion becomes the reference allele.  Others may
     -- need padding.
     rallele = snd $ maximum [ (U.length r, r) | IndelVariant (V_Nucs r) _ <- indel_variants site ]
-    alleles = [ S.pack $ show (ref_allele site) ++ show (U.toList a) ++ show (U.toList $ U.drop (U.length r) rallele)
+    alleles = [ S.pack $ showNucleotides (ref_allele site) : show (U.toList a) ++ show (U.toList $ U.drop (U.length r) rallele)
               | IndelVariant (V_Nucs r) (V_Nuc a) <- indel_variants site ]
 
 encodeVar :: [S.ByteString] -> U.Vector Mini -> CallStats -> Refseq -> Int -> CallFunc -> Push
@@ -242,29 +247,29 @@ encodeVar alleles likelihoods CallStats{..} ref pos do_call =
 
               pushByte 0x11 <> pushByte 0x01 <>                 -- INFO key 0 (MQ)
               pushByte 0x11 <> pushByte rms_mapq <>             -- MQ, typed word8
-              pushByte 0x11 <> pushByte 0x02 <>                 -- INFO key 0 (MQ0)
-              pushByte 0x12 <> pushWord16 (fromIntegral reads_mapq0)   -- MQ0
+              pushByte 0x11 <> pushByte 0x02 <>                 -- INFO key 1 (MQ0)
+              pushByte 0x12 <> pushWord16 (fromIntegral reads_mapq0) -- MQ0
 
-    b_indiv = pushByte 0x01 <> pushByte 0x03 <>                 -- FORMAT key GT
+    b_indiv = pushByte 0x01 <> pushByte 0x03 <>                 -- FORMAT key 2 (GT)
               pushByte 0x21 <>                                  -- two uint8s for GT
               pushByte (2 + 2 * fromIntegral g) <>              -- actual GT
               pushByte (2 + 2 * fromIntegral h) <>
 
-              pushByte 0x01 <> pushByte 0x04 <>                 -- FORMAT key DP
+              pushByte 0x01 <> pushByte 0x04 <>                 -- FORMAT key 3 (DP)
               pushByte 0x12 <>                                  -- one uint16 for DP
               pushWord16 (fromIntegral read_depth) <>           -- depth
 
-              pushByte 0x01 <> pushByte 0x05 <>                 -- FORMAT key PL
+              pushByte 0x01 <> pushByte 0x05 <>                 -- FORMAT key 4 (PL)
               ( let l = U.length lks in if l < 15
                 then pushByte (fromIntegral l `shiftL` 4 .|. 2)
-                else pushWord16 0x03F2 <> pushWord16 (fromIntegral l) ) <>
+                else pushWord16 0x02F2 <> pushWord16 (fromIntegral l) ) <>
               pl_vals <>                                        -- vector of uint16s for PLs
 
-              pushByte 0x01 <> pushByte 0x06 <>                 -- FORMAT key GQ
+              pushByte 0x01 <> pushByte 0x06 <>                 -- FORMAT key 5 (GQ)
               pushByte 0x11 <> pushByte gq'                     -- uint8, genotype
 
     rms_mapq = round $ sqrt (fromIntegral sum_mapq_squared / fromIntegral read_depth :: Double)
-    typed_string s | S.length s < 15 = pushByte (fromIntegral $ (S.length s `shiftL` 4) .|. 0x7) <> pushByteString s
+    typed_string s | S.length s < 15 = pushByte (fromIntegral $ S.length s `shiftL` 4 .|. 0x7) <> pushByteString s
                    | otherwise       = pushByte 0xF7 <> pushByte 0x03 <> pushWord32 (fromIntegral $ S.length s) <> pushByteString s
 
     pl_vals = U.foldr ((<>) . pushWord16 . round . max 0 . min 0x7fff . (*) (-10/log 10) . unPr . (/ lks U.! maxidx)) mempty lks
