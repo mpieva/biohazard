@@ -283,11 +283,11 @@ maxD = 64
 -- estimation afterwards.  Returns the product of the
 -- parameter-independent parts of the likehoods and the histogram
 -- indexed by D and H (see @genotyping.pdf@ for details).
-tabulateSingle :: (Functor m, MonadIO m) => Iteratee [Calls] m (Double, U.Vector Int)
+tabulateSingle :: (Functor m, MonadIO m) => Iteratee [Calls] m DivTable
 tabulateSingle = do
     tab <- liftIO $ M.replicate (12 * maxD * maxD) (0 :: Int)
-    (,) <$> foldStreamM (\acc -> accum tab acc . p_snp_pile) (0 :: Double)
-        <*> liftIO (U.unsafeFreeze tab)
+    DivTable <$> foldStreamM (\acc -> accum tab acc . p_snp_pile) (0 :: Double)
+             <*> liftIO (U.unsafeFreeze tab)
   where
     -- We need GL values for the invariant, the three homozygous variant
     -- and the three single-event heterozygous variant cases.  The
