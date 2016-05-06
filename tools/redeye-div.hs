@@ -75,8 +75,8 @@ main = do
             Just smp -> async $ do
                 ests <- forM eff_regions >=> mapM wait $ \rgn -> async
                                 $ fmap ((,) rgn)
-                                $ uncurry (estimateSingle conf_verbose)
-                                $ foldl1' (\(a,u) (b,v) -> (a+b, U.zipWith (+) u v))
+                                $ estimateSingle conf_verbose
+                                $ foldl1' (\(DivTable a u) (DivTable b v) -> DivTable (a+b) (U.zipWith (+) u v))
                                 $ H.elems
                                 $ H.filterWithKey (match rgn)
                                 $ sample_div_tables smp
@@ -102,8 +102,8 @@ main = do
 
 -- XXX we should estimate an indel rate, to be appended as the fourth
 -- result (but that needs different tables)
-estimateSingle :: Bool -> Double -> U.Vector Int -> IO DivEst
-estimateSingle verbose llk_rr tab = do
+estimateSingle :: Bool -> DivTable -> IO DivEst
+estimateSingle verbose (DivTable llk_rr tab) = do
     (fit, res, stats) <- minimize quietParameters 0.0001 (llk tab) (U.fromList [0,0,0])
     let xform = map (\x -> exp x / (1 + exp x)) . VS.toList
 

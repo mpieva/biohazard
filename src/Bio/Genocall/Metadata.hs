@@ -7,14 +7,14 @@ import Control.Applicative           hiding ( empty )
 import Control.Concurrent                   ( threadDelay )
 import Control.Exception                    ( bracket, onException, handleJust )
 import Control.Monad                        ( forM_ )
-import Data.Text                            ( Text, pack )
-import Data.HashMap.Strict                  ( HashMap )
 import Data.Aeson
-import Data.ByteString.Char8                ( readFile )
-import Data.ByteString.Lazy                 ( toChunks )
+import Data.Binary
+import Data.Binary.Get                      ( runGetOrFail )
+import Data.Binary.Put                      ( runPut )
+import Data.ByteString.Lazy                 ( toChunks, readFile )
 import Data.ByteString.Unsafe               ( unsafeUseAsCStringLen )
 import Data.Monoid
-import Data.Vector.Unboxed                  ( Vector )
+import Data.Text                            ( Text, pack )
 import Foreign.Ptr                          ( castPtr )
 import GHC.IO.Exception                     ( IOErrorType(..) )
 import Prelude                       hiding ( writeFile, readFile )
@@ -23,13 +23,17 @@ import System.Posix.Files                   ( rename, removeLink )
 import System.Posix.IO
 
 import qualified Data.HashMap.Strict as M
+import qualified Data.Vector.Unboxed as U
+
+data DivTable = DivTable !Double !(U.Vector Int)
+  deriving Show
 
 data Sample = Sample {
     sample_libraries   :: [Library],
-    sample_avro_files  :: HashMap Text Text,                    -- ^ maps a region to the av file
-    sample_bcf_files   :: HashMap Text Text,                    -- ^ maps a region to the bcf file
-    sample_div_tables  :: HashMap Text (Double, Vector Int),    -- ^ maps a region to the table needed for div. estimation
-    sample_divergences :: HashMap Text DivEst
+    sample_avro_files  :: M.HashMap Text Text,                    -- ^ maps a region to the av file
+    sample_bcf_files   :: M.HashMap Text Text,                    -- ^ maps a region to the bcf file
+    sample_div_tables  :: M.HashMap Text DivTable,                -- ^ maps a region to the table needed for div. estimation
+    sample_divergences :: M.HashMap Text DivEst
   } deriving Show
 
 data Library = Library {
@@ -47,11 +51,15 @@ data DivEst = DivEst {
   } deriving Show
 
 
-type Metadata = HashMap Text Sample
+type Metadata = M.HashMap Text Sample
 
 instance ToJSON DivEst where
     toJSON DivEst{..} = object $ [ "estimate" .= point_est
                                  , "confidence-region" .= conf_region ]
+
+instance Binary DivEst where
+    put DivEst{..} = put point_est >> put conf_region
+    get = DivEst <$> get <*> get
 
 instance FromJSON DivEst where
     parseJSON (Object o) = DivEst <$> o .: "estimate" <*> o .:? "confidence-region" .!= []
@@ -67,6 +75,11 @@ instance ToJSON float => ToJSON (DamageParameters float) where
                            , "ds-delta"  .= dsd_delta
                            , "ds-lambda" .= dsd_lambda ]
 
+instance Binary float => Binary (DamageParameters float) where
+    put DP{..} = put ssd_sigma >> put ssd_delta >> put ssd_lambda >> put ssd_kappa >>
+                 put dsd_sigma >> put dsd_delta >> put dsd_lambda
+    get = DP <$> get <*> get <*> get <*> get <*> get <*> get <*> get
+
 instance FromJSON float => FromJSON (DamageParameters float) where
     parseJSON = withObject "damage parameters" $ \o ->
                     DP <$> o .: "ss-sigma"
@@ -80,6 +93,10 @@ instance FromJSON float => FromJSON (DamageParameters float) where
 instance ToJSON Library where
     toJSON (Library name files dp) = object ( maybe id ((:) . ("damage" .=)) dp
                                             $ [ "name" .= name, "files" .= files ] )
+
+instance Binary Library where
+    put Library{..} = put library_name >> put library_files >> put library_damage
+    get = Library <$> get <*> get <*> get
 
 instance FromJSON Library where
     parseJSON (String name) = return $ Library name [name <> ".bam"] Nothing
@@ -99,6 +116,12 @@ instance ToJSON Sample where
         hashToJson k vs = if M.null vs then id else (:) (k .= vs)
         listToJson k vs = if   null vs then id else (:) (k .= vs)
 
+instance Binary Sample where
+    put Sample{..} = put sample_libraries >> putObject sample_avro_files >>
+                     putObject sample_bcf_files >> putObject sample_div_tables >>
+                     putObject sample_divergences
+    get = Sample <$> get <*> getObject <*> getObject <*> getObject <*> getObject
+
 instance FromJSON Sample where
     parseJSON (String s) = pure $ Sample [Library s [s <> ".bam"] Nothing] M.empty M.empty M.empty M.empty
     parseJSON (Array ls) = (\ll -> Sample ll M.empty M.empty M.empty M.empty) <$> parseJSON (Array ls)
@@ -109,11 +132,51 @@ instance FromJSON Sample where
                                   <*> (M.singleton "" <$> o .: "divergence" <|> o.:? "divergences" .!= M.empty)
     parseJSON _ = fail $ "String, Array or Object expected for Sample"
 
+instance FromJSON DivTable where
+    parseJSON x = parseJSON x >>= \[a,b] -> DivTable <$> parseJSON a <*> parseJSON b
+
+instance Binary DivTable where
+    put (DivTable a b) = put a >> putVector b
+    get = DivTable <$> get <*> getVector
+
+instance ToJSON DivTable where
+    toJSON (DivTable a b) = toJSON [toJSON a, toJSON b]
+
+putObject :: Binary value => M.HashMap Text value -> Put
+putObject m = put (M.size m) >> M.foldrWithKey (\k v a -> put k >> put v >> a) (return ()) m
+
+getObject :: Binary value => Get (M.HashMap Text value)
+getObject = get >>= \l -> get_map M.empty (l::Int)
+    where
+        get_map !acc 0 = return acc
+        get_map !acc n = get >>= \k -> get >>= \v -> get_map (M.insert k v acc) (n-1)
+
+-- Hm.  I'm putting the vector in reverse order, because the
+-- accumulation when reading reverses it.
+putVector :: (U.Unbox a, Binary a) => U.Vector a -> Put
+putVector v = put (U.length v) >> U.mapM_ put (U.reverse v)
+
+getVector :: (U.Unbox a, Binary a) => Get (U.Vector a)
+getVector = get >>= \l -> U.fromListN l <$> get_list [] l
+    where
+        get_list acc 0 = return acc
+        get_list acc n = get >>= \ !x -> get_list (x:acc) (n-1)
+
+
+-- | Read the configuration file.  Retries, because NFS tends to result
+-- in 'ResourceVanished' if the file is replaced while we try to read it.
+readJsonMetadata :: FilePath -> IO Metadata
+readJsonMetadata fn = either error return . eitherDecode =<< go (15::Int)
+  where
+    go !n = handleJust     -- retry every sec for 15 seconds
+                (\e -> case ioeGetErrorType e of ResourceVanished | n > 0 -> Just () ; _ -> Nothing)
+                (\_ -> threadDelay 1000000 >> go (n-1))
+                (readFile fn)
 
 -- | Read the configuration file.  Retries, because NFS tends to result
 -- in 'ResourceVanished' if the file is replaced while we try to read it.
 readMetadata :: FilePath -> IO Metadata
-readMetadata fn = either error return . eitherDecodeStrict =<< go (15::Int)
+readMetadata fn = either (error . show) (\(_,_,r) -> return r) . runGetOrFail getObject =<< go (15::Int)
   where
     go !n = handleJust     -- retry every sec for 15 seconds
                 (\e -> case ioeGetErrorType e of ResourceVanished | n > 0 -> Just () ; _ -> Nothing)
@@ -141,12 +204,19 @@ updateMetadata f fp = go (360::Int)     -- retry every 5 secs for 30 minutes
                     (openFd fpn WriteOnly (Just 0o666) defaultFileFlags{ exclusive = True })
                     (closeFd) $ \fd ->
                         (do mdata <- readMetadata fp
-                            forM_ (toChunks . encode . toJSON $ f mdata) $ \ch ->
+                            forM_ (toChunks . runPut . putObject $ f mdata) $ \ch ->
                                 unsafeUseAsCStringLen ch $ \(p,l) ->
                                     fdWriteBuf fd (castPtr p) (fromIntegral l)
                             rename fpn fp)
                         `onException` removeLink fpn
 
+writeMetadata :: FilePath -> Metadata -> IO ()
+writeMetadata fp mdata = bracket
+                    (openFd fp WriteOnly (Just 0o666) defaultFileFlags{ exclusive = True })
+                    (closeFd) $ \fd ->
+                        forM_ (toChunks . runPut . putObject $ mdata) $ \ch ->
+                             unsafeUseAsCStringLen ch $ \(p,l) ->
+                                 fdWriteBuf fd (castPtr p) (fromIntegral l)
 
 split_sam_rgns :: Metadata -> [String] -> [( String, [Maybe String] )]
 split_sam_rgns _meta [    ] = []

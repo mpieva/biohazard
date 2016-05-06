@@ -16,8 +16,6 @@ Author:              Udo Stenzel
 Maintainer:          udo.stenzel@eva.mpg.de
 Copyright:           (C) 2010-2015 Udo Stenzel
 
-Tested-With:         GHC == 7.4.2, GHC == 7.6.3, GHC == 7.8.4,
-                     GHC == 7.10.3, GHC == 8.0.1
 Extra-Source-Files:  man/man7/biohazard.7
                      man/man1/bam-meld.1
                      man/man1/bam-rewrap.1
@@ -31,6 +29,7 @@ Data-Dir:            data
 
 Cabal-version:       >=1.9.2
 Build-type:          Custom
+Tested-With:         GHC == 7.4.2, GHC == 7.6.3, GHC == 7.8.4, GHC == 7.10.3
 
 source-repository head
   type:     git
@@ -126,7 +125,6 @@ Library
 
 Executable redeye-dar
   Main-is:             redeye-dar.hs
-  Ghc-options:         -Wall -auto-all
   Hs-Source-Dirs:      tools
   Ghc-options:         -Wall -auto-all -threaded -rtsopts -with-rtsopts=-N
   Build-depends:       async,
