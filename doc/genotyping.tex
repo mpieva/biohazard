@@ -9,6 +9,8 @@
 \newcommandx{\oops}[2][1=]{\todo[nolist,noline,inline,linecolor=yellow,backgroundcolor=yellow!25,bordercolor=yellow,#1]{#2}}
 \newcommandx{\result}[2][1=]{\todo[nolist,noline,inline,linecolor=green,backgroundcolor=green!25,bordercolor=green,#1]{#2}}
 
+\newcommand{\argmax}{\operatornamewithlimits{arg\,max}}
+
 \title{Deamination Aware Genotype Calling}
 \author{Udo Stenzel}
 
@@ -117,9 +119,9 @@ double stranded model, and a model without damage.  At the maximum likelihood pa
 single stranded or double stranded model being correct.  (For brevity, all parameters not mentioned here are assumed to be zero.)
 
 \begin{align*}
-\hat{\sigma_s}, \hat{\delta_s}, \hat{\lambda_s}, \hat{\kappa_s} &:= \arg \max_{\sigma_s, \delta_s, \lambda_s, \kappa_s}
+\hat{\sigma_s}, \hat{\delta_s}, \hat{\lambda_s}, \hat{\kappa_s} &:= \argmax_{\sigma_s, \delta_s, \lambda_s, \kappa_s}
     P(D | \sigma_s, \delta_s, \lambda_s, \kappa_s ) \\
-\hat{\sigma_d}, \hat{\delta_d}, \hat{\lambda_d} &:= \arg \max_{\sigma_d, \delta_d, \lambda_d}
+\hat{\sigma_d}, \hat{\delta_d}, \hat{\lambda_d} &:= \argmax_{\sigma_d, \delta_d, \lambda_d}
     P(D | \sigma_d, \delta_d, \lambda_d ) \\
 P_s(D) &:= \frac{   
     P(D | \hat{\sigma_s}, \hat{\delta_s}, \hat{\lambda_s}, \hat{\kappa_s}) }{
@@ -528,29 +530,48 @@ contamination rate\todo{Try and confirm}.
 When co-calling individuals from multiple populations, the correct prior
 for the genotypes would be based on a covariance matrix\footnote{We
 restrict to site-by-site analysis and a couple more simplifying
-assumptions.}.  Estimating
-that matrix allows Treemix, Patterson's~D and Pruefer's Divergence,
-possibly more.  % And the replacement for TreeMix is "Blandskog" (==
-                % mixed forest)
+assumptions.}.  Estimating that matrix allows Treemix, Patterson's~D,
+Pr\:ufer's Divergence, and PCA; possibly more.   We also get a clean
+method for imputation for free.
+% And the replacement for TreeMix is "Blandskog" (== mixed forest)
 
 Conceptually, it's easy:  the covariance matrix serves as prior for the
-allele frequencies in multiple populations, the allele frequency
-(together with a small term for new mutations) serves as prior for the
-genotypes\todo{Equation!}.  Maximizing the covariance matrix is
-straight forward, but it would require integrating over the space of
-possible combinations of allele frequencies, which sounds impractical,
-and becomes exponentially more impractical the more samples are considered.  Even if
-symbolic integration was possible (I don't think it is), the resulting
-term would grow with the number of genotype \emph{combinations}, which
-is still exponential in the number of samples.
+allele frequencies in multiple populations, the allele frequency serves
+as prior for the genotype.  The goal is to maximize the likelihood with
+respect to the covariance matrix.  The likelihood function looks more or
+less like this:
 
-Instead, we take inspiration from SeqEm\cite{seqem}.  We treat the
-allele frequencies $\mathcal{f}$ as hidden parameters, marginalize over
-the genotypes, and maximize the joint probability $P(\mathcal{D},
-\mathcal{f} | \Sigma)$ with respect to the variance-covariance matrix
-$\Sigma$ using an EM algorithm\footnote{Effectively, we estimate the
-allele frequency at every position for every sample.  Literally, this is of course
-impossible, but in aggregate makes sense for populations.}.
+\begin{equation*}
+L = \frac{1}{\sqrt{2^k \pi^k |\Sigma|}} \int_{0^k}^{1^k} f^T G f 
+    \exp \left( -\frac{1}{2}(f-\mu)^T \Sigma^{-1} (f-\mu) \right) df
+\end{equation*}    
+
+This appears to require integration over the space of possible
+combinations of allele frequencies, which sounds impractical.  If this
+has to be done numerically (Monte-Carlo integration seems at least
+feasible), it will be slow and horrible.  It's not obvious how to do it
+symbolically (it would only make sense if the genotypes can be
+separated, otherwise marginalization over all \emph{combinations} of
+genotypes remains), but even then, a few problems remain:
+
+\begin{itemize}
+\item The formula lacks a normalization factor arising from the
+integration bounds.
+\item PopGen models based on allele frequencies fail catastrophically if
+the frequencies approach 1 or 0.  It seems disingenious to integrate out
+to these boundaries.
+\item How to deal with $\mu$ is not obvious.
+\end{itemize}
+
+Instead, we sidestep these problems by taking inspiration from
+SeqEm\cite{seqem}.  We treat the allele frequencies $\bar{f}$ as
+hidden parameters, marginalize over the genotypes(!), and maximize the
+joint probability $P(\mathcal{D}, \bar{f} | \Sigma, \mu)$ with
+respect to the variance-covariance matrix $\Sigma$ and the mean
+distances $\mu$ using an EM algorithm\footnote{Effectively, we estimate
+the allele frequency at every position for every sample.  Literally,
+this is of course impossible, but in aggregate makes sense for
+populations.}.
 
 The expectation step, which is finding estimates for the allele
 frequencies, is much easier, as it requires only summation over the
@@ -561,11 +582,42 @@ maximization should do it.}.  Maximization is finding a covariance
 matrix from allele frequencies, and this is again easy.  The obvious
 moment based estimator should work.
 
+Maximization (actually done by the moment based estimator for sample
+mean and sample covariances):
+
+\begin{equation*}
+\hat{\mu}, \hat{\Sigma} := \argmax_{\mu,\Sigma} 
+    P(\bar{f}_1,\ldots,\bar{f}_k| \mu,\Sigma)
+\end{equation*}
+
+Expectation (for each site):
+\begin{align*}
+\hat{f_1} \lell \hat{f_k} &= \argmax_{f_1,\ldots,f_k}
+    P(\mathcal{D} | f_1,\ldots,f_k) P(f_1,\ldots,f_k | \mu, \Sigma)  \\
+    &=  \argmax_{f_1,\ldots,f_k}
+    \prod_{i=1}^k \sum_{G_i} P(\mathcal{D} | G_i) P( G_i | f_i ) 
+    e^{ -\frac{1}{2} ((f_1,\ldots,f_k) - \mu)^T \Sigma^{-1} ((f_1,\ldots,f_k) - \mu) }
+\end{align*}
+
+Here, $P(\mathcal{D}|G_i)$ is a genotype likelihood, acting as a
+constant, and $P( G_i | f_i)$ follows by assuming
+Hardy-Weinberg-Equilibrium\footnote{Even if HWE is violated in practice,
+it will be absorbed by the estimation of more drift along the affected
+lineage.}:
+
+\begin{equation*}
+P(G=RR) = (1-f)^2 \quad P(G=RA) = 2f(1-f) \quad P(AA) = f^2
+\end{equation*}
+
+This \emph{looks} as if it can be optimized analytically.  The summation
+over the genotypes requires no nested sums, so it \emph{looks} tractable.
+
 \idea{The practical implementation should probably not store the
 aforementioned 600GB of likelihoods, but only 6GB or thereabout of
 allele frequency data per sample.  The likelihoods can be generated from
 the smaller BAM files on the fly.  That probably means 'pileup' needs to
-get a lot faster.}
+get a lot faster.  On second thought, maybe the frequencies don't need
+to be stored at all.}
 
 \idea{Dealing with contamination becomes obvious in this framework.  For
 a contaminated sample, every position has two allele frequencies (or two
@@ -584,11 +636,11 @@ Means are subtracted from each column, then each column is divided by
 its empirical standard deviation $\sqrt{f_j (1 - f_j)}$.  For
 multiallelic sites, one frequency is used per variant.  
 
-Since $m < n$, matrix $X = \frac{1}{n} M M^T$ is small and \sc{Lapack}
-can trivially perform PCA on it.  It just so happens that $X$ is the
-same covariance matrix we estimated above.  (Before David and Nick got
-involved, everybody PCA's $\frac{1}{m} M^T M$ instead, which is much
-bigger.  I don't know why.)
+Since $m < n$, matrix $X = \frac{1}{n} M M^T$ is small and
+\textsc{Lapack} can trivially perform PCA on it.  It just so happens
+that $X$ is the same covariance matrix we estimated above.  (Before
+David and Nick got involved, everybody PCA'd $\frac{1}{m} M^T M$
+instead, which is much bigger.  I don't know why.)
 
 
 
