@@ -126,7 +126,10 @@ main' Conf{..} sample_name smp rgnex =
         case fmap point_est $ H.foldrWithKey (ifMatch rgn) Nothing (sample_divergences smp) of
             Just (prior_div : prior_het : _prior_het2 : more) -> do
                 liftIO $ conf_report $ "Calling " ++ sample_name ++ "/" ++ unpack rgn ++ "."
+
                 let prior_indel = case more of [] -> prior_div * 0.1 ; p : _ -> p
+                    prior_het_indel = prior_indel * prior_het / prior_div
+
                     infile      = takeDirectory conf_metadata </> unpack avfile
                     outfile     = takeDirectory conf_metadata </> conf_output sample_name rgn
                     tmpfile     = outfile ++ ".#"
@@ -153,17 +156,17 @@ main' Conf{..} sample_name smp rgnex =
     ifMatch r k v a = if regMatch (regComp (unpack k)) (unpack r) then Just v else a
 
 call :: Double -> Double -> U.Vector (Prob' Float) -> Maybe StdGen -> (Int,Maybe StdGen)
-call prior prior_h lks gen = case gen of
+call prior_d prior_h lks gen = case gen of
     Nothing -> ( U.maxIndex ps, Nothing )
     Just  g -> (            ix, Just g' )
       where
         (p,g') = randomR (0, 1) g
         ix     = U.length $ U.takeWhile (<p) $ U.map fromProb $
-                 U.prescanl (+) 0 $ U.map (/ U.sum ps) ps
+                 U.postscanl (+) 0 $ U.map (/ U.sum ps) ps
   where
-    ps = U.zipWith (*) lks $ U.replicate (U.length lks) (toProb . realToFrac $ prior_h * prior)
-                             U.// [ (0, toProb . realToFrac $ 1-prior) ]
-                             U.// [ (i, toProb . realToFrac $ (1-prior_h) * prior)
+    ps = U.zipWith (*) lks $ U.replicate (U.length lks) (toProb . realToFrac $ prior_h * (1-prior_d))
+                             U.// [ (0, toProb . realToFrac $ (1-prior_d) * (1-prior_h)) ]
+                             U.// [ (i, toProb . realToFrac $ (1-prior_d) * prior_h)
                                   | i <- takeWhile (< U.length lks) (scanl (+) 2 [3..]) ]
 
 
