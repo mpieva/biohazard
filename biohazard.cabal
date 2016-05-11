@@ -179,6 +179,7 @@ Executable redeye-single
                        directory,
                        iteratee,
                        filepath,
+                       random,
                        text,
                        unix,
                        unordered-containers,

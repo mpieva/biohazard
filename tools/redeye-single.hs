@@ -35,8 +35,9 @@ import System.Console.GetOpt
 import System.Directory                 ( renameFile )
 import System.Environment
 import System.Exit
-import System.FilePath
+import System.FilePath           hiding ( combine )
 import System.Posix.IO
+import System.Random
 
 import qualified Data.ByteString.Char8          as S
 import qualified Data.ByteString.Unsafe         as S
@@ -51,10 +52,11 @@ data Conf = Conf {
     conf_output      :: String -> Text -> FilePath,
     conf_regions     :: Regex,
     conf_ploidy      :: String -> Int,
-    conf_report      :: String -> IO () }
+    conf_report      :: String -> IO (),
+    conf_random      :: Maybe StdGen }
 
 defaultConf :: Conf
-defaultConf = Conf (error "no metadata file specified") default_out (regComp "") (const 2) (\_ -> return ())
+defaultConf = Conf (error "no metadata file specified") default_out (regComp "") (const 2) (\_ -> return ()) Nothing
   where
     default_out smp  "" = smp <> ".bcf"
     default_out smp rgn = smp <> "-" <> unpack rgn <> ".bcf"
@@ -66,6 +68,7 @@ options = [
     Option "r"  ["regions"]         (ReqArg set_regions "REGEX") "Process only regions matching REGEX",
     Option "1"  ["haploid-chromosomes"] (ReqArg set_hap "REGEX") "Targets matching REGEX are haploid",
     Option "2"  ["diploid-chromosomes"] (ReqArg set_dip "REGEX") "Targets matching REGEX are diploid",
+    Option "s"  ["sample-genotypes"]     (OptArg set_rnd "SEED") "Sample genotypes from posterior",
     Option "v"  ["verbose"]             (NoArg       be_verbose) "Print more diagnostics",
     Option "h?" ["help","usage"]        (NoArg       disp_usage) "Display this message" ]
   where
@@ -82,6 +85,9 @@ options = [
     set_regions    a c = return $ c { conf_regions = regComp $ "^" ++ a ++ "$" }
 
     set_output    fn c = return $ c { conf_output = mkoutput fn }
+
+    set_rnd  Nothing c = newStdGen >>= \g -> return $ c { conf_random = Just g }
+    set_rnd (Just a) c = readIO  a >>= \s -> return $ c { conf_random = Just (mkStdGen s) }
 
 mkoutput :: FilePath -> String -> Text -> FilePath
 mkoutput str smp rgn = go str
@@ -131,6 +137,7 @@ main' Conf{..} sample_name smp rgnex =
                     joinI $ progressPos getpos "calling at " conf_report (getRefseqs av_meta)   $
                     bcf_to_fd ofd (getRefseqs av_meta) [fromString sample_name]
                                   (call (prior_div/3) prior_het, call prior_indel prior_het)
+                                  conf_random
 
                 let upd_bcf_files f s = s { sample_bcf_files = f $ sample_bcf_files s }
                     ins_bcf_file      = upd_bcf_files $ H.insert rgn (fromString outfile)
@@ -139,34 +146,42 @@ main' Conf{..} sample_name smp rgnex =
 
             _ -> fail $ sample_name ++ "/" ++ unpack rgn ++ " is missing divergence information"
   where
-    call :: Double -> Double -> U.Vector (Prob' Float) -> Int
-    call prior prior_h lks = U.maxIndex . U.zipWith (*) lks $
-                             U.replicate (U.length lks) (toProb . realToFrac $ prior_h * prior)
-                             U.// [ (0, toProb . realToFrac $ 1-prior) ]
-                             U.// [ (i, toProb . realToFrac $ (1-prior_h) * prior)
-                                  | i <- takeWhile (< U.length lks) (scanl (+) 2 [3..]) ]
-
     getpos :: GenoCallBlock -> (Refseq, Int)
     getpos b = (reference_name b, start_position b)
 
     ifMatch :: Text -> Text -> a -> Maybe a -> Maybe a
     ifMatch r k v a = if regMatch (regComp (unpack k)) (unpack r) then Just v else a
 
+call :: Double -> Double -> U.Vector (Prob' Float) -> Maybe StdGen -> (Int,Maybe StdGen)
+call prior prior_h lks gen = case gen of
+    Nothing -> ( U.maxIndex ps, Nothing )
+    Just  g -> (            ix, Just g' )
+      where
+        (p,g') = randomR (0, 1) g
+        ix     = U.length $ U.takeWhile (<p) $ U.map fromProb $
+                 U.prescanl (+) 0 $ U.map (/ U.sum ps) ps
+  where
+    ps = U.zipWith (*) lks $ U.replicate (U.length lks) (toProb . realToFrac $ prior_h * prior)
+                             U.// [ (0, toProb . realToFrac $ 1-prior) ]
+                             U.// [ (i, toProb . realToFrac $ (1-prior_h) * prior)
+                                  | i <- takeWhile (< U.length lks) (scanl (+) 2 [3..]) ]
+
 
 -- | Generates BCF and writes it to a 'Handle'.  For the necessary VCF
 -- header, we get the /names/ of the reference sequences from the Avro
 -- schema and the /lengths/ from the biohazard.refseq_length entry in
 -- the meta data.
-bcf_to_fd :: MonadIO m => Fd -> Refs -> [S.ByteString] -> CallFuncs -> Iteratee [GenoCallBlock] m ()
-bcf_to_fd hdl refs name callz =
-    toBcf refs name callz ><> encodeBgzfWith 9 =$
+bcf_to_fd :: MonadIO m => Fd -> Refs -> [S.ByteString] -> CallFuncs gen -> gen -> Iteratee [GenoCallBlock] m ()
+bcf_to_fd hdl refs name callz gen =
+    toBcf refs name callz gen ><> encodeBgzfWith 9 =$
     mapChunksM_ (\s -> liftIO $ S.unsafeUseAsCStringLen s $ \(p,l) ->
                                 fdWriteBuf hdl (castPtr p) (fromIntegral l))
 
 
-
-type CallFunc = U.Vector (Prob' Float) -> Int
-type CallFuncs = (CallFunc, CallFunc)
+-- A function from likelihoods to called index.  It's allowed to require
+-- a random number generator.
+type CallFunc gen = U.Vector (Prob' Float) -> gen -> (Int, gen)
+type CallFuncs gen = (CallFunc gen, CallFunc gen)
 
 vcf_header :: Refs -> [S.ByteString] -> Push
 vcf_header refs smps = foldr (\a b -> pushByteString a <> pushByte 10 <> b) mempty $
@@ -182,30 +197,41 @@ vcf_header refs smps = foldr (\a b -> pushByteString a <> pushByte 10 <> b) memp
 
 
 -- XXX Ploidy is being ignored.
-toBcf :: Monad m => Refs -> [S.ByteString] -> CallFuncs -> Enumeratee [GenoCallBlock] Push m r
-toBcf refs smps (snp_call, indel_call) = eneeCheckIfDone go
+toBcf :: Monad m => Refs -> [S.ByteString] -> CallFuncs gen -> gen -> Enumeratee [GenoCallBlock] Push m r
+toBcf refs smps (snp_call, indel_call) gen0 = eneeCheckIfDone go
   where
-    go  k = mapChunks (foldMap encode) . k $ Chunk hdr
+    go  k = eneeCheckIfDone (go2 gen0) . k $ Chunk hdr
+    go2 g k = tryHead >>= \mblock -> case mblock of
+                    Nothing -> return $ liftI k
+                    Just bl -> let (p,g1) = encode bl g
+                               in eneeCheckIfDone (go2 g1) . k $ Chunk p
 
     hdr   = pushByteString "BCF\2\2" <> setMark <>
             vcf_header refs smps <> pushByte 0 <> endRecord
 
-    encode :: GenoCallBlock -> Push
-    encode GenoCallBlock{..} = mconcat $ zipWith (encode1 reference_name) [start_position..] called_sites
+    -- encode :: GenoCallBlock -> gen -> (Push, gen)
+    encode GenoCallBlock{..} = combine start_position called_sites
+      where
+        combine !_ [    ] gen = (mempty, gen)
+        combine !p (s:ss) gen = (p1 <> p2, g2)
+          where
+            (p1, g1) = encode1 reference_name p s gen
+            (p2, g2) = combine (succ p) ss g1
 
-    encode1 :: Refseq -> Int -> GenoCallSite -> Push
-    encode1 ref pos site =
-        encodeSNP site ref pos snp_call <>
-        case indel_variants site of
-            [ ] -> mempty
-            [_] -> mempty
-            v:_ | U.null d && U.null i -> encodeIndel site ref pos indel_call
-                | otherwise            -> error "First indel variant should always be the reference."
-              where
-                IndelVariant (V_Nucs d) (V_Nuc i) = v
+    -- encode1 :: Refseq -> Int -> GenoCallSite -> gen -> (Push, gen)
+    encode1 ref pos site g0 = (p1 <> p2, g2)
+      where
+        (p1,g1) = encodeSNP site ref pos snp_call g0
+        (p2,g2) = case indel_variants site of
+                    [ ] -> (mempty,g1)
+                    [_] -> (mempty,g1)
+                    v:_ | U.null d && U.null i -> encodeIndel site ref pos indel_call g1
+                        | otherwise            -> error "First indel variant should always be the reference."
+                      where
+                        IndelVariant (V_Nucs d) (V_Nuc i) = v
 
 
-encodeSNP :: GenoCallSite -> Refseq -> Int -> CallFunc -> Push
+encodeSNP :: GenoCallSite -> Refseq -> Int -> CallFunc gen -> gen -> (Push, gen)
 encodeSNP site = encodeVar (map S.singleton alleles) (snp_likelihoods site) (snp_stats site)
   where
     -- Permuting the reference allele to the front sucks.  Since
@@ -216,7 +242,7 @@ encodeSNP site = encodeVar (map S.singleton alleles) (snp_likelihoods site) (snp
             | ref_allele site == nucsC = "CAGT"
             | otherwise                = "ACGT"
 
-encodeIndel :: GenoCallSite -> Refseq -> Int -> CallFunc -> Push
+encodeIndel :: GenoCallSite -> Refseq -> Int -> CallFunc gen -> gen -> (Push, gen)
 encodeIndel site = encodeVar alleles (indel_likelihoods site) (indel_stats site)
   where
     -- We're looking at the indel /after/ the current position.
@@ -228,11 +254,12 @@ encodeIndel site = encodeVar alleles (indel_likelihoods site) (indel_stats site)
     alleles = [ S.pack $ showNucleotides (ref_allele site) : show (U.toList a) ++ show (U.toList $ U.drop (U.length r) rallele)
               | IndelVariant (V_Nucs r) (V_Nuc a) <- indel_variants site ]
 
-encodeVar :: [S.ByteString] -> U.Vector Mini -> CallStats -> Refseq -> Int -> CallFunc -> Push
-encodeVar alleles likelihoods CallStats{..} ref pos do_call =
-    setMark <> setMark <>           -- remember space for two marks
-    b_share <> endRecordPart1 <>    -- store 1st length and 2nd mark
-    b_indiv <> endRecordPart2       -- store 2nd length
+encodeVar :: [S.ByteString] -> U.Vector Mini -> CallStats -> Refseq -> Int -> CallFunc gen -> gen -> (Push, gen)
+encodeVar alleles likelihoods CallStats{..} ref pos do_call gen =
+    ( setMark <> setMark <>           -- remember space for two marks
+      b_share <> endRecordPart1 <>    -- store 1st length and 2nd mark
+      b_indiv <> endRecordPart2       -- store 2nd length
+    , gen' )
   where
     b_share = pushWord32 (unRefseq ref) <>
               pushWord32 (fromIntegral pos) <>
@@ -280,7 +307,7 @@ encodeVar alleles likelihoods CallStats{..} ref pos do_call =
     gq = -10 * unPr (U.sum (U.ifilter (\i _ -> i /= maxidx) lks) / U.sum lks) / log 10
     gq' = round . max 0 . min 127 $ gq
 
-    callidx = do_call lks
+    (callidx, gen') = do_call lks gen
     h = length $ takeWhile (<= callidx) $ scanl (+) 1 [2..]
     g = callidx - h * (h+1) `div` 2
 
