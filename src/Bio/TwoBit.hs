@@ -12,6 +12,8 @@ module Bio.TwoBit (
         getSubseqAscii,
         getSubseqMasked,
         getLazySubseq,
+        getFragment,
+        getFwdSubseqV,
         getSeqnames,
         lookupSequence,
         getSeqLength,
@@ -36,6 +38,7 @@ import           Data.Char (toLower)
 import qualified Data.IntMap as I
 import qualified Data.HashMap.Lazy as M
 import           Data.Maybe
+import qualified Data.Vector.Unboxed as U
 import           Numeric
 import           System.IO.Posix.MMap
 import           System.Random
@@ -257,4 +260,31 @@ getRandomSeq tbf len = draw
         mask2maybe n Soft = Just n
         mask2maybe _ Hard = Nothing
         mask2maybe _ Both = Nothing
+
+-- | Gets a fragment from a 2bit file.  The result always has the
+-- desired length; if necessary, it is padded with Ns.  Be careful about
+-- the unconventional encoding: 0..4 == TCAGN
+getFragment :: TwoBitFile -> Seqid -> Int -> Int -> U.Vector Word8
+getFragment tbf chr p l =
+    case lookupSequence tbf chr of
+        Nothing  -> U.replicate l 4
+        Just tbs -> getFwdSubseqV tbf tbs p l
+
+-- Careful about weird encoding: 0..4 == TCAGN
+getFwdSubseqV :: TwoBitFile -> TwoBitSequence -> Int -> Int -> U.Vector Word8
+getFwdSubseqV TBF{..} TBS{..} start len = U.unfoldrN len step ini
+  where
+    ini = (start, takeOverlap start tbs_n_blocks)
+
+    step (off, nbs)
+        | off < 0                   = Just (4, (succ off, nbs))
+        | off >= tbs_dna_size       = Just (4, (succ off, nbs))
+        | otherwise = case nbs of
+            [        ]             -> Just (y, (succ off, [ ]))
+            (s,l):nbs' | off < s   -> Just (y, (succ off, nbs))
+                       | off < s+l -> Just (4, (succ off, nbs))
+                       | otherwise -> Just (y, (succ off, nbs'))
+      where
+        x = B.index tbf_raw (tbs_dna_offset + off `shiftR` 2)
+        y = x `shiftR` (6 - 2 * (off .&. 3)) .&. 3     -- T,C,A,G
 

@@ -36,11 +36,11 @@
 --   - needs support for multiple input files
 --   - needs to deal with long (unmerged) reads (by ignoring them?)
 
+import Bio.Adna              hiding ( bang )
 import Bio.Bam.Header
 import Bio.Bam.Index
 import Bio.Bam.Rec
 import Bio.Base
-import Bio.Genocall.Adna
 import Bio.Genocall.Metadata
 import Bio.Iteratee
 import Bio.Util.AD
@@ -132,8 +132,8 @@ lk_fun1 lmin lmax parms = case length parms of
     -- Likelihood given precomputed damage table.  We compute the giant
     -- table ahead of time, which maps length, index and base pair to a
     -- likelihood.
-    lk tab_m     _     _ (Merged b) = U.ifoldl' (\a i np -> a * tab_m `bang` index' my_bounds (U.length b, i, NP np)) 1 b
-    lk     _ tab_f     _ (Mate1st  b) = U.ifoldl' (\a i np -> a * tab_f `bang` index' my_bounds (U.length b, i, NP np)) 1 b
+    lk tab_m     _     _ (Merged  b) = U.ifoldl' (\a i np -> a * tab_m `bang` index' my_bounds (U.length b, i, NP np)) 1 b
+    lk     _ tab_f     _ (Mate1st b) = U.ifoldl' (\a i np -> a * tab_f `bang` index' my_bounds (U.length b, i, NP np)) 1 b
     lk     _     _ tab_s (Mate2nd b) = U.ifoldl' (\a i np -> a * tab_s `bang` index' my_bounds (U.length b, i, NP np)) 1 b
 
     index' bnds x | inRange bnds x = index bnds x

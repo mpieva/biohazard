@@ -1,5 +1,5 @@
 Name:                biohazard
-Version:             0.6.5
+Version:             0.6.6
 Synopsis:            bioinformatics support library
 Description:         This is a collection of modules I separated from
                      various bioinformatics tools.  The hope is to make
@@ -14,7 +14,7 @@ License-File:        LICENSE
 
 Author:              Udo Stenzel
 Maintainer:          udo.stenzel@eva.mpg.de
-Copyright:           (C) 2010-2015 Udo Stenzel
+Copyright:           (C) 2010-2016 Udo Stenzel
 
 Extra-Source-Files:  man/man7/biohazard.7
                      man/man1/bam-meld.1
@@ -29,20 +29,21 @@ Data-Dir:            data
 
 Cabal-version:       >=1.9.2
 Build-type:          Custom
-Tested-With:         GHC == 7.4.2, GHC == 7.6.3, GHC == 7.8.4, GHC == 7.10.3
+-- Tested-With:         GHC == 7.4.2, GHC == 7.6.3, GHC == 7.8.4, GHC == 7.10.3
 
 source-repository head
   type:     git
-  location: git://github.com/udo-stenzel/biohazard.git
+  location: https://bitbucket.org/ustenzel/biohazard.git
 
 source-repository this
   type:     git
-  location: git://github.com/udo-stenzel/biohazard.git
-  tag:      0.6.5
+  location: https://bitbucket.org/ustenzel/biohazard.git
+  tag:      0.6.6
 
 
 Library
   Exposed-modules:     Bio.Base,
+                       Bio.Adna,
                        Bio.Align,
                        Bio.Bam,
                        Bio.Bam.Evan,
@@ -58,7 +59,6 @@ Library
                        Bio.Bam.Trim,
                        Bio.Bam.Writer,
                        Bio.Genocall,
-                       Bio.Genocall.Adna,
                        Bio.Genocall.AvroFile,
                        Bio.Genocall.Metadata,
                        Bio.Iteratee,
@@ -106,7 +106,7 @@ Library
                        vector-th-unbox          == 0.2.*,
                        zlib                     >= 0.5 && < 0.7
 
-  Ghc-options:         -Wall -auto-all
+  Ghc-options:         -Wall
   Hs-source-dirs:      src
   Install-Includes:    src/cbits/myers_align.h
   C-sources:           src/cbits/myers_align.c
@@ -119,14 +119,14 @@ Library
   -- Build-tools:         
 
 -- Test-Suite test-biohazard
-  -- Ghc-options:         -Wall -auto-all -threaded -rtsopts -with-rtsopts=-N
+  -- Ghc-options:         -Wall -threaded -rtsopts -with-rtsopts=-N
   -- Type:                exitcode-stdio-1.0
   -- Main-is:             test-biohazard.hs
 
 Executable redeye-dar
   Main-is:             redeye-dar.hs
   Hs-Source-Dirs:      tools
-  Ghc-options:         -Wall -auto-all -threaded -rtsopts -with-rtsopts=-N
+  Ghc-options:         -Wall -threaded -rtsopts -with-rtsopts=-N
   Build-depends:       async,
                        base,
                        biohazard,
@@ -137,7 +137,7 @@ Executable redeye-dar
 
 Executable redeye-div
   Main-is:             redeye-div.hs
-  Ghc-options:         -Wall -auto-all -threaded -rtsopts -with-rtsopts=-N
+  Ghc-options:         -Wall -threaded -rtsopts -with-rtsopts=-N
   Hs-Source-Dirs:      tools
   Build-depends:       async,
                        base,
@@ -150,7 +150,7 @@ Executable redeye-div
 
 Executable redeye-pileup
   Main-is:             redeye-pileup.hs
-  Ghc-options:         -Wall -auto-all -threaded -rtsopts -with-rtsopts=-N
+  Ghc-options:         -Wall -threaded -rtsopts -with-rtsopts=-N
   Hs-Source-Dirs:      tools
   Build-depends:       aeson,
                        base,
@@ -167,7 +167,7 @@ Executable redeye-pileup
 
 Executable redeye-single
   Main-is:             redeye-single.hs
-  Ghc-options:         -Wall -auto-all -rtsopts
+  Ghc-options:         -Wall -rtsopts
   Hs-Source-Dirs:      tools
   Build-depends:       aeson,
                        base,
@@ -184,7 +184,7 @@ Executable redeye-single
 
 Executable gt-scan
   Main-is:             gt-scan.hs
-  Ghc-options:         -Wall -auto-all
+  Ghc-options:         -Wall
   Hs-Source-Dirs:      tools
   Build-depends:       aeson,
                        base,
@@ -203,10 +203,10 @@ Executable gt-scan
 
 Executable afroengineer
   Main-is:             afroengineer.hs
-  Ghc-options:         -Wall -auto-all
+  Ghc-options:         -Wall
   Hs-source-dirs:      tools
-  -- Ghc-options:         -Wall -auto-all -threaded -rtsopts -with-rtsopts=-N
-  Ghc-options:         -Wall -auto-all -rtsopts
+  -- Ghc-options:         -Wall -threaded -rtsopts -with-rtsopts=-N
+  Ghc-options:         -Wall -rtsopts
   Other-Modules:       Align, SimpleSeed
   Build-Depends:       base,
                        biohazard,
@@ -219,10 +219,10 @@ Executable afroengineer
 
 Executable bam-fixpair
   Main-is:             bam-fixpair.hs
-  Ghc-options:         -Wall -auto-all
+  Ghc-options:         -Wall
   Hs-Source-Dirs:      tools
-  -- Ghc-options:         -Wall -auto-all -threaded -rtsopts -with-rtsopts=-N
-  Ghc-options:         -Wall -auto-all -rtsopts
+  -- Ghc-options:         -Wall -threaded -rtsopts -with-rtsopts=-N
+  Ghc-options:         -Wall -rtsopts
   Build-depends:       base,
                        binary,
                        biohazard,
@@ -233,10 +233,10 @@ Executable bam-fixpair
 
 Executable bam-meld
   Main-is:             bam-meld.hs
-  Ghc-options:         -Wall -auto-all
+  Ghc-options:         -Wall
   Hs-Source-Dirs:      tools
-  -- Ghc-options:         -Wall -auto-all -threaded -rtsopts -with-rtsopts=-N
-  Ghc-options:         -Wall -auto-all -rtsopts
+  -- Ghc-options:         -Wall -threaded -rtsopts -with-rtsopts=-N
+  Ghc-options:         -Wall -rtsopts
   Build-depends:       base,
                        biohazard,
                        bytestring,
@@ -244,10 +244,10 @@ Executable bam-meld
 
 Executable bam-resample
   Main-is:             bam-resample.hs
-  Ghc-options:         -Wall -auto-all
+  Ghc-options:         -Wall
   Hs-Source-Dirs:      tools
-  -- Ghc-options:         -Wall -auto-all -threaded -rtsopts -with-rtsopts=-N
-  Ghc-options:         -Wall -auto-all -rtsopts
+  -- Ghc-options:         -Wall -threaded -rtsopts -with-rtsopts=-N
+  Ghc-options:         -Wall -rtsopts
   Build-depends:       base,
                        biohazard,
                        bytestring,
@@ -255,10 +255,10 @@ Executable bam-resample
 
 Executable bam-rewrap
   Main-is:             bam-rewrap.hs
-  Ghc-options:         -Wall -auto-all
+  Ghc-options:         -Wall
   Hs-Source-Dirs:      tools
-  -- Ghc-options:         -Wall -auto-all -threaded -rtsopts -with-rtsopts=-N
-  Ghc-options:         -Wall -auto-all -rtsopts
+  -- Ghc-options:         -Wall -threaded -rtsopts -with-rtsopts=-N
+  Ghc-options:         -Wall -rtsopts
   Build-depends:       base,
                        biohazard,
                        bytestring,
@@ -266,10 +266,10 @@ Executable bam-rewrap
 
 Executable bam-rmdup
   Main-is:             bam-rmdup.hs
-  Ghc-options:         -Wall -auto-all
+  Ghc-options:         -Wall
   Hs-Source-Dirs:      tools
-  -- Ghc-options:         -Wall -auto-all -threaded -rtsopts -with-rtsopts=-N
-  Ghc-options:         -Wall -auto-all -rtsopts
+  -- Ghc-options:         -Wall -threaded -rtsopts -with-rtsopts=-N
+  Ghc-options:         -Wall -rtsopts
   Build-depends:       base,
                        biohazard,
                        bytestring,
@@ -281,20 +281,20 @@ Executable bam-rmdup
 
 Executable bam-trim
   Main-is:             bam-trim.hs
-  Ghc-options:         -Wall -auto-all
+  Ghc-options:         -Wall
   Hs-Source-Dirs:      tools
-  -- Ghc-options:         -Wall -auto-all -threaded -rtsopts -with-rtsopts=-N
-  Ghc-options:         -Wall -auto-all -rtsopts
+  -- Ghc-options:         -Wall -threaded -rtsopts -with-rtsopts=-N
+  Ghc-options:         -Wall -rtsopts
   Build-depends:       base,
                        biohazard,
                        bytestring
 
 Executable fastq2bam
   Main-is:             fastq2bam.hs
-  Ghc-options:         -Wall -auto-all
+  Ghc-options:         -Wall
   Hs-Source-Dirs:      tools
-  -- Ghc-options:         -Wall -auto-all -threaded -rtsopts -with-rtsopts=-N
-  Ghc-options:         -Wall -auto-all -rtsopts
+  -- Ghc-options:         -Wall -threaded -rtsopts -with-rtsopts=-N
+  Ghc-options:         -Wall -rtsopts
   Build-depends:       base,
                        biohazard,
                        bytestring,
@@ -307,8 +307,8 @@ Executable jivebunny
   Hs-Source-Dirs:      tools
   C-sources:           src/cbits/jive.c
   CC-options:          -std=c99 -ffast-math
-  -- Ghc-options:         -Wall -auto-all -threaded -rtsopts -with-rtsopts=-N
-  Ghc-options:         -Wall -auto-all -rtsopts
+  -- Ghc-options:         -Wall -threaded -rtsopts -with-rtsopts=-N
+  Ghc-options:         -Wall -rtsopts
   Other-modules:       Index
   Build-depends:       aeson,
                        base,
@@ -327,10 +327,10 @@ Executable jivebunny
 
 Executable mt-anno
   Main-is:             mt-anno.hs
-  Ghc-options:         -Wall -auto-all
+  Ghc-options:         -Wall
   Hs-Source-Dirs:      tools
-  -- Ghc-options:         -Wall -auto-all -threaded -rtsopts -with-rtsopts=-N
-  Ghc-options:         -Wall -auto-all -rtsopts
+  -- Ghc-options:         -Wall -threaded -rtsopts -with-rtsopts=-N
+  Ghc-options:         -Wall -rtsopts
   Other-Modules:       Anno, Seqs, Xlate
   Build-Depends:       base,
                        bytestring,
@@ -339,10 +339,10 @@ Executable mt-anno
 
 Executable mt-ccheck
   Main-is:             mt-ccheck.hs
-  Ghc-options:         -Wall -auto-all
+  Ghc-options:         -Wall
   Hs-Source-Dirs:      tools
-  -- Ghc-options:         -Wall -auto-all -threaded -rtsopts -with-rtsopts=-N
-  Ghc-options:         -Wall -auto-all -rtsopts
+  -- Ghc-options:         -Wall -threaded -rtsopts -with-rtsopts=-N
+  Ghc-options:         -Wall -rtsopts
   Build-Depends:       base,
                        bytestring,
                        biohazard,

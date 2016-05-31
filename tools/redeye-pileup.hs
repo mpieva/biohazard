@@ -30,6 +30,7 @@
 -- overhead of 150% useless likelihood values for the sex chromosomes
 -- and maybe estimate heterozygosity where there is none.
 
+import Bio.Adna
 import Bio.Base
 import Bio.Bam.Header
 import Bio.Bam.Index
@@ -37,7 +38,6 @@ import Bio.Bam.Pileup
 import Bio.Bam.Reader
 import Bio.Bam.Rec
 import Bio.Genocall
-import Bio.Genocall.Adna
 import Bio.Genocall.AvroFile
 import Bio.Genocall.Metadata
 import Bio.Iteratee
