@@ -2,7 +2,7 @@
 -- | Metadata necessary for a sensible genotyping workflow.
 module Bio.Genocall.Metadata where
 
-import Bio.Genocall.Adna                    ( DamageParameters(..) )
+import Bio.Adna                             ( DamageParameters(..) )
 import Control.Applicative           hiding ( empty )
 import Control.Concurrent                   ( threadDelay )
 import Control.Exception                    ( bracket, onException, handleJust )

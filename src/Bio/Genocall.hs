@@ -1,9 +1,9 @@
 {-# LANGUAGE BangPatterns #-}
 module Bio.Genocall where
 
+import Bio.Adna
 import Bio.Bam.Pileup
 import Bio.Base
-import Bio.Genocall.Adna
 import Control.Applicative
 import Data.Foldable hiding ( sum, product )
 import Data.List ( inits, tails, sortBy )
@@ -44,7 +44,7 @@ simple_indel_call ploidy vars = ( simple_call ploidy mkpls vars, vars' )
                 | (_q,(d,i)) <- vars
                 , not (null d) || not (null i) ]
 
-    match = zipWith $ \(DB b q _ m) n -> let p  = m ! n :-> b
+    match = zipWith $ \(DB b q _ m) n -> let p  = m `bang` n :-> b
                                              p' = fromQual q
                                          in toProb $ p + p' - p * p'
 
@@ -63,12 +63,12 @@ simple_snp_call :: (Qual -> Double) -> Int -> BasePile -> Snp_GLs
 simple_snp_call from_qual ploidy vars = snp_gls (simple_call ploidy mkpls vars) ref
   where
     ref = case vars of (_, DB _ _ r _) : _ -> r ; _ -> nucsN
-    mkpls (q, DB b qq _ m) = [ toProb $ x + pe*(s-x) | n <- [0..3], let x = m ! N n :-> b ]
+    mkpls (q, DB b qq _ m) = [ toProb $ x + pe*(s-x) | n <- [0..3], let x = m `bang` N n :-> b ]
       where
         !p1 = from_qual q
         !p2 = from_qual qq
         !pe = p1 + p2 - p1*p2
-        !s  = sum [ m ! N n :-> b | n <- [0..3] ] / 4
+        !s  = sum [ m `bang` N n :-> b | n <- [0..3] ] / 4
 
 -- | Compute @GL@ values for the simple case.  The simple case is where
 -- we sample 'ploidy' alleles with equal probability and assume that
@@ -162,7 +162,7 @@ maq_snp_call ploidy theta bases = snp_gls (V.fromList $ map l $ mk_snp_gts ploid
         let
             -- P(X|Q,H), a vector of four (x is fixed, h is not)
             -- this is the simple form where we set all w to 1/4
-            p_x__q_h_ = Vec.map (\h -> 0.25 * fromQualRaised (theta ** (k ! h :-> db_call x)) (db_qual x)) everynuc
+            p_x__q_h_ = Vec.map (\h -> 0.25 * fromQualRaised (theta ** (k `bang` h :-> db_call x)) (db_qual x)) everynuc
 
             -- eh, this is cumbersome... what was I thinking?!
             p_x__q_h  = Vec.zipWith (\p h -> if db_call x == h then 1 + p - Vec.sum p_x__q_h_ else p) p_x__q_h_ everynuc
@@ -176,7 +176,7 @@ maq_snp_call ploidy theta bases = snp_gls (V.fromList $ map l $ mk_snp_gts ploid
             k' = Vec.setElem (fromIntegral . unN $ db_call x) kk k
 
             acc' = acc * toProb p_x__q
-            meh = Vec.map (\h -> k ! h :-> db_call x) everynuc -- XXX
+            meh = Vec.map (\h -> k `bang` h :-> db_call x) everynuc -- XXX
         in {- trace (unlines ["gt " ++ show gt
                           ,"p(x|q,h) " ++ show p_x__q_h
                           ,"dg " ++ show dg ++ ", call = " ++ show (db_call x)
