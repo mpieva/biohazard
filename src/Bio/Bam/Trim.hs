@@ -91,7 +91,7 @@ trim_low_quality q = const $ all (< q)
 
 
 -- | Overlap-merging of read pairs.  We shall compute the likelihood
--- for every possible overlap, the select the most likely one (unless it
+-- for every possible overlap, then select the most likely one (unless it
 -- looks completely random), compute a quality from the second best
 -- merge, then merge and clamp the quality accordingly.  Output should
 -- be the pair *and* the merged representation, suitably flagged.
@@ -104,3 +104,16 @@ trim_low_quality q = const $ all (< q)
 -- trim all adapters known to us (should be only two or three).
 --
 -- Single-end reads are treated as pairs with an empty second read.
+
+-- Merging for a single read:  we need one adapter only (the one coming
+-- /after/ the read), here provided as a list of options, and the second
+-- read is added as empty.  Results in up to two reads (the original,
+-- possibly flagged, and the trimmed one, definitely flagged, and two
+-- qualities).
+trim_adapter :: BamRec -> [???] -> Maybe (BamRec, BamRec, Qual, Qual)
+
+-- Merging of a read pair:  two reads go in, with two adapter list.
+-- May result in the modified original reads, the merged one and two
+-- qualities.
+merge_overlap :: BamRec -> [???] -> BamRec -> [???]
+              -> Maybe (BamRec, BamRec, BamRec, Qual, Qual)
