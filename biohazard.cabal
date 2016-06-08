@@ -1,5 +1,5 @@
 Name:                biohazard
-Version:             0.6.6
+Version:             0.6.6.1
 Synopsis:            bioinformatics support library
 Description:         This is a collection of modules I separated from
                      various bioinformatics tools.  The hope is to make
@@ -29,7 +29,7 @@ Data-Dir:            data
 
 Cabal-version:       >=1.9.2
 Build-type:          Custom
--- Tested-With:         GHC == 7.4.2, GHC == 7.6.3, GHC == 7.8.4, GHC == 7.10.3
+Tested-With:         GHC == 7.6.2, GHC == 7.8.4, GHC == 7.10.1
 
 source-repository head
   type:     git
@@ -38,7 +38,7 @@ source-repository head
 source-repository this
   type:     git
   location: https://bitbucket.org/ustenzel/biohazard.git
-  tag:      0.6.6
+  tag:      0.6.6.1
 
 
 Library
