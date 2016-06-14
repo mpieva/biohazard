@@ -592,7 +592,7 @@ mean and sample covariances):
 
 Expectation (for each site):
 \begin{align*}
-\hat{f_1} \lell \hat{f_k} &= \argmax_{f_1,\ldots,f_k}
+\hat{f_1} \ldots \hat{f_k} &= \argmax_{f_1,\ldots,f_k}
     P(\mathcal{D} | f_1,\ldots,f_k) P(f_1,\ldots,f_k | \mu, \Sigma)  \\
     &=  \argmax_{f_1,\ldots,f_k}
     \prod_{i=1}^k \sum_{G_i} P(\mathcal{D} | G_i) P( G_i | f_i ) 
@@ -642,7 +642,14 @@ that $X$ is the same covariance matrix we estimated above.  (Before
 David and Nick got involved, everybody PCA'd $\frac{1}{m} M^T M$
 instead, which is much bigger.  I don't know why.)
 
-
+\idea{The Nielsen method to infer IBD (or inbred) tracts assumes HWE and
+relies on an estimate of allele frequencies per site.  That's of course
+ridiculous if only one individual is available, and I think the method
+should fail on a single individual.  (They must be using multiple
+individuals from a homogenous population.  Confirm?)  However, we
+already estimate allele frequencies as a side effect.  Given these, the
+Nielsen method could be adapted!  It could actually be simplified, the
+frequencies are constant, only the HMM parameters need to be inferred.}
 
 \appendix
 
