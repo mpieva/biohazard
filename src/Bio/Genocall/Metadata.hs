@@ -3,22 +3,14 @@
 module Bio.Genocall.Metadata where
 
 import Bio.Adna                             ( DamageParameters(..) )
-import Control.Applicative           hiding ( empty )
-import Control.Concurrent                   ( threadDelay )
-import Control.Exception                    ( bracket, onException, handleJust )
-import Control.Monad                        ( forM_ )
+import Bio.Prelude                   hiding ( writeFile, readFile )
 import Data.Aeson
 import Data.Binary
 import Data.Binary.Get                      ( runGetOrFail )
 import Data.Binary.Put                      ( runPut )
 import Data.ByteString.Lazy                 ( toChunks, readFile )
 import Data.ByteString.Unsafe               ( unsafeUseAsCStringLen )
-import Data.Monoid
-import Data.Text                            ( Text, pack )
 import Foreign.Ptr                          ( castPtr )
-import GHC.IO.Exception                     ( IOErrorType(..) )
-import Prelude                       hiding ( writeFile, readFile )
-import System.IO.Error                      ( isAlreadyExistsErrorType, ioeGetErrorType )
 import System.Posix.Files                   ( rename, removeLink )
 import System.Posix.IO
 
@@ -221,4 +213,4 @@ writeMetadata fp mdata = bracket
 split_sam_rgns :: Metadata -> [String] -> [( String, [Maybe String] )]
 split_sam_rgns _meta [    ] = []
 split_sam_rgns  meta (s:ss) = (s, if null rgns then [Nothing] else map Just rgns) : split_sam_rgns meta rest
-    where (rgns, rest) = break (\x -> pack x `M.member` meta) ss
+    where (rgns, rest) = break (\x -> fromString x `M.member` meta) ss

@@ -3,13 +3,8 @@
 
 module Align where
 
-import Bio.Base
 import Bio.Bam
-import Control.Applicative
-import Control.Monad
-import Control.Monad.ST (runST)
-import Data.Bits
-import Data.List (group)
+import Bio.Prelude
 import Data.Sequence ( (<|), (><), ViewL((:<)) )
 
 import qualified Data.Foldable               as F
@@ -294,10 +289,10 @@ vote_for_at votes v0 idx bq ps =
 -- we concatenate.
 finalize_ref_seq :: NewRefSeq -> (RefSeq, XTab)
 finalize_ref_seq (NRS z) =
-    ( RS $ U.concat $ F.foldr unpack [] z
+    ( RS $ U.concat $ F.foldr unpck [] z
     , Z.fromList $ scanl (+) 0 $ F.foldr tolen [] z)
   where
-    unpack (NC ins bas) k = map5 call ins ++ call bas : k
+    unpck (NC ins bas) k = map5 call ins ++ call bas : k
     map5 f v = [ f (U.slice i 5 v) | i <- [0, 5 .. U.length v - 5] ]
     call v = U.map (\x -> round $ (-10) / log 10 * log ((x+1) / total)) v where total = U.sum v + 5
 

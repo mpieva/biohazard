@@ -2,12 +2,8 @@
 {-# OPTIONS_GHC -Wall #-}
 module SimpleSeed where
 
-import Bio.Base
 import Bio.Bam.Rec
-
-import Data.Bits
-import Data.List
-import Data.Maybe
+import Bio.Prelude
 
 import qualified Data.IntMap as IM
 import qualified Data.Vector.Generic as V
@@ -73,20 +69,8 @@ create_seed_maps = SM . IM.unionsWith const . map (unSM . create_seed_map)
 -- probably discard overly long regions.
 
 do_seed :: Int -> SeedMap -> BamRec -> Maybe (Int,Int)
-do_seed ln (SM sm) BamRec{..} = -- do S.hPut stdout $ S.concat [ b_qname, key, ":  ", S.pack (shows b_seq "\n") ]
-                   --    mapM_ (\x -> hPutStrLn stdout $ "  " ++ show x) rgns
-                   case rgns of
-                           [         ] -> Nothing -- putStrLn "discard"
-                           {- (a,b,_) : _ | a > 20000 || a < (-20000) -> error $ concat [
-                                    "Weird region: ",
-                                    shows (a,b,ln) "; ",
-                                    "Primitive regions: ",
-                                    shows (rgns_fwd ++ rgns_rev) "; ",
-                                    "Resulting regions: ",
-                                    show rgns ] -}
-                           (a,b,_) : _ -> Just (a,b) -- putStrLn $ "seed to " ++ shows a ".." ++ shows b " ("
-                                                         --     ++ shows (b-a) "/" ++ shows (V.length b_seq) ")"
-
+do_seed ln (SM sm) BamRec{..} = case rgns of [         ] -> Nothing
+                                             (a,b,_) : _ -> Just (a,b)
   where
     seeds = filter ((/= 0) . fst) $ filter ((/= template) . fst) $
             filter ((>= 0) . snd) $ create_seed_words $ V.toList b_seq

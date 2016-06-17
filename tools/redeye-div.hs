@@ -4,24 +4,15 @@
 -- store the result back.  The estimate can be done for regions, which
 -- are defined by regular expressions.
 
-import Bio.Base
+import Bio.Prelude
 import Bio.Genocall.Metadata
 import Bio.Util.AD
 import Bio.Util.AD2
 import Bio.Util.Numeric              ( log1p )
 import Bio.Util.Regex                ( regComp, regMatch )
 import Control.Concurrent.Async      ( async, wait )
-import Control.Monad                 ( when, unless, forM, (>=>) )
-import Data.Foldable                 ( foldMap )
-import Data.List                     ( foldl1', foldl' )
-import Data.String                   ( fromString )
-import Data.Text                     ( Text, unpack )
-import Numeric                       ( showFFloat )
 import Numeric.LinearAlgebra.HMatrix ( eigSH', (><), toRows, scale )
 import System.Console.GetOpt
-import System.Environment            ( getArgs, getProgName )
-import System.Exit                   ( exitSuccess, exitFailure )
-import System.IO                     ( hPutStrLn, stderr )
 
 import qualified Data.HashMap.Strict            as H
 import qualified Data.Vector.Storable           as VS

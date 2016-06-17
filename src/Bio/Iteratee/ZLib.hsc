@@ -43,6 +43,7 @@ import Data.Foldable
 import Data.Typeable
 import Foreign
 import Foreign.C
+import Prelude
 #ifdef DEBUG
 import qualified Foreign.Concurrent as C
 import System.IO (stderr)

@@ -7,6 +7,7 @@ import Xlate
 import Bio.Align
 import Control.Applicative
 import Data.Char
+import Prelude
 import Text.Printf
 
 import qualified Data.ByteString.Char8 as S

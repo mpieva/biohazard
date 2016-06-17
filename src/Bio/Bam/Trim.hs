@@ -6,6 +6,7 @@ module Bio.Bam.Trim ( trim_3', trim_3, trim_low_quality ) where
 
 import Bio.Bam.Rec
 import Bio.Base
+import Prelude
 
 import Data.Bits ( testBit )
 import Data.List ( inits )

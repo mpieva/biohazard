@@ -5,11 +5,9 @@ module Bio.Bam.Fastq (
 
 import Bio.Bam.Header
 import Bio.Bam.Rec
-import Bio.Base
+import Bio.Prelude hiding ( isSpace )
 import Bio.Iteratee
-import Control.Applicative hiding ( many )
 import Data.Attoparsec.ByteString.Char8
-import Data.Bits
 
 import qualified Data.Attoparsec.ByteString.Char8   as P
 import qualified Data.ByteString                    as B
@@ -67,10 +65,10 @@ import qualified Data.Vector.Generic                as V
 -- ignored.
 
 {-# WARNING parseFastq "parseFastq no longer removes syntactic warts!" #-}
-parseFastq :: Monad m => Enumeratee S.ByteString [ BamRec ] m a
+parseFastq :: Monad m => Enumeratee Bytes [ BamRec ] m a
 parseFastq = parseFastq' (const id)
 
-parseFastqCassava :: Monad m => Enumeratee S.ByteString [ BamRec ] m a
+parseFastqCassava :: Monad m => Enumeratee Bytes [ BamRec ] m a
 parseFastqCassava = parseFastq' (pdesc . S.split ':' . S.takeWhile (' ' /=))
   where
     pdesc (num:flg:_:idx:_) br = br { b_flag = sum [ if num == "1" then flagFirstMate .|. flagPaired else 0
@@ -86,8 +84,7 @@ parseFastqCassava = parseFastq' (pdesc . S.split ':' . S.takeWhile (' ' /=))
 -- end up empty.
 
 {-# WARNING parseFastq' "parseFastq' no longer removes syntactic warts!" #-}
-parseFastq' :: Monad m => ( S.ByteString -> BamRec -> BamRec )
-                       -> Enumeratee S.ByteString [ BamRec ] m a
+parseFastq' :: Monad m => ( Bytes -> BamRec -> BamRec ) -> Enumeratee Bytes [ BamRec ] m a
 parseFastq' descr it = do skipJunk ; convStream (parserToIteratee $ (:[]) <$> pRec) it
   where
     isCBase   = inClass "ACGTUBDHVSWMKRYNacgtubdhvswmkryn"
@@ -106,25 +103,14 @@ parseFastq' descr it = do skipJunk ; convStream (parserToIteratee $ (:[]) <$> pR
     step i c | isSpace c = Just i
              | otherwise = Just (i-1)
 
-skipJunk :: Monad m => Iteratee S.ByteString m ()
+skipJunk :: Monad m => Iteratee Bytes m ()
 skipJunk = I.peek >>= check
   where
     check (Just c) | bad c = I.dropWhile (c2w '\n' /=) >> I.drop 1 >> skipJunk
     check _                = return ()
     bad c = c /= c2w '>' && c /= c2w '@'
 
-makeRecord :: Seqid -> (BamRec->BamRec) -> (String, S.ByteString) -> BamRec
+makeRecord :: Seqid -> (BamRec->BamRec) -> (String, Bytes) -> BamRec
 makeRecord name extra (sq,qual) = extra $ nullBamRec
         { b_qname = name, b_seq = V.fromList $ read sq, b_qual = V.fromList $ map (Q . subtract 33) $ B.unpack qual }
-
-----------------------------------------------------------------------------
-
-some_file :: FilePath
-some_file = "/mnt/ngs_data/101203_SOLEXA-GA04_00007_PEDi_MM_QF_SR/Ibis/Final_Sequences/s_5_L3280_sequence_merged.txt"
-
-fastq_test :: FilePath -> IO ()
-fastq_test = fileDriver $ joinI $ parseFastq print_names
-
-print_names :: Iteratee [BamRec] IO ()
-print_names = I.mapM_ $ S.putStrLn . b_qname
 

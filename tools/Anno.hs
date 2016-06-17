@@ -3,6 +3,7 @@
 module Anno where
 
 import Data.List
+import Prelude
 
 -- What does this header mean?
 -- >Feature ref|NC_012920.1|

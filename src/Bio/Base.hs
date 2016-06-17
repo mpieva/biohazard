@@ -21,8 +21,6 @@ module Bio.Base(
     compl, compls,
 
     Seqid,
-    unpackSeqid,
-    packSeqid,
 
     Position(..),
     shiftPosition,
@@ -38,23 +36,15 @@ module Bio.Base(
     w2c,
     c2w,
 
-    findAuxFile,
-    module Data.Monoid
+    findAuxFile
 ) where
 
+import BasePrelude
 import Bio.Util.Numeric             ( log1p )
-import Data.Bits
 import Data.ByteString.Internal     ( c2w, w2c )
-import Data.Char                    ( isAlpha, isSpace, ord, toUpper )
-import Data.Ix                      ( Ix )
-import Data.Monoid
-import Data.Word                    ( Word8 )
 import Data.Vector.Unboxed.Deriving ( derivingUnbox )
-import Foreign.Storable             ( Storable(..) )
-import Numeric                      ( showFFloat )
 import System.Directory             ( doesFileExist )
 import System.FilePath              ( (</>), isAbsolute, splitSearchPath )
-import System.Environment           ( getEnvironment )
 
 import qualified Data.ByteString.Char8 as S
 import qualified Data.Vector.Unboxed   as U
@@ -179,17 +169,7 @@ nucsN = Ns 15
 
 -- | Sequence identifiers are ASCII strings
 -- Since we tend to store them for a while, we use strict byte strings.
--- Use @unpackSeqid@ and @packSeqid@ to avoid the qualified import of
--- @Data.ByteString@.
 type Seqid = S.ByteString
-
--- | Unpacks a @Seqid@ into a @String@
-unpackSeqid :: Seqid -> String
-unpackSeqid = S.unpack
-
--- | Packs a @String@ into a @Seqid@.  Only works for ASCII subset.
-packSeqid :: String -> Seqid
-packSeqid = S.pack
 
 -- | Coordinates in a genome.
 -- The position is zero-based, no questions about it.  Think of the
@@ -227,9 +207,9 @@ data Range = Range {
 -- The usual codes for A,C,G,T and U are understood, '-' and '.' become
 -- gaps and everything else is an N.
 toNucleotide :: Char -> Nucleotide
-toNucleotide c = if ord c < 128 then N (arr `U.unsafeIndex` ord c) else N 0
+toNucleotide c = if ord c < 128 then N (ar `U.unsafeIndex` ord c) else N 0
   where
-    arr = U.replicate 128 0 U.//
+    ar = U.replicate 128 0 U.//
           ( [ (ord          x,  n) | (x, N n) <- pairs ] ++
             [ (ord (toUpper x), n) | (x, N n) <- pairs ] )
 
@@ -240,9 +220,9 @@ toNucleotide c = if ord c < 128 then N (arr `U.unsafeIndex` ord c) else N 0
 -- The usual codes for A,C,G,T and U are understood, '-' and '.' become
 -- gaps and everything else is an N.
 toNucleotides :: Char -> Nucleotides
-toNucleotides c = if ord c < 128 then Ns (arr `U.unsafeIndex` ord c) else nucsN
+toNucleotides c = if ord c < 128 then Ns (ar `U.unsafeIndex` ord c) else nucsN
   where
-    arr = U.replicate 128 (unNs nucsN) U.//
+    ar = U.replicate 128 (unNs nucsN) U.//
           ( [ (ord          x,  n) | (x, Ns n) <- pairs ] ++
             [ (ord (toUpper x), n) | (x, Ns n) <- pairs ] )
 
@@ -332,9 +312,9 @@ compl (N n) = N $ n `xor` 3
 -- | Complements a Nucleotides.
 {-# INLINE compls #-}
 compls :: Nucleotides -> Nucleotides
-compls (Ns x) = Ns $ arr `U.unsafeIndex` fromIntegral (x .&. 15)
+compls (Ns x) = Ns $ ar `U.unsafeIndex` fromIntegral (x .&. 15)
   where
-    !arr = U.fromListN 16 [ 0, 8, 4, 12, 2, 10, 6, 14, 1, 9, 5, 13, 3, 11, 7, 15 ]
+    !ar = U.fromListN 16 [ 0, 8, 4, 12, 2, 10, 6, 14, 1, 9, 5, 13, 3, 11, 7, 15 ]
 
 
 -- | Moves a @Position@.  The position is moved forward according to the
@@ -376,9 +356,9 @@ wrapRange n (Range (Pos sq s) l) = Range (Pos sq (s `mod` n)) l
 -- PATH.
 findAuxFile :: FilePath -> IO FilePath
 findAuxFile fn | isAbsolute fn = return fn
-               | otherwise = loop . maybe ["."] splitSearchPath . lookup "BIOHAZARD" =<< getEnvironment
+               | otherwise = go . maybe ["."] splitSearchPath . lookup "BIOHAZARD" =<< getEnvironment
   where
-    loop [    ] = return fn
-    loop (p:ps) = do e <- doesFileExist $ p </> fn
-                     if e then return $ p </> fn else loop ps
+    go [    ] = return fn
+    go (p:ps) = doesFileExist (p </> fn) >>=
+                bool (return $ p </> fn) (go ps)
 
