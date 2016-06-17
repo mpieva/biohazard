@@ -1,4 +1,4 @@
-{-# LANGUAGE UnboxedTuples, RecordWildCards, FlexibleContexts, BangPatterns, OverloadedStrings #-}
+{-# LANGUAGE RecordWildCards, FlexibleContexts, BangPatterns, OverloadedStrings #-}
 -- | Buffer builder to assemble Bgzf blocks.  (This will probably be
 -- renamed.)  The plan is to serialize stuff (BAM and BCF) into a
 -- buffer, then Bgzf chunks from the buffer and reuse it.  This /should/
@@ -15,7 +15,9 @@ module Bio.Iteratee.Builder where
 import Bio.Iteratee
 import Bio.Iteratee.Bgzf
 import Data.Bits
+import Data.Bits.Floating.Prim ( float2WordBitwise )
 import Data.Monoid
+import Data.NullPoint ( NullPoint(..) )
 import Data.Primitive.Addr
 import Data.Primitive.ByteArray
 import Data.Word ( Word8, Word16, Word32 )
@@ -24,6 +26,7 @@ import Foreign.Marshal.Utils
 import Foreign.Ptr
 import Foreign.Storable ( peek, poke )
 import GHC.Exts
+import Prelude
 import System.IO.Unsafe ( unsafePerformIO )
 
 import qualified Data.ByteString            as B
@@ -120,10 +123,7 @@ pushByteString bs = ensureBuffer (B.length bs) <> unsafePushByteString bs
 
 {-# INLINE unsafePushFloat #-}
 unsafePushFloat :: Float -> Push
-unsafePushFloat f = unsafePushWord32 i
-  where
-    i :: Word32
-    i = unsafePerformIO $ alloca $ \b -> poke (castPtr b) f >> peek b
+unsafePushFloat = unsafePushWord32 . float2WordBitwise
 
 {-# INLINE pushFloat #-}
 pushFloat :: Float -> Push

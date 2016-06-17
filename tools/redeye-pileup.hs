@@ -31,26 +31,17 @@
 -- and maybe estimate heterozygosity where there is none.
 
 import Bio.Adna
-import Bio.Base
-import Bio.Bam.Header
-import Bio.Bam.Index
+import Bio.Bam
 import Bio.Bam.Pileup
-import Bio.Bam.Reader
-import Bio.Bam.Rec
 import Bio.Genocall
 import Bio.Genocall.AvroFile
 import Bio.Genocall.Metadata
-import Bio.Iteratee
-import Control.Applicative
-import Control.Monad
+import Bio.Prelude
 import Data.Aeson
 import Data.Avro
-import Data.String                   ( fromString )
 import Data.Vec.Packed               ( packMat )
 import System.Console.GetOpt
 import System.Directory              ( renameFile )
-import System.Environment
-import System.Exit
 import System.FilePath
 import System.IO
 
@@ -152,6 +143,7 @@ main = do
 mergeLibraries :: (MonadIO m, MonadMask m)
                => (String -> IO ()) -> FilePath
                -> [Library] -> Maybe String -> Enumerator' BamMeta [PosPrimChunks] m b
+mergeLibraries       _   _ [    ]    _ = error "Sample must have at least one library."
 mergeLibraries  report cfg [ l  ] mrgn = enumLibrary report cfg l mrgn
 mergeLibraries  report cfg (l:ls) mrgn = mergeEnums' (mergeLibraries report cfg ls mrgn) (enumLibrary report cfg l mrgn) mm
   where
@@ -164,8 +156,8 @@ enumLibrary report cfg (Library nm fs mdp) mrgn output = do
     let (msg, dmg) = case mdp of Nothing -> ("no damage model", noDamage)
                                  Just dp -> ("universal damage parameters" ++ show dp, univDamage dp)
 
-    liftIO . report $ "using " ++ msg ++ " for " ++ T.unpack nm
-    mergeInputRgns mrgn combineCoordinates (map ((</>) (takeDirectory cfg) . T.unpack) fs)
+    liftIO . report $ "using " ++ msg ++ " for " ++ unpack nm
+    mergeInputRgns mrgn combineCoordinates (map ((</>) (takeDirectory cfg) . unpack) fs)
         $== takeWhileE (isValidRefseq . b_rname . unpackBam)
         $== mapMaybeStream (\br ->
                 let b = unpackBam br
@@ -184,7 +176,7 @@ mergeInputRgns (Just rs) (?) (fp0:fps0) = go fp0 fps0
     enum1  fp k1 = do idx <- liftIO $ readBamIndex fp
                       enumFileRandom defaultBufSize fp >=> run >=> run $
                             decodeAnyBam $ \hdr ->
-                            let Just ri = Z.findIndexL ((==) rs . unpackSeqid . sq_name) (meta_refs hdr)
+                            let Just ri = Z.findIndexL ((==) rs . unpack . sq_name) (meta_refs hdr)
                             in eneeBamRefseq idx (Refseq $ fromIntegral ri) $ k1 hdr
 
     go fp [       ] = enum1 fp

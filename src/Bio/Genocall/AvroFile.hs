@@ -1,15 +1,13 @@
 {-# LANGUAGE TemplateHaskell, OverloadedStrings, PatternGuards #-}
 module Bio.Genocall.AvroFile where
 
-import Bio.Base
 import Bio.Bam.Header
 import Bio.Bam.Pileup
-import Control.Applicative
+import Bio.Prelude
 import Data.Aeson
 import Data.Avro
 import Data.Binary.Builder
 import Data.Binary.Get
-import Data.List ( intersperse )
 import Data.MiniFloat
 import Data.Scientific ( toBoundedInteger )
 import Data.Text.Encoding ( encodeUtf8 )

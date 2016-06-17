@@ -25,13 +25,8 @@
 
 import Bio.Bam
 import Bio.Bam.Rmdup
-import Control.Monad                    ( when )
-import Data.Foldable                    ( toList )
-import Data.Version                     ( showVersion )
+import Bio.Prelude
 import Paths_biohazard                  ( version )
-import System.Environment               ( getArgs, getProgName )
-import System.Exit                      ( exitFailure )
-import System.IO                        ( hPutStr )
 
 import qualified Data.ByteString.Char8  as S
 import qualified Data.Map               as M
@@ -56,7 +51,7 @@ main = getArgs >>= \args ->
            joinI $ mapChunks (concatMap (rewrap (M.fromList ltab) . unpackBam))
                  $ protectTerm $ pipeBamOutput (add_pg hdr { meta_refs = seqs' })
 
-parseArgs :: Refs -> [String] -> ([(Refseq,(Int,S.ByteString))], Refs)
+parseArgs :: Refs -> [String] -> ([(Refseq,(Int,Bytes))], Refs)
 parseArgs refs | Z.null refs = error $ "no target sequences found (empty input?)"
                | otherwise   = foldl parseArg ([],refs)
   where
@@ -77,7 +72,7 @@ parseArgs refs | Z.null refs = error $ "no target sequences found (empty input?)
 -- (POS must be in the canonical interval) and fix XA, MPOS, MAPQ where
 -- appropriate, then duplicate the read and softmask the noncanonical
 -- parts.  Rmdup fits in between the two, hence the split
-rewrap :: M.Map Refseq (Int,S.ByteString) -> BamRec -> [BamRec]
+rewrap :: M.Map Refseq (Int,Bytes) -> BamRec -> [BamRec]
 rewrap m b = maybe [b] (\(l,nm) -> wrapTo l $ normalizeTo nm l b)
              $ M.lookup (b_rname b) m
 

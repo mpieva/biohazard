@@ -10,21 +10,10 @@
 -- also sorted together.  So all we have to do is (maybe) exchange first
 -- and seocnd mate.
 
-import Bio.Base
-import Bio.Bam.Header
-import Bio.Bam.Reader
-import Bio.Bam.Rec
-import Bio.Bam.Writer
-import Bio.Iteratee
-import Control.Monad                            ( unless, foldM )
-import Data.List                                ( sortBy )
-import Data.String                              ( fromString )
-import Data.Version                             ( showVersion )
+import Bio.Bam
+import Bio.Prelude
 import Paths_biohazard                          ( version )
 import System.Console.GetOpt
-import System.Environment                       ( getArgs, getProgName )
-import System.Exit                              ( exitSuccess, exitFailure )
-import System.IO                                ( hPutStrLn )
 
 import qualified Data.ByteString.Char8 as S
 import qualified Data.Sequence         as Z

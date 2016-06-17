@@ -9,20 +9,16 @@ module Bio.Bam.Writer (
     pipeSamOutput
                       ) where
 
-import Bio.Base
 import Bio.Bam.Header
 import Bio.Bam.Rec
 import Bio.Iteratee
 import Bio.Iteratee.Builder
+import Bio.Prelude
 
 import Data.ByteString.Builder      ( toLazyByteString )
-import Data.Bits
-import Data.Char                    ( ord, chr )
-import Data.Foldable		        ( foldMap )
 import Foreign.Marshal.Alloc        ( alloca )
 import Foreign.Storable             ( pokeByteOff, peek )
-import System.IO
-import System.IO.Unsafe             ( unsafeDupablePerformIO )
+import System.IO                    ( openBinaryFile, IOMode(..) )
 
 import qualified Control.Monad.Catch                as C
 import qualified Data.ByteString                    as B
@@ -65,13 +61,13 @@ encodeSamEntry refs b = conjoin '\t' [
     unpck = (++) . S.unpack
     conjoin c = foldr1 (\a f -> a . (:) c . f)
 
-    extToSam (Int        i) = (:) 'i' . (:) ':' . shows i
-    extToSam (Float      f) = (:) 'f' . (:) ':' . shows f
-    extToSam (Text       t) = (:) 'Z' . (:) ':' . unpck t
-    extToSam (Bin        x) = (:) 'H' . (:) ':' . tohex x
-    extToSam (Char       c) = (:) 'A' . (:) ':' . (:) (w2c c)
-    extToSam (IntArr   arr) = (:) 'B' . (:) ':' . (:) 'i' . sarr arr
-    extToSam (FloatArr arr) = (:) 'B' . (:) ':' . (:) 'f' . sarr arr
+    extToSam (Int      i) = (:) 'i' . (:) ':' . shows i
+    extToSam (Float    f) = (:) 'f' . (:) ':' . shows f
+    extToSam (Text     t) = (:) 'Z' . (:) ':' . unpck t
+    extToSam (Bin      x) = (:) 'H' . (:) ':' . tohex x
+    extToSam (Char     c) = (:) 'A' . (:) ':' . (:) (w2c c)
+    extToSam (IntArr   a) = (:) 'B' . (:) ':' . (:) 'i' . sarr a
+    extToSam (FloatArr a) = (:) 'B' . (:) ':' . (:) 'f' . sarr a
 
     tohex = B.foldr (\c f -> w2d (c `shiftR` 4) . w2d (c .&. 0xf) . f) id
     w2d = (:) . S.index "0123456789ABCDEF" . fromIntegral

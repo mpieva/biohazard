@@ -2,12 +2,8 @@
 {-# OPTIONS_GHC -Wall #-}
 module SimpleSeed where
 
-import Bio.Base
 import Bio.Bam.Rec
-
-import Data.Bits
-import Data.List
-import Data.Maybe
+import Bio.Prelude
 
 import qualified Data.IntMap as IM
 import qualified Data.Vector.Generic as V

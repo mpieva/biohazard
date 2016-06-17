@@ -1,7 +1,5 @@
 {-# LANGUAGE BangPatterns, NamedFieldPuns, RecordWildCards #-}
 module Bio.TwoBit (
-        module Bio.Base,
-
         TwoBitFile(..),
         TwoBitSequence(..),
         openTwoBit,
@@ -25,21 +23,15 @@ module Bio.TwoBit (
         Mask(..)
     ) where
 
-import           Bio.Base
-import           Control.Applicative
-import           Control.Monad
-import           Data.Bits
+import           Bio.Prelude hiding ( left, right, chr )
 import           Data.Binary.Get
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Lazy as L
-import           Data.Char (toLower)
 -- can't use Data.IntMap.Strict to remain compatible with
 -- containers-0.4.1 and therefore ghc 7.4  :-(
 import qualified Data.IntMap as I
 import qualified Data.HashMap.Lazy as M
-import           Data.Maybe
 import qualified Data.Vector.Unboxed as U
-import           Numeric
 import           System.IO.Posix.MMap
 import           System.Random
 
@@ -162,7 +154,7 @@ mergeBlocks [     ] [     ] = []
 -- masking.
 getSubseqWith :: (Nucleotide -> Mask -> a) -> TwoBitFile -> Range -> [a]
 getSubseqWith maskf tbf (Range { r_pos = Pos { p_seq = chr, p_start = start }, r_length = len }) = do
-    let sq1 = maybe (error $ unpackSeqid chr ++ " doesn't exist") id $ M.lookup chr (tbf_seqs tbf)
+    let sq1 = maybe (error $ unpack chr ++ " doesn't exist") id $ M.lookup chr (tbf_seqs tbf)
     let go = getFwdSubseqWith tbf sq1
     if start < 0
         then reverse $ take len $ go (maskf . cmp_nt) (-start-len)
@@ -174,7 +166,7 @@ getSubseqWith maskf tbf (Range { r_pos = Pos { p_seq = chr, p_start = start }, r
 -- | Works only in forward direction.
 getLazySubseq :: TwoBitFile -> Position -> [Nucleotide]
 getLazySubseq tbf (Pos { p_seq = chr, p_start = start }) = do
-    let sq1 = maybe (error $ unpackSeqid chr ++ " doesn't exist") id $ M.lookup chr (tbf_seqs tbf)
+    let sq1 = maybe (error $ unpack chr ++ " doesn't exist") id $ M.lookup chr (tbf_seqs tbf)
     let go  = getFwdSubseqWith tbf sq1
     if start < 0
         then error "sorry, can't go backwards"

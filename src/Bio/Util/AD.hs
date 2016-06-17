@@ -8,6 +8,7 @@ module Bio.Util.AD
 import Numeric.Optimization.Algorithms.HagerZhang05
 import qualified Data.Vector.Unboxed as U
 import qualified Data.Vector.Storable as V
+import Prelude
 
 -- | Simple forward-mode AD to get a scalar valued function with gradient.
 data AD = C !Double | D !Double !(U.Vector Double) deriving Show

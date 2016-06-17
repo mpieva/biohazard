@@ -1,18 +1,17 @@
 {-# LANGUAGE CPP, ForeignFunctionInterface #-}
 -- | The absolute minimum necessary for regex matching using POSIX regexec.
-module Bio.Util.Regex ( Regex, regComp, regMatch )where
+module Bio.Util.Regex ( Regex, regComp, regMatch ) where
 
 #include <sys/types.h>
 #include <regex.h>
 
-import Control.Applicative
-import Control.Monad
 import Foreign.Ptr
 import Foreign.ForeignPtr
 import Foreign.Marshal.Alloc
 import Foreign.C.String
 import Foreign.C.Types
 import System.IO.Unsafe
+import BasePrelude
 
 newtype Regex = Regex (ForeignPtr Regex)
 

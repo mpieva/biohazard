@@ -6,9 +6,9 @@ module Index where
 -- instance.  That dramatically lowers the chance that template haskell
 -- runs into problems :(
 
+import Bio.Prelude
 import Data.Bits
 import Data.Char ( chr )
-import Data.Hashable
 import Data.Vector.Unboxed.Deriving
 import Data.Word ( Word64 )
 import Foreign.Storable ( Storable )

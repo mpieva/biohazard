@@ -4,24 +4,16 @@
 module Data.Avro where
 
 import Bio.Iteratee
-import Control.Applicative
-import Control.Monad
+import Bio.Prelude
 import Data.Aeson
 import Data.Binary.Get
-import Data.Bits
 import Data.Binary.Builder
-import Data.Foldable ( foldMap )
-import Data.Int ( Int64 )
-import Data.Maybe
-import Data.Monoid
+import Data.Bits.Floating.Prim
 import Data.Scientific
 import Data.Text.Encoding
-import Data.Word ( Word8, Word32, Word64 )
-import Foreign.Marshal.Alloc ( alloca )
-import Foreign.Storable ( Storable, sizeOf, peek, pokeByteOff )
+import Foreign.Storable                     ( sizeOf )
 import Language.Haskell.TH
 import System.Random
-import System.IO.Unsafe ( unsafeDupablePerformIO )
 
 import qualified Data.ByteString            as B
 import qualified Data.ByteString.Lazy       as BL
@@ -143,14 +135,14 @@ instance Avro Int64 where
 
 instance Avro Float where
     toSchema _ = return $ String "float"
-    toBin      = putWord32le . floatToWord
-    fromBin    = wordToFloat <$> getWord32le
+    toBin      = putWord32le . float2WordBitwise
+    fromBin    = word2FloatBitwise <$> getWord32le
     toAvron    = Number . fromFloatDigits
 
 instance Avro Double where
     toSchema _ = return $ String "double"
-    toBin      = putWord64le . doubleToWord
-    fromBin    = wordToDouble <$> getWord64le
+    toBin      = putWord64le . double2WordBitwise
+    fromBin    = word2DoubleBitwise <$> getWord64le
     toAvron    = Number . fromFloatDigits
 
 instance Avro B.ByteString where
@@ -164,32 +156,6 @@ instance Avro T.Text where
     toBin      = toBin . encodeUtf8
     fromBin    = decodeUtf8 <$> fromBin
     toAvron    = String
-
--- Integer<->Float conversions, stolen from cereal.
-
-{-# INLINE wordToFloat #-}
-wordToFloat :: Word32 -> Float
-wordToFloat x = cast x
-
-{-# INLINE wordToDouble #-}
-wordToDouble :: Word64 -> Double
-wordToDouble x = cast x
-
-{-# INLINE floatToWord #-}
-floatToWord :: Float -> Word32
-floatToWord x = cast x
-
-{-# INLINE doubleToWord #-}
-doubleToWord :: Double -> Word64
-doubleToWord x = cast x
-
-{-# INLINE cast #-}
-cast :: ( Storable a, Storable b ) => a -> b
-cast x | sizeOf x == sizeOf y = y
-       | otherwise = error "cannot cast: size mismatch"
-  where
-    y = unsafeDupablePerformIO $ alloca $ \buf ->
-        pokeByteOff buf 0 x >> peek buf
 
 -- | Implements Zig-Zag-Coding like in Protocol Buffers and Avro.
 zig :: (Storable a, Bits a) => a -> a
@@ -526,14 +492,14 @@ findSchema nm meta = maybe Null go $ decodeStrict =<< H.lookup "avro.schema" met
 
     go _ = Null
 
-    go_struct (Array arr) = V.foldr (try_next . go') Null arr     -- struct fields, recurse into "type" subfield
-    go_struct _           = Null
+    go_struct (Array a) = V.foldr (try_next . go') Null a     -- struct fields, recurse into "type" subfield
+    go_struct _         = Null
 
     go' (Object o) | Just o' <- H.lookup "type" o = go o'
     go' _                                         = Null
 
-    go_union (Array arr) = V.foldr (try_next . go) Null arr       -- union arms, recurse
-    go_union _           = Null
+    go_union (Array a) = V.foldr (try_next . go) Null a       -- union arms, recurse
+    go_union _         = Null
 
     try_next Null b = b
     try_next a    _ = a

@@ -11,6 +11,7 @@ import Bio.Bam.Rec
 import Bio.Base
 import Bio.Iteratee
 import Data.Bits
+import Prelude
 
 import qualified Data.Vector.Generic as V
 

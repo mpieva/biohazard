@@ -1,12 +1,7 @@
 import Bio.Bam
-import Bio.Base
-import Control.Monad                        ( unless, foldM )
-import Data.Version                         ( showVersion )
+import Bio.Prelude
 import Paths_biohazard                      ( version )
 import System.Console.GetOpt
-import System.Environment                   ( getArgs, getProgName )
-import System.Exit                          ( exitFailure, exitSuccess )
-import System.IO                            ( hPutStrLn )
 
 data Conf = Conf { c_trim_pred :: [Nucleotides] -> [Qual] -> Bool
                  , c_pass_pred :: BamRec -> Bool }

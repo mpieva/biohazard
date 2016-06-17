@@ -2,23 +2,16 @@
 {-# OPTIONS_GHC -funbox-strict-fields #-}
 module Bio.Bam.Pileup where
 
-import Bio.Base
 import Bio.Bam.Header
 import Bio.Bam.Rec
 import Bio.Iteratee
+import Bio.Prelude hiding ( yield )
 
-import Control.Applicative
-import Control.Monad hiding ( mapM_ )
-import Control.Monad.Fix ( fix )
-import Data.Foldable hiding ( sum, product )
-import Data.Ord
 import Data.Vec.Packed ( Mat44D )
 
 import qualified Data.ByteString        as B
 import qualified Data.Vector.Generic    as V
 import qualified Data.Vector.Unboxed    as U
-
-import Prelude hiding ( foldr, foldr1, concat, mapM_, all )
 
 -- ^ Genotype Calling:  like Samtools(?), but for aDNA
 --
@@ -415,7 +408,7 @@ clr_active = PileM $ \k r p a -> k a r p []
 
 {-# INLINE ins_waiting #-}
 ins_waiting :: Int -> PrimBase -> PileM m ()
-ins_waiting !q !v = PileM $ \ k r p a w -> k () r p a $! Node q v Empty Empty `union` w
+ins_waiting !q !v = PileM $ \ k r p a w -> k () r p a $! Node q v Empty Empty `unionH` w
 
 {-# INLINE get_waiting #-}
 get_waiting :: PileM m Heap
@@ -430,10 +423,10 @@ set_waiting !w = PileM $ \k r p a _ -> k () r p a w
 {-# INLINE yield #-}
 yield :: Monad m => Pile -> PileM m ()
 yield x = PileM $ \ !kont !r !p !a !w !out !inp -> Iteratee $ \od oc ->
-      let loop              = kont () r p a w
+      let recurse           = kont () r p a w
           onDone y s        = od (idone y s) inp
-          onCont k Nothing  = runIter (loop k inp) od oc
-          onCont k (Just e) = runIter (throwRecoverableErr e (loop k . (<>) inp)) od oc
+          onCont k Nothing  = runIter (recurse k inp) od oc
+          onCont k (Just e) = runIter (throwRecoverableErr e (recurse k . (<>) inp)) od oc
       in runIter (out (Chunk [x])) onDone onCont
 
 -- | Inspect next input element, if any.  Returns @Just b@ if @b@ is the
@@ -518,23 +511,21 @@ p'feed_input = do
     rs <- get_refseq
     po <- get_pos
 
-    fix $ \loop -> peek >>= mapM_ (\(rs', po', prim) ->
+    fix $ \go -> peek >>= mapM_ (\(rs', po', prim) ->
                         when (rs == rs' && po == po') $ do
                             bump
                             case prim of Seek   !p !pb -> ins_waiting p pb
                                          Indel _ _ !pb ->    add_active pb
                                          EndOfRead     ->        return ()
-                            loop)
+                            go)
 
 -- | Checks /waiting/ queue.  If there is anything waiting for the
 -- current position, moves it to /active/ queue.
 p'check_waiting :: PileM m ()
 p'check_waiting = do
     po <- get_pos
-    fix $ \loop -> (viewMin <$> get_waiting) >>= mapM_ (\(!mk,!pb,w') ->
-            when (mk == po) $ do add_active pb
-                                 set_waiting w'
-                                 loop)
+    fix $ \go -> (viewMin <$> get_waiting) >>= mapM_ (\(!mk,!pb,w') ->
+            when (mk == po) $ do add_active pb ; set_waiting w' ; go)
 
 -- | Scans /active/ queue and makes a 'BasePile'.  Also sees what's next
 -- in the 'PrimChunks':  'Indel's contribute to an 'IndelPile', 'Seek's
@@ -563,22 +554,22 @@ p'scan_active =
 partitionPairEithers :: [(a, Either b c)] -> ([(a,b)], [(a,c)])
 partitionPairEithers = foldr either' ([],[])
  where
-  either' (a, Left  b) = left  a b
-  either' (a, Right c) = right a c
+  either' (a, Left  b) = consLeft  a b
+  either' (a, Right c) = consRight a c
 
-  left  a b ~(l, r) = ((a,b):l, r)
-  right a c ~(l, r) = (l, (a,c):r)
+  consLeft  a b ~(l, r) = ((a,b):l, r)
+  consRight a c ~(l, r) = (l, (a,c):r)
 
 -- | We need a simple priority queue.  Here's a skew heap (specialized
 -- to strict 'Int' priorities and 'PrimBase' values).
 data Heap = Empty | Node {-# UNPACK #-} !Int {-# UNPACK #-} !PrimBase Heap Heap
 
-union :: Heap -> Heap -> Heap
-Empty                 `union` t2                    = t2
-t1                    `union` Empty                 = t1
-t1@(Node k1 x1 l1 r1) `union` t2@(Node k2 x2 l2 r2)
-   | k1 <= k2                                       = Node k1 x1 (t2 `union` r1) l1
-   | otherwise                                      = Node k2 x2 (t1 `union` r2) l2
+unionH :: Heap -> Heap -> Heap
+Empty                 `unionH` t2                    = t2
+t1                    `unionH` Empty                 = t1
+t1@(Node k1 x1 l1 r1) `unionH` t2@(Node k2 x2 l2 r2)
+   | k1 <= k2                                       = Node k1 x1 (t2 `unionH` r1) l1
+   | otherwise                                      = Node k2 x2 (t1 `unionH` r2) l2
 
 getMinKey :: Heap -> Maybe Int
 getMinKey Empty          = Nothing
@@ -586,5 +577,5 @@ getMinKey (Node x _ _ _) = Just x
 
 viewMin :: Heap -> Maybe (Int, PrimBase, Heap)
 viewMin Empty          = Nothing
-viewMin (Node k v l r) = Just (k, v, l `union` r)
+viewMin (Node k v l r) = Just (k, v, l `unionH` r)
 
