@@ -1,5 +1,5 @@
 {-# LANGUAGE OverloadedStrings, BangPatterns, RecordWildCards, RankNTypes #-}
-{-# OPTIONS_GHC -Wall #-}
+{-# OPTIONS_GHC -Wall -funbox-strict-fields #-}
 
 -- Cobble up a mitochondrion, or something similar.  This is not an
 -- assembly, but something that could serve in stead of one :)
@@ -47,10 +47,10 @@ readFasta = go . dropWhile (not . isHeader) . L.lines
 -- keep the bare minimum:  name, sequence/quality, seed region, flags
 -- (currently only the strand).  Just enough to write a valig BAM file.
 
-data QueryRec = QR { qr_name :: {-# UNPACK #-} !Seqid           -- from BAM
-                   , qr_seq  :: {-# UNPACK #-} !QuerySeq        -- sequence and quality
-                   , qr_pos  :: {-# UNPACK #-} !RefPosn         -- start position of band
-                   , qr_band :: {-# UNPACK #-} !Bandwidth }     -- bandwidth (negative to indicate reversed sequence_
+data QueryRec = QR { qr_name :: !Seqid           -- from BAM
+                   , qr_seq  :: !QuerySeq        -- sequence and quality
+                   , qr_pos  :: !RefPosn         -- start position of band
+                   , qr_band :: !Bandwidth }     -- bandwidth (negative to indicate reversed sequence_
   deriving Show
 
 data Conf = Conf {

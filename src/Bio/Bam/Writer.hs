@@ -18,7 +18,7 @@ import Bio.Prelude
 import Data.ByteString.Builder      ( hPutBuilder )
 import Foreign.Marshal.Alloc        ( alloca )
 import Foreign.Storable             ( pokeByteOff, peek )
-import System.IO                    ( openBinaryFile, IOMode(..), stdout )
+import System.IO                    ( openBinaryFile, IOMode(..) )
 
 import qualified Control.Monad.Catch                as C
 import qualified Data.ByteString                    as B

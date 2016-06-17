@@ -8,7 +8,7 @@ import Bio.Prelude
 import Data.Aeson
 import Data.Binary.Get
 import Data.Binary.Builder
-import Data.Bits.Floating.Prim
+import Data.Bits.Floating
 import Data.Scientific
 import Data.Text.Encoding
 import Foreign.Storable                     ( sizeOf )

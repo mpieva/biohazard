@@ -15,7 +15,7 @@ module Bio.Iteratee.Builder where
 import Bio.Iteratee
 import Bio.Iteratee.Bgzf
 import Data.Bits
-import Data.Bits.Floating.Prim ( float2WordBitwise )
+import Data.Bits.Floating ( float2WordBitwise )
 import Data.Monoid
 import Data.NullPoint ( NullPoint(..) )
 import Data.Primitive.Addr

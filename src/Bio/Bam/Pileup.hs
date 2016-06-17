@@ -283,9 +283,8 @@ type GL = U.Vector Prob
 newtype V_Nuc  = V_Nuc  (U.Vector Nucleotide)  deriving (Eq, Ord, Show)
 newtype V_Nucs = V_Nucs (U.Vector Nucleotides) deriving (Eq, Ord, Show)
 
-data IndelVariant = IndelVariant { deleted_bases  :: {-# UNPACK #-} !V_Nucs
-                                 , inserted_bases :: {-# UNPACK #-} !V_Nuc }
-  deriving (Eq, Ord, Show)
+data IndelVariant = IndelVariant { deleted_bases  :: !V_Nucs, inserted_bases :: !V_Nuc }
+      deriving (Eq, Ord, Show)
 
 
 -- | Map quality and a list of encountered bases, with damage

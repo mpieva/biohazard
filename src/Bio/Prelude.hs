@@ -14,6 +14,12 @@ module Bio.Prelude (
     (:!:),
 #endif
 #endif
+
+#if !MIN_VERSION_base(4,7,0)
+    isLeft,
+    isRight,
+#endif
+
     Hashable(..),
     Unpack(..),
     hPutStr,
@@ -23,9 +29,13 @@ module Bio.Prelude (
     stdin
                    ) where
 
-import Bio.Base
+#if MIN_VERSION_base(4,7,0)
 import BasePrelude  hiding ( EOF )
+#else
+import BasePrelude  hiding ( EOF, block )
+#endif
 
+import Bio.Base
 import Data.ByteString     ( ByteString )
 import Data.Text           ( Text )
 import Data.Hashable       ( Hashable(..) )
@@ -59,3 +69,9 @@ class Unpack s where unpack :: s -> String
 instance Unpack ByteString where unpack = S.unpack
 instance Unpack Text       where unpack = T.unpack
 instance Unpack String     where unpack = id
+
+#if !MIN_VERSION_base(4,7,0)
+isLeft, isRight :: Either a b -> Bool
+isLeft = either (const False) (const True)
+isRight = either (const True) (const False)
+#endif
