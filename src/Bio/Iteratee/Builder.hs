@@ -21,13 +21,10 @@ import Data.NullPoint ( NullPoint(..) )
 import Data.Primitive.Addr
 import Data.Primitive.ByteArray
 import Data.Word ( Word8, Word16, Word32 )
-import Foreign.Marshal.Alloc
 import Foreign.Marshal.Utils
 import Foreign.Ptr
-import Foreign.Storable ( peek, poke )
 import GHC.Exts
 import Prelude
-import System.IO.Unsafe ( unsafePerformIO )
 
 import qualified Data.ByteString            as B
 import qualified Data.ByteString.Unsafe     as B

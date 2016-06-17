@@ -7,11 +7,7 @@ module Index where
 -- runs into problems :(
 
 import Bio.Prelude
-import Data.Bits
-import Data.Char ( chr )
 import Data.Vector.Unboxed.Deriving
-import Data.Word ( Word64 )
-import Foreign.Storable ( Storable )
 
 #if __GLASGOW_HASKELL__ == 704
 import Data.Vector.Generic          ( Vector(..) )

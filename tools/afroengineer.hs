@@ -16,10 +16,9 @@ import Align
 import SimpleSeed
 
 import Bio.Bam
-import Bio.Prelude hiding ( round, left, right )
+import Bio.Prelude                   hiding ( round, left, right )
 import System.Console.GetOpt
-import System.Directory ( doesFileExist )
-import System.IO
+import System.Directory                     ( doesFileExist )
 
 import qualified Bio.Iteratee.ZLib          as ZLib
 import qualified Data.ByteString.Char8      as S
