@@ -15,15 +15,14 @@ import Bio.Iteratee
 import Bio.Iteratee.Builder
 import Bio.Prelude
 
-import Data.ByteString.Builder      ( toLazyByteString )
+import Data.ByteString.Builder      ( hPutBuilder )
 import Foreign.Marshal.Alloc        ( alloca )
 import Foreign.Storable             ( pokeByteOff, peek )
-import System.IO                    ( openBinaryFile, IOMode(..) )
+import System.IO                    ( openBinaryFile, IOMode(..), stdout )
 
 import qualified Control.Monad.Catch                as C
 import qualified Data.ByteString                    as B
 import qualified Data.ByteString.Char8              as S
-import qualified Data.ByteString.Lazy               as L
 import qualified Data.Vector.Generic                as V
 import qualified Data.Vector.Storable               as VS
 import qualified Data.Vector.Unboxed                as U
@@ -40,7 +39,7 @@ import qualified Data.Sequence                      as Z
 -- debugging.  No convenience function to send SAM to a file exists,
 -- because that's a stupid idea.
 pipeSamOutput :: MonadIO m => BamMeta -> Iteratee [BamRec] m ()
-pipeSamOutput meta = do liftIO . L.putStr . toLazyByteString $ showBamMeta meta
+pipeSamOutput meta = do liftIO . hPutBuilder stdout $ showBamMeta meta
                         mapStreamM_ $ \b -> liftIO . putStr $ encodeSamEntry (meta_refs meta) b "\n"
 
 encodeSamEntry :: Refs -> BamRec -> String -> String

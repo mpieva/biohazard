@@ -57,7 +57,7 @@ parseArgs refs | Z.null refs = error $ "no target sequences found (empty input?)
   where
     parseArg (sqs, h) arg = case break (==':') arg of
         (nm,':':r) -> case reads r of
-            [(l,[])] | l > 0 -> case filter (S.isPrefixOf (S.pack nm) . sq_name . snd) $ zip [0..] $ toList h of
+            [(l,[])] | l > 0 -> case filter (S.isPrefixOf (fromString nm) . sq_name . snd) $ zip [0..] $ toList h of
                 [(k,a)] | sq_length a >= l -> ( (Refseq $ fromIntegral k,(l, sq_name a)):sqs, Z.update k (a { sq_length = l }) h )
                         | otherwise -> error $ "cannot wrap " ++ show nm ++ " to " ++ show l
                                             ++ ", which is more than the original " ++ show (sq_length a)

@@ -124,10 +124,10 @@ meld hdr score rs | all p_is_unmapped rs = head rs
     encode b xas | isUnmapped b = xas
                  | otherwise = S.intercalate (S.singleton ',') [ rnm, pos, cig, nm ] : xas
       where
-        nm =  S.pack $ show $ extAsInt 0 "NM" b
-        pos = S.pack $ (if isReversed b then '-' else '+') : show (b_pos b)
+        nm =  fromString $ show $ extAsInt 0 "NM" b
+        cig = fromString $ show $ b_cigar b
+        pos = fromString $ (if isReversed b then '-' else '+') : show (b_pos b)
         rnm = sq_name $ getRef (meta_refs hdr) (b_rname b)
-        cig = S.pack $ show $ b_cigar b
 
 
 options :: [OptDescr (Conf -> IO Conf)]

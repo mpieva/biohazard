@@ -39,6 +39,7 @@ import Bio.Genocall.Metadata
 import Bio.Prelude
 import Data.Aeson
 import Data.Avro
+import Data.Text.Encoding            ( decodeUtf8 )
 import Data.Vec.Packed               ( packMat )
 import System.Console.GetOpt
 import System.Directory              ( renameFile )
@@ -49,8 +50,6 @@ import qualified Data.ByteString.Char8          as S
 import qualified Data.ByteString.Lazy           as BL
 import qualified Data.Foldable                  as F
 import qualified Data.HashMap.Strict            as H
-import qualified Data.Text                      as T
-import qualified Data.Text.Encoding             as T
 import qualified Data.Vector.Storable           as VS
 import qualified Data.Vector                    as V
 import qualified Data.Vector.Unboxed            as U
@@ -134,8 +133,8 @@ main = do
                             mapStream (calls conf_theta)                                                   =$
                             zipStreams tabulateSingle (output_avro ohdl $ meta_refs hdr)
 
-                let upd_sample s = s { sample_div_tables = H.insert (maybe T.empty T.pack rgn)                 tab  (sample_div_tables s)
-                                     , sample_avro_files = H.insert (maybe T.empty T.pack rgn) (fromString outstem) (sample_avro_files s) }
+                let upd_sample s = s { sample_div_tables = H.insert (maybe "" fromString rgn)                 tab  (sample_div_tables s)
+                                     , sample_avro_files = H.insert (maybe "" fromString rgn) (fromString outstem) (sample_avro_files s) }
 
                 updateMetadata (H.adjust upd_sample (fromString sample)) conf_metadata
                 renameFile tmpfile outfile
@@ -261,7 +260,7 @@ output_avro hdl refs = compileBlocks =$
         object [ "type" .= String "enum"
                , "name" .= String "Refseq"
                , "symbols" .= Array
-                    (V.fromList . map (String . T.decodeUtf8 . sq_name) $ F.toList refs) ]
+                    (V.fromList . map (String . decodeUtf8 . sq_name) $ F.toList refs) ]
     meta_info = H.singleton "biohazard.refseq_length" $
                 S.concat $ BL.toChunks $ encode $ Array $ V.fromList
                 [ Number (fromIntegral (sq_length s)) | s <- F.toList refs ]

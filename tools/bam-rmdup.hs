@@ -103,7 +103,7 @@ options = [
 
     add_circular a c = case break ((==) ':') a of
         (nm,':':r) -> case reads r of
-            [(l,[])] | l > 0 -> return $ c { circulars = add_circular' (S.pack nm) l (circulars c) }
+            [(l,[])] | l > 0 -> return $ c { circulars = add_circular' (fromString nm) l (circulars c) }
             _ -> fail $ "couldn't parse length " ++ show r ++ " for " ++ show nm
         _ -> fail $ "couldn't parse \"circular\" argument " ++ show a
 
