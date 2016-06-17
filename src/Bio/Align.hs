@@ -5,11 +5,10 @@ module Bio.Align (
     showAligned
                  ) where
 
-import Control.Applicative      ( (<$>), (<*>) )
+import Bio.Prelude       hiding ( lefts, rights )
 import Foreign.C.String         ( CString )
 import Foreign.C.Types          ( CInt(..) )
 import Foreign.Marshal.Alloc    ( allocaBytes )
-import System.IO.Unsafe         ( unsafePerformIO )
 
 import qualified Data.ByteString.Char8      as S
 import qualified Data.ByteString.Unsafe     as S
@@ -46,7 +45,7 @@ data Mode = Globally  -- ^ align globally, without gaps at either end
 -- characters match iff there is at least one nucleotide both can code
 -- for.  Note that N is a wildcard, while X matches nothing.
 
-myersAlign :: Int -> S.ByteString -> Mode -> S.ByteString -> (Int, S.ByteString, S.ByteString)
+myersAlign :: Int -> Bytes -> Mode -> Bytes -> (Int, Bytes, Bytes)
 myersAlign maxd seqA mode seqB =
     unsafePerformIO                                 $
     S.unsafeUseAsCStringLen seqA                    $ \(seq_a, len_a) ->
@@ -74,7 +73,7 @@ myersAlign maxd seqA mode seqB =
 -- manageable chunks, stack them vertically and add a line showing
 -- asterisks in every column where all aligned strings agree.  The
 -- result is /almost/ the Clustal format.
-showAligned :: Int -> [S.ByteString] -> [L.ByteString]
+showAligned :: Int -> [Bytes] -> [L.ByteString]
 showAligned w ss | all S.null ss = []
                  | otherwise = map (L.fromChunks . (:[])) lefts ++
                                L.pack agreement :

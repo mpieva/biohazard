@@ -21,13 +21,8 @@ module Bio.Adna (
                 ) where
 
 import Bio.Bam
-import Bio.Base
+import Bio.Prelude
 import Bio.TwoBit
-import Control.Applicative
-import Control.Arrow ( (***) )
-import Control.Monad
-import Data.Bits ( xor )
-import Data.Monoid
 import Data.Vec ( Mat44, Mat44D, identity, getElem, Vec4, (:.)((:.)) )
 
 import qualified Data.Vector.Generic            as G

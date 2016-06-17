@@ -33,21 +33,15 @@ module Bio.Bam.Reader (
     combineNames,
                       ) where
 
-import Bio.Base
 import Bio.Bam.Header
 import Bio.Bam.Rec
 import Bio.Iteratee
 import Bio.Iteratee.Bgzf
 import Bio.Iteratee.ZLib hiding ( CompressionLevel )
+import Bio.Prelude
 
-import Control.Applicative
-import Control.Arrow                ( (&&&) )
-import Control.Monad
 import Data.Attoparsec.ByteString   ( anyWord8 )
-import Data.Char                    ( digitToInt )
 import Data.Sequence                ( (|>) )
-import Data.String                  ( fromString )
-import System.Environment           ( getArgs )
 
 import qualified Data.Attoparsec.ByteString.Char8   as P
 import qualified Data.ByteString                    as B
@@ -67,11 +61,10 @@ import qualified Data.Vector.Unboxed                as U
 -- - Reader for gzipped/bzipped/bgzf'ed SAM.  Storing SAM is a bad idea,
 --   so why would anyone ever want to compress, much less index it?
 
-type ByteString = B.ByteString
-type BamrawEnumeratee m b = Enumeratee' BamMeta S.ByteString [BamRaw] m b
-type BamEnumeratee m b = Enumeratee' BamMeta ByteString [BamRec] m b
+type BamrawEnumeratee m b = Enumeratee' BamMeta Bytes [BamRaw] m b
+type BamEnumeratee m b = Enumeratee' BamMeta Bytes [BamRec] m b
 
-isBamOrSam :: MonadIO m => Iteratee ByteString m (BamEnumeratee m a)
+isBamOrSam :: MonadIO m => Iteratee Bytes m (BamEnumeratee m a)
 isBamOrSam = maybe decodeSam wrap `liftM` isBam
   where
     wrap enee it' = enee (\hdr -> mapStream unpackBam (it' hdr)) >>= lift . run
@@ -94,14 +87,14 @@ decodeAnyBamOrSamFile fn k = enumFileRandom defaultBufSize fn (decodeAnyBamOrSam
 -- it is supposed to work the same way as the BAM parser, it requires
 -- the presense of the SQ header lines.  These are stripped from the
 -- header text and turned into the symbol table.
-decodeSam :: Monad m => (BamMeta -> Iteratee [BamRec] m a) -> Iteratee ByteString m (Iteratee [BamRec] m a)
+decodeSam :: Monad m => (BamMeta -> Iteratee [BamRec] m a) -> Iteratee Bytes m (Iteratee [BamRec] m a)
 decodeSam inner = joinI $ enumLinesBS $ do
     let pHeaderLine acc str = case P.parseOnly parseBamMetaLine str of Right f -> return $ f : acc
                                                                        Left e  -> fail $ e ++ ", " ++ show str
     meta <- liftM (foldr ($) mempty . reverse) (joinI $ breakE (not . S.isPrefixOf "@") $ foldStreamM pHeaderLine [])
     decodeSamLoop (meta_refs meta) (inner meta)
 
-decodeSamLoop :: Monad m => Refs -> Enumeratee [ByteString] [BamRec] m a
+decodeSamLoop :: Monad m => Refs -> Enumeratee [Bytes] [BamRec] m a
 decodeSamLoop refs inner = convStream (liftI parse_record) inner
   where !refs' = M.fromList $ zip [ nm | BamSQ { sq_name = nm } <- F.toList refs ] [toEnum 0..]
         ref x = M.lookupDefault invalidRefseq x refs'
@@ -117,10 +110,10 @@ decodeSamLoop refs inner = convStream (liftI parse_record) inner
 -- that it doesn't stall on a pipe that never delivers data.  Has the
 -- disadvantage that it never reads the header and therefore needs a
 -- list of allowed RNAMEs.
-decodeSam' :: Monad m => Refs -> Enumeratee ByteString [BamRec] m a
+decodeSam' :: Monad m => Refs -> Enumeratee Bytes [BamRec] m a
 decodeSam' refs inner = joinI $ enumLinesBS $ decodeSamLoop refs inner
 
-parseSamRec :: (ByteString -> Refseq) -> P.Parser BamRec
+parseSamRec :: (Bytes -> Refseq) -> P.Parser BamRec
 parseSamRec ref = mkBamRec
                   <$> word <*> num <*> (ref <$> word) <*> (subtract 1 <$> num)
                   <*> (Q <$> num') <*> (VS.fromList <$> cigar) <*> rnext <*> (subtract 1 <$> num)
@@ -173,7 +166,7 @@ parseSamRec ref = mkBamRec
 -- returned.  This uses 'iLookAhead' internally, so it shouldn't consume
 -- anything from the stream.
 isBam, isEmptyBam, isPlainBam, isBgzfBam, isGzipBam :: MonadIO m
-    => Iteratee S.ByteString m (Maybe (BamrawEnumeratee m a))
+    => Iteratee Bytes m (Maybe (BamrawEnumeratee m a))
 isBam = firstOf [ isEmptyBam, isPlainBam, isBgzfBam, isGzipBam ]
   where
     firstOf [] = return Nothing

@@ -6,6 +6,7 @@ import Data.Bits
 import Data.Ix
 import Data.Word                    ( Word8 )
 import Data.Vector.Unboxed.Deriving ( derivingUnbox )
+import Prelude
 
 #if __GLASGOW_HASKELL__ == 704
 import Data.Vector.Generic          ( Vector(..) )

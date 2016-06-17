@@ -45,17 +45,9 @@
 --       header or from an external source.
 
 
-import Bio.Base
 import Bio.Bam hiding ( Unknown )
-import Control.Applicative
-import Control.Monad
-import Data.Bits
-import Data.List
-import Numeric
+import Bio.Prelude
 import System.Console.GetOpt
-import System.Environment
-import System.Exit
-import System.IO
 
 import qualified Data.HashMap.Strict        as HM
 import qualified Data.IntMap                as IM
@@ -187,8 +179,8 @@ freshDNA = id
 -- | Ancient DNA, single strand protocol.  Deamination can turn C into T
 -- only.
 ancientDNAss :: Adna
-ancientDNAss = N . app . unN
-  where app x = if x .&. unN nucT /= 0 then x .|. unN nucC else x
+ancientDNAss = N . app0 . unN
+  where app0 x = if x .&. unN nucT /= 0 then x .|. unN nucC else x
 
 -- | Ancient DNA, double strand protocol.  Deamination can turn C into T
 -- and G into A.

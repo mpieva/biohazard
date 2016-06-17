@@ -17,9 +17,10 @@ module Bio.PriorityQueue (
 import Data.Binary
 import Data.IORef
 import qualified Control.Exception as CE
+import Prelude
 
--- | A Priority Queue that can fall back to external storage.  
--- 
+-- | A Priority Queue that can fall back to external storage.
+--
 -- Note that such a Priority Queue automatically gives rise to an
 -- external sorting algorithm:  enqueue everything, dequeue until empty.
 --
@@ -27,7 +28,7 @@ import qualified Control.Exception as CE
 -- it may need to be moved to external storage on demand.  We also need
 -- a way to estimate the memory consumption of an enqueued object.  When
 -- constructing the queue, the maximum amount of RAM to consume is set.
--- Note that open input streams use memory for buffering, too.  
+-- Note that open input streams use memory for buffering, too.
 --
 -- Enqueued objects are kept in an in memory heap until the memory
 -- consumption becomes too high.  At that point, the whole heap is
@@ -101,7 +102,7 @@ dequeuePQ (PQ pq) = do (p,s) <- readIORef pq
                        writeIORef pq (p',s')
 
 
--- | Returns the minimum element from the queue.  
+-- | Returns the minimum element from the queue.
 -- If the queue is empty, Nothing is returned.  Else the minimum element
 -- currently in the queue.
 peekMinPQ :: (Binary a, Ord a, Sizeable a) => PQ a -> IO (Maybe a)
@@ -118,24 +119,24 @@ sizePQ (PQ pq) = snd `fmap` readIORef pq
 
 -- We need an in-memory heap anyway.  Here's a skew heap.
 data SkewHeap a = Empty | Node a (SkewHeap a) (SkewHeap a)
- 
+
 singleton :: Ord a => a -> SkewHeap a
 singleton x = Node x Empty Empty
- 
+
 union :: Ord a => SkewHeap a -> SkewHeap a -> SkewHeap a
 Empty              `union` t2                 = t2
 t1                 `union` Empty              = t1
 t1@(Node x1 l1 r1) `union` t2@(Node x2 l2 r2)
    | x1 <= x2                                 = Node x1 (t2 `union` r1) l1
    | otherwise                                = Node x2 (t1 `union` r2) l2
- 
+
 insert :: Ord a => a -> SkewHeap a -> SkewHeap a
 insert x heap = singleton x `union` heap
- 
+
 getMin :: Ord a => SkewHeap a -> Maybe a
 getMin Empty        = Nothing
 getMin (Node x _ _) = Just x
- 
+
 dropMin :: Ord a => SkewHeap a -> SkewHeap a
 dropMin Empty        = error "dropMin on empty queue... are you sure?!"
 dropMin (Node _ l r) = l `union` r

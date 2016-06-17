@@ -9,6 +9,7 @@ module Bio.Bam.Evan where
 import Bio.Bam.Header
 import Bio.Bam.Rec
 import Data.Bits
+import Prelude
 
 import qualified Data.ByteString.Char8 as S
 

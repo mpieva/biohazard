@@ -1,13 +1,9 @@
 {-# LANGUAGE BangPatterns, OverloadedStrings #-}
-import Bio.Base
 import Bio.Bam
 import Bio.Bam.Evan ( removeWarts )
 import Bio.Iteratee.ZLib
-import Control.Monad
-import Data.Bits
+import Bio.Prelude
 import System.Console.GetOpt
-import System.Environment
-import System.Exit
 import System.IO
 
 import qualified Data.ByteString as B

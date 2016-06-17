@@ -8,13 +8,8 @@ module Bio.Bam.Rmdup(
 
 import Bio.Bam.Header
 import Bio.Bam.Rec
-import Bio.Base
 import Bio.Iteratee
-import Control.Applicative
-import Data.Bits
-import Data.List
-import Data.Ord                         ( comparing )
-import Data.String                      ( fromString )
+import Bio.Prelude hiding ( left, right )
 
 import qualified Data.ByteString        as B
 import qualified Data.ByteString.Char8  as T

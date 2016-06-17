@@ -23,46 +23,35 @@
 --    assignment rates (Done.)
 
 import Bio.Bam
-import Bio.Util.Numeric ( showNum )
-import Control.Applicative
-import Control.Arrow ( (&&&) )
-import Control.Monad ( when, unless, forM_, foldM )
+import Bio.Prelude
+import Bio.Util.Numeric                 ( showNum )
 import Data.Aeson
-import Data.Bits
-import Data.List ( foldl', sortBy )
-import Data.Monoid
-import Data.String ( fromString )
-import Data.Version ( showVersion )
-import Data.Word ( Word64 )
 import Foreign.C.Types
 import Foreign.Marshal.Alloc
 import Foreign.Ptr
 import Foreign.Storable
-import Paths_biohazard ( version, getDataFileName )
+import Paths_biohazard                  ( version, getDataFileName )
 import System.Console.GetOpt
-import System.Environment ( getProgName, getArgs )
-import System.Exit
-import System.IO
-import System.Random ( randomRIO )
+import System.Random                    ( randomRIO )
 
-import qualified Data.ByteString as B
-import qualified Data.ByteString.Char8 as BS
-import qualified Data.HashMap.Strict as HM
-import qualified Data.Text as T
-import qualified Data.Text.Encoding as T
-import qualified Data.Text.IO as T
-import qualified Data.Text.Lazy as L hiding ( singleton )
-import qualified Data.Text.Lazy.IO as L
-import qualified Data.Text.Lazy.Builder as L
-import qualified Data.Text.Lazy.Builder.Int as L
-import qualified Data.Text.Lazy.Builder.RealFloat as L
-import qualified Data.Vector as V
-import qualified Data.Vector.Algorithms.Intro as V
-import qualified Data.Vector.Unboxed as U
-import qualified Data.Vector.Storable as VS
-import qualified Data.Vector.Storable.Mutable as VSM
-import qualified Data.Vector.Generic            as VG
-import qualified Data.Vector.Generic.Mutable    as VGM
+import qualified Data.ByteString                    as B
+import qualified Data.ByteString.Char8              as BS
+import qualified Data.HashMap.Strict                as HM
+import qualified Data.Text                          as T
+import qualified Data.Text.Encoding                 as T
+import qualified Data.Text.IO                       as T
+import qualified Data.Text.Lazy                     as L hiding ( singleton )
+import qualified Data.Text.Lazy.IO                  as L
+import qualified Data.Text.Lazy.Builder             as L
+import qualified Data.Text.Lazy.Builder.Int         as L
+import qualified Data.Text.Lazy.Builder.RealFloat   as L
+import qualified Data.Vector                        as V
+import qualified Data.Vector.Algorithms.Intro       as V
+import qualified Data.Vector.Unboxed                as U
+import qualified Data.Vector.Storable               as VS
+import qualified Data.Vector.Storable.Mutable       as VSM
+import qualified Data.Vector.Generic                as VG
+import qualified Data.Vector.Generic.Mutable        as VGM
 
 import Index
 
@@ -187,8 +176,8 @@ match :: Index -> Index -> Word64
 match (Index a) (Index b) = score
   where x = a `xor` b
         y = (shiftR x 5 .|. shiftR x 6 .|. shiftR x 7) .&. 0x0101010101010101
-        mask = (0x2020202020202020 - y) .&. 0x1F1F1F1F1F1F1F1F
-        score = shiftR ((a .&. mask) * 0x0101010101010101) 56
+        bitmask = (0x2020202020202020 - y) .&. 0x1F1F1F1F1F1F1F1F
+        score = shiftR ((a .&. bitmask) * 0x0101010101010101) 56
 
 -- | A mixture description is one probability for each combination of p7
 -- and p5 index.  They should sum to one.
@@ -407,18 +396,18 @@ main = do
     notice $ "Got " ++ showNum (U.length ixvec) ++ " index pairs.\n"
 
     notice "decomposing mix "
-    let loop !n v = do v' <- iterEM ixvec (unique_indices p7is) (unique_indices p5is) v
-                       case cf_loudness of Loud   -> hPutStrLn stderr [] >> inspect stderr 20 v'
-                                           Normal -> hPutStr stderr "."
-                                           Quiet  -> return ()
-                       let d = VS.foldl' (\a -> max a . abs) 0 $ VS.zipWith (-) v v'
-                       if n > 0 && d > cf_threshold * fromIntegral (U.length ixvec)
-                            then loop (n-1) v'
-                            else do notice (if n == 0 then "\nmaximum number of iterations reached.\n"
-                                                      else "\nmixture ratios converged.\n")
-                                    return v'
+    let go !n v = do v' <- iterEM ixvec (unique_indices p7is) (unique_indices p5is) v
+                     case cf_loudness of Loud   -> hPutStrLn stderr [] >> inspect stderr 20 v'
+                                         Normal -> hPutStr stderr "."
+                                         Quiet  -> return ()
+                     let d = VS.foldl' (\a -> max a . abs) 0 $ VS.zipWith (-) v v'
+                     if n > 0 && d > cf_threshold * fromIntegral (U.length ixvec)
+                          then go (n-1) v'
+                          else do notice (if n == 0 then "\nmaximum number of iterations reached.\n"
+                                                    else "\nmixture ratios converged.\n")
+                                  return v'
 
-    mix <- loop (50::Int) $ naiveMix (U.length $ unique_indices p7is, U.length $ unique_indices p5is) (U.length ixvec)
+    mix <- go (50::Int) $ naiveMix (U.length $ unique_indices p7is, U.length $ unique_indices p5is) (U.length ixvec)
 
     unlessQuiet cf_loudness $ do
             T.hPutStrLn cf_stats_hdl "\nfinal mixture estimate:"
@@ -428,7 +417,6 @@ main = do
         ns7 = canonical_names p7is
         ns5 = canonical_names p5is
         num = 7
-        sortOn f = sortBy (\a b -> compare (f a) (f b))
 
     case cf_output of
         Nothing  -> do  unlessQuiet cf_loudness $ do

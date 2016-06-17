@@ -8,18 +8,15 @@
 -- Second iteration:  Mitochondrion only, but with a divergence
 -- parameter.  Needs to be scanned in parallel with a TwoBit file.
 
-import Bio.Base
 import Bio.Bam.Header
 import Bio.Genocall.AvroFile
 import Bio.Iteratee
+import Bio.Prelude
 import Bio.TwoBit
 import Bio.Util.AD
 import Bio.Util.Numeric
 import Data.Avro
-import Data.List ( intercalate )
 import Data.MiniFloat ( mini2float )
-import Data.Strict.Tuple ( Pair((:!:)) )
-import Numeric ( showFFloat )
 
 import qualified Data.Vector.Storable as S
 import qualified Data.Vector.Unboxed as U

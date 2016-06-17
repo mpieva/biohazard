@@ -76,32 +76,28 @@ module Bio.Iteratee (
     module Data.Iteratee.Iteratee
         ) where
 
-import Bio.Base                             ( findAuxFile )
 import Bio.Bam.Header
 import Bio.Util.Numeric                     ( showNum )
+import Bio.Prelude
 import Control.Concurrent.Async             ( Async, async, wait, cancel )
-import Control.Monad
-import Control.Monad.Catch
+import Control.Monad.Catch                  ( MonadMask(..) )
 import Control.Monad.IO.Class
 import Control.Monad.Trans.Class
 import Data.Binary.Get
-import Data.Bits                            ( shiftR )
 import Data.Iteratee.Binary
 import Data.Iteratee.Char
 import Data.Iteratee.IO              hiding ( defaultBufSize )
-import Data.Iteratee.Iteratee        hiding ( identity )
+import Data.Iteratee.Iteratee        hiding ( identity, empty )
 import Data.ListLike                        ( ListLike )
-import Data.Monoid
-import Data.Typeable
-import System.IO                            ( stdin, stdout, stderr, hIsTerminalDevice )
-import System.Environment                   ( getArgs )
-import System.Mem                           ( performGC )
+import System.IO                            ( hIsTerminalDevice )
 import System.Posix                         ( Fd, openFd, closeFd, OpenMode(..), defaultFileFlags )
 
+import qualified Control.Monad.Catch            as CMC
 import qualified Data.Attoparsec.ByteString     as A
 import qualified Data.ByteString.Char8          as S
 import qualified Data.Iteratee                  as I
 import qualified Data.ListLike                  as LL
+import qualified Data.NullPoint                 as N
 import qualified Data.Vector.Generic            as VG
 import qualified Data.Vector.Generic.Mutable    as VM
 
@@ -420,7 +416,7 @@ parMapChunksIO np f = eneeCheckIfDonePass (go emptyQ)
         _                               -> liftI $ go' qq k
 
     -- we have room for input
-    go' !qq k (EOF  mx) = do a <- liftIO (async (f empty))
+    go' !qq k (EOF  mx) = do a <- liftIO (async (f N.empty))
                              goE mx (pushQ a qq) k Nothing
     go' !qq k (Chunk c) = do a <- liftIO (async (f c))
                              go (pushQ a qq) k Nothing
@@ -542,7 +538,7 @@ stream2vector = liftIO (VM.new 1024) >>= go 0
                                 go (i+1) mv'
 
 withFileFd :: (MonadIO m, MonadMask m) => FilePath -> (Fd -> m a) -> m a
-withFileFd filepath iter = bracket
+withFileFd filepath iter = CMC.bracket
     (liftIO $ openFd filepath ReadOnly Nothing defaultFileFlags)
     (liftIO . closeFd) iter
 

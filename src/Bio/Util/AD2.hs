@@ -2,6 +2,7 @@
 module Bio.Util.AD2 ( AD2(..), paramVector2 ) where
 
 import qualified Data.Vector.Unboxed as U
+import Prelude
 
 -- | Simple forward-mode AD to get a scalar valued function
 -- with gradient and Hessian.
@@ -97,7 +98,7 @@ instance Floating AD2 where
 
     tan   = liftF tan   (\x ->   recip (sqr (cos  x))) (\x ->  2 * tan  x / sqr (cos  x))
     tanh  = liftF tanh  (\x ->   recip (sqr (cosh x))) (\x -> -2 * tanh x / sqr (cosh x))
-    
+
     asin  = liftF asin  (\x ->   recip (sqrt (1 - sqr x))) (\x ->      x / sqrt (cube (1 - sqr x)))
     acos  = liftF acos  (\x -> - recip (sqrt (1 - sqr x))) (\x ->     -x / sqrt (cube (1 - sqr x)))
     asinh = liftF asinh (\x ->   recip (sqrt (sqr x + 1))) (\x ->     -x / sqrt (cube (sqr x + 1)))

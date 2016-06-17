@@ -8,6 +8,7 @@ module Bio.Util.Numeric (
 
 import Data.List ( foldl1' )
 import Data.Char ( intToDigit )
+import Prelude
 
 -- ^ Random useful stuff I didn't know where to put.
 
