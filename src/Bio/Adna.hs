@@ -1,6 +1,8 @@
 {-# LANGUAGE BangPatterns, RecordWildCards, FlexibleContexts #-}
 module Bio.Adna (
     DmgStats(..),
+    CompositionStats,
+    SubstitutionStats,
     damagePatternsIter,
     damagePatternsIterMD,
     damagePatternsIter2Bit,
@@ -10,7 +12,7 @@ module Bio.Adna (
     bang,
     Alignment(..),
     FragType(..),
-    To(..),
+    Subst(..),
     NPair,
 
     noDamage,
@@ -53,7 +55,7 @@ import qualified Data.Vector.Unboxed.Mutable    as UM
 -- should probably memoize precomputed damage models somehow.
 
 type DamageModel a = Bool -> Int -> V.Vector (Mat44 a)
-data To = Nucleotide :-> Nucleotide
+data Subst = Nucleotide :-> Nucleotide
 
 infix 9 :->
 infix 8 `bang`
@@ -61,7 +63,7 @@ infix 8 `bang`
 -- | Convenience function to access a substitution matrix that has a
 -- mnemonic reading.
 {-# INLINE bang #-}
-bang :: Mat44D -> To -> Double
+bang :: Mat44D -> Subst -> Double
 bang m (N x :-> N y) = getElem (fromIntegral x) $ getElem (fromIntegral y) m
 
 -- | 'DamageModel' for undamaged DNA.  The likelihoods follow directly
@@ -172,19 +174,23 @@ univDamage DP{..} r l = V.generate l mat
 -- XXX  This got kind of ugly.  We'll see where this goes...
 
 data DmgStats a = DmgStats {
-    basecompo5 :: [( Maybe Nucleotide, U.Vector Int )],
-    basecompo3 :: [( Maybe Nucleotide, U.Vector Int )],
-    substs5    :: [( To, U.Vector Int )],
-    substs3    :: [( To, U.Vector Int )],
-    substs5d5  :: [( To, U.Vector Int )],
-    substs3d5  :: [( To, U.Vector Int )],
-    substs5d3  :: [( To, U.Vector Int )],
-    substs3d3  :: [( To, U.Vector Int )],
-    substs5dd  :: [( To, U.Vector Int )],
-    substs3dd  :: [( To, U.Vector Int )],
-    substs5cpg :: [( To, U.Vector Int )],
-    substs3cpg :: [( To, U.Vector Int )],
+    basecompo5 :: CompositionStats,
+    basecompo3 :: CompositionStats,
+    substs5    :: SubstitutionStats,
+    substs3    :: SubstitutionStats,
+    substs5d5  :: SubstitutionStats,
+    substs3d5  :: SubstitutionStats,
+    substs5d3  :: SubstitutionStats,
+    substs3d3  :: SubstitutionStats,
+    substs5dd  :: SubstitutionStats,
+    substs3dd  :: SubstitutionStats,
+    substs5cpg :: SubstitutionStats,
+    substs3cpg :: SubstitutionStats,
     stats_more :: a }
+
+type CompositionStats  = [( Maybe Nucleotide, U.Vector Int )]
+type SubstitutionStats = [( Subst, U.Vector Int )]
+
 
 data FragType = Complete | Leading | Trailing deriving (Show, Eq)
 type NPair = ( Nucleotides, Nucleotides )

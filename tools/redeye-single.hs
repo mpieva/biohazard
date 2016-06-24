@@ -115,7 +115,7 @@ main' :: Conf -> String -> Sample -> Regex -> IO ()
 main' Conf{..} sample_name smp rgnex =
     forM_ (filter (regMatch rgnex . unpack . fst) . H.toList $ sample_avro_files smp) $ \(rgn, avfile) ->
         case fmap point_est $ H.foldrWithKey (ifMatch rgn) Nothing (sample_divergences smp) of
-            Just (prior_div : prior_het : _prior_het2 : more) -> do
+            Just (prior_div : prior_het : more) -> do
                 liftIO $ conf_report $ "Calling " ++ sample_name ++ "/" ++ unpack rgn ++ "."
 
                 let prior_indel = case more of [] -> prior_div * 0.1 ; p : _ -> p

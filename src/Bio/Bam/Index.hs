@@ -346,6 +346,12 @@ lookupLE k m = case ma of
 
 -- | Subsample randomly from a BAM file.  If an index exists, this
 -- produces an infinite stream taken from random locations in the file.
+--
+-- XXX It would be cool if we could subsample from multiple BAM files.
+-- It's a bit annoying to code: we'd probably read the indices up front,
+-- estimate how many reads we'd find in each file, then open them
+-- recursively to form a monad stack where the merging function has to
+-- select randomly where to read from.  Hm.
 
 subsampleBam :: (MonadIO m, MonadMask m) => FilePath -> Enumerator' BamMeta [BamRaw] m b
 subsampleBam fp o = liftIO (E.try (readBamIndex fp)) >>= subsam
