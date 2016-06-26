@@ -4,14 +4,14 @@
 module Data.Avro where
 
 import Bio.Iteratee
-import Bio.Prelude
+import Bio.Prelude       hiding ( cast )
 import Data.Aeson
 import Data.Binary.Get
 import Data.Binary.Builder
-import Data.Bits.Floating
 import Data.Scientific
 import Data.Text.Encoding
-import Foreign.Storable                     ( sizeOf )
+import Foreign.Marshal.Alloc    ( alloca )
+import Foreign.Storable         ( Storable( peek, pokeByteOff, sizeOf ) )
 import Language.Haskell.TH
 import System.Random
 
@@ -135,14 +135,14 @@ instance Avro Int64 where
 
 instance Avro Float where
     toSchema _ = return $ String "float"
-    toBin      = putWord32le . float2WordBitwise
-    fromBin    = word2FloatBitwise <$> getWord32le
+    toBin      = putWord32le . cast
+    fromBin    = cast <$> getWord32le
     toAvron    = Number . fromFloatDigits
 
 instance Avro Double where
     toSchema _ = return $ String "double"
-    toBin      = putWord64le . double2WordBitwise
-    fromBin    = word2DoubleBitwise <$> getWord64le
+    toBin      = putWord64le . cast 
+    fromBin    = cast <$> getWord64le
     toAvron    = Number . fromFloatDigits
 
 instance Avro B.ByteString where
@@ -156,6 +156,14 @@ instance Avro T.Text where
     toBin      = toBin . encodeUtf8
     fromBin    = decodeUtf8 <$> fromBin
     toAvron    = String
+
+{-# INLINE cast #-}
+cast :: ( Storable a, Storable b ) => a -> b
+cast x | sizeOf x == sizeOf y = y
+       | otherwise = error "cannot cast: size mismatch"
+  where
+    y = unsafeDupablePerformIO $ alloca $ \buf ->
+        pokeByteOff buf 0 x >> peek buf
 
 -- | Implements Zig-Zag-Coding like in Protocol Buffers and Avro.
 zig :: (Storable a, Bits a) => a -> a
