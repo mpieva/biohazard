@@ -8,6 +8,7 @@ module Bio.Adna (
     damagePatternsIter2Bit,
 
     DamageParameters(..),
+    NewDamageParameters(..),
     DamageModel,
     bang,
     Alignment(..),
@@ -55,7 +56,7 @@ import qualified Data.Vector.Unboxed.Mutable    as UM
 -- should probably memoize precomputed damage models somehow.
 
 type DamageModel a = Bool -> Int -> V.Vector (Mat44 a)
-data Subst = Nucleotide :-> Nucleotide
+data Subst = Nucleotide :-> Nucleotide deriving (Eq, Ord, Ix, Show)
 
 infix 9 :->
 infix 8 `bang`
@@ -106,6 +107,19 @@ data DamageParameters float = DP { ssd_sigma  :: !float         -- deamination r
                                  , dsd_delta  :: !float         -- deamination rate in ds DNA, DS model
                                  , dsd_lambda :: !float }       -- param for geom. distribution, DS model
   deriving (Read, Show)
+
+data NewDamageParameters vec float = NDP { dp_gc_frac :: !float
+                                         , dp_mu      :: !float
+                                         , dp_nu      :: !float
+                                         , dp_alpha5  :: !(vec float)
+                                         , dp_beta5   :: !(vec float)
+                                         , dp_alpha   :: !float
+                                         , dp_beta    :: !float
+                                         , dp_alpha3  :: !(vec float)
+                                         , dp_beta3   :: !(vec float) }
+  deriving (Read, Show)
+
+
 
 -- | Generic substitution matrix, has C->T and G->A deamination as
 -- parameters.  Setting 'p' or 'q' to 0 as appropriate makes this apply
@@ -368,7 +382,7 @@ damagePatternsIter ctx rng get_ref_and_aln leeHom it = do
 
     it'  <- concatMapStreamM do_bc it
 
-    let nsubsts = 2*4*4*rng
+    let nsubsts = 4*4*rng
         mk_substs off = sequence [ (,) (n1 :-> n2) <$> U.unsafeFreeze (UM.slice ((4*i+j)*rng + off*nsubsts) rng acc_st)
                                  | (i,n1) <- zip [0..] [nucA..nucT]
                                  , (j,n2) <- zip [0..] [nucA..nucT] ]

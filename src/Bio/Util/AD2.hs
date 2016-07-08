@@ -1,12 +1,15 @@
 {-# LANGUAGE BangPatterns #-}
-module Bio.Util.AD2 ( AD2(..), paramVector2 ) where
+module Bio.Util.AD2 ( AD2(..), paramVector2, IsDouble(..) ) where
 
-import qualified Data.Vector.Unboxed as U
+import Bio.Util.AD ( IsDouble(..) )
 import Prelude
+import qualified Data.Vector.Unboxed as U
 
 -- | Simple forward-mode AD to get a scalar valued function
 -- with gradient and Hessian.
 data AD2 = C2 !Double | D2 !Double !(U.Vector Double) !(U.Vector Double)
+
+instance IsDouble AD2 where fromDouble = C2
 
 instance Show AD2 where
     show (C2 x) = show x

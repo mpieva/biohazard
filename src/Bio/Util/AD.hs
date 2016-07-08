@@ -3,6 +3,7 @@ module Bio.Util.AD
           ( AD(..), paramVector, minimize
           , module Numeric.Optimization.Algorithms.HagerZhang05
           , debugParameters, quietParameters
+          , IsDouble(..)
           ) where
 
 import Numeric.Optimization.Algorithms.HagerZhang05
@@ -132,3 +133,6 @@ quietParameters = defaultParameters { printFinal = False, verbose = Quiet, maxIt
 debugParameters :: Parameters
 debugParameters = defaultParameters { verbose = Verbose }
 
+class IsDouble a where fromDouble :: Double -> a
+instance IsDouble Double where fromDouble = id
+instance IsDouble AD where fromDouble = C

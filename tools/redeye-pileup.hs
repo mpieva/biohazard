@@ -152,8 +152,8 @@ enumLibrary :: (MonadIO m, MonadMask m)
             => (String -> IO ()) -> FilePath
             -> Library -> Maybe String -> Enumerator' BamMeta [PosPrimChunks] m b
 enumLibrary report cfg (Library nm fs mdp) mrgn output = do
-    let (msg, dmg) = case mdp of Nothing -> ("no damage model", noDamage)
-                                 Just dp -> ("universal damage parameters" ++ show dp, univDamage dp)
+    let (msg, dmg) = case mdp of UnknownDamage -> ("no damage model", noDamage)
+                                 OldDamage dp -> ("universal damage parameters" ++ show dp, univDamage dp)
 
     liftIO . report $ "using " ++ msg ++ " for " ++ unpack nm
     mergeInputRgns mrgn combineCoordinates (map ((</>) (takeDirectory cfg) . unpack) fs)

@@ -10,7 +10,6 @@ import Bio.Util.AD
 import Bio.Util.AD2
 import Bio.Util.Numeric              ( log1p )
 import Bio.Util.Regex                ( regComp, regMatch )
-import Control.Arrow                 ( (***) )
 import Control.Concurrent.Async      ( async, wait )
 import Numeric.LinearAlgebra.HMatrix ( eigSH', (><), toRows, scale )
 import System.Console.GetOpt

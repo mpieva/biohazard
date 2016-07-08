@@ -1,8 +1,8 @@
-{-# LANGUAGE OverloadedStrings, RecordWildCards, FlexibleContexts, BangPatterns #-}
+{-# LANGUAGE OverloadedStrings, RecordWildCards, FlexibleContexts, BangPatterns, FlexibleInstances #-}
 -- | Metadata necessary for a sensible genotyping workflow.
 module Bio.Genocall.Metadata where
 
-import Bio.Adna                             ( DamageParameters(..) )
+import Bio.Adna                             ( DamageParameters(..), NewDamageParameters(..) )
 import Bio.Prelude                   hiding ( writeFile, readFile )
 import Data.Aeson
 import Data.Binary
@@ -28,10 +28,16 @@ data Sample = Sample {
     sample_divergences :: M.HashMap Text DivEst
   } deriving Show
 
+data GenDamageParameters vec float
+    = UnknownDamage
+    | OldDamage (DamageParameters float)
+    | NewDamage (NewDamageParameters vec float)
+  deriving Show
+
 data Library = Library {
     library_name :: Text,
     library_files :: [Text],
-    library_damage :: Maybe (DamageParameters Double)
+    library_damage :: GenDamageParameters U.Vector Double
   } deriving Show
 
 -- | Divergence estimate.  Lists contain three or four floats, these are
@@ -67,10 +73,39 @@ instance ToJSON float => ToJSON (DamageParameters float) where
                            , "ds-delta"  .= dsd_delta
                            , "ds-lambda" .= dsd_lambda ]
 
+instance (ToJSON (vec float), ToJSON float) => ToJSON (NewDamageParameters vec float) where
+    toJSON NDP{..} = object [ "gc-frac" .= dp_gc_frac
+                            , "mu"      .= dp_mu
+                            , "nu"      .= dp_nu
+                            , "alpha5"  .= dp_alpha5
+                            , "beta5"   .= dp_beta5
+                            , "alpha"   .= dp_alpha
+                            , "beta"    .= dp_beta
+                            , "alpha3"  .= dp_alpha3
+                            , "beta3"   .= dp_beta3 ]
+
 instance Binary float => Binary (DamageParameters float) where
     put DP{..} = put ssd_sigma >> put ssd_delta >> put ssd_lambda >> put ssd_kappa >>
                  put dsd_sigma >> put dsd_delta >> put dsd_lambda
     get = DP <$> get <*> get <*> get <*> get <*> get <*> get <*> get
+
+instance (Binary float, U.Unbox float) => Binary (NewDamageParameters U.Vector float) where
+    put NDP{..} = put dp_gc_frac >> put dp_mu >> put dp_nu >>
+                  putVector dp_alpha5 >> putVector dp_beta5  >>
+                  put dp_alpha >> put dp_beta >>
+                  putVector dp_alpha3 >> putVector dp_beta3
+    get = NDP <$> get <*> get <*> get <*> getVector <*> getVector
+              <*> get <*> get <*> getVector <*> getVector
+
+instance (Binary float, U.Unbox float) => Binary (GenDamageParameters U.Vector float) where
+    put  UnknownDamage  = put (0::Word8)
+    put (OldDamage  dp) = put (1::Word8) >> put dp
+    put (NewDamage  dp) = put (2::Word8) >> put dp
+
+    get = get >>= \x -> case x :: Word8 of 0 -> pure UnknownDamage
+                                           1 -> OldDamage <$> get
+                                           2 -> NewDamage <$> get
+
 
 instance FromJSON float => FromJSON (DamageParameters float) where
     parseJSON = withObject "damage parameters" $ \o ->
@@ -82,20 +117,37 @@ instance FromJSON float => FromJSON (DamageParameters float) where
                        <*> o .: "ds-delta"
                        <*> o .: "ds-lambda"
 
+instance (FromJSON (vec float), FromJSON float) => FromJSON (NewDamageParameters vec float) where
+    parseJSON = withObject "new damage parameters" $ \o ->
+                    NDP <$> o .: "gc-frac"
+                        <*> o .: "mu"
+                        <*> o .: "nu"
+                        <*> o .: "alpha5"
+                        <*> o .: "beta5"
+                        <*> o .: "alpha"
+                        <*> o .: "beta"
+                        <*> o .: "alpha3"
+                        <*> o .: "beta3"
+
 instance ToJSON Library where
-    toJSON (Library name files dp) = object ( maybe id ((:) . ("damage" .=)) dp
-                                            $ [ "name" .= name, "files" .= files ] )
+    toJSON (Library name files dp) = object $ ( case dp of
+                                                  UnknownDamage -> id
+                                                  OldDamage dp' -> (:) ("damage" .= dp')
+                                                  NewDamage dp' -> (:) ("damage" .= dp')
+                                              ) [ "name" .= name, "files" .= files ]
 
 instance Binary Library where
     put Library{..} = put library_name >> put library_files >> put library_damage
     get = Library <$> get <*> get <*> get
 
 instance FromJSON Library where
-    parseJSON (String name) = return $ Library name [name <> ".bam"] Nothing
+    parseJSON (String name) = return $ Library name [name <> ".bam"] UnknownDamage
     parseJSON (Object o) = Library <$> o .: "name"
                                    <*> (maybe id (:) <$> o .:? "file"
                                                      <*> o .:? "files" .!= [])
-                                   <*> o .:? "damage"
+                                   <*> (OldDamage <$> o .: "damage" <|>
+                                        NewDamage <$> o .: "damage" <|>
+                                        pure UnknownDamage)
     parseJSON _ = fail "String or Object expected for library"
 
 instance ToJSON Sample where
@@ -115,7 +167,7 @@ instance Binary Sample where
     get = Sample <$> get <*> getObject <*> getObject <*> getObject <*> getObject
 
 instance FromJSON Sample where
-    parseJSON (String s) = pure $ Sample [Library s [s <> ".bam"] Nothing] M.empty M.empty M.empty M.empty
+    parseJSON (String s) = pure $ Sample [Library s [s <> ".bam"] UnknownDamage] M.empty M.empty M.empty M.empty
     parseJSON (Array ls) = (\ll -> Sample ll M.empty M.empty M.empty M.empty) <$> parseJSON (Array ls)
     parseJSON (Object o) = Sample <$> o .: "libraries"
                                   <*> (M.singleton "" <$> o .: "avro-file" <|> o .:? "avro-files" .!= M.empty)

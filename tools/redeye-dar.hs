@@ -37,7 +37,6 @@
 --   - needs to deal with long (unmerged) reads (by ignoring them?)
 
 import Bio.Adna              hiding ( bang )
-import Bio.Bam.Header
 import Bio.Bam.Index
 import Bio.Bam.Rec
 import Bio.Base
@@ -45,11 +44,8 @@ import Bio.Genocall.Metadata
 import Bio.Iteratee
 import Bio.Util.AD
 import Bio.Util.AD2
-import Bio.Util.Numeric hiding ( sigmoid2, isigmoid2 )
 import Control.Applicative
-import Control.Concurrent.Async
 import Control.Monad                ( unless )
-import Data.Bits
 import Data.Foldable
 import Data.Ix
 import Data.Maybe
@@ -62,8 +58,7 @@ import System.FilePath
 import System.IO                    ( hPutStrLn )
 
 import qualified Data.HashMap.Strict        as M
-import qualified Data.Vector                as V
-import qualified Data.Vector.Generic        as G
+import qualified Data.Vector.Generic        as V
 import qualified Data.Vector.Unboxed        as U
 
 import Prelude hiding ( sequence_, mapM, mapM_, concatMap, sum, minimum, foldr1, foldl )
@@ -71,8 +66,8 @@ import Prelude hiding ( sequence_, mapM, mapM_, concatMap, sum, minimum, foldr1,
 -- | Full likelihood function.  We apply the HKY substitution model
 -- (anything simpler doesn't seem to cut it), and we will estimate a
 -- position specific substitution rate for C->T and G->A.  We
--- arbitrarily estimate (k+1) such values (say 12) for each end, and another
--- one for the interior.
+-- arbitrarily estimate (k+1) such values (more than 8 doesn't look very
+-- useful) for each end, and another one for the interior.
 --
 -- This leaves us with the following parameters:  pi_a, pi_c, pi_g for
 -- the base composition; mu and nu for the rates of transitions and
@@ -84,144 +79,138 @@ import Prelude hiding ( sequence_, mapM, mapM_, concatMap, sum, minimum, foldr1,
 --
 -- The remaining input is two sets of 'SubstitutionStats', one each for
 -- 5' and 3' ends.
-{-# INLINE lk_fun #-}
-lk_fun :: (Num a, Show a, Fractional a, Floating a, Memorable a)
-        => SubstitutionStats -> SubstitutionStats -> [a] -> a
-lk_fun stats5 stats3 (pi_a : pi_c : pi_g : mu0 : nu0 : alpha : beta : spars) =
-    [
-    -- pick vectors of counts for each of the possible substitutions
-    | fromNuc <- [nucA,nucC,nucG,nucT] | row <- smat
-    ???
+--
+-- Notes:
+--
+-- - The mutation rates could add up to more than one.  Then the
+--   likelihood becomes NaN.  We might try to reformulate to avoid this.
+--
+-- - We could compute the full likelihood function with gradient and
+--   Hessian once at the end, just to see if the fit is good and how
+--   badly the parameters are confounded.
+--
+-- - Alternatively, we could parameterize the deamination rates using an
+--   exponential decay.  The old formulation had three models:  one
+--   fixes deamination to zero, one has C->T at one end and G->A at the
+--   other with one length parameter, the third has only C->T with two
+--   length parameters.  This works out, respectively, to
+--
+--      alpha5_i = alpha5_0 * lambda ^^ (1+i)
+--      beta5_i  = 0
+--      alpha3_i = 0
+--      beta3_i  = beta3_0 * lambda ^^ (1+i)
+--
+--   and
+--
+--      alpha5_i = alpha5_0 * lambda ^^ (1+i)
+--      beta5_i  = 0
+--      alpha3_i = alpha3_0 * kappa ^^ (1+i)
+--      beta3_i  = 0-
+
+-- Argh, dumb mistake.  Likelihood of any substitution has to be
+-- multiplied with base frequency.
+smat :: (Num a, Floating a, IsDouble a) => Double -> a -> a -> a -> a -> [a]
+smat gc mu nu a b =
+       [ pA * (1 - nu*pC - mu*pG - nu*pT + mu*pG * tr (-b))
+                   , pA * (nu*pC * tr a)
+                               , pA * (mu*pG * tr b)
+                                           , pA * (nu*pC * tr (-a) + nu*pT)
+       , pC * (nu*pA + nu*pG * tr (-b))
+                    , pC * ((1 - nu*pA - nu*pG - mu*pT) * tr a)
+                               , pC * (nu*pG * tr b)
+                                           , pC * ((1 - nu*pA - nu*pG - mu*pT) * tr (-a) + mu * pT)
+       , pG * ((1 - mu*pA - nu*pC - nu*pT) * tr (-b) + mu*pA)
+                    , pG * (nu*pC * tr a)
+                               , pG * ((1 - mu*pA - nu*pC - nu*pT) * tr b)
+                                           , pG * (nu*pC * tr (-a) + nu*pT)
+       , pT * (nu*pA + nu*pG * tr (-b))
+                    , pT * (mu*pC * tr a)
+                               , pT * (mu*pG * tr b)
+                                           , pT * (1 - nu*pA - mu*pC - nu*pG + mu*pC * tr (-a)) ]
   where
-    pp = recip $ exp pi_a + exp pi_c + exp pi_g + 1
-    pA = exp pi_a * pp
-    pC = exp pi_c * pp
-    pG = exp pi_g * pp
-    pT =            PP
+    tr x = recip $ 1 + exp x
 
-    mu = recip $ 1 + exp (-mu0)
-    nu = recip $ 1 + exp (-nu0)
-
-    smat alpha0 beta0 =
-        [ [ 1 - nu*pC - mu*pG - nu*pT + mu*pG * beta,
-                            nu*pC * alpham1,
-                                            mu*pG * betam1,
-                                                            nu*pC * alpha + nu*pT ]
-        , [ nu*pA + nu*pG * beta,
-                            (1 - nu*pA - nu*pG - mu*pT) * alpham1,
-                                            nu*pG * betam1,
-                                                            (1 - nu*pA - nu*pG - mu*pT) * alpha + mu * pT ]
-        , [ (1 - mu*pA - nu*pC - nu_pT) * beta + mu*pA,
-                            nu*pC * alpham1,
-                                            (1 - mu*pA - nu*pC - nu*pT) * betam1,
-                                                            nu*pC * alpha + nu*pT ],
-        , [ nu*pA + nu*pG * beta,
-                            mu*pC * alpham1,
-                                            mu*pG * betam1,
-                                                            1 - nu*pA - mu*pC - nu*pG + mu*pC * alpha ] ]
-      where
-        alpham1 = recip $ 1 + exp alpha0
-        alpha   = recip $ 1 + exp (-alpha0)
-        betam1  = recip $ 1 + exp beta0
-        beta    = recip $ 1 + exp (-beta0)
+    pA = fromDouble $ 0.5 - gc * 0.5
+    pC = fromDouble $ gc * 0.5
+    pG = fromDouble $ gc * 0.5
+    pT = fromDouble $ 0.5 - gc * 0.5
 
 
+-- | Estimates GC fraction.  Base composition is stable with respect to
+-- our substitution model, so we should be able to estimate it from the
+-- reference sequence.  Practically, since G and C have to be balanced,
+-- we just estimate the GC fraction.
 
-
-
-
-case length parms of
-    1 -> V.foldl' (\a b -> a - log (lk tab00 tab00 tab00 b)) 0 . guardV             -- undamaged case
-      where
-        !tab00 = fromListN (rangeSize my_bounds) [ l_epq p_subst 0 0 x
-                                                 | (_,_,x) <- range my_bounds ]
-
-    4 -> V.foldl' (\a b -> a - log (lk tabDS tabDS1 tabDS1 b)) 0 . guardV           -- double strand case
-      where
-        !tabDS = fromListN (rangeSize my_bounds) [ l_epq p_subst p_d p_e x
-                                                 | (l,i,x) <- range my_bounds
-                                                 , let p_d = mu $ lambda ^^ (1+i)
-                                                 , let p_e = mu $ lambda ^^ (l-i) ]
-
-        !tabDS1 = fromListN (rangeSize my_bounds) [ l_epq p_subst p_d 0 x
-                                                  | (_,i,x) <- range my_bounds
-                                                  , let p_d = mu $ lambda ^^ (1+i) ]
-
-    5 -> V.foldl' (\a b -> a - log (lk tabSS tabSS1 tabSS2 b)) 0 . guardV           -- single strand case
-      where
-        !tabSS = fromListN (rangeSize my_bounds) [ l_epq p_subst p_d 0 x
-                                                 | (l,i,x) <- range my_bounds
-                                                 , let lam5 = lambda ^^ (1+i) ; lam3 = kappa ^^ (l-i)
-                                                 , let p_d = mu $ lam3 + lam5 - lam3 * lam5 ]
-
-        !tabSS1 = fromListN (rangeSize my_bounds) [ l_epq p_subst p_d 0 x
-                                                  | (_,i,x) <- range my_bounds
-                                                  , let p_d = mu $ lambda ^^ (1+i) ]
-
-        !tabSS2 = fromListN (rangeSize my_bounds) [ l_epq p_subst 0 p_d x
-                                                  | (_,i,x) <- range my_bounds
-                                                  , let p_d = mu $ lambda ^^ (1+i) ]
-
-    _ -> error "Not supposed to happen:  unexpected number of model parameters."
+est_gc_frac :: DmgStats a -> Double
+est_gc_frac DmgStats{..} = fromIntegral gc_counts / fromIntegral (at_counts+gc_counts)
   where
-    ~(l_subst : ~(l_sigma : ~(l_delta : ~(l_lam : ~(l_kap : _))))) = parms
+    get n = maybe 0 U.sum . lookup (Just n)
+    at_counts = sum [ get n v | n <- [nucA,nucT], v <- [basecompo5, basecompo3] ]
+    gc_counts = sum [ get n v | n <- [nucG,nucC], v <- [basecompo5, basecompo3] ]
 
-    p_subst = 0.33333 * sigmoid2 l_subst
-    sigma   = sigmoid2 l_sigma
-    delta   = sigmoid2 l_delta
-    lambda  = sigmoid2 l_lam
-    kappa   = sigmoid2 l_kap
+-- | Estimates mutation rates for transitions and transversion.  We
+-- write down the likelihood function with just two general deamination
+-- rates.  Likewise, our substitution statistics collapse to one single
+-- matrix.  This is not perfect, but hopefully good enough to get a
+-- quick estimate of the two mutation rates.  (Numeric optimization,
+-- sorry it's in IO.)
+est_mut_rate :: Parameters -> Double -> DmgStats a -> IO (Double, Double)
+est_mut_rate params gc_frac DmgStats{..} = do
+    (xs,_,_) <- minimize params 0.001 lk_fun v0
+    return (xs V.! 0, xs V.! 1)
+  where
+    counts = [ c5 + c3
+             | subst <- range (nucA :-> nucA, nucT :-> nucT)
+             , let c5 = maybe 0 U.sum $ lookup subst substs5
+             , let c3 = maybe 0 U.sum $ lookup subst substs3 ]
 
-    guardV = V.filter (\u -> U.length (unSeq u) >= lmin && U.length (unSeq u) <= lmax)
+    v0 = U.fromList [-4.5, -5.5, -3, -6.5] -- guesstimates
 
-    -- Likelihood given precomputed damage table.  We compute the giant
-    -- table ahead of time, which maps length, index and base pair to a
-    -- likelihood.
-    lk tab_m     _     _ (Merged  b) = U.ifoldl' (\a i np -> a * tab_m `bang` index' my_bounds (U.length b, i, NP np)) 1 b
-    lk     _ tab_f     _ (Mate1st b) = U.ifoldl' (\a i np -> a * tab_f `bang` index' my_bounds (U.length b, i, NP np)) 1 b
-    lk     _     _ tab_s (Mate2nd b) = U.ifoldl' (\a i np -> a * tab_s `bang` index' my_bounds (U.length b, i, NP np)) 1 b
+    lk_fun [mu0,nu0,alpha,beta] =
+        let !mu = recip $ 1 + exp (-mu0)
+            !nu = recip $ 1 + exp (-nu0)
+        in negate . sum $ zipWith (\num lk -> fromIntegral num * log lk)
+                                  counts (smat gc_frac mu nu alpha beta)
 
-    index' bnds x | inRange bnds x = index bnds x
-                  | otherwise = error $ "Huh? " ++ show x ++ " \\nin " ++ show bnds
+-- | Estimate deamination rates.  We take the base composition (GC
+-- fraction) and the two mutation rates (ti,tv) as constant, then
+-- estimate two deamination rates (C->T and G->A) for a given number of
+-- positions, and then the remainder.  (They are now decoupled, so we
+-- could as well estimate the parameters (just two!) using Newton
+-- iteration.)
+est_deamination :: Parameters -> Int -> Double -> (Double,Double) -> DmgStats a
+                -> IO (U.Vector Double, Double, Double, U.Vector Double)
+est_deamination parameters l_over gc_frac (mu0,nu0) DmgStats{..} = do
+    ab_left <- V.concat <$> sequence
+               [ fst3 <$> minimize parameters 0.001 (lk_fun counts) v0
+               | i <- [0 .. l_over-1]
+               , let counts = [ maybe 0 (U.! i) $ lookup subst substs5
+                              | subst <- range (nucA :-> nucA, nucT :-> nucT) ] ]
 
-    my_bounds = ((lmin,0,NP 0),(lmax,lmax,NP 16))
-    mu p = sigma * p + delta * (1-p)
+    ab_mid <- let counts = [ maybe 0 (U.sum . U.drop l_over)             (lookup subst substs5)
+                           + maybe 0 (U.sum . U.drop l_over . U.reverse) (lookup subst substs3)
+                           | subst <- range (nucA :-> nucA, nucT :-> nucT) ]
+              in fst3 <$> minimize parameters 0.001 (lk_fun counts) v0
 
+    ab_right <- V.concat <$> sequence
+                [ fst3 <$> minimize parameters 0.001 (lk_fun counts) v0
+                | i <- [0 .. l_over-1]
+                , let counts = [ maybe 0 ((U.! i) . U.reverse) $ lookup subst substs3
+                               | subst <- range (nucA :-> nucA, nucT :-> nucT) ] ]
 
--- Likelihood for a certain pair of bases given error rate, C-T-rate
--- and G-A rate.
-l_epq :: (Num a, Fractional a, Floating a) => a -> a -> a -> NP -> a
-l_epq e p q (NP x) = case x of {
-     0 -> s         ;  1 -> e         ;  2 -> e         ;  3 -> e         ;
-     4 -> e         ;  5 -> s-p+4*e*p ;  6 -> e         ;  7 -> e+p-4*e*p ;
-     8 -> e+q-4*e*q ;  9 -> e         ; 10 -> s-q+4*e*q ; 11 -> e         ;
-    12 -> e         ; 13 -> e         ; 14 -> e         ; 15 -> s         ;
-     _ -> 1 } where s = 1 - 3 * e
+    return (V.convert ab_left, ab_mid V.! 0, ab_mid V.! 1, V.convert ab_right)
 
+  where
+    fst3 (x,_,_) = x
+    !mu = fromDouble . recip $ 1 + exp (-mu0)
+    !nu = fromDouble . recip $ 1 + exp (-nu0)
 
--- Likelihood for a certain pair of bases given error rate, C-T-rate
--- and G-A rate.
-l_abp :: (Num a, Fractional a, Floating a) => a -> a -> a -> NP -> a
-l_abp e p q (NP x) = case x of {
-     0 -> s         ;  1 -> e         ;  2 -> e         ;  3 -> e         ;
-     4 -> e         ;  5 -> s-p+4*e*p ;  6 -> e         ;  7 -> e+p-4*e*p ;
-     8 -> e+q-4*e*q ;  9 -> e         ; 10 -> s-q+4*e*q ; 11 -> e         ;
-    12 -> e         ; 13 -> e         ; 14 -> e         ; 15 -> s         ;
-     _ -> 1 } where s = 1 - 3 * e
+    v0 = U.fromList [-3, -6.5] -- guesstimates
 
-
-lkfun :: Int -> Int -> V.Vector Seq -> U.Vector Double -> Double
-lkfun lmin lmax brs parms = lk_fun1 lmin lmax (U.toList parms) brs
-
-lkfun' :: Int -> Int -> V.Vector Seq -> [Double] -> AD
-lkfun' lmin lmax brs parms = lk_fun1 lmin lmax (paramVector parms) brs
-
-lkfun'' :: Int -> Int -> V.Vector Seq -> [Double] -> AD2
-lkfun'' lmin lmax brs parms = lk_fun1 lmin lmax (paramVector2 parms) brs
-
-combofn :: Int -> Int -> V.Vector Seq -> U.Vector Double -> (Double, U.Vector Double)
-combofn lmin lmax brs parms = (x,g)
-  where D x g = lk_fun1 lmin lmax (paramVector $ U.toList parms) brs
+    lk_fun :: [Int] -> [AD] -> AD
+    lk_fun counts [alpha,beta] =
+        negate . sum $ zipWith (\num lk -> fromIntegral num * log lk)
+                               counts (smat gc_frac mu nu alpha beta)
 
 
 data Conf = Conf {
@@ -244,7 +233,7 @@ options = [
   where
     set_lmin   a c = readIO a >>= \l -> return $ c { conf_lmin     = l }
     set_conf   f c =                    return $ c { conf_metadata = f }
-    set_leehom f c =                    return $ c { conf_leehom   = True }
+    set_leehom   c =                    return $ c { conf_leehom   = True }
     set_verbose  c = return $ c { conf_report   = hPutStrLn stderr, conf_params = debugParameters }
 
     disp_usage  _ = do pn <- getProgName
@@ -270,28 +259,45 @@ main' Conf{..} lname = do
     -- statistics, and we'll collect them, say, 50 positions into the
     -- read.  That should be plenty.
 
-    DmgStats{substs5,substs3} <-
-            subsampleBam (takeDirectory conf_metadata </> unpack (head fs)) >=> run $ \_ ->
-            joinI $ filterStream (\b -> not (isUnmapped (unpackBam b)) && G.length (b_seq (unpackBam b)) >= conf_lmin) $
-            joinI $ takeStream 1000000 $
-            joinI $ damagePatternsIterMD 50 conf_leehom $ skipToEof
+    dmg_stats <- subsampleBam (takeDirectory conf_metadata </> unpack (head fs)) >=> run $ \_ ->
+                 joinI $ filterStream (\b -> not (isUnmapped (unpackBam b)) && V.length (b_seq (unpackBam b)) >= conf_lmin) $
+                 joinI $ takeStream 100000 $
+                 damagePatternsIterMD 50 conf_leehom skipToEof
 
-    let lmax = V.maximum $ V.map (U.length . unSeq) brs
-        v0 = crude_estimate brs
-        opt v = optimize conf_params 0.0001 v
-                         (VFunction $ lkfun conf_lmin lmax brs)
-                         (VGradient $ snd . combofn conf_lmin lmax brs)
-                         (Just . VCombined $ combofn conf_lmin lmax brs)
+    let gc_frac = est_gc_frac dmg_stats
+    print gc_frac
 
-    results <- mapConcurrently opt [ v0, U.take 4 v0, U.take 1 v0 ]
+    (mu,nu) <- est_mut_rate conf_params gc_frac dmg_stats
+    print (mu,nu)
 
-    let mlk = minimum [ finalValue st | (_,_,st) <- results ]
-        tot = sum [ exp $ mlk - finalValue st | (_,_,st) <- results ]
-        p l = exp (mlk - l) / tot
+    (ab_left, alpha_mid, beta_mid, ab_right) <- est_deamination conf_params 12 gc_frac (mu,nu) dmg_stats
+    print ab_left
+    print (alpha_mid, beta_mid)
+    print ab_right
 
-        [ (p_ss, [ _, ssd_sigma_, ssd_delta_, ssd_lambda, ssd_kappa ]),
+    {-
+    let ct i = log 0.5 + log 0.6 * i
+        ga i = log 0.05 + log 0.6 * i
+        omax = 8
+
+    let v0 = 0 : -0.4 : -0.4 : -4.5 : -6 : ct omax : ga omax : concat
+             [ [ ct i, ga i, ct i, ga i ] | i <- [0 .. omax-1] ]
+    results <- minimize conf_params 0.001 (lk_fun substs5 substs3) (U.fromList v0)
+                         -- (VFunction $ lkfun substs5 substs3)
+                         -- (VGradient $ snd . combofn substs5 substs3)
+                         -- (Just . VCombined $ combofn substs5 substs3)
+    print results
+    -}
+    --
+    -- results <- mapConcurrently opt [ v0, U.take 4 v0, U.take 1 v0 ]
+
+    -- let mlk = minimum [ finalValue st | (_,_,st) <- results ]
+        -- tot = sum [ exp $ mlk - finalValue st | (_,_,st) <- results ]
+        -- p l = exp (mlk - l) / tot
+
+        {-[ (p_ss, [ _, ssd_sigma_, ssd_delta_, ssd_lambda, ssd_kappa ]),
           (p_ds, [ _, dsd_sigma_, dsd_delta_, dsd_lambda ]),
-          (_   , [ _ ]) ] = [ (p (finalValue st), map sigmoid2 $ G.toList xs) | (xs,_,st) <- results ]
+          (_   , [ _ ]) ] = [ (p (finalValue st), map sigmoid2 $ V.toList xs) | (xs,_,st) <- results ]
 
         ssd_sigma = p_ss * ssd_sigma_
         ssd_delta = p_ss * ssd_delta_
@@ -308,51 +314,9 @@ main' Conf{..} lname = do
     -- (Remember, we minimized.)
     mapM_ print [ (r,s) | (_,r,s) <- results ]
     putStrLn ""
-    mapM_ print [ lkfun' conf_lmin lmax brs (G.toList xs) | (xs,_,_) <- results ]
+    mapM_ print [ lkfun' conf_lmin lmax brs (V.toList xs) | (xs,_,_) <- results ]
     putStrLn ""
-    mapM_ print [ lkfun'' conf_lmin lmax brs (G.toList xs) | (xs,_,_) <- results ]
-
-class Memorable a where
-    type Memo a :: *
-
-    fromListN :: Int -> [a] -> Memo a
-    bang :: Memo a -> Int -> a
-
-instance Memorable Double where
-    type Memo Double = U.Vector Double
-
-    fromListN = U.fromListN
-    bang = (U.!)
-
-instance Memorable AD where
-    type Memo AD = (Int, U.Vector Double)
-
-    fromListN _    [       ] = error "unexpected: tried to memorize an empty list"
-    fromListN _    (C _  :_) = error "unexpected: tried to memorize a value without derivatives"
-    fromListN n xs@(D _ v:_) = (1+d, U.fromListN (n * (1+d)) $ concatMap unp xs)
-      where
-        !d = U.length v
-        unp (C a)    = a : replicate d 0
-        unp (D a da) = a : U.toList da
-
-    bang (d, v) i = D (v U.! (d*i+0)) (U.slice (d*i+1) (d-1) v)
-
-instance Memorable AD2 where
-    type Memo AD2 = (Int, U.Vector Double)
-
-    fromListN _    [            ] = error "unexpected: tried to memorize an empty list"
-    fromListN _    (C2 _     : _) = error "unexpected: tried to memorize a value without derivatives"
-    fromListN n xs@(D2 _ v _ : _) = (d, U.fromListN (n * (1+d+d*d)) $ concatMap unp xs)
-      where
-        !d = U.length v
-        unp (C2 a)        = a : replicate (d+d*d) 0
-        unp (D2 a da dda) = a : U.toList da ++ U.toList dda
-
-    bang (d, v) i = D2 (v U.! (stride*i))
-                       (U.slice (stride*i+1) d v)
-                       (U.slice (stride*i+1+d) (d*d) v)
-      where
-        stride = 1 + d + d*d
+    mapM_ print [ lkfun'' conf_lmin lmax brs (V.toList xs) | (xs,_,_) <- results ] -}
 
 
 store_dp :: String -> DamageParameters Double -> Metadata -> Metadata
@@ -360,10 +324,5 @@ store_dp lname dp = M.map go1
   where
     go1 (Sample  ls af bf ts dv) = Sample (map go2 ls) af bf ts dv
     go2 (Library      nm fs dmg)
-        | nm == fromString lname = Library nm fs (Just dp)
+        | nm == fromString lname = Library nm fs (OldDamage dp)
         | otherwise              = Library nm fs dmg
-
-
-
-sigmoid2 x = recip $ 1 + exp (1-x)
-isigmoid2 y = 1 - log ((1-y) / y)
