@@ -28,12 +28,6 @@ data Sample = Sample {
     sample_divergences :: M.HashMap Text DivEst
   } deriving Show
 
-data GenDamageParameters vec float
-    = UnknownDamage
-    | OldDamage (DamageParameters float)
-    | NewDamage (NewDamageParameters vec float)
-  deriving Show
-
 data Library = Library {
     library_name :: Text,
     library_files :: [Text],
@@ -47,6 +41,12 @@ data DivEst = DivEst {
     point_est :: [Double],
     conf_region :: [( [Double], [Double] )]
   } deriving Show
+
+data GenDamageParameters vec float
+    = UnknownDamage
+    | OldDamage (DamageParameters float)
+    | NewDamage (NewDamageParameters vec float)
+  deriving Show
 
 
 type Metadata = M.HashMap Text Sample

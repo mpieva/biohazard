@@ -242,16 +242,15 @@ damagePatternsIter2Bit :: MonadIO m
                        => Refs -> TwoBitFile -> Int -> Int -> Bool
                        -> Iteratee [Alignment] m b
                        -> Iteratee [BamRaw] m (DmgStats b)
-damagePatternsIter2Bit refs tbf ctx rng =
-    damagePatternsIter ctx rng $ \br ->
+damagePatternsIter2Bit refs tbf ctx rng leeHom it =
+    mapMaybeStream (\br -> do
         let b@BamRec{..} = unpackBam br
-            ref_nm = sq_name $ getRef refs b_rname
+        guard (not $ isUnmapped b)
+        let ref_nm = sq_name $ getRef refs b_rname
             ref    = getFragment tbf ref_nm (b_pos - ctx) (alignedLength b_cigar + 2*ctx)
             pairs  = aln_from_ref (U.drop ctx ref) b_seq b_cigar
-        in if isUnmapped b
-           then Nothing
-           else Just (b, ref, pairs)
-
+        return (b, ref, pairs)) =$
+    damagePatternsIter ctx rng leeHom it
 
 -- | Enumeratee (almost) that computes some statistics from plain BAM
 -- with a valid MD field.  The 'Alignment' is also reconstructed and
@@ -274,14 +273,15 @@ damagePatternsIterMD :: MonadIO m
                      => Int -> Bool
                      -> Iteratee [Alignment] m b
                      -> Iteratee [BamRaw] m (DmgStats b)
-damagePatternsIterMD rng =
-    damagePatternsIter 0 rng $ \br -> do
+damagePatternsIterMD rng leeHom it =
+    mapMaybeStream (\br -> do
         let b@BamRec{..} = unpackBam br
         guard (not $ isUnmapped b)
         md <- getMd b
         let pairs = aln_from_md b_seq b_cigar md
             ref   = U.map fromN $ U.filter ((/=) gap . fst) pairs
-        return (b, ref, pairs)
+        return (b, ref, pairs)) =$
+    damagePatternsIter 0 rng leeHom it
   where
     fromN (ns,_) | ns == nucsA = 2
                  | ns == nucsC = 1
@@ -295,19 +295,15 @@ damagePatternsIterMD rng =
 -- strand of the reference; we reverse-complement it if necessary.
 damagePatternsIter :: MonadIO m
                    => Int -> Int
-                   -> (BamRaw -> Maybe (BamRec, U.Vector Word8, U.Vector NPair))
                    -> Bool -> Iteratee [Alignment] m b
-                   -> Iteratee [BamRaw] m (DmgStats b)
-damagePatternsIter ctx rng get_ref_and_aln leeHom it = do
+                   -> Iteratee [(BamRec, U.Vector Word8, U.Vector NPair)] m (DmgStats b)
+damagePatternsIter ctx rng leeHom it = mapStream revcom_both =$ do
     let maxwidth = ctx + rng
     acc_bc <- liftIO $ UM.replicate (2 * 5 *    maxwidth) (0::Int)
     acc_st <- liftIO $ UM.replicate (2 * 4 * 4 * 4 * rng) (0::Int)
     acc_cg <- liftIO $ UM.replicate (2 * 2 * 4 *     rng) (0::Int)
 
-    let do_bc br = case fmap revcom_both $ get_ref_and_aln br of
-            Nothing                         -> return []
-            Just (b@BamRec{..}, ref, a_sequence) -> liftIO $ do
-
+    it' <- flip mapStreamM it $ \(b@BamRec{..}, ref, a_sequence) -> liftIO $ do
               let good_pairs     = U.indexed             a_sequence
                   good_pairs_rev = U.indexed $ U.reverse a_sequence
                   a_fragment_type | isFirstMate  b && isPaired     b = Leading
@@ -324,9 +320,8 @@ damagePatternsIter ctx rng get_ref_and_aln leeHom it = do
 
               -- For substitutions, decide what damage class we're in:
               -- 0 - no damage, 1 - damaged 5' end, 2 - damaged 3' end, 3 - both
-              let dmgbase = 2*4*4*rng *
-                              ( (if U.null a_sequence || U.head a_sequence /= (nucsC,nucsT) then 1 else 0)
-                              + (if U.null a_sequence || U.last a_sequence /= (nucsC,nucsT) then 2 else 0) )
+              let dmgbase = 2*4*4*rng * ( (if U.null a_sequence || U.head a_sequence /= (nucsC,nucsT) then 1 else 0)
+                                        + (if U.null a_sequence || U.last a_sequence /= (nucsC,nucsT) then 2 else 0) )
 
               -- substitutions near 5' end
               let len_at_5 = case a_fragment_type of Leading  -> min rng (G.length b_seq)
@@ -359,28 +354,7 @@ damagePatternsIter ctx rng get_ref_and_aln leeHom it = do
                   (U.drop 1 good_pairs_rev) (U.take len_at_3 good_pairs_rev)
 
 
-              return [ ALN{..} ]
-          where
-            {-# INLINE withPair #-}
-            withPair (Ns u, Ns v) k = case pairTab `U.unsafeIndex` fromIntegral (16*u+v) of
-                    j -> if j >= 0 then k j else return ()
-
-            !pairTab = U.replicate 256 (-1) U.//
-                       [ (fromIntegral $ 16*u+v, x*4+y) | (Ns u,x) <- zip [nucsA, nucsC, nucsG, nucsT] [0,1,2,3]
-                                                        , (Ns v,y) <- zip [nucsA, nucsC, nucsG, nucsT] [0,1,2,3] ]
-
-            {-# INLINE bump #-}
-            bump i v = UM.unsafeRead v i >>= UM.unsafeWrite v i . succ
-
-            {-# INLINE withNs #-}
-            withNs ns k | ns == nucsA = k 0
-                        | ns == nucsC = k 1
-                        | ns == nucsG = k 2
-                        | ns == nucsT = k 3
-                        | otherwise   = return ()
-
-
-    it'  <- concatMapStreamM do_bc it
+              return ALN{..}
 
     let nsubsts = 4*4*rng
         mk_substs off = sequence [ (,) (n1 :-> n2) <$> U.unsafeFreeze (UM.slice ((4*i+j)*rng + off*nsubsts) rng acc_st)
@@ -410,16 +384,72 @@ damagePatternsIter ctx rng get_ref_and_aln leeHom it = do
                                            , (j,n1) <- zip [0..] [nucA..nucT] ]
 
     accs' <- accs `liftM` lift (run it')
-    let vsum = foldl1 (zipWith s1) . map ($ accs')
-        s1 (x :-> y, u) (z :-> w, v) | x == z && y == w = (x :-> y, U.zipWith (+) u v)
-                                     | otherwise = error $ "Mismatch in zip.  This is a bug."
+    return $ accs' { substs5   = mconcat [ substs5 accs', substs5d5 accs', substs5d3 accs', substs5dd accs' ]
+                   , substs3   = mconcat [ substs3 accs', substs3d5 accs', substs3d3 accs', substs3dd accs' ]
+                   , substs5d5 = mconcat [ substs5d5 accs', substs5dd accs']
+                   , substs3d5 = mconcat [ substs3d5 accs', substs3dd accs']
+                   , substs5d3 = mconcat [ substs5d3 accs', substs5dd accs']
+                   , substs3d3 = mconcat [ substs3d3 accs', substs3dd accs'] }
+  where
+    {-# INLINE withPair #-}
+    withPair (Ns u, Ns v) k = case pairTab `U.unsafeIndex` fromIntegral (16*u+v) of
+         j -> if j >= 0 then k j else return ()
 
-    return $ accs' { substs5 = vsum [ substs5, substs5d5, substs5d3, substs5dd ]
-                   , substs3 = vsum [ substs3, substs3d5, substs3d3, substs3dd ]
-                   , substs5d5 = vsum [ substs5d5, substs5dd ]
-                   , substs3d5 = vsum [ substs3d5, substs3dd ]
-                   , substs5d3 = vsum [ substs5d3, substs5dd ]
-                   , substs3d3 = vsum [ substs3d3, substs3dd ] }
+    !pairTab = U.replicate 256 (-1) U.//
+            [ (fromIntegral $ 16*u+v, x*4+y) | (Ns u,x) <- zip [nucsA, nucsC, nucsG, nucsT] [0,1,2,3]
+                                             , (Ns v,y) <- zip [nucsA, nucsC, nucsG, nucsT] [0,1,2,3] ]
+    {-# INLINE bump #-}
+    bump i v = UM.read v i >>= UM.write v i . succ
+
+    {-# INLINE withNs #-}
+    withNs ns k | ns == nucsA = k 0
+                | ns == nucsC = k 1
+                | ns == nucsG = k 2
+                | ns == nucsT = k 3
+                | otherwise   = return ()
+
+
+instance Monoid a => Monoid (DmgStats a) where
+    mempty = DmgStats { basecompo5 = empty_compo
+                      , basecompo3 = empty_compo
+                      , substs5    = empty_subst
+                      , substs3    = empty_subst
+                      , substs5d5  = empty_subst
+                      , substs3d5  = empty_subst
+                      , substs5d3  = empty_subst
+                      , substs3d3  = empty_subst
+                      , substs5dd  = empty_subst
+                      , substs3dd  = empty_subst
+                      , substs5cpg = empty_subst
+                      , substs3cpg = empty_subst
+                      , stats_more = mempty }
+      where
+        empty_compo = [ (nuc, U.empty) | nuc <- [Just nucA, Just nucC, Just nucG, Just nucT, Nothing] ]
+        empty_subst = [ (n1 :-> n2, U.empty) | n1 <- [nucA..nucT], n2 <- [nucA..nucT] ]
+
+    a `mappend` b = DmgStats { basecompo5 = zipWith s1 (basecompo5 a) (basecompo5 b)
+                             , basecompo3 = zipWith s1 (basecompo3 a) (basecompo3 b)
+                             , substs5    = zipWith s2 (substs5    a) (substs5    b)
+                             , substs3    = zipWith s2 (substs3    a) (substs3    b)
+                             , substs5d5  = zipWith s2 (substs5d5  a) (substs5d5  b)
+                             , substs3d5  = zipWith s2 (substs3d5  a) (substs3d5  b)
+                             , substs5d3  = zipWith s2 (substs5d3  a) (substs5d3  b)
+                             , substs3d3  = zipWith s2 (substs3d3  a) (substs3d3  b)
+                             , substs5dd  = zipWith s2 (substs5dd  a) (substs5dd  b)
+                             , substs3dd  = zipWith s2 (substs3dd  a) (substs3dd  b)
+                             , substs5cpg = zipWith s2 (substs5cpg a) (substs5cpg b)
+                             , substs3cpg = zipWith s2 (substs3cpg a) (substs3cpg b)
+                             , stats_more = mappend    (stats_more a) (stats_more b) }
+      where
+        s1 (x, u) (z, v) | x /= z    = error "Mismatch in zip.  This is a bug."
+                         | U.null u  = (x, v)
+                         | U.null v  = (x, u)
+                         | otherwise = (x, U.zipWith (+) u v)
+
+        s2 (x :-> y, u) (z :-> w, v) | x /= z || y /= w = error "Mismatch in zip.  This is a bug."
+                                     | U.null u         = (x :-> y, v)
+                                     | U.null v         = (x :-> y, u)
+                                     | otherwise        = (x :-> y, U.zipWith (+) u v)
 
 
 revcom_both :: ( BamRec, U.Vector Word8, U.Vector (Nucleotides, Nucleotides) )
@@ -428,7 +458,7 @@ revcom_both (b, ref, pairs)
     | isReversed b = ( b, revcom_ref ref, revcom_pairs pairs )
     | otherwise    = ( b,            ref,              pairs )
   where
-    revcom_ref   = U.reverse . U.map (xor 2)
+    revcom_ref   = U.reverse . U.map (\x -> if x > 3 then x else xor x 2)
     revcom_pairs = U.reverse . U.map (compls *** compls)
 
 
