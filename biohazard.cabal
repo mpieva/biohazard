@@ -4,7 +4,7 @@ Synopsis:            bioinformatics support library
 Description:         This is a collection of modules I separated from
                      various bioinformatics tools.  The hope is to make
                      them reusable and easier to maintain.  Also includes
-                     some of these tools and a bunch that work on mitochondrial 
+                     some of these tools and a bunch that work on mitochondrial
                      sequences.
 Category:            Bioinformatics
 
@@ -72,9 +72,10 @@ Library
                        Bio.Util.AD,
                        Bio.Util.AD2,
                        Bio.Util.Numeric,
+                       Bio.Util.Pretty,
                        Bio.Util.Regex,
-                       Data.MiniFloat,
-                       Data.Avro
+                       Data.Avro,
+                       Data.MiniFloat
 
   Other-modules:       Paths_biohazard
 
@@ -108,6 +109,7 @@ Library
                        vector                   >= 0.9 && < 0.11,
                        vector-algorithms        >= 0.3 && < 1.0,
                        vector-th-unbox          == 0.2.*,
+                       wl-pprint-text           == 1.1.*,
                        zlib                     >= 0.5 && < 0.7
 
   Ghc-options:         -Wall

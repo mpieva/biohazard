@@ -28,33 +28,35 @@ import qualified Data.Vector.Unboxed as U
 --
 -- Notes:
 --
--- - The mutation rates could add up to more than one.  Then the
+-- * The mutation rates could add up to more than one.  Then the
 --   likelihood becomes NaN.  We might try to reformulate to avoid this.
 --
--- - We could compute the full likelihood function with gradient and
+-- * We could compute the full likelihood function with gradient and
 --   Hessian once at the end, just to see if the fit is good and how
 --   badly the parameters are confounded.
 --
--- - Alternatively, we could parameterize the deamination rates using an
+-- * Alternatively, we could parameterize the deamination rates using an
 --   exponential decay.  The old formulation had three models:  one
 --   fixes deamination to zero, one has C->T at one end and G->A at the
 --   other with one length parameter, the third has only C->T with two
 --   length parameters.  This works out, respectively, to
---
+-- \[
 --      alpha5_i = alpha5_0 * lambda ^^ (1+i)
 --      beta5_i  = 0
 --      alpha3_i = 0
 --      beta3_i  = beta3_0 * lambda ^^ (1+i)
---
+-- \]
 --   and
---
+-- \[
 --      alpha5_i = alpha5_0 * lambda ^^ (1+i)
 --      beta5_i  = 0
 --      alpha3_i = alpha3_0 * kappa ^^ (1+i)
 --      beta3_i  = 0-
+-- \]
+--
+-- * Dumb mistake to be avoided:  The likelihood of any substitution has
+--   to be multiplied with the base frequency of the original base.
 
--- Argh, dumb mistake.  Likelihood of any substitution has to be
--- multiplied with base frequency.
 smat :: (Num a, Floating a, IsDouble a) => Double -> a -> a -> a -> a -> [a]
 smat gc mu nu a b =
        [ pA * (1 - nu*pC - mu*pG - nu*pT + mu*pG * tr (-b))
@@ -112,11 +114,12 @@ est_mut_rate params gc_frac DmgStats{..} = do
 
     v0 = U.fromList [-4.5, -5.5, -3, -6.5] -- guesstimates
 
-    lk_fun [mu0,nu0,alpha,beta] =
-        let !mu = recip $ 1 + exp (-mu0)
+    lk_fun [mu0,nu0,alpha,beta] = sum $ zipWith (\num lk -> - fromIntegral num * log lk)
+                                                counts (smat gc_frac mu nu alpha beta)
+      where !mu = recip $ 1 + exp (-mu0)
             !nu = recip $ 1 + exp (-nu0)
-        in negate . sum $ zipWith (\num lk -> fromIntegral num * log lk)
-                                  counts (smat gc_frac mu nu alpha beta)
+    lk_fun _ = error "Inconceivable!"
+
 
 -- | Estimate deamination rates.  We take the base composition (GC
 -- fraction) and the two mutation rates (ti,tv) as constant, then
@@ -145,7 +148,6 @@ est_deamination parameters l_over gc_frac (mu0,nu0) DmgStats{..} = do
                                | subst <- range (nucA :-> nucA, nucT :-> nucT) ] ]
 
     return (V.convert ab_left, ab_mid V.! 0, ab_mid V.! 1, V.convert ab_right)
-
   where
     fst3 (x,_,_) = x
     !mu = fromDouble . recip $ 1 + exp (-mu0)
@@ -157,13 +159,14 @@ est_deamination parameters l_over gc_frac (mu0,nu0) DmgStats{..} = do
     lk_fun counts [alpha,beta] =
         negate . sum $ zipWith (\num lk -> fromIntegral num * log lk)
                                counts (smat gc_frac mu nu alpha beta)
+    lk_fun _ _ = error "Inconceivable!"
 
 estimateDamage :: Parameters -> DmgStats a -> IO (NewDamageParameters U.Vector Double)
 estimateDamage conf_params dmg = do
     let dp_gc_frac = est_gc_frac dmg
     (dp_mu,dp_nu) <- est_mut_rate conf_params dp_gc_frac dmg
 
-    (ab_left, dp_alpha, dp_beta, ab_right) <- est_deamination conf_params 12 dp_gc_frac (dp_mu,dp_nu) dmg
+    (ab_left, dp_alpha, dp_beta, ab_right) <- est_deamination conf_params 8 dp_gc_frac (dp_mu,dp_nu) dmg
     let dp_alpha5 = U.ifilter (const .  odd) ab_left
         dp_beta5  = U.ifilter (const . even) ab_left
         dp_alpha3 = U.ifilter (const .  odd) ab_right

@@ -34,6 +34,7 @@
 import Bio.Bam
 import Bio.Genocall.Damage
 import Bio.Prelude
+import Bio.Util.Pretty
 import Bio.Util.AD
 import System.Console.GetOpt
 
@@ -67,7 +68,7 @@ main = do
 
     -- XXX  We currently don't get confidence intervals.  Are they even
     -- all that interesting?
-    estimateDamageFromFiles conf_lmin conf_params files >>= print
+    estimateDamageFromFiles conf_lmin conf_params files >>= pprint
 
     -- XXX  Many optimizations fit only one parameter.  Newton-Iteration
     -- should be more efficient that the generic CG method.

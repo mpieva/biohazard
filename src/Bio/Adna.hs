@@ -1,4 +1,4 @@
-{-# LANGUAGE BangPatterns, RecordWildCards, FlexibleContexts #-}
+{-# LANGUAGE BangPatterns, RecordWildCards, FlexibleContexts, DeriveGeneric, DeriveAnyClass #-}
 module Bio.Adna (
     DmgStats(..),
     CompositionStats,
@@ -18,6 +18,7 @@ module Bio.Adna (
 
     noDamage,
     univDamage,
+    empDamage,
     memoDamageModel,
     Mat44,
     Mat44D
@@ -26,6 +27,7 @@ module Bio.Adna (
 import Bio.Bam
 import Bio.Prelude
 import Bio.TwoBit
+import Bio.Util.Pretty
 import Data.Vec ( Mat44, Mat44D, identity, getElem, Vec4, (:.)((:.)) )
 
 import qualified Data.Vector.Generic            as G
@@ -106,7 +108,7 @@ data DamageParameters float = DP { ssd_sigma  :: !float         -- deamination r
                                  , dsd_sigma  :: !float         -- deamination rate in ss DNA, DS model
                                  , dsd_delta  :: !float         -- deamination rate in ds DNA, DS model
                                  , dsd_lambda :: !float }       -- param for geom. distribution, DS model
-  deriving (Read, Show)
+  deriving (Read, Show, Generic, Pretty)
 
 data NewDamageParameters vec float = NDP { dp_gc_frac :: !float
                                          , dp_mu      :: !float
@@ -117,7 +119,7 @@ data NewDamageParameters vec float = NDP { dp_gc_frac :: !float
                                          , dp_beta    :: !float
                                          , dp_alpha3  :: !(vec float)
                                          , dp_beta3   :: !(vec float) }
-  deriving (Read, Show)
+  deriving (Read, Show, Generic, Pretty)
 
 
 
@@ -165,25 +167,43 @@ univDamage DP{..} r l = V.generate l mat
         lam5_ds = dsd_lambda ^ (1+i)
         lam3_ds = dsd_lambda ^ (l-i)
 
+{-# SPECIALIZE empDamage :: NewDamageParameters U.Vector Double -> DamageModel Double #-}
+empDamage :: (G.Vector v a, Fractional a) => NewDamageParameters v a -> DamageModel a
+empDamage NDP{..} r l
+    | r         = V.generate l (get (flip genSubstMat))
+    | otherwise = V.generate l (get       genSubstMat )
+  where
+    get k i | i < G.length dp_alpha5 && i < G.length dp_beta5
+                = k (G.unsafeIndex dp_alpha5 i) (G.unsafeIndex dp_beta5 i)
+            | l-i < G.length dp_alpha3 && l-i <= G.length dp_beta3
+                = k (G.unsafeIndex dp_alpha3 (l-i-1)) (G.unsafeIndex dp_beta3 (l-i-1))
+            | otherwise
+                = k dp_alpha dp_beta
 
 
 -- | Collected \"traditional\" statistics:
 --
 -- * Base composition near 5' end and near 3' end.  Each consists of
--- five vectors of counts of A,C,G,T, and everything else.  'basecompo5'
--- begins with 'context' bases to the left of the 5' end, 'basecompo3'
--- ends with 'context' bases to the right of the 3' end.
+--   five vectors of counts of A,C,G,T, and everything else.
+--   'basecompo5' begins with 'context' bases to the left of the 5' end,
+--   'basecompo3' ends with 'context' bases to the right of the 3' end.
 --
 -- * Substitutions.  Counted from the reconstructed alignment, once
--- around the 5' end and once around the 3' end.  For a total of 2*4*4
--- different substitutions.
+--   around the 5' end and once around the 3' end.  For a total of 2*4*4
+--   different substitutions.  Positions where the query has a gap are
+--   skipped.
 --
--- * Substitutions at CpG motivs.  Also counted from the reconstructed
--- alignment, and a CpG site is simply the sequence CG in the reference.
--- Gaps may interfere with that, but that might actually be desirable.
+-- * Substitutions at CpG motifs.  Also counted from the reconstructed
+--   alignment, and a CpG site is simply the sequence CG in the
+--   reference.  Gaps may confuse that definition, so that CpHpG still
+--   counts as CpG, because the H is gapped.  That might actually
+--   be desirable.
 --
--- * Conditional substitutions.  Need an exact definition, and then a
--- couple additional tables.
+-- * Conditional substitutions.  The 5' and 3' ends count as damaged if
+--   the very last position has a C-to-T substitution.  With that in
+--   mind, 'substs5d5', 'substs5d3', 'substs5dd' are like 'substs5', but
+--   counting only reads where the 5' end is damaged, where the 3' end
+--   is damaged, and where both ends are damaged, respectively.
 --
 -- XXX  This got kind of ugly.  We'll see where this goes...
 
