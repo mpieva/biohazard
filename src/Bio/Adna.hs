@@ -108,7 +108,7 @@ data DamageParameters float = DP { ssd_sigma  :: !float         -- deamination r
                                  , dsd_sigma  :: !float         -- deamination rate in ss DNA, DS model
                                  , dsd_delta  :: !float         -- deamination rate in ds DNA, DS model
                                  , dsd_lambda :: !float }       -- param for geom. distribution, DS model
-  deriving (Read, Show, Generic, Pretty)
+  deriving (Read, Show, Generic, Pretty, Parse)
 
 data NewDamageParameters vec float = NDP { dp_gc_frac :: !float
                                          , dp_mu      :: !float
@@ -119,7 +119,7 @@ data NewDamageParameters vec float = NDP { dp_gc_frac :: !float
                                          , dp_beta    :: !float
                                          , dp_alpha3  :: !(vec float)
                                          , dp_beta3   :: !(vec float) }
-  deriving (Read, Show, Generic, Pretty)
+  deriving (Read, Show, Generic, Pretty, Parse)
 
 
 
