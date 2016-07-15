@@ -90,7 +90,6 @@ import Data.Iteratee.IO              hiding ( defaultBufSize )
 import Data.Iteratee.Iteratee        hiding ( identity, empty )
 import Data.ListLike                        ( ListLike )
 import System.IO                            ( hIsTerminalDevice )
-import System.Posix                         ( Fd, openFd, closeFd, OpenMode(..), defaultFileFlags )
 
 import qualified Control.Monad.Catch            as CMC
 import qualified Data.Attoparsec.ByteString     as A

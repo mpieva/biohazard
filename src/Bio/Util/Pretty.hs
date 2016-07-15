@@ -15,8 +15,8 @@ import qualified Data.Vector.Unboxed as U
 pprint :: Pretty a => a -> IO ()
 pprint = (>> putStrLn []) . P.displayIO stdout . P.renderPretty 0.75 132 . pretty 0
 
-pparse :: Parse a => Text -> A.Result a
-pparse = A.parse (parse 0)
+pparse :: Parse a => Text -> Either String a
+pparse = A.parseOnly (parse 0)
 
 prettyList :: Pretty a => [a] -> P.Doc
 prettyList = P.brackets . P.align . P.fillSep . P.punctuate P.comma . map (pretty 0)
@@ -42,7 +42,10 @@ class Parse a where
     default parse :: (Generic a, GParse (Rep a)) => Int -> A.Parser a
     parse i = to `fmap` gparse Pref i
 
+instance Pretty    Int where pretty _ = P.int
 instance Pretty Double where pretty _ = P.double
+
+instance Parse    Int where parse _ = A.signed A.decimal
 instance Parse Double where parse _ = A.double
 
 instance (Pretty a, U.Unbox a) => Pretty (U.Vector a) where pretty _ = prettyList . U.toList
@@ -88,7 +91,8 @@ instance Parse c => GParse (K1 i c) where
 
 instance (GPretty f, Constructor c) => GPretty (M1 C c f) where
     gpretty t i c@(M1 fp)
-        | conIsRecord c = P.text (fromString (conName c)) <+>
+        | conIsRecord c = parensIf (i > appPrec && not (basic fp)) $
+                          P.text (fromString (conName c)) <+>
                           P.braces (P.align (gpretty Rec i fp))
         | otherwise = case conFixity c of
             Prefix -> parensIf (i > appPrec && not (basic fp)) $
@@ -99,15 +103,14 @@ instance (GPretty f, Constructor c) => GPretty (M1 C c f) where
 -- XXX What to do with the precedence thingy?
 -- XXX Both the prefix and infix forms should be tried.
 instance (GParse f, Constructor c) => GParse (M1 C c f) where
-    gparse t i | conIsRecord c = fmap M1 $ record_form <|> prefix_form
+    gparse t i | conIsRecord c = fmap M1 $ a_parensIf (i > appPrec1 && not (basic' fp)) $
+                                           record_form <|> prefix_form
                | otherwise = fmap M1 $ case conFixity c of
-                    Prefix    -> prefix_form
-                    Infix _ m -> prefix_form
+                    Prefix    -> a_parensIf (i > appPrec1 && not (basic' fp)) $ prefix_form
+                    Infix _ m -> a_parensIf (i > appPrec1 && not (basic' fp)) $ prefix_form
       where
         record_form = A.string (fromString (conName c)) *> A.skipSpace *> a_braces (gparse Rec i)
-        prefix_form = a_parensIf (i > appPrec1 && not (basic' fp)) $
-                                        A.string (fromString (conName c)) *>
-                                        A.skipSpace *> gparse t appPrec1
+        prefix_form = A.string (fromString (conName c)) *> A.skipSpace *> gparse t appPrec1
 
         c = M1 undefined :: M1 C c f a
         fp = undefined :: f a

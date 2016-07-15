@@ -21,14 +21,14 @@ derivingUnbox "Mini" [t| Mini -> Word8 |] [| unMini |] [| Mini |]
 -- byte.  It has no sign, four bits of precision, and the range is from
 -- 0 to 63488, initially in steps of 1/8.  Nice to store quality scores
 -- with reasonable precision and range.
-float2mini :: RealFloat a => a -> Mini
+float2mini :: (Show a, RealFloat a) => a -> Mini
 float2mini f | f' <  0   = error "no negative minifloats"   -- negative zero is fine!
              | f  <  2   = Mini f'
              | e >= 17   = Mini 0xff
-             | s  < 16   = error $ "oops: " ++ show (e,s)
+             | s  < 16   = error $ "float2mini: " ++ show (e,s,f,f')
              | s  < 32   = Mini $ (e-1) `shiftL` 4 .|. (s .&. 0xf)
              | s == 32   = Mini $ e `shiftL` 4
-             | otherwise = error $ "oops: " ++ show (e,s)
+             | otherwise = error $ "float2mini: " ++ show (e,s,f,f')
   where
     f' = round (8*f)
     e  = fromIntegral $ exponent f

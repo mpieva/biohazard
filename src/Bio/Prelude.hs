@@ -2,6 +2,9 @@
 module Bio.Prelude (
     module Bio.Base,
     module BasePrelude,
+    module System.Posix.Files,
+    module System.Posix.IO,
+    module System.Posix.Types,
     Bytes,
     HashMap,
     HashSet,
@@ -24,6 +27,9 @@ module Bio.Prelude (
     Unpack(..),
     hPutStr,
     hPutStrLn,
+    fdPut,
+    fdPutLazy,
+    withFd,
     stderr,
     stdout,
     stdin
@@ -43,10 +49,18 @@ import Data.HashMap.Strict ( HashMap )
 import Data.HashSet        ( HashSet )
 import Data.IntMap         ( IntMap )
 import Data.IntSet         ( IntSet )
+import Foreign.C.Error     ( throwErrnoIf_ )
+import Foreign.Ptr         ( castPtr )
 import System.IO           ( hPutStr, hPutStrLn, stderr, stdout, stdin )
+import System.Posix.Files
+import System.Posix.IO
+import System.Posix.Types
 
-import qualified Data.ByteString.Char8 as S
-import qualified Data.Text as T
+import qualified Data.ByteString        as B
+import qualified Data.ByteString.Unsafe as B
+import qualified Data.ByteString.Lazy   as L
+import qualified Data.ByteString.Char8  as S
+import qualified Data.Text              as T
 
 type Bytes = ByteString
 
@@ -75,3 +89,16 @@ isLeft, isRight :: Either a b -> Bool
 isLeft = either (const False) (const True)
 isRight = either (const True) (const False)
 #endif
+
+fdPut :: Fd -> B.ByteString -> IO ()
+fdPut fd s =
+    B.unsafeUseAsCStringLen s $ \(p,l) ->
+    throwErrnoIf_ (/= fromIntegral l) "fdPut" $
+    fdWriteBuf fd (castPtr p) (fromIntegral l)
+
+fdPutLazy :: Fd -> L.ByteString -> IO ()
+fdPutLazy fd = mapM_ (fdPut fd) . L.toChunks
+
+withFd :: FilePath -> OpenMode -> Maybe FileMode -> OpenFileFlags
+       -> (Fd -> IO a) -> IO a
+withFd fp om fm ff k = bracket (openFd fp om fm ff) closeFd k

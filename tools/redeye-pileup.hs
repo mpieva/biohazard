@@ -37,14 +37,12 @@ import Bio.Genocall
 import Bio.Genocall.AvroFile
 import Bio.Genocall.Metadata
 import Bio.Prelude
+import Bio.Util.Pretty
 import Data.Aeson
 import Data.Avro
 import Data.Text.Encoding            ( decodeUtf8 )
 import Data.Vec.Packed               ( packMat )
 import System.Console.GetOpt
-import System.Directory              ( renameFile )
-import System.FilePath
-import System.IO
 
 import qualified Data.ByteString.Char8          as S
 import qualified Data.ByteString.Lazy           as BL
@@ -57,107 +55,97 @@ import qualified Data.Vector.Unboxed.Mutable    as M
 import qualified Data.Sequence                  as Z
 
 data Conf = Conf {
-    -- Generator for output file name.  Receives sample name and
-    -- (optional) region as arguments.
-    conf_output      :: String -> Maybe String -> FilePath,
-    conf_metadata    :: FilePath,
-    conf_theta       :: Maybe Double,
-    conf_report      :: String -> IO () }
+    conf_output :: FilePath,
+    conf_libs   :: [Lib],
+    conf_chrom  :: String,
+    conf_theta  :: Maybe Double,
+    conf_report :: Reporter,
+    conf_table  :: Bool }
 
 defaultConf :: Conf
-defaultConf = Conf default_out (error "no metadata file specified") Nothing (\_ -> return ())
-  where
-    default_out smp   Nothing  = smp <> ".av"
-    default_out smp (Just rgn) = smp <> "-" <> rgn <> ".av"
+defaultConf = Conf { conf_output = error "no output file"
+                   , conf_libs   = []
+                   , conf_chrom  = ""
+                   , conf_theta  = Nothing
+                   , conf_report = \_ -> return ()
+                   , conf_table  = False }
 
 options :: [OptDescr (Conf -> IO Conf)]
 options = [
-    Option "c"  ["config"] (ReqArg set_conf   "FILE") "Set name of json config file to FILE",
-    Option "o"  ["output"] (ReqArg set_output "FILE") "Set out file schema to FILE",
+    Option "o"  ["output"] (ReqArg set_output "FILE") "Set output filename to FILE",
+    Option "c"  chrom      (ReqArg set_chrom  "NAME") "Restrict to chromosome NAME",
+    Option "D"  ["damage"] (ReqArg set_dmg   "PARMS") "Set damage parameters to PARMS",
     Option "t"  dep_param  (ReqArg set_theta  "FRAC") "Set dependency coefficient to FRAC (\"N\" to turn off)",
+    Option "T"  ["table"]          (NoArg want_table) "Print table for divergence estimation",
     Option "v"  ["verbose"]        (NoArg be_verbose) "Print more diagnostics",
     Option "h?" ["help","usage"]   (NoArg disp_usage) "Display this message" ]
   where
     dep_param = ["theta","dependency-coefficient"]
+    chrom     = ["chromosome","region"]
 
     disp_usage    _ = do pn <- getProgName
-                         let blah = "Usage: " ++ pn ++ " [OPTION...] [SAMPLE [REGION...] ...]"
+                         let blah = "Usage: " ++ pn ++ " [[OPTION...] [BAM-FILE...] ...]"
                          putStrLn $ usageInfo blah options
                          exitSuccess
 
     be_verbose    c = return $ c { conf_report = hPutStrLn stderr }
-    set_conf   fn c = return $ c { conf_metadata = fn }
+    want_table    c = return $ c { conf_table  = True }
 
-    set_theta "N" c = return $ c { conf_theta  = Nothing }
-    set_theta   a c = (\t -> c { conf_theta       = Just   t }) <$> readIO a
+    set_theta "N" c = return $ c { conf_theta = Nothing }
+    set_theta   a c = (\t  ->  c { conf_theta = Just  t }) <$> readIO a
 
-    set_output fn c = return $ c { conf_output = mkoutput fn }
+    set_dmg     a c = let upd d = return $ c { conf_libs = Lib [] d : conf_libs c }
+                      in either fail upd . pparse . fromString $ a
 
-mkoutput :: FilePath -> String -> Maybe String -> FilePath
-mkoutput str smp rgn = go str
-  where
-    go ('%':'s':s) = smp ++ go s
-    go ('%':'r':s) = maybe id (++) rgn $ go s
-    go ('%':'%':s) = '%' : go s
-    go ('%': c :s) =  c  : go s
-    go (     c :s) =  c  : go s
-    go [         ] = [ ]
+    set_chrom   a c = return $ c { conf_chrom  = a }
+    set_output fn c = return $ c { conf_output = fn }
+
 
 main :: IO ()
 main = do
-    (opts, samprgns, errs) <- getOpt Permute options <$> getArgs
+    (opts, [], errs) <- let put_file  f c = return $ c { conf_libs = put_file1 f $ conf_libs c }
+                            put_file1 f (Lib fs d : ls) =   Lib (f:fs) d : ls
+                            put_file1 f [             ] = [ Lib [f] UnknownDamage ]
+                        in getOpt (ReturnInOrder put_file) options <$> getArgs
+
     Conf{..} <- foldl (>>=) (return defaultConf) opts
     unless (null errs) $ mapM_ (hPutStrLn stderr) errs >> exitFailure
 
-    -- samprgns contains samples and regions.  We define anything found in the metadata as sample,
-    -- anything else as region to apply to the previous sample.  Name a sample "chr1" and you get
-    -- what you deserve.
+    (tab,()) <- withFd (conf_output ++ ".#") WriteOnly Nothing defaultFileFlags                 $ \ohdl ->
+                mergeLibraries conf_report (reverse conf_libs) conf_chrom >=> run               $ \hdr ->
+                progressPos (\(rs, p, _) -> (rs, p)) "GT call at " conf_report (meta_refs hdr) =$
+                pileup                                                                         =$
+                mapStream (calls conf_theta)                                                   =$
+                zipStreams tabulateSingle (output_avro ohdl $ meta_refs hdr)
 
-    samples <- flip split_sam_rgns samprgns <$> readMetadata conf_metadata
-    when (null samples) $ hPutStrLn stderr "need (at least) one sample name" >> exitFailure
+    rename (conf_output ++ ".#") conf_output
+    when conf_table $ pprint tab
 
-    forM_ samples $ \(sample, rgns) -> do
-        meta <- readMetadata conf_metadata
-
-        case H.lookup (fromString sample) meta of
-            Nothing -> hPutStrLn stderr $ "unknown sample " ++ show sample
-
-            Just smp -> forM_ rgns $ \rgn -> do
-                let outstem = conf_output sample rgn
-                    outfile = takeDirectory conf_metadata </> outstem
-                    tmpfile = outfile ++ ".#"
-                (tab,()) <- withFile tmpfile WriteMode                                                      $ \ohdl ->
-                            mergeLibraries conf_report conf_metadata (sample_libraries smp) rgn >=> run     $ \hdr ->
-                            progressPos (\(rs, p, _) -> (rs, p)) "GT call at " conf_report (meta_refs hdr) =$
-                            pileup                                                                         =$
-                            mapStream (calls conf_theta)                                                   =$
-                            zipStreams tabulateSingle (output_avro ohdl $ meta_refs hdr)
-
-                let upd_sample s = s { sample_div_tables = H.insert (maybe "" fromString rgn)                 tab  (sample_div_tables s)
-                                     , sample_avro_files = H.insert (maybe "" fromString rgn) (fromString outstem) (sample_avro_files s) }
-
-                updateMetadata (H.adjust upd_sample (fromString sample)) conf_metadata
-                renameFile tmpfile outfile
 
 mergeLibraries :: (MonadIO m, MonadMask m)
-               => (String -> IO ()) -> FilePath
-               -> [Library] -> Maybe String -> Enumerator' BamMeta [PosPrimChunks] m b
-mergeLibraries       _   _ [    ]    _ = error "Sample must have at least one library."
-mergeLibraries  report cfg [ l  ] mrgn = enumLibrary report cfg l mrgn
-mergeLibraries  report cfg (l:ls) mrgn = mergeEnums' (mergeLibraries report cfg ls mrgn) (enumLibrary report cfg l mrgn) mm
+               => Reporter -> [Lib] -> String
+               -> Enumerator' BamMeta [PosPrimChunks] m b
+mergeLibraries       _ [    ]    _ = error "Need at least one library."
+mergeLibraries  report [ l  ] mrgn = enumLibrary report l mrgn
+mergeLibraries  report (l:ls) mrgn = mergeEnums' (mergeLibraries report ls mrgn) (enumLibrary report l mrgn) mm
   where
     mm _ = mergeSortStreams $ \(rs1, p1, _) (rs2, p2, _) -> if (rs1, p1) < (rs2, p2) then Less else NotLess
 
-enumLibrary :: (MonadIO m, MonadMask m)
-            => (String -> IO ()) -> FilePath
-            -> Library -> Maybe String -> Enumerator' BamMeta [PosPrimChunks] m b
-enumLibrary report cfg (Library nm fs mdp) mrgn output = do
-    let (msg, dmg) = case mdp of UnknownDamage -> ("no damage model",                              noDamage)
-                                 OldDamage  dp -> ("universal damage parameters" ++ show dp,  univDamage dp)
-                                 NewDamage ndp -> ("empirical damage parameters" ++ show ndp, empDamage ndp)
+data Lib = Lib [String] (GenDamageParameters U.Vector Double)
+type Reporter = String -> IO ()
 
-    liftIO . report $ "using " ++ msg ++ " for " ++ unpack nm
-    mergeInputRgns mrgn combineCoordinates (map ((</>) (takeDirectory cfg) . unpack) fs)
+enumLibrary :: (MonadIO m, MonadMask m)
+            => Reporter -> Lib -> String -> Enumerator' BamMeta [PosPrimChunks] m b
+enumLibrary report (Lib fs mdp) mrgn output = do
+    let (msg, dmg) = case mdp of UnknownDamage -> ("no damage model",                               noDamage)
+                                 OldDamage  dp -> ("universal damage parameters " ++ show dp,  univDamage dp)
+                                 NewDamage ndp -> ("empirical damage parameters " ++ show ndp, empDamage ndp)
+
+    liftIO . report $ "using " ++ msg ++ " for " ++ show fs
+    liftIO $ mapM_ print $ [ dmg False 30 V.! i | i <- [0..29] ]
+
+
+    mergeInputRgns combineCoordinates mrgn (reverse fs)
         $== takeWhileE (isValidRefseq . b_rname . unpackBam)
         $== mapMaybeStream (\br ->
                 let b = unpackBam br
@@ -166,12 +154,11 @@ enumLibrary report cfg (Library nm fs mdp) mrgn output = do
         $ output
 
 mergeInputRgns :: (MonadIO m, MonadMask m)
-    => Maybe String
-    -> (BamMeta -> Enumeratee [BamRaw] [BamRaw] (Iteratee [BamRaw] m) a)
-    -> [FilePath] -> Enumerator' BamMeta [BamRaw] m a
-mergeInputRgns     _      _  [        ] = \k -> return (k mempty)
-mergeInputRgns  Nothing  (?)      fps   = mergeInputs (?) fps
-mergeInputRgns (Just rs) (?) (fp0:fps0) = go fp0 fps0
+               => (BamMeta -> Enumeratee [BamRaw] [BamRaw] (Iteratee [BamRaw] m) a)
+               -> String -> [FilePath] -> Enumerator' BamMeta [BamRaw] m a
+mergeInputRgns  _   _ [        ] = \k -> return (k mempty)
+mergeInputRgns (?) ""      fps   = mergeInputs (?) fps
+mergeInputRgns (?) rs (fp0:fps0) = go fp0 fps0
   where
     enum1  fp k1 = do idx <- liftIO $ readBamIndex fp
                       enumFileRandom defaultBufSize fp >=> run >=> run $
@@ -250,10 +237,10 @@ compileBlocks = convStream $ do
         rlist (x:xs) = x `seq` rlist xs
 
 
-output_avro :: Handle -> Refs -> Iteratee [Calls] IO ()
+output_avro :: Fd -> Refs -> Iteratee [Calls] IO ()
 output_avro hdl refs = compileBlocks =$
                        writeAvroContainer ContainerOpts{..} =$
-                       mapChunksM_ (S.hPut hdl)
+                       mapChunksM_ (fdPut hdl)
   where
     objects_per_block = 16
     filetype_label = "Genotype Likelihoods V0.1"

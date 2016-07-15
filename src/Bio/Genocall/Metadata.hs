@@ -1,24 +1,23 @@
-{-# LANGUAGE OverloadedStrings, RecordWildCards, FlexibleContexts, BangPatterns, FlexibleInstances #-}
+{-# LANGUAGE OverloadedStrings, RecordWildCards, FlexibleContexts #-}
+{-# LANGUAGE BangPatterns, FlexibleInstances, DeriveGeneric, DeriveAnyClass #-}
+
 -- | Metadata necessary for a sensible genotyping workflow.
 module Bio.Genocall.Metadata where
 
 import Bio.Adna                             ( DamageParameters(..), NewDamageParameters(..) )
 import Bio.Prelude                   hiding ( writeFile, readFile )
+import Bio.Util.Pretty
 import Data.Aeson
 import Data.Binary
 import Data.Binary.Get                      ( runGetOrFail )
 import Data.Binary.Put                      ( runPut )
-import Data.ByteString.Lazy                 ( toChunks, readFile )
-import Data.ByteString.Unsafe               ( unsafeUseAsCStringLen )
-import Foreign.Ptr                          ( castPtr )
-import System.Posix.Files                   ( rename, removeLink )
-import System.Posix.IO
+import Data.ByteString.Lazy                 ( readFile )
 
 import qualified Data.HashMap.Strict as M
 import qualified Data.Vector.Unboxed as U
 
 data DivTable = DivTable !Double !(U.Vector Int)
-  deriving Show
+  deriving (Show, Generic, Pretty, Parse)
 
 data Sample = Sample {
     sample_libraries   :: [Library],
@@ -46,7 +45,7 @@ data GenDamageParameters vec float
     = UnknownDamage
     | OldDamage (DamageParameters float)
     | NewDamage (NewDamageParameters vec float)
-  deriving Show
+  deriving (Show, Generic, Pretty, Parse)
 
 
 type Metadata = M.HashMap Text Sample
@@ -248,9 +247,7 @@ updateMetadata f fp = go (360::Int)     -- retry every 5 secs for 30 minutes
                     (openFd fpn WriteOnly (Just 0o666) defaultFileFlags{ exclusive = True })
                     (closeFd) $ \fd ->
                         (do mdata <- readMetadata fp
-                            forM_ (toChunks . runPut . putObject $ f mdata) $ \ch ->
-                                unsafeUseAsCStringLen ch $ \(p,l) ->
-                                    fdWriteBuf fd (castPtr p) (fromIntegral l)
+                            fdPutLazy fd . runPut . putObject $ f mdata
                             rename fpn fp)
                         `onException` removeLink fpn
 
@@ -258,9 +255,7 @@ writeMetadata :: FilePath -> Metadata -> IO ()
 writeMetadata fp mdata = bracket
                     (openFd fp WriteOnly (Just 0o666) defaultFileFlags{ exclusive = True })
                     (closeFd) $ \fd ->
-                        forM_ (toChunks . runPut . putObject $ mdata) $ \ch ->
-                             unsafeUseAsCStringLen ch $ \(p,l) ->
-                                 fdWriteBuf fd (castPtr p) (fromIntegral l)
+                        fdPutLazy fd . runPut . putObject $ mdata
 
 split_sam_rgns :: Metadata -> [String] -> [( String, [Maybe String] )]
 split_sam_rgns _meta [    ] = []

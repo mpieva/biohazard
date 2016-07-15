@@ -168,18 +168,17 @@ univDamage DP{..} r l = V.generate l mat
         lam3_ds = dsd_lambda ^ (l-i)
 
 {-# SPECIALIZE empDamage :: NewDamageParameters U.Vector Double -> DamageModel Double #-}
-empDamage :: (G.Vector v a, Fractional a) => NewDamageParameters v a -> DamageModel a
+empDamage :: (G.Vector v a, Fractional a, Floating a) => NewDamageParameters v a -> DamageModel a
 empDamage NDP{..} r l
-    | r         = V.generate l (get (flip genSubstMat))
-    | otherwise = V.generate l (get       genSubstMat )
+    | r         = V.generate l (get (flip genSubstMat'))
+    | otherwise = V.generate l (get       genSubstMat' )
   where
-    get k i | i < G.length dp_alpha5 && i < G.length dp_beta5
-                = k (G.unsafeIndex dp_alpha5 i) (G.unsafeIndex dp_beta5 i)
-            | l-i < G.length dp_alpha3 && l-i <= G.length dp_beta3
-                = k (G.unsafeIndex dp_alpha3 (l-i-1)) (G.unsafeIndex dp_beta3 (l-i-1))
-            | otherwise
-                = k dp_alpha dp_beta
+    get k i | i+i  <  l = k (fromMaybe dp_alpha (dp_alpha5 G.!? i))
+                            (fromMaybe dp_beta  (dp_beta5  G.!? i))
+            | otherwise = k (fromMaybe dp_alpha (dp_alpha3 G.!? (l-i-1)))
+                            (fromMaybe dp_beta  (dp_beta3  G.!? (l-i-1)))
 
+    genSubstMat' a b = genSubstMat (recip $ 1 + exp (-a)) (recip $ 1 + exp (-b))
 
 -- | Collected \"traditional\" statistics:
 --

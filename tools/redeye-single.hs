@@ -23,15 +23,11 @@ import Bio.Prelude
 import Bio.Util.Regex                   ( Regex, regComp, regMatch )
 import Data.Avro
 import Data.MiniFloat
-import Foreign.Ptr                      ( castPtr )
 import System.Console.GetOpt
-import System.Directory                 ( renameFile )
 import System.FilePath           hiding ( combine )
-import System.Posix.IO
 import System.Random
 
 import qualified Data.ByteString.Char8          as S
-import qualified Data.ByteString.Unsafe         as S
 import qualified Data.HashMap.Strict            as H
 import qualified Data.Vector.Unboxed            as U
 import qualified System.IO                      as IO
@@ -136,7 +132,7 @@ main' Conf{..} sample_name smp rgnex =
                 let upd_bcf_files f s = s { sample_bcf_files = f $ sample_bcf_files s }
                     ins_bcf_file      = upd_bcf_files $ H.insert rgn (fromString outfile)
                 updateMetadata (H.adjust ins_bcf_file (fromString sample_name)) conf_metadata
-                renameFile tmpfile outfile
+                rename tmpfile outfile
 
             _ -> fail $ sample_name ++ "/" ++ unpack rgn ++ " is missing divergence information"
   where
@@ -168,8 +164,7 @@ call prior_d prior_h lks gen = case gen of
 bcf_to_fd :: MonadIO m => Fd -> Refs -> [S.ByteString] -> CallFuncs gen -> gen -> Iteratee [GenoCallBlock] m ()
 bcf_to_fd hdl refs name callz gen =
     toBcf refs name callz gen ><> encodeBgzfWith 9 =$
-    mapChunksM_ (\s -> liftIO $ S.unsafeUseAsCStringLen s $ \(p,l) ->
-                                fdWriteBuf hdl (castPtr p) (fromIntegral l))
+    mapChunksM_ (liftIO . fdPut hdl)
 
 
 -- A function from likelihoods to called index.  It's allowed to require
