@@ -117,3 +117,17 @@ trim_adapter :: BamRec -> [???] -> Maybe (BamRec, BamRec, Qual, Qual)
 -- qualities.
 merge_overlap :: BamRec -> [???] -> BamRec -> [???]
               -> Maybe (BamRec, BamRec, BamRec, Qual, Qual)
+
+-- For merging, we don't need the complete adapters (length around 70!),
+-- only a sufficient prefix.  Taking only the more-or-less constant
+-- part (length around 30), there aren't all that many different
+-- adapters in the world.  To deal with pretty much every library, we
+-- only need the following, which will be the default (listed here in
+-- the direction they would be sequenced in):
+--
+-- 5' adapters:  Genomic_R1 "AGATCGGAAGAGCGTCGTGTAGGGAAAGAGTGT"
+--               CL72            "GGAAGAGCGTCGTGTAGGGAAAGAGTGT"
+--
+-- 3' adapters:  Genomic R2     "AGATCGGAAGAGCGGTTCAGCAGGAATGCCGAGACCG"
+--               Multiplex R2   "AGATCGGAAGAGCACACGTCTGAACTCCAGTCAC"
+--               Graft P7       "AGATCGGAAGAGCTCGTATGCCGTCTTCTGCTTG"
