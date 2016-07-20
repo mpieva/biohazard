@@ -1,10 +1,13 @@
-{-# LANGUAGE RecordWildCards #-}
-module Bio.Genocall.Damage where
+{-# LANGUAGE RecordWildCards, DeriveGeneric #-}
+module Bio.Genocall.Estimators where
 
 import Bio.Adna
 import Bio.Bam
 import Bio.Prelude
 import Bio.Util.AD
+import Bio.Util.AD2
+import Bio.Util.Numeric              ( log1p )
+import Bio.Util.Pretty
 
 import qualified Data.Vector.Generic as V
 import qualified Data.Vector.Unboxed as U
@@ -187,3 +190,64 @@ estimateDamageFromFiles lmin params fs = do
     leehom :: BamMeta -> Bool
     leehom meta = not $ null [ () | ("PG",line) <- meta_other_shit meta
                                   , ("PN","mergeTrimReadsBAM") <- line ]
+
+data DivTable = DivTable !Double !(U.Vector Int) deriving (Show, Generic)
+
+instance Pretty DivTable
+instance Parse  DivTable
+
+-- | Divergence estimate.  Lists contain three or four floats, these are
+-- divergence, heterozygosity at W sites, heterozygosity at S sites, and
+-- optionally gappiness in this order.
+data DivEst = DivEst {
+    point_est :: [Double],
+    conf_region :: [( [Double], [Double] )]
+  } deriving Show
+
+
+-- XXX we should estimate an indel rate, to be appended as the fourth
+-- result (but that needs different tables)
+estimateSingle :: DivTable -> IO (DivEst, DivEst)
+estimateSingle (DivTable _llk_rr tab) = do
+    (fit1, _res1, _stats1) <- minimize quietParameters 0.0001 (llk tab) (U.fromList   [0,0])
+    (fit2, _res2, _stats2) <- minimize quietParameters 0.0001 (llk tab) (U.fromList [0,0,0])
+
+    let xform = map (\x -> recip $ 1 + exp (-x)) . V.toList
+        !de1  = DivEst (xform fit1) (map (xform *** xform) $ confidenceIntervals (llk2 tab) fit1)
+        !de2  = DivEst (xform fit2) (map (xform *** xform) $ confidenceIntervals (llk2 tab) fit2)
+
+    return (de1,de2)
+
+llk :: U.Vector Int -> [AD] -> AD
+llk tab [delta,eta] = llk' tab 0 delta eta + llk' tab 6 delta eta
+llk tab [delta,eta,eta2] = llk' tab 0 delta eta + llk' tab 6 delta eta2
+llk _ _ = error "Wtf? (3)"
+
+llk2 :: U.Vector Int -> [AD2] -> AD2
+llk2 tab [delta,eta] = llk' tab 0 delta eta + llk' tab 6 delta eta
+llk2 tab [delta,eta,eta2] = llk' tab 0 delta eta + llk' tab 6 delta eta2
+llk2 _ _ = error "Wtf? (4)"
+
+{-# INLINE llk' #-}
+llk' :: (Ord a, Floating a) => U.Vector Int -> Int -> a -> a -> a
+llk' tab base delta eta = block (base+0) g_RR g_RA g_AA
+                        + block (base+1) g_RR g_AA g_RA
+                        + block (base+2) g_RA g_RR g_AA
+                        + block (base+3) g_RA g_AA g_RR
+                        + block (base+4) g_AA g_RR g_RA
+                        + block (base+5) g_AA g_RA g_RR
+  where
+    !maxD2 = U.length tab `div` 12
+    !maxD  = round (sqrt (fromIntegral maxD2) :: Double)
+
+    !g_AA = Pr delta / Pr (log1p (exp delta))
+    !g_RA =        1 / Pr (log1p (exp delta)) * Pr eta / Pr (log1p (exp eta))
+    !g_RR =        1 / Pr (log1p (exp delta)) *      1 / Pr (log1p (exp eta))
+
+    block ix g1 g2 g3 = U.ifoldl' step 0 $ U.slice (ix * maxD2) maxD2 tab
+      where
+        step !acc !i !num = acc - fromIntegral num * unPr p
+          where
+            (!d1,!d2) = i `quotRem` maxD
+            p = g1 + Pr (- fromIntegral d1) * g2 + Pr (- fromIntegral (d1+d2)) * g3
+

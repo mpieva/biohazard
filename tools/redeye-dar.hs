@@ -32,7 +32,7 @@
 -- overhang at all (probability 1/2) at each end, then deaminate it.
 
 import Bio.Bam
-import Bio.Genocall.Damage
+import Bio.Genocall.Estimators
 import Bio.Prelude
 import Bio.Util.Pretty
 import Bio.Util.AD

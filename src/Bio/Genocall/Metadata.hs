@@ -6,6 +6,7 @@ module Bio.Genocall.Metadata where
 
 import Bio.Adna                             ( DamageParameters(..), NewDamageParameters(..) )
 import Bio.Prelude                   hiding ( writeFile, readFile )
+import Bio.Genocall.Estimators
 import Bio.Util.Pretty
 import Data.Aeson
 import Data.Binary
@@ -15,9 +16,6 @@ import Data.ByteString.Lazy                 ( readFile )
 
 import qualified Data.HashMap.Strict as M
 import qualified Data.Vector.Unboxed as U
-
-data DivTable = DivTable !Double !(U.Vector Int)
-  deriving (Show, Generic, Pretty, Parse)
 
 data Sample = Sample {
     sample_libraries   :: [Library],
@@ -32,21 +30,6 @@ data Library = Library {
     library_files :: [Text],
     library_damage :: GenDamageParameters U.Vector Double
   } deriving Show
-
--- | Divergence estimate.  Lists contain three or four floats, these are
--- divergence, heterozygosity at W sites, heterozygosity at S sites, and
--- optionally gappiness in this order.
-data DivEst = DivEst {
-    point_est :: [Double],
-    conf_region :: [( [Double], [Double] )]
-  } deriving Show
-
-data GenDamageParameters vec float
-    = UnknownDamage
-    | OldDamage (DamageParameters float)
-    | NewDamage (NewDamageParameters vec float)
-  deriving (Show, Generic, Pretty, Parse)
-
 
 type Metadata = M.HashMap Text Sample
 

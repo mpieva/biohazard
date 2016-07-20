@@ -35,7 +35,7 @@ import Bio.Bam
 import Bio.Bam.Pileup
 import Bio.Genocall
 import Bio.Genocall.AvroFile
-import Bio.Genocall.Metadata
+import Bio.Genocall.Estimators
 import Bio.Prelude
 import Bio.Util.Pretty
 import Data.Aeson
@@ -119,7 +119,23 @@ main = do
                 zipStreams tabulateSingle (output_avro ohdl $ meta_refs hdr)
 
     rename (conf_output ++ ".#") conf_output
-    when conf_table $ pprint tab
+
+    if conf_table
+      then pprint tab
+      else do
+        (de1,de2) <- estimateSingle tab
+        putStrLn $ unlines $
+                showRes (point_est de1) :
+                [ "[ " ++ showRes u ++ " .. " ++ showRes v ++ " ]" | (u,v) <- conf_region de1 ] ++
+                [] : showRes (point_est de2) :
+                [ "[ " ++ showRes u ++ " .. " ++ showRes v ++ " ]" | (u,v) <- conf_region de2 ]
+  where
+    showRes     [dv,h] = "D  = " ++ showFFloat (Just 6) dv ", " ++
+                         "H  = " ++ showFFloat (Just 6) h ""
+    showRes [dv,hs,hw] = "D  = " ++ showFFloat (Just 6) dv ", " ++
+                         "Hs = " ++ showFFloat (Just 6) hs ", " ++
+                         "Hw = " ++ showFFloat (Just 6) hw ""
+    showRes          _ = error "Wtf? (showRes)"
 
 
 mergeLibraries :: (MonadIO m, MonadMask m)
