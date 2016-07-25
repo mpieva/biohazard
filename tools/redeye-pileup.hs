@@ -62,6 +62,9 @@ data Conf = Conf {
     conf_report :: Reporter,
     conf_table  :: Bool }
 
+-- | We pair libraries with their appropriate damage models.  Right now,
+-- we specify the damage model (\"-D\", complete data structure in
+-- 'gparse' format), then list the libraries it applies to.
 defaultConf :: Conf
 defaultConf = Conf { conf_output = error "no output file"
                    , conf_libs   = []

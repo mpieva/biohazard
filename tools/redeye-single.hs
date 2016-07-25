@@ -1,6 +1,8 @@
 {-# LANGUAGE BangPatterns, RecordWildCards, OverloadedStrings, FlexibleContexts #-}
--- Genotype calling for a single individual.  The only parameters needed
--- are the (prior) probabilities for a heterozygous or homozygous variant.
+-- Genotype calling for a single individual on a subset of the genome.
+-- It takes the appropriate set of .av files as input, along with priors
+-- for divergence, indel rate, etc.  These also have sensible defaults.
+-- Output is a BCF file.
 --
 -- (This can be extended easily into a caller for a homogenous
 -- population where individuals are assumed to be randomly related (i.e.
@@ -17,10 +19,9 @@
 import Bio.Bam
 import Bio.Bam.Pileup
 import Bio.Genocall.AvroFile
-import Bio.Genocall.Metadata
 import Bio.Iteratee.Builder
 import Bio.Prelude
-import Bio.Util.Regex                   ( Regex, regComp, regMatch )
+import Bio.Util.Regex                   ( regComp, regMatch )
 import Data.Avro
 import Data.MiniFloat
 import System.Console.GetOpt
@@ -28,119 +29,104 @@ import System.FilePath           hiding ( combine )
 import System.Random
 
 import qualified Data.ByteString.Char8          as S
-import qualified Data.HashMap.Strict            as H
 import qualified Data.Vector.Unboxed            as U
 import qualified System.IO                      as IO
 
+type Reporter = String -> IO ()
+
+-- XXX  conf_ploidy is completely ignored.  Should it be?
 data Conf = Conf {
-    conf_metadata    :: FilePath,
-    -- | Generator for output file name.  Receives sample name and
-    -- (optional) region as arguments.
-    conf_output      :: String -> Text -> FilePath,
-    conf_regions     :: Regex,
-    conf_ploidy      :: String -> Int,
-    conf_report      :: String -> IO (),
-    conf_random      :: Maybe StdGen }
+    conf_report     :: Reporter,
+    conf_random     :: Maybe StdGen,
+    conf_ploidy     :: String -> Int,
+    sample_name     :: Conf -> String,
+    outfile         :: FilePath,
+    prior_div       :: Double,
+    prior_het       :: Conf -> Double,
+    prior_indel     :: Conf -> Double,
+    prior_het_indel :: Conf -> Double }
+
 
 defaultConf :: Conf
-defaultConf = Conf (error "no metadata file specified") default_out (regComp "") (const 2) (\_ -> return ()) Nothing
-  where
-    default_out smp  "" = smp <> ".bcf"
-    default_out smp rgn = smp <> "-" <> unpack rgn <> ".bcf"
+defaultConf = Conf { conf_report = \_ -> return ()
+                   , conf_random = Nothing
+                   , conf_ploidy = const 2
+                   , sample_name = takeBaseName . outfile
+                   , outfile = "-"
+                   , prior_div = 0.001
+                   , prior_het = (*) 2 . prior_div
+                   , prior_indel = (*) 0.1 . prior_div
+                   , prior_het_indel = \c -> prior_indel c c * prior_het c c / prior_div c }
+
 
 options :: [OptDescr (Conf -> IO Conf)]
 options = [
-    Option "c"  ["config"]            (ReqArg   set_conf "FILE") "Set name of json config file to FILE",
     Option "o"  ["output"]            (ReqArg set_output "FILE") "Set output file pattern to FILE",
-    Option "r"  ["regions"]         (ReqArg set_regions "REGEX") "Process only regions matching REGEX",
     Option "1"  ["haploid-chromosomes"] (ReqArg set_hap "REGEX") "Targets matching REGEX are haploid",
     Option "2"  ["diploid-chromosomes"] (ReqArg set_dip "REGEX") "Targets matching REGEX are diploid",
     Option "s"  ["sample-genotypes"]     (OptArg set_rnd "SEED") "Sample genotypes from posterior",
+    Option "N"  ["name"]                (ReqArg set_name "NAME") "Set sample name to NAME",
+    Option "d"  ["divergence"]           (ReqArg set_div "PROB") "Set probability of a hom. SNP to PROB",
+    Option "D"  ["heterozygosity"]       (ReqArg set_het "PROB") "Set probability of a het. SNP to PROB",
+    Option "i"  ["indel"]              (ReqArg set_indel "PROB") "Set probability of a hom. InDel to PROB",
+    Option "I"  ["het-indel"]         (ReqArg set_hindel "PROB") "Set probability of a het. InDel to PROB",
     Option "v"  ["verbose"]             (NoArg       be_verbose) "Print more diagnostics",
     Option "h?" ["help","usage"]        (NoArg       disp_usage) "Display this message" ]
   where
     disp_usage _ = do pn <- getProgName
-                      let blah = "Usage: " ++ pn ++ " [OPTION...] [SAMPLE [REGION...] ...]"
+                      let blah = "Usage: " ++ pn ++ " [OPTION...] [AV-FILE ...]"
                       putStrLn $ usageInfo blah options
                       exitFailure
 
     be_verbose       c = return $ c { conf_report = IO.hPutStrLn stderr }
-    set_conf      fn c = return $ c { conf_metadata = fn }
 
     set_hap        a c = return $ c { conf_ploidy = \ch -> if regMatch (regComp a) ch then 1 else conf_ploidy c ch }
     set_dip        a c = return $ c { conf_ploidy = \ch -> if regMatch (regComp a) ch then 2 else conf_ploidy c ch }
-    set_regions    a c = return $ c { conf_regions = regComp $ "^" ++ a ++ "$" }
 
-    set_output    fn c = return $ c { conf_output = mkoutput fn }
+    set_output    fn c = return $ c { outfile     =       fn }
+    set_name      nm c = return $ c { sample_name = const nm }
 
     set_rnd  Nothing c = newStdGen >>= \g -> return $ c { conf_random = Just g }
     set_rnd (Just a) c = readIO  a >>= \s -> return $ c { conf_random = Just (mkStdGen s) }
 
-mkoutput :: FilePath -> String -> Text -> FilePath
-mkoutput str smp rgn = go str
-  where
-    go ('%':'s':s) = smp ++ go s
-    go ('%':'r':s) = unpack rgn ++ go s
-    go ('%':'%':s) = '%' : go s
-    go ('%': c :s) =  c  : go s
-    go (     c :s) =  c  : go s
-    go [         ] = [ ]
+    set_div        a c = readIO a >>= \x -> return $ c { prior_div       =       x }
+    set_het        a c = readIO a >>= \x -> return $ c { prior_het       = const x }
+    set_indel      a c = readIO a >>= \x -> return $ c { prior_indel     = const x }
+    set_hindel     a c = readIO a >>= \x -> return $ c { prior_het_indel = const x }
+
 
 main :: IO ()
 main = do
-    (opts, samples, errs) <- getOpt Permute options <$> getArgs
+    (opts, infiles, errs) <- getOpt Permute options <$> getArgs
     unless (null errs) $ mapM_ (IO.hPutStrLn stderr) errs >> exitFailure
+    conf@Conf{..} <- foldl (>>=) (return defaultConf) opts
 
-    conf <- foldl (>>=) (return defaultConf) opts
-    when (null samples) $ IO.hPutStrLn stderr "need (at least) one sample name" >> exitFailure
+    withOutputFd outfile                                                                                    $ \ofd ->
+      concatAvs infiles >=> run                                                                             $ \av_meta ->
+        progressPos (reference_name &&& start_position) "calling at " conf_report (getRefseqs av_meta)     =$
+        bcf_to_fd ofd (getRefseqs av_meta) [fromString $ sample_name conf] conf_random
+                      ( call (prior_div/3) (prior_het conf)
+                      , call (prior_indel conf) (prior_het_indel conf) )
 
-    forM_ samples $ \sample -> do
-        meta <- readMetadata (conf_metadata conf)
 
-        case H.lookup (fromString sample) meta of
-            Nothing  -> IO.hPutStrLn stderr $ "unknown sample " ++ show sample
-            Just smp -> main' conf sample smp (conf_regions conf)
+withOutputFd :: FilePath -> (Fd -> IO a) -> IO a
+withOutputFd "-" k = k stdOutput
+withOutputFd  f  k = do
+    r <- withFd (f++".#") WriteOnly (Just 0o666) defaultFileFlags k
+    rename (f++".#") f
+    return r
 
--- | Call for a given sample and a set of regions defined by a regex.
--- Input are the av files whose keys match the region regex, output is
--- generated schematically from the keys so that we get one bcf output
--- for every av input.  Divergence parameters for each av file are the
--- first set whose key interpreted as a regex matches the key for the av
--- file.
-main' :: Conf -> String -> Sample -> Regex -> IO ()
-main' Conf{..} sample_name smp rgnex =
-    forM_ (filter (regMatch rgnex . unpack . fst) . H.toList $ sample_avro_files smp) $ \(rgn, avfile) ->
-        case fmap point_est $ H.foldrWithKey (ifMatch rgn) Nothing (sample_divergences smp) of
-            Just (prior_div : prior_het : more) -> do
-                liftIO $ conf_report $ "Calling " ++ sample_name ++ "/" ++ unpack rgn ++ "."
 
-                let prior_indel = case more of [] -> prior_div * 0.1 ; p : _ -> p
-                    prior_het_indel = prior_indel * prior_het / prior_div
-
-                    infile      = takeDirectory conf_metadata </> unpack avfile
-                    outfile     = takeDirectory conf_metadata </> conf_output sample_name rgn
-                    tmpfile     = outfile ++ ".#"
-
-                bracket (openFd tmpfile WriteOnly (Just 0o666) defaultFileFlags) closeFd        $ \ofd ->
-                    enumFile defaultBufSize infile >=> run $
-                    joinI $ readAvroContainer                                                   $ \av_meta ->
-                    joinI $ progressPos getpos "calling at " conf_report (getRefseqs av_meta)   $
-                    bcf_to_fd ofd (getRefseqs av_meta) [fromString sample_name]
-                                  (call (prior_div/3) prior_het, call prior_indel prior_het)
-                                  conf_random
-
-                let upd_bcf_files f s = s { sample_bcf_files = f $ sample_bcf_files s }
-                    ins_bcf_file      = upd_bcf_files $ H.insert rgn (fromString outfile)
-                updateMetadata (H.adjust ins_bcf_file (fromString sample_name)) conf_metadata
-                rename tmpfile outfile
-
-            _ -> fail $ sample_name ++ "/" ++ unpack rgn ++ " is missing divergence information"
+concatAvs :: (MonadIO m, MonadMask m, Avro a) => [FilePath] -> Enumerator' AvroMeta [a] m b
+concatAvs [        ] = \k -> enumHandle defaultBufSize stdin (readAvroContainer k) >>= run
+concatAvs (fp0:fps0) = \k -> enum1 fp0 k >>= go fps0
   where
-    getpos :: GenoCallBlock -> (Refseq, Int)
-    getpos b = (reference_name b, start_position b)
+    enum1 "-" k1 = enumHandle defaultBufSize stdin (readAvroContainer k1) >>= run
+    enum1  fp k1 = enumFile   defaultBufSize    fp (readAvroContainer k1) >>= run
 
-    ifMatch :: Text -> Text -> a -> Maybe a -> Maybe a
-    ifMatch r k v a = if regMatch (regComp (unpack k)) (unpack r) then Just v else a
+    go [       ] = return
+    go (fp1:fps) = enum1 fp1 . const >=> go fps
+
 
 call :: Double -> Double -> U.Vector (Prob' Float) -> Maybe StdGen -> (Int,Maybe StdGen)
 call prior_d prior_h lks gen = case gen of
@@ -161,8 +147,8 @@ call prior_d prior_h lks gen = case gen of
 -- header, we get the /names/ of the reference sequences from the Avro
 -- schema and the /lengths/ from the biohazard.refseq_length entry in
 -- the meta data.
-bcf_to_fd :: MonadIO m => Fd -> Refs -> [S.ByteString] -> CallFuncs gen -> gen -> Iteratee [GenoCallBlock] m ()
-bcf_to_fd hdl refs name callz gen =
+bcf_to_fd :: MonadIO m => Fd -> Refs -> [S.ByteString] -> gen -> CallFuncs gen -> Iteratee [GenoCallBlock] m ()
+bcf_to_fd hdl refs name gen callz =
     toBcf refs name callz gen ><> encodeBgzfWith 9 =$
     mapChunksM_ (liftIO . fdPut hdl)
 
