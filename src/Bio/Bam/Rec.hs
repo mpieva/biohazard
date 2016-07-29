@@ -51,6 +51,7 @@ module Bio.Bam.Rec (
     isDuplicate,
     isTrimmed,
     isMerged,
+    isVestigial,
     type_mask,
 
     progressBam,
@@ -345,7 +346,7 @@ unpackExtensions = go
 
 isPaired, isProperlyPaired, isUnmapped, isMateUnmapped, isReversed,
     isMateReversed, isFirstMate, isSecondMate, isAuxillary, isFailsQC,
-    isDuplicate, isTrimmed, isMerged :: BamRec -> Bool
+    isDuplicate, isTrimmed, isMerged, isVestigial :: BamRec -> Bool
 
 isPaired         = flip testBit  0 . b_flag
 isProperlyPaired = flip testBit  1 . b_flag
@@ -361,6 +362,7 @@ isDuplicate      = flip testBit 10 . b_flag
 
 isTrimmed        = flip testBit 0 . extAsInt 0 "FF"
 isMerged         = flip testBit 1 . extAsInt 0 "FF"
+isVestigial      = flip testBit 2 . extAsInt 0 "FF"
 
 type_mask :: Int
 type_mask = flagFirstMate .|. flagSecondMate .|. flagPaired

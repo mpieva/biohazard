@@ -39,6 +39,7 @@ module Bio.Bam.Header (
         flagDuplicate,
         eflagTrimmed,
         eflagMerged,
+        eflagVestigial,
 
         distinctBin,
 
@@ -317,9 +318,10 @@ flagAuxillary = 0x100
 flagFailsQC = 0x200
 flagDuplicate = 0x400
 
-eflagTrimmed, eflagMerged :: Int
+eflagTrimmed, eflagMerged, eflagVestigial :: Int
 eflagTrimmed       = 0x1
 eflagMerged        = 0x2
+eflagVestigial     = 0x4
 
 
 -- | Compares two sequence names the way samtools does.
