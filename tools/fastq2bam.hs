@@ -70,12 +70,12 @@ main = do (opts, [], errors) <- getopts `fmap` getArgs
           pgm <- addPG Nothing
 
           let eff_inputs = if null (inputs conf) then [ plainInput "-" ] else inputs conf
-          hPrint stderr $ eff_inputs
+          mapM_ (hPrint stderr) $ eff_inputs
 
           foldr ((>=>) . enum_input) run (reverse eff_inputs) $
                 joinI $ progress (verbose conf) $
                 joinI $ mapChunks concatDuals $
-                ilift liftIO $ output conf (pgm mempty)
+                output conf (pgm mempty)
 
 
 type UpToTwo a = (a, Maybe a)
@@ -99,12 +99,10 @@ fromFastq :: (MonadIO m, MonadMask m) => FilePath -> Enumerator [BamRec] m a
 fromFastq fp = enumAny fp $= enumInflateAny $= parseFastqCassava $= mapStream removeWarts
   where
     enumAny "-" = enumHandle defaultBufSize stdin
-    enumAny  f  = enumFile defaultBufSize f
+    enumAny  f  = enumFile   defaultBufSize   f
 
 enum_input :: (MonadIO m, MonadMask m) => Input -> Enumerator [UpToTwo BamRec] m a
-enum_input inp@(Input r1 mr2 mi1 mi2 il1) o = do
-    liftIO (hPrint stderr inp)
-    enum $ joinI $ mapStream (addIdx il1) $ o
+enum_input (Input r1 mr2 mi1 mi2 il1) = enum $= mapStream (addIdx il1)
   where
     enum = withIndex mi1 "XI" "YI" $ withIndex mi2 "XJ" "YJ" $
            maybe (fromFastq r1 $= mapStream one) (enumDual r1) mr2

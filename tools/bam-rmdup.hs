@@ -8,8 +8,7 @@ import System.Console.GetOpt
 
 import qualified Data.ByteString.Char8          as S
 import qualified Data.HashMap.Strict            as M
-import qualified Data.IntMap                    as IM
-import qualified Data.Iteratee                  as I
+import qualified Data.IntMap                    as I
 import qualified Data.Sequence                  as Z
 import qualified Data.Vector                    as VV
 import qualified Data.Vector.Algorithms.Intro   as VV
@@ -26,11 +25,11 @@ data Conf = Conf {
     transform :: BamRec -> Maybe BamRec,
     min_len :: Int,
     min_qual :: Qual,
-    get_label :: M.HashMap Seqid Seqid -> BamRec -> Seqid,
+    get_label :: HashMap Seqid Seqid -> BamRec -> Seqid,
     putResult :: String -> IO (),
     debug :: String -> IO (),
     which :: Which,
-    circulars :: Refs -> IO (IM.IntMap (Seqid,Int), Refs) }
+    circulars :: Refs -> IO (IntMap (Seqid,Int), Refs) }
 
 -- | Which reference sequences to scan
 data Which = Allrefs | Some Refseq Refseq | Unaln deriving Show
@@ -50,7 +49,7 @@ defaults = Conf { output = Nothing
                 , putResult = putStr
                 , debug = \_ -> return ()
                 , which = Allrefs
-                , circulars = \rs -> return (IM.empty, rs) }
+                , circulars = \rs -> return (I.empty, rs) }
 
 options :: [OptDescr (Conf -> IO Conf)]
 options = [
@@ -110,7 +109,7 @@ options = [
     add_circular' nm l io refs = do
         (m1, refs') <- io refs
         case filter (S.isPrefixOf nm . sq_name . snd) $ zip [0..] $ toList refs' of
-            [(k,a)] | sq_length a >= l -> let m2     = IM.insert k (sq_name a,l) m1
+            [(k,a)] | sq_length a >= l -> let m2     = I.insert k (sq_name a,l) m1
                                               refs'' = Z.update k (a { sq_length = l }) refs'
                                           in return (m2, refs'')
                     | otherwise -> fail $ "cannot wrap " ++ show nm ++ " to " ++ show l
@@ -204,7 +203,7 @@ main = do
               normalizeSortWith circtable ><>
               filterStream (\b -> b_mapq b >= min_qual) ><>
               rmdup (get_label tbl) strand_preserved (co keep_all) $
-              count_all (get_label tbl) `I.zip` ou
+              count_all (get_label tbl) `zipStreams` ou
 
        let do_copy = do liftIO $ debug "\27[Krmdup done; copying junk\n" ; joinI (filters ou')
            do_bail = do liftIO $ debug "\27[Krmdup done\n" ; lift (run ou')
@@ -246,8 +245,8 @@ do_report lbl Counts{..} = intercalate "\t" fs
 -- don't double count mate pairs, while still working mostly sensibly in
 -- the presence of broken BAM files.
 
-count_all :: Functor m => (BamRec -> Seqid) -> Iteratee [BamRec] m (M.HashMap Seqid Counts)
-count_all lbl = M.map fixup `fmap` I.foldl' plus M.empty
+count_all :: Monad m => (BamRec -> Seqid) -> Iteratee [BamRec] m (M.HashMap Seqid Counts)
+count_all lbl = M.map fixup `fmap` foldStream plus M.empty
   where
     plus m b = M.insert (lbl b) cs m
       where
@@ -357,14 +356,14 @@ clean_multi_flags b = return $ if extAsInt 1 "HI" b /= 1 then Nothing else Just 
 -- groups as list, apply a function to the argument and the list, pass
 -- the result on.  Absent groups are passed on as they are.  Note that
 -- ordering within groups is messed up (it doesn't matter here).
-mapAtGroups :: Monad m => IM.IntMap a -> (a -> [BamRec] -> [BamRec]) -> Enumeratee [BamRec] [BamRec] m b
+mapAtGroups :: Monad m => IntMap a -> (a -> [BamRec] -> [BamRec]) -> Enumeratee [BamRec] [BamRec] m b
 mapAtGroups m f = eneeCheckIfDonePass no_group
   where
     no_group k (Just e) = idone (liftI k) $ EOF (Just e)
     no_group k Nothing  = tryHead >>= maybe (idone (liftI k) $ EOF Nothing) (\a -> no_group_1 a k Nothing)
 
     no_group_1 _ k (Just e) = idone (liftI k) $ EOF (Just e)
-    no_group_1 a k Nothing  = case IM.lookup (b_rname_int a) m of
+    no_group_1 a k Nothing  = case I.lookup (b_rname_int a) m of
             Nothing  -> eneeCheckIfDonePass no_group . k $ Chunk [a]
             Just arg -> cont_group (b_rname a) arg [a] k Nothing
 
@@ -378,10 +377,10 @@ mapAtGroups m f = eneeCheckIfDonePass no_group
 
     b_rname_int = fromIntegral . unRefseq . b_rname
 
-normalizeSortWith :: Monad m => IM.IntMap (Seqid, Int) -> Enumeratee [BamRec] [BamRec] m a
+normalizeSortWith :: Monad m => IntMap (Seqid, Int) -> Enumeratee [BamRec] [BamRec] m a
 normalizeSortWith m = mapAtGroups m $ \(nm,l) -> sortPos . map (normalizeTo nm l)
 
-wrapSortWith :: Monad m => IM.IntMap (Seqid, Int) -> Enumeratee [BamRec] [BamRec] m a
+wrapSortWith :: Monad m => IntMap (Seqid, Int) -> Enumeratee [BamRec] [BamRec] m a
 wrapSortWith m = mapAtGroups m $ \(_,l) -> sortPos . concatMap (wrapTo l)
 
 sortPos :: [BamRec] -> [BamRec]

@@ -166,7 +166,6 @@ Executable redeye-pileup
                        containers,
                        directory,
                        filepath,
-                       iteratee,
                        text,
                        unordered-containers,
                        Vec,
@@ -183,7 +182,6 @@ Executable redeye-single
                        bytestring,
                        containers,
                        directory,
-                       iteratee,
                        filepath,
                        text,
                        unix,
@@ -200,7 +198,6 @@ Executable gt-scan
                        biohazard,
                        bytestring,
                        containers,
-                       iteratee,
                        nonlinear-optimization,
                        primitive,
                        unordered-containers,
@@ -221,7 +218,6 @@ Executable afroengineer
                        bytestring,
                        containers,
                        directory,
-                       iteratee,
                        unordered-containers,
                        vector
 
@@ -281,7 +277,6 @@ Executable bam-rmdup
                        biohazard,
                        bytestring,
                        containers,
-                       iteratee,
                        unordered-containers,
                        vector,
                        vector-algorithms
@@ -306,7 +301,6 @@ Executable fastq2bam
                        biohazard,
                        bytestring,
                        containers,
-                       iteratee,
                        vector
 
 Executable jivebunny
