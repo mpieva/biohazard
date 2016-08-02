@@ -246,7 +246,7 @@ do_report lbl Counts{..} = intercalate "\t" fs
 -- the presence of broken BAM files.
 
 count_all :: Monad m => (BamRec -> Seqid) -> Iteratee [BamRec] m (M.HashMap Seqid Counts)
-count_all lbl = M.map fixup `fmap` foldStream plus M.empty
+count_all lbl = M.map fixup `liftM` foldStream plus M.empty
   where
     plus m b = M.insert (lbl b) cs m
       where
