@@ -14,27 +14,18 @@
 -- restricted to variant sites.  Or BCF restricted to sites not known to
 -- be reference.  People will come up with filters for sure...
 
-import Bio.Base
 import Bio.Bam
 import Bio.Bam.Pileup
 import Bio.Genocall.AvroFile
 import Bio.Genocall.Metadata
 import Bio.Iteratee.Builder
+import Bio.Prelude
 import Bio.Util.Regex                   ( Regex, regComp, regMatch )
-import Control.Applicative
-import Control.Exception                ( bracket )
-import Control.Monad
 import Data.Avro
-import Data.Bits
-import Data.Foldable                    ( toList, foldMap )
 import Data.MiniFloat
-import Data.String
-import Data.Text                        ( Text, unpack )
 import Foreign.Ptr                      ( castPtr )
 import System.Console.GetOpt
 import System.Directory                 ( renameFile )
-import System.Environment
-import System.Exit
 import System.FilePath
 import System.Posix.IO
 
@@ -77,8 +68,8 @@ options = [
     be_verbose       c = return $ c { conf_report = IO.hPutStrLn stderr }
     set_conf      fn c = return $ c { conf_metadata = fn }
 
-    set_hap        a c = return $ c { conf_ploidy = \chr -> if regMatch (regComp a) chr then 1 else conf_ploidy c chr }
-    set_dip        a c = return $ c { conf_ploidy = \chr -> if regMatch (regComp a) chr then 2 else conf_ploidy c chr }
+    set_hap        a c = return $ c { conf_ploidy = \ch -> if regMatch (regComp a) ch then 1 else conf_ploidy c ch }
+    set_dip        a c = return $ c { conf_ploidy = \ch -> if regMatch (regComp a) ch then 2 else conf_ploidy c ch }
     set_regions    a c = return $ c { conf_regions = regComp $ "^" ++ a ++ "$" }
 
     set_output    fn c = return $ c { conf_output = mkoutput fn }

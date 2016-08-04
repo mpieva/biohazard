@@ -21,12 +21,7 @@ import Bio.Bam.Rec
 import Bio.Bam.Regions              ( Region(..), Subsequence(..) )
 import Bio.Iteratee
 import Bio.Iteratee.Bgzf
-import Control.Monad
-import Data.Bits                    ( shiftL, shiftR, testBit )
-import Data.ByteString              ( ByteString )
-import Data.Char                    ( chr )
-import Data.Int                     ( Int64 )
-import Data.IntMap                  ( IntMap )
+import Bio.Prelude
 import System.Directory             ( doesFileExist )
 import System.FilePath              ( dropExtension, takeExtension, (<.>) )
 import System.Random                ( randomRIO )
@@ -128,11 +123,11 @@ rgnToSegments bi@BamIndex{..} beg end bins cpts =
 binList :: BamIndex a -> Int -> Int -> [Int]
 binList BamIndex{..} beg end = binlist' 0 (minshift + 3*depth) 0
   where
-    binlist' l s t = if l > depth then [] else [b..e] ++ loop
+    binlist' l s t = if l > depth then [] else [b..e] ++ go
       where
         b = t + beg `shiftR` s
         e = t + (end-1) `shiftR` s
-        loop = binlist' (l+1) (s-3) (t + 1 `shiftL` (3*l))
+        go = binlist' (l+1) (s-3) (t + 1 `shiftL` (3*l))
 
 
 -- | Merges two lists of segments.  Lists must be sorted, the merge sort
@@ -158,23 +153,23 @@ xs ~~ [] = xs
 readBamIndex :: FilePath -> IO (BamIndex ())
 readBamIndex fp | takeExtension fp == ".bai" = fileDriver readBaiIndex fp
                 | takeExtension fp == ".csi" = fileDriver readBaiIndex fp
-                | otherwise = try               (fp <.> "bai") $
-                              try (dropExtension fp <.> "bai") $
-                              try               (fp <.> "csi") $
-                              try (dropExtension fp <.> "csi") $
+                | otherwise = tryIx               (fp <.> "bai") $
+                              tryIx (dropExtension fp <.> "bai") $
+                              tryIx               (fp <.> "csi") $
+                              tryIx (dropExtension fp <.> "csi") $
                               fileDriver readBaiIndex fp
   where
-    try f k = do e <- doesFileExist f
-                 if e then do r <- enumFile defaultBufSize f readBaiIndex >>= tryRun
-                              case r of Right                     ix -> return ix
-                                        Left (IterStringException _) -> k
-                      else k
+    tryIx f k = do e <- doesFileExist f
+                   if e then do r <- enumFile defaultBufSize f readBaiIndex >>= tryRun
+                                case r of Right                     ix -> return ix
+                                          Left (IterStringException _) -> k
+                        else k
 
 -- | Read an index in BAI or CSI format, recognized automatically.
 -- Note that TBI is supposed to be compressed using bgzip; it must be
 -- decompressed before being passed to 'readBaiIndex'.
 
-readBaiIndex :: MonadIO m => Iteratee ByteString m (BamIndex ())
+readBaiIndex :: MonadIO m => Iteratee Bytes m (BamIndex ())
 readBaiIndex = iGetString 4 >>= switch
   where
     switch "BAI\1" = do nref <- fromIntegral `liftM` endianRead4 LSB
@@ -210,14 +205,14 @@ data TabMeta = TabMeta { format :: TabFormat
                        , col_end :: Int                           -- Column for the end of a region
                        , comment_char :: Char
                        , skip_lines :: Int
-                       , names :: V.Vector ByteString }
+                       , names :: V.Vector Bytes }
   deriving Show
 
 data TabFormat = Generic | SamFormat | VcfFormat | ZeroBased   deriving Show
 
 -- | Reads a Tabix index.  Note that tabix indices are compressed, this
 -- is taken care of.
-readTabix :: MonadIO m => Iteratee ByteString m TabIndex
+readTabix :: MonadIO m => Iteratee Bytes m TabIndex
 readTabix = joinI $ decompressBgzf $ iGetString 4 >>= switch
   where
     switch "TBI\1" = do nref <- fromIntegral `liftM` endianRead4 LSB
@@ -242,7 +237,7 @@ readTabix = joinI $ decompressBgzf $ iGetString 4 >>= switch
     toFormat x = if testBit x 16 then ZeroBased else Generic
 
 -- Read the intervals.  Each one becomes a checkpoint.
-getIntervals :: Monad m => (IntMap Int64, Int64) -> Iteratee ByteString m (IntMap Int64, Int64)
+getIntervals :: Monad m => (IntMap Int64, Int64) -> Iteratee Bytes m (IntMap Int64, Int64)
 getIntervals (cp,mx0) = do
     nintv <- fromIntegral `liftM` endianRead4 LSB
     reduceM 0 nintv (cp,mx0) $ \(!im,!mx) int -> do
@@ -251,9 +246,9 @@ getIntervals (cp,mx0) = do
 
 
 getIndexArrays :: MonadIO m => Int -> Int -> Int
-               -> (Word32 -> Ckpoints -> Iteratee ByteString m Ckpoints)
-               -> ((Ckpoints, Int64) -> Iteratee ByteString m (Ckpoints, Int64))
-               -> Iteratee ByteString m (BamIndex ())
+               -> (Word32 -> Ckpoints -> Iteratee Bytes m Ckpoints)
+               -> ((Ckpoints, Int64) -> Iteratee Bytes m (Ckpoints, Int64))
+               -> Iteratee Bytes m (BamIndex ())
 getIndexArrays nref minshift depth addOneCheckpoint addManyCheckpoints
     | nref  < 1 = return $ BamIndex minshift depth 0 () V.empty V.empty
     | otherwise = do
@@ -274,7 +269,7 @@ getIndexArrays nref minshift depth addOneCheckpoint addManyCheckpoints
 
 -- | Reads the list of segments from an index file and makes sure
 -- it is sorted.
-getSegmentArray :: MonadIO m => Iteratee ByteString m Segments
+getSegmentArray :: MonadIO m => Iteratee Bytes m Segments
 getSegmentArray = do
     nsegs <- fromIntegral `liftM` endianRead4 LSB
     segsarr <- liftIO $ N.new nsegs
@@ -367,15 +362,15 @@ subsampleBam fp o = liftIO (E.try (readBamIndex fp)) >>= subsam
                          hdr <- enumFdRandom defaultBufSize fd >=> run $
                                 joinI $ decompressBgzfBlocks' 1 $
                                 joinI $ decodeBam return
-                         loop fd (o hdr)
+                         go fd (o hdr)
       where
         !ckpts = U.fromList . V.foldr ((++) . M.elems) [] $ refseq_ckpoints bix
 
-        loop fd o1 = enumCheckIfDone o1 >>= loop' fd
+        go fd o1 = enumCheckIfDone o1 >>= go' fd
 
-        loop'  _ (True,  o2) = return o2
-        loop' fd (False, o2) = do i <- liftIO $ randomRIO (0, U.length ckpts -1)
-                                  enum fd i o2 >>= loop fd
+        go'  _ (True,  o2) = return o2
+        go' fd (False, o2) = do i <- liftIO $ randomRIO (0, U.length ckpts -1)
+                                enum fd i o2 >>= go fd
 
         enum fd i = enumFdRandom defaultBufSize fd               $=
                     decompressBgzfBlocks' 1                      $=

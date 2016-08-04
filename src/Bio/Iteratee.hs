@@ -14,6 +14,10 @@ module Bio.Iteratee (
     peekStream,
     takeStream,
     dropStream,
+    mapChunks,
+    mapChunksM,
+    mapStream,
+    rigidMapStream,
     mapStreamM,
     mapStreamM_,
     filterStream,
@@ -21,6 +25,7 @@ module Bio.Iteratee (
     foldStream,
     foldStreamM,
     zipStreams,
+    zipStreams3,
     protectTerm,
     concatMapStream,
     concatMapStreamM,
@@ -29,7 +34,6 @@ module Bio.Iteratee (
     progressNum,
     progressPos,
 
-    I.mapStream,
     I.takeWhileE,
     I.tryHead,
     I.isFinished,
@@ -76,32 +80,28 @@ module Bio.Iteratee (
     module Data.Iteratee.Iteratee
         ) where
 
-import Bio.Base                             ( findAuxFile )
 import Bio.Bam.Header
 import Bio.Util.Numeric                     ( showNum )
+import Bio.Prelude
 import Control.Concurrent.Async             ( Async, async, wait, cancel )
-import Control.Monad
-import Control.Monad.Catch
+import Control.Monad.Catch                  ( MonadMask(..) )
 import Control.Monad.IO.Class
 import Control.Monad.Trans.Class
 import Data.Binary.Get
-import Data.Bits                            ( shiftR )
 import Data.Iteratee.Binary
 import Data.Iteratee.Char
 import Data.Iteratee.IO              hiding ( defaultBufSize )
-import Data.Iteratee.Iteratee        hiding ( identity )
+import Data.Iteratee.Iteratee        hiding ( identity, empty, mapChunks, mapChunksM )
 import Data.ListLike                        ( ListLike )
-import Data.Monoid
-import Data.Typeable
-import System.IO                            ( stdin, stdout, stderr, hIsTerminalDevice )
-import System.Environment                   ( getArgs )
-import System.Mem                           ( performGC )
+import System.IO                            ( hIsTerminalDevice )
 import System.Posix                         ( Fd, openFd, closeFd, OpenMode(..), defaultFileFlags )
 
+import qualified Control.Monad.Catch            as CMC
 import qualified Data.Attoparsec.ByteString     as A
 import qualified Data.ByteString.Char8          as S
 import qualified Data.Iteratee                  as I
 import qualified Data.ListLike                  as LL
+import qualified Data.NullPoint                 as N
 import qualified Data.Vector.Generic            as VG
 import qualified Data.Vector.Generic.Mutable    as VM
 
@@ -336,9 +336,40 @@ filterStreamM k = mapChunksM (go id)
                               let acc' = if p then LL.cons (LL.head s) . acc else acc
                               go acc' (LL.tail s)
 
+{-# INLINE mapChunks #-}
+mapChunks :: NullPoint s => (s -> s') -> Enumeratee s s' m a
+mapChunks f = eneeCheckIfDonePass (icont . step)
+ where
+  step k (Chunk xs) = eneeCheckIfDonePass (icont . step) . k . Chunk $ f xs
+  step k str        = idone (liftI k) str
+
+{-# INLINE mapChunksM #-}
+mapChunksM :: (Monad m, NullPoint s) => (s -> m s') -> Enumeratee s s' m a
+mapChunksM f = eneeCheckIfDonePass (icont . step)
+ where
+  step k (Chunk xs) = f xs `mBind` eneeCheckIfDonePass (icont . step) . k . Chunk
+  step k str        = idone (liftI k) str
+
+-- | Map a function over an 'Iteratee'.
+-- This one is reimplemented and differs from the the one in
+-- "Data.Iteratee.ListLike" in so far that it doesn't pass on an 'EOF'
+-- received in the input, which is the expected behavior.
+{-# INLINE mapStream #-}
+mapStream :: (ListLike (s el) el, ListLike (s el') el', NullPoint (s el), LooseMap s el el')
+          => (el -> el') -> Enumeratee (s el) (s el') m a
+mapStream = mapChunks . LL.map
+
+-- | Map a function over an 'Iteratee' rigidly.
+-- This one is reimplemented and differs from the the one in
+-- "Data.Iteratee.ListLike" in so far that it doesn't pass on an 'EOF'
+-- received in the input, which is the expected behavior.
+{-# INLINE rigidMapStream #-}
+rigidMapStream :: (ListLike s el, NullPoint s) => (el -> el) -> Enumeratee s s m a
+rigidMapStream = mapChunks . LL.rigidMap
+
 -- | Map a monadic function over an 'Iteratee'.
 {-# INLINE mapStreamM #-}
-mapStreamM :: (Monad m, ListLike (s el) el, ListLike (s el') el', NullPoint (s el), Nullable (s el), LooseMap s el el')
+mapStreamM :: (Monad m, ListLike (s el) el, ListLike (s el') el', NullPoint (s el), LooseMap s el el')
            => (el -> m el') -> Enumeratee (s el) (s el') m a
 mapStreamM = mapChunksM . LL.mapM
 
@@ -363,6 +394,11 @@ foldStream f = foldChunksM (\b s -> return $! LL.foldl' f b s)
 zipStreams :: (Nullable s, ListLike s el, Monad m)
            => Iteratee s m a -> Iteratee s m b -> Iteratee s m (a, b)
 zipStreams = I.zip
+
+-- | Apply three 'Iteratee's to the same stream.
+zipStreams3 :: (Nullable s, ListLike s el, Monad m)
+            => Iteratee s m a -> Iteratee s m b -> Iteratee s m c -> Iteratee s m (a, b, c)
+zipStreams3 = I.zip3
 
 type Enumerator' h eo m b = (h -> Iteratee eo m b) -> m (Iteratee eo m b)
 type Enumeratee' h ei eo m b = (h -> Iteratee eo m b) -> Iteratee ei m (Iteratee eo m b)
@@ -420,7 +456,7 @@ parMapChunksIO np f = eneeCheckIfDonePass (go emptyQ)
         _                               -> liftI $ go' qq k
 
     -- we have room for input
-    go' !qq k (EOF  mx) = do a <- liftIO (async (f empty))
+    go' !qq k (EOF  mx) = do a <- liftIO (async (f N.empty))
                              goE mx (pushQ a qq) k Nothing
     go' !qq k (Chunk c) = do a <- liftIO (async (f c))
                              go (pushQ a qq) k Nothing
@@ -542,7 +578,7 @@ stream2vector = liftIO (VM.new 1024) >>= go 0
                                 go (i+1) mv'
 
 withFileFd :: (MonadIO m, MonadMask m) => FilePath -> (Fd -> m a) -> m a
-withFileFd filepath iter = bracket
+withFileFd filepath iter = CMC.bracket
     (liftIO $ openFd filepath ReadOnly Nothing defaultFileFlags)
     (liftIO . closeFd) iter
 

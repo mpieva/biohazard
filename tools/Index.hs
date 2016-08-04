@@ -6,12 +6,8 @@ module Index where
 -- instance.  That dramatically lowers the chance that template haskell
 -- runs into problems :(
 
-import Data.Bits
-import Data.Char ( chr )
-import Data.Hashable
+import Bio.Prelude
 import Data.Vector.Unboxed.Deriving
-import Data.Word ( Word64 )
-import Foreign.Storable ( Storable )
 
 #if __GLASGOW_HASKELL__ == 704
 import Data.Vector.Generic          ( Vector(..) )

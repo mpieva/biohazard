@@ -1,4 +1,4 @@
-{-# LANGUAGE UnboxedTuples, RecordWildCards, FlexibleContexts, BangPatterns, OverloadedStrings #-}
+{-# LANGUAGE RecordWildCards, FlexibleContexts, BangPatterns, OverloadedStrings #-}
 -- | Buffer builder to assemble Bgzf blocks.  (This will probably be
 -- renamed.)  The plan is to serialize stuff (BAM and BCF) into a
 -- buffer, then Bgzf chunks from the buffer and reuse it.  This /should/
@@ -9,22 +9,26 @@
 -- Exported functions with @unsafe@ in the name resulting in a type of
 -- 'Push' omit the bounds checking.  To use them safely, an appropriate
 -- 'ensureBuffer' has to precede them.
+--
+-- XXX  This may not be the most clever way to do it.  According to the
+-- reasoning behind the binary-serialise-cbor package, it would be more
+-- clever to have a representation of the things we can 'Push' that's
+-- similar to a list, and then a function (an Iteratee?) that consumes
+-- the list of tokens and fills a buffer.  
 
 module Bio.Iteratee.Builder where
 
-import Bio.Iteratee
+import Bio.Iteratee hiding ( NullPoint ) 
 import Bio.Iteratee.Bgzf
-import Data.Bits
-import Data.Monoid
+import Bio.Prelude
+import Data.NullPoint ( NullPoint(..) )
 import Data.Primitive.Addr
 import Data.Primitive.ByteArray
-import Data.Word ( Word8, Word16, Word32 )
 import Foreign.Marshal.Alloc
 import Foreign.Marshal.Utils
 import Foreign.Ptr
-import Foreign.Storable ( peek, poke )
+import Foreign.Storable
 import GHC.Exts
-import System.IO.Unsafe ( unsafePerformIO )
 
 import qualified Data.ByteString            as B
 import qualified Data.ByteString.Unsafe     as B
@@ -58,7 +62,7 @@ instance NullPoint Push where
 
 -- | Creates a buffer with initial capacity of ~128k.
 newBuffer :: IO BB
-newBuffer = newPinnedByteArray 128000 >>= \arr -> return $ BB arr 0 0 0
+newBuffer = newPinnedByteArray 128000 >>= \ar -> return $ BB ar 0 0 0
 
 -- | Ensures a given free space in the buffer by doubling its capacity
 -- if necessary.
@@ -120,10 +124,9 @@ pushByteString bs = ensureBuffer (B.length bs) <> unsafePushByteString bs
 
 {-# INLINE unsafePushFloat #-}
 unsafePushFloat :: Float -> Push
-unsafePushFloat f = unsafePushWord32 i
-  where
-    i :: Word32
-    i = unsafePerformIO $ alloca $ \b -> poke (castPtr b) f >> peek b
+unsafePushFloat f =
+    unsafePushWord32 $ unsafeDupablePerformIO $
+    alloca $ \b -> poke (castPtr b) f >> peek b
 
 {-# INLINE pushFloat #-}
 pushFloat :: Float -> Push

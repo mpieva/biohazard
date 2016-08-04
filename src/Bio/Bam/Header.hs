@@ -48,30 +48,20 @@ module Bio.Bam.Header (
         showMd
     ) where
 
-import Bio.Base
-import Control.Applicative
-import Data.Bits                    ( shiftL, shiftR, (.&.), (.|.) )
-import Data.Char                    ( isDigit, ord, chr )
+import Bio.Prelude           hiding ( uncons )
+import Data.ByteString              ( uncons )
 import Data.ByteString.Builder
-import Data.Ix
-import Data.List                    ( (\\), foldl' )
 import Data.Sequence                ( (><), (|>) )
-import Data.String
-import Data.Version                 ( Version, showVersion )
-import Data.Word                    ( Word16, Word32 )
-import System.Environment           ( getArgs, getProgName )
 
 import qualified Data.Attoparsec.ByteString.Char8   as P
-import qualified Data.ByteString                    as B
 import qualified Data.ByteString.Char8              as S
-import qualified Data.Foldable                      as F
 import qualified Data.Sequence                      as Z
 
 data BamMeta = BamMeta {
         meta_hdr :: !BamHeader,
         meta_refs :: !Refs,
         meta_other_shit :: [(BamKey, BamOtherShit)],
-        meta_comment :: [S.ByteString]
+        meta_comment :: [Bytes]
     } deriving Show
 
 -- | Exactly two characters, for the \"named\" fields in bam.
@@ -148,7 +138,7 @@ bad_seq = BamSQ (error "no SN field") (error "no LN field") []
 data BamSorting = Unknown | Unsorted | Grouped | Queryname | Coordinate | GroupSorted
     deriving (Show, Eq)
 
-type BamOtherShit = [(BamKey, S.ByteString)]
+type BamOtherShit = [(BamKey, Bytes)]
 
 parseBamMeta :: P.Parser BamMeta
 parseBamMeta = fixup . foldl' (flip ($)) mempty <$> P.sepBy parseBamMetaLine (P.skipWhile (=='\t') >> P.char '\n')
@@ -196,12 +186,12 @@ parseBamMetaLine = P.char '@' >> P.choice [hdLine, sqLine, coLine, otherLine]
     otherLine = (\k ts meta -> meta { meta_other_shit = (k,ts) : meta_other_shit meta })
                   <$> bamkey <*> (tabs >> P.sepBy1 tagother tabs)
 
-    tagother :: P.Parser (BamKey,S.ByteString)
+    tagother :: P.Parser (BamKey,Bytes)
     tagother = (,) <$> bamkey <*> (P.char ':' >> pall)
 
     tabs = P.char '\t' >> P.skipWhile (== '\t')
 
-    pall :: P.Parser S.ByteString
+    pall :: P.Parser Bytes
     pall = P.takeWhile (\c -> c/='\t' && c/='\n')
 
     bamkey :: P.Parser BamKey
@@ -210,14 +200,14 @@ parseBamMetaLine = P.char '@' >> P.choice [hdLine, sqLine, coLine, otherLine]
 showBamMeta :: BamMeta -> Builder
 showBamMeta (BamMeta h ss os cs) =
     show_bam_meta_hdr h <>
-    F.foldMap show_bam_meta_seq ss <>
-    F.foldMap show_bam_meta_other os <>
-    F.foldMap show_bam_meta_comment cs
+    foldMap show_bam_meta_seq ss <>
+    foldMap show_bam_meta_other os <>
+    foldMap show_bam_meta_comment cs
   where
     show_bam_meta_hdr (BamHeader (major,minor) so os') =
         byteString "@HD\tVN:" <>
         intDec major <> char7 '.' <> intDec minor <>
-        byteString (case so of Unknown     -> B.empty
+        byteString (case so of Unknown     -> mempty
                                Unsorted    -> "\tSO:unsorted"
                                Grouped     -> "\tSO:grouped"
                                Queryname   -> "\tSO:queryname"
@@ -236,7 +226,7 @@ showBamMeta (BamMeta h ss os cs) =
         char7 '@' <> word16LE k <> show_bam_others ts
 
     show_bam_others ts =
-        F.foldMap show_bam_other ts <> char7 '\n'
+        foldMap show_bam_other ts <> char7 '\n'
 
     show_bam_other (BamKey k,v) =
         char7 '\t' <> word16LE k <> char7 ':' <> byteString v
@@ -335,7 +325,7 @@ eflagVestigial     = 0x4
 --   smaller (and that part is stupid)
 
 compareNames :: Seqid -> Seqid -> Ordering
-compareNames n m = case (B.uncons n, B.uncons m) of
+compareNames n m = case (uncons n, uncons m) of
         ( Nothing, Nothing ) -> EQ
         ( Just  _, Nothing ) -> GT
         ( Nothing, Just  _ ) -> LT
@@ -357,7 +347,7 @@ compareNames n m = case (B.uncons n, B.uncons m) of
 
 data MdOp = MdNum Int | MdRep Nucleotides | MdDel [Nucleotides] deriving Show
 
-readMd :: S.ByteString -> Maybe [MdOp]
+readMd :: Bytes -> Maybe [MdOp]
 readMd s | S.null s           = return []
          | isDigit (S.head s) = do (n,t) <- S.readInt s
                                    (MdNum n :) <$> readMd t
@@ -367,7 +357,7 @@ readMd s | S.null s           = return []
 
 -- | Normalizes a series of 'MdOp's and encodes them in the way BAM and
 -- SAM expect it.
-showMd :: [MdOp] -> S.ByteString
+showMd :: [MdOp] -> Bytes
 showMd = S.pack . flip s1 []
   where
     s1 (MdNum  i : MdNum  j : ms) = s1 (MdNum (i+j) : ms)

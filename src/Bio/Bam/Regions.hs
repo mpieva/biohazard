@@ -3,6 +3,7 @@ module Bio.Bam.Regions where
 import Bio.Bam.Header ( Refseq(..) )
 import Data.List ( foldl' )
 import qualified Data.IntMap as IM
+import Prelude
 
 data Region = Region { refseq :: !Refseq, start :: !Int, end :: !Int }
   deriving (Eq, Ord, Show)

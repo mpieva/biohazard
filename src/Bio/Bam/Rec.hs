@@ -58,23 +58,14 @@ module Bio.Bam.Rec (
     Word32
 ) where
 
-import Bio.Base
 import Bio.Bam.Header
 import Bio.Iteratee
+import Bio.Prelude
 
-import Control.Monad
 import Control.Monad.Primitive      ( unsafePrimToPrim, unsafeInlineIO )
-import Control.Applicative
-import Data.Bits                    ( Bits, testBit, shiftL, shiftR, (.&.), (.|.) )
-import Data.ByteString              ( ByteString )
-import Data.Int                     ( Int32, Int16, Int8 )
-import Data.Ix
-import Data.String                  ( fromString )
-import Data.Word                    ( Word32, Word16 )
 import Foreign.ForeignPtr
 import Foreign.Marshal.Alloc        ( alloca )
 import Foreign.Storable             ( peek, poke, peekByteOff, pokeByteOff, Storable(..) )
-import System.IO.Unsafe             ( unsafeDupablePerformIO )
 
 import qualified Data.ByteString                    as B
 import qualified Data.ByteString.Char8              as S
@@ -211,11 +202,11 @@ instance Show (Vector_Nucs_half Nucleotides) where
 
 -- | Bam record in its native encoding along with virtual address.
 data BamRaw = BamRaw { virt_offset :: {-# UNPACK #-} !FileOffset
-                     , raw_data :: {-# UNPACK #-} !S.ByteString }
+                     , raw_data    :: {-# UNPACK #-} !Bytes }
 
 -- | Smart constructor.  Makes sure we got a at least a full record.
 {-# INLINE bamRaw #-}
-bamRaw :: FileOffset -> S.ByteString -> BamRaw
+bamRaw :: FileOffset -> Bytes -> BamRaw
 bamRaw o s = if good then BamRaw o s else error $ "broken BAM record " ++ show (S.length s, m) ++ show m
   where
     good | S.length s < 32 = False
@@ -293,12 +284,12 @@ adjustE _ _ [         ]             = []
 adjustE f k ((k',v):es) | k  ==  k' = (k', f v) : es
                         | otherwise = (k',   v) : adjustE f k es
 
-data Ext = Int Int | Float Float | Text ByteString | Bin ByteString | Char Word8
+data Ext = Int Int | Float Float | Text Bytes | Bin Bytes | Char Word8
          | IntArr (U.Vector Int) | FloatArr (U.Vector Float)
     deriving (Show, Eq, Ord)
 
 {-# INLINE unpackExtensions #-}
-unpackExtensions :: ByteString -> Extensions
+unpackExtensions :: Bytes -> Extensions
 unpackExtensions = go
   where
     go s | S.length s < 4 = []
@@ -370,7 +361,7 @@ type_mask = flagFirstMate .|. flagSecondMate .|. flagPaired
 extAsInt :: Int -> BamKey -> BamRec -> Int
 extAsInt d nm br = case lookup nm (b_exts br) of Just (Int i) -> i ; _ -> d
 
-extAsString :: BamKey -> BamRec -> ByteString
+extAsString :: BamKey -> BamRec -> Bytes
 extAsString nm br = case lookup nm (b_exts br) of
     Just (Char c) -> B.singleton c
     Just (Text s) -> s

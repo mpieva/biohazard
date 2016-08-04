@@ -28,30 +28,14 @@ TODO:
    opportunistic sort that is fast on almost sorted files.
 -}
 
-import Bio.Base
-import Bio.Bam.Header
-import Bio.Bam.Reader hiding ( mergeInputs, combineCoordinates )
-import Bio.Bam.Rec
-import Bio.Bam.Trim
-import Bio.Bam.Writer
-import Bio.Iteratee
+import Bio.Bam                           hiding ( mergeInputs, combineCoordinates )
+import Bio.Prelude                       hiding ( yield )
 import Bio.PriorityQueue
 import Bio.Util.Numeric                         ( showNum )
-import Control.Arrow                            ( (&&&) )
-import Control.Applicative
-import Control.Monad
 import Control.Monad.Trans.Class
 import Data.Binary
-import Data.Bits
-import Data.Hashable
-import Data.List
-import Data.Version                             ( showVersion )
 import Paths_biohazard                          ( version )
 import System.Console.GetOpt
-import System.Environment                       ( getArgs, getProgName )
-import System.Exit                              ( exitFailure, exitSuccess )
-import System.IO                                ( hPutStrLn )
-import Text.Printf
 
 import qualified Data.ByteString as S
 import qualified Data.Vector.Generic as V
@@ -144,7 +128,7 @@ fixmate :: MonadIO m => BamRaw -> BamRaw -> Mating r m [BamRec]
 fixmate r s | isFirstMate (unpackBam r) && isSecondMate (unpackBam s) = sequence [go r s, go s r]
             | isSecondMate (unpackBam r) && isFirstMate (unpackBam s) = sequence [go s r, go r s]
             | otherwise = liftIO $ do hPutStrLn stderr $ "Names match, but 1st mate / 2nd mate flags do not: "
-                                                        ++ unpackSeqid (b_qname (unpackBam r))
+                                                        ++ unpack (b_qname (unpackBam r))
                                       hPutStrLn stderr $ "There is no clear way to fix this file.  Giving up."
                                       exitFailure
   where
@@ -323,7 +307,7 @@ report br = do i <- gets total_in
                      ms <- getSize messed_up
                      rr <- getRefseqs
                      let BamRec{..} = unpackBam br
-                         rn = unpackSeqid . sq_name $ getRef rr b_rname
+                         rn = unpack . sq_name $ getRef rr b_rname
                          at = if b_rname == invalidRefseq || b_pos == invalidPos
                               then "" else printf "@%s/%d, " rn b_pos
                      note $ printf "%sin: %d, out: %d, here: %d, wait: %d, mess: %d" (at::String) i o hs os ms

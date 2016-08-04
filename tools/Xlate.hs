@@ -6,6 +6,7 @@ import qualified Data.ByteString.Char8  as S
 import qualified Data.IntMap            as I
 import qualified Data.List              as L
 import qualified Data.Map               as M
+import Prelude
 
 -- aligned sequences in, coodinate on first in, coordinate on second out
 xpose :: S.ByteString -> S.ByteString -> Int -> Int

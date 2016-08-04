@@ -15,12 +15,8 @@ module Bio.Iteratee.Bgzf (
                      ) where
 
 import Bio.Iteratee
-import Control.Concurrent                   ( getNumCapabilities )
+import Bio.Prelude
 import Control.Concurrent.Async             ( async, wait )
-import Control.Monad                        ( liftM, forM_, when )
-import Data.Bits                            ( shiftL, shiftR, testBit, (.&.) )
-import Data.Monoid                          ( Monoid(..) )
-import Data.Word                            ( Word32, Word16, Word8 )
 import Foreign.Marshal.Alloc                ( mallocBytes, free, allocaBytes )
 import Foreign.Storable                     ( peekByteOff, pokeByteOff )
 import Foreign.C.String                     ( withCAString )
@@ -37,38 +33,38 @@ import qualified Data.Iteratee.ListLike     as I
 -- of an uncompressed file, if we want to support indexing of
 -- uncompressed BAM or some silliness like that.
 data Block = Block { block_offset   :: {-# UNPACK #-} !FileOffset
-                   , block_contents :: {-# UNPACK #-} !S.ByteString }
+                   , block_contents :: {-# UNPACK #-} !Bytes }
 
-instance NullPoint Block where empty = Block 0 S.empty
+instance NullPoint Block where empty = mempty
 instance Nullable Block where nullC (Block _ s) = S.null s
 
 instance Monoid Block where
-    mempty = empty
+    mempty = Block 0 S.empty
     mappend (Block x s) (Block _ t) = Block x (s `S.append` t)
-    mconcat [] = empty
+    mconcat [] = Block 0 S.empty
     mconcat bs@(Block x _:_) = Block x $ S.concat [s|Block _ s <- bs]
 
 -- | "Decompresses" a plain file.  What's actually happening is that the
--- offset in the input stream is tracked and added to the @ByteString@s
+-- offset in the input stream is tracked and added to the @Bytes@s
 -- giving @Block@s.  This results in the same interface as decompressing
 -- actual Bgzf.
-decompressPlain :: MonadIO m => Enumeratee S.ByteString Block m a
+decompressPlain :: MonadIO m => Enumeratee Bytes Block m a
 decompressPlain = eneeCheckIfDone (liftI . step 0)
   where
     step !o it (Chunk s) = eneeCheckIfDone (liftI . step (o + fromIntegral (S.length s))) . it $ Chunk (Block o s)
     step  _ it (EOF  mx) = idone (liftI it) (EOF mx)
 
--- | Decompress a BGZF stream into a stream of 'S.ByteString's.
-decompressBgzf :: MonadIO m => Enumeratee S.ByteString S.ByteString m a
+-- | Decompress a BGZF stream into a stream of 'Bytes's.
+decompressBgzf :: MonadIO m => Enumeratee Bytes Bytes m a
 decompressBgzf = decompressBgzfBlocks ><> mapChunks block_contents
 
-decompressBgzfBlocks :: MonadIO m => Enumeratee S.ByteString Block m a
+decompressBgzfBlocks :: MonadIO m => Enumeratee Bytes Block m a
 decompressBgzfBlocks out =  do
     np <- liftIO $ getNumCapabilities
     decompressBgzfBlocks' np out
 
 -- | Decompress a BGZF stream into a stream of 'Block's, 'np' fold parallel.
-decompressBgzfBlocks' :: MonadIO m => Int -> Enumeratee S.ByteString Block m a
+decompressBgzfBlocks' :: MonadIO m => Int -> Enumeratee Bytes Block m a
 decompressBgzfBlocks' np = eneeCheckIfDonePass (go 0 emptyQ)
   where
     -- check if the queue is full
@@ -110,7 +106,7 @@ decompressBgzfBlocks' np = eneeCheckIfDonePass (go 0 emptyQ)
             | otherwise       -> let b' = Block (p + fromIntegral sz) (S.drop sz c)
                                  in idone () (Chunk b')
 
-get_bgzf_block :: MonadIO m => FileOffset -> Iteratee S.ByteString m (FileOffset, IO Block)
+get_bgzf_block :: MonadIO m => FileOffset -> Iteratee Bytes m (FileOffset, IO Block)
 get_bgzf_block off = do !(csize,xlen) <- get_bgzf_header
                         !comp  <- get_block . fromIntegral $ csize - xlen - 19
                         !crc   <- endianRead4 LSB
@@ -129,7 +125,7 @@ get_bgzf_block off = do !(csize,xlen) <- get_bgzf_header
 
 -- | Decodes a BGZF block header and returns the block size if
 -- successful.
-get_bgzf_header :: Monad m => Iteratee S.ByteString m (Word16, Word16)
+get_bgzf_header :: Monad m => Iteratee Bytes m (Word16, Word16)
 get_bgzf_header = do n <- I.heads "\31\139"
                      _cm <- I.head
                      flg <- I.head
@@ -151,14 +147,12 @@ get_bgzf_header = do n <- I.heads "\31\139"
 
 -- | Tests whether a stream is in BGZF format.  Does not consume any
 -- input.
-isBgzf :: Monad m => Iteratee S.ByteString m Bool
+isBgzf :: Monad m => Iteratee Bytes m Bool
 isBgzf = liftM isRight $ checkErr $ iLookAhead $ get_bgzf_header
-  where
-    isRight = either (const False) (const True)
 
 -- | Tests whether a stream is in GZip format.  Also returns @True@ on a
 -- Bgzf stream, which is technically a special case of GZip.
-isGzip :: Monad m => Iteratee S.ByteString m Bool
+isGzip :: Monad m => Iteratee Bytes m Bool
 isGzip = liftM (either (const False) id) $ checkErr $ iLookAhead $ test
   where
     test = do n <- I.heads "\31\139"
@@ -177,7 +171,7 @@ maxBlockSize = 65450
 -- | The EOF marker for BGZF files.
 -- This is just an empty string compressed as BGZF.  Appended to BAM
 -- files to indicate their end.
-bgzfEofMarker :: S.ByteString
+bgzfEofMarker :: Bytes
 bgzfEofMarker = "\x1f\x8b\x8\x4\0\0\0\0\0\xff\x6\0\x42\x43\x2\0\x1b\0\x3\0\0\0\0\0\0\0\0\0"
 
 -- | Decompress a collection of strings into a single BGZF block.
@@ -189,7 +183,7 @@ bgzfEofMarker = "\x1f\x8b\x8\x4\0\0\0\0\0\xff\x6\0\x42\x43\x2\0\x1b\0\x3\0\0\0\0
 -- assign the address.
 --
 -- Now allocate space for uncompressed data, decompress the chunks we
--- got, compute crc for each and check it, finally convert to ByteString
+-- got, compute crc for each and check it, finally convert to 'Bytes'
 -- and emit.
 --
 -- We could probably get away with @unsafePerformIO@'ing everything in
@@ -197,7 +191,7 @@ bgzfEofMarker = "\x1f\x8b\x8\x4\0\0\0\0\0\xff\x6\0\x42\x43\x2\0\x1b\0\x3\0\0\0\0
 -- anyway.  Hence, run in IO.
 
 
-decompress1 :: FileOffset -> [S.ByteString] -> Word32 -> Int -> IO Block
+decompress1 :: FileOffset -> [Bytes] -> Word32 -> Int -> IO Block
 decompress1 off ss crc usize =
     allocaBytes (#{const sizeof(z_stream)}) $ \stream -> do
     buf <- mallocBytes usize
@@ -247,7 +241,7 @@ decompress1 off ss crc usize =
 -- here, but then again, we only do this when we're writing output
 -- anyway.  Hence, run in IO.
 
-compress1 :: Int -> [S.ByteString] -> IO S.ByteString
+compress1 :: Int -> [Bytes] -> IO Bytes
 compress1 _lv [] = return bgzfEofMarker
 compress1 lv ss0 =
     allocaBytes (#{const sizeof(z_stream)}) $ \stream -> do
@@ -274,8 +268,8 @@ compress1 lv ss0 =
                                               (-15) 8 #{const Z_DEFAULT_STRATEGY}
 
     -- loop over the fragments.  In reverse order!
-    let loop (s:ss) = do
-            crc <- loop ss
+    let go (s:ss) = do
+            crc <- go ss
             S.unsafeUseAsCString s $ \p ->
               case fromIntegral $ S.length s of
                 l | l > 0 -> do
@@ -284,8 +278,8 @@ compress1 lv ss0 =
                     z_check "deflate" =<< c_deflate stream #{const Z_NO_FLUSH}
                     c_crc32 crc p l
                 _ -> return crc
-        loop [] = c_crc32 0 nullPtr 0
-    crc <- loop ss0
+        go [] = c_crc32 0 nullPtr 0
+    crc <- go ss0
 
     z_check "deflate" =<< c_deflate stream #{const Z_FINISH}
     z_check "deflateEnd" =<< c_deflateEnd stream
@@ -353,9 +347,9 @@ getOffset = liftI step
     step s@(EOF _) = icont step (Just (setEOF s))
     step s@(Chunk (Block o _)) = idone o s
 
--- | Runs an @Iteratee@ for @ByteString@s when decompressing BGZF.  Adds
+-- | Runs an @Iteratee@ for @Bytes@s when decompressing BGZF.  Adds
 -- internal bookkeeping.
-liftBlock :: Monad m => Iteratee S.ByteString m a -> Iteratee Block m a
+liftBlock :: Monad m => Iteratee Bytes m a -> Iteratee Block m a
 liftBlock = liftI . step
   where
     step it (EOF ex) = joinI $ lift $ enumChunk (EOF ex) it
@@ -368,7 +362,7 @@ liftBlock = liftI . step
         onDone od hdr (EOF      ex) = od hdr (EOF ex)
 
 
--- | Compresses a stream of @ByteString@s into a stream of BGZF blocks,
+-- | Compresses a stream of @Bytes@s into a stream of BGZF blocks,
 -- in parallel
 
 -- We accumulate an uncompressed block as long as adding a new chunk to
@@ -377,12 +371,12 @@ liftBlock = liftI . step
 -- write out a block.  Then we continue writing until we're below block
 -- size.  On EOF, we flush and write the end marker.
 
-compressBgzf' :: MonadIO m => CompressParams -> Enumeratee BgzfChunk S.ByteString m a
+compressBgzf' :: MonadIO m => CompressParams -> Enumeratee BgzfChunk Bytes m a
 compressBgzf' (CompressParams lv np) = bgzfBlocks ><> parMapChunksIO np (compress1 lv)
 
-data BgzfChunk = SpecialChunk  !S.ByteString BgzfChunk
-               | RecordChunk   !S.ByteString BgzfChunk
-               | LeftoverChunk !S.ByteString BgzfChunk
+data BgzfChunk = SpecialChunk  !Bytes BgzfChunk
+               | RecordChunk   !Bytes BgzfChunk
+               | LeftoverChunk !Bytes BgzfChunk
                | NoChunk
 
 instance NullPoint BgzfChunk where empty = NoChunk
@@ -393,11 +387,11 @@ instance Nullable BgzfChunk where
     nullC (LeftoverChunk s c) = S.null s && nullC c
 
 -- | Breaks a stream into chunks suitable to be compressed individually.
--- Each chunk on output is represented as a list of 'S.ByteString's,
+-- Each chunk on output is represented as a list of 'Bytes',
 -- each list must be reversed and concatenated to be compressed.
 -- ('compress1' does that.)
 
-bgzfBlocks :: Monad m => Enumeratee BgzfChunk [S.ByteString] m a
+bgzfBlocks :: Monad m => Enumeratee BgzfChunk [Bytes] m a
 bgzfBlocks = eneeCheckIfDone (liftI . to_blocks 0 [])
   where
     -- terminate by sending the last block and then an empty block,
@@ -442,10 +436,10 @@ bgzfBlocks = eneeCheckIfDone (liftI . to_blocks 0 [])
         | otherwise                         = eneeCheckIfDone (\k' -> to_blocks 0 [] k' (Chunk (LeftoverChunk c cs))) . k $ Chunk acc
 
 -- | Like 'compressBgzf'', with sensible defaults.
-compressBgzf :: MonadIO m => Enumeratee BgzfChunk S.ByteString m a
+compressBgzf :: MonadIO m => Enumeratee BgzfChunk Bytes m a
 compressBgzf = compressBgzfLv 6
 
-compressBgzfLv :: MonadIO m => Int -> Enumeratee BgzfChunk S.ByteString m a
+compressBgzfLv :: MonadIO m => Int -> Enumeratee BgzfChunk Bytes m a
 compressBgzfLv lv out =  do
     np <- liftIO $ getNumCapabilities
     compressBgzf' (CompressParams lv (np+2)) out
@@ -455,7 +449,7 @@ data CompressParams = CompressParams {
         queue_depth :: Int }
     deriving Show
 
-compressChunk :: Int -> Ptr CChar -> CUInt -> IO S.ByteString
+compressChunk :: Int -> Ptr CChar -> CUInt -> IO Bytes
 compressChunk lv ptr len =
     allocaBytes (#{const sizeof(z_stream)}) $ \stream -> do
     buf <- mallocBytes 65536

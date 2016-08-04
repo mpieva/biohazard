@@ -1,5 +1,5 @@
 {-# LANGUAGE OverloadedStrings, BangPatterns, RecordWildCards, RankNTypes #-}
-{-# OPTIONS_GHC -Wall #-}
+{-# OPTIONS_GHC -Wall -funbox-strict-fields #-}
 
 -- Cobble up a mitochondrion, or something similar.  This is not an
 -- assembly, but something that could serve in stead of one :)
@@ -15,29 +15,16 @@
 import Align
 import SimpleSeed
 
-import Bio.Base
 import Bio.Bam
-import Control.Applicative
-import Control.Monad
-import Data.Bits
-import Data.Char
-import Data.List ( isSuffixOf )
-import Numeric
-import Prelude hiding ( round )
+import Bio.Prelude                   hiding ( round, left, right )
 import System.Console.GetOpt
-import System.Directory ( doesFileExist )
-import System.Environment
-import System.Exit
-import System.IO
+import System.Directory                     ( doesFileExist )
 
 import qualified Bio.Iteratee.ZLib          as ZLib
 import qualified Data.ByteString.Char8      as S
 import qualified Data.ByteString.Lazy.Char8 as L
-import qualified Data.Iteratee              as I
 import qualified Data.Sequence              as Z
 import qualified Data.Vector.Generic        as V
-
-import Debug.Trace
 
 -- Read a FastA file, drop the names, yield the sequences.
 readFasta :: L.ByteString -> [( S.ByteString, [Either Nucleotides Nucleotides] )]
@@ -59,10 +46,10 @@ readFasta = go . dropWhile (not . isHeader) . L.lines
 -- keep the bare minimum:  name, sequence/quality, seed region, flags
 -- (currently only the strand).  Just enough to write a valig BAM file.
 
-data QueryRec = QR { qr_name :: {-# UNPACK #-} !Seqid           -- from BAM
-                   , qr_seq  :: {-# UNPACK #-} !QuerySeq        -- sequence and quality
-                   , qr_pos  :: {-# UNPACK #-} !RefPosn         -- start position of band
-                   , qr_band :: {-# UNPACK #-} !Bandwidth }     -- bandwidth (negative to indicate reversed sequence_
+data QueryRec = QR { qr_name :: !Seqid           -- from BAM
+                   , qr_seq  :: !QuerySeq        -- sequence and quality
+                   , qr_pos  :: !RefPosn         -- start position of band
+                   , qr_band :: !Bandwidth }     -- bandwidth (negative to indicate reversed sequence_
   deriving Show
 
 data Conf = Conf {
@@ -153,7 +140,7 @@ roundN :: Monad m
             (RefSeq, [QueryRec])                        -- new reference & queries out
 roundN rs out = do
     ((), (rs', xtab), qry') <- mapStream aln =$ filterStream good =$
-                               I.zip3 out mkref collect
+                               zipStreams3 out mkref collect
     return (rs', reverse $ map (xlate xtab) qry')
 
   where
@@ -248,9 +235,9 @@ ref_to_ascii (RS v) = [ base | i <- [0, 5 .. V.length v - 5]
                              , let pgap = indexV "ref_to_ascii/pgap" v (i+4)
                              , pgap > 3
                              , let letters = if pgap <= 6 then "acgtn" else "ACGTN"
-                             , let (index, p1, p2) = minmin i 4
+                             , let (ix, p1, p2) = minmin i 4
                              , let good = p2 - p1 >= 3 -- probably nonsense
-                             , let base = S.index letters $ if good then index else  trace (show (V.slice i 5 v)) 4 ]
+                             , let base = S.index letters $ if good then ix else  trace (show (V.slice i 5 v)) 4 ]
   where
     minmin i0 l = V.ifoldl' step (l, 255, 255) $ V.slice i0 l v
     step (!i, !m, !n) j x | x <= m    = (j, x, m)

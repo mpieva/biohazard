@@ -1,31 +1,18 @@
 {-# LANGUAGE RecordWildCards, BangPatterns, FlexibleContexts, OverloadedStrings #-}
 import Bio.Bam
 import Bio.Bam.Rmdup
-import Bio.Base
+import Bio.Prelude
 import Bio.Util.Numeric ( showNum, showOOM, estimateComplexity )
-import Control.Monad
-import Control.Monad.ST ( runST )
-import Data.Bits
-import Data.Foldable ( toList )
-import Data.List ( intercalate )
-import Data.Maybe
-import Data.Ord ( comparing )
-import Data.Vector.Algorithms.Intro ( sortBy )
-import Data.Version ( showVersion )
-import Numeric ( showFFloat )
 import Paths_biohazard ( version )
 import System.Console.GetOpt
-import System.Environment ( getArgs, getProgName )
-import System.Exit
-import System.IO
 
-import qualified Data.ByteString.Char8  as S
-import qualified Data.HashMap.Strict    as M
-import qualified Data.IntMap            as IM
-import qualified Data.Iteratee          as I
-import qualified Data.Sequence          as Z
-import qualified Data.Vector            as VV
-import qualified Data.Vector.Generic    as V
+import qualified Data.ByteString.Char8          as S
+import qualified Data.HashMap.Strict            as M
+import qualified Data.IntMap                    as I
+import qualified Data.Sequence                  as Z
+import qualified Data.Vector                    as VV
+import qualified Data.Vector.Algorithms.Intro   as VV
+import qualified Data.Vector.Generic            as V
 
 data Conf = Conf {
     output :: Maybe ((BamRec -> Seqid) -> BamMeta -> Iteratee [BamRec] IO ()),
@@ -38,11 +25,11 @@ data Conf = Conf {
     transform :: BamRec -> Maybe BamRec,
     min_len :: Int,
     min_qual :: Qual,
-    get_label :: M.HashMap Seqid Seqid -> BamRec -> Seqid,
+    get_label :: HashMap Seqid Seqid -> BamRec -> Seqid,
     putResult :: String -> IO (),
     debug :: String -> IO (),
     which :: Which,
-    circulars :: Refs -> IO (IM.IntMap (Seqid,Int), Refs) }
+    circulars :: Refs -> IO (IntMap (Seqid,Int), Refs) }
 
 -- | Which reference sequences to scan
 data Which = Allrefs | Some Refseq Refseq | Unaln deriving Show
@@ -62,7 +49,7 @@ defaults = Conf { output = Nothing
                 , putResult = putStr
                 , debug = \_ -> return ()
                 , which = Allrefs
-                , circulars = \rs -> return (IM.empty, rs) }
+                , circulars = \rs -> return (I.empty, rs) }
 
 options :: [OptDescr (Conf -> IO Conf)]
 options = [
@@ -115,14 +102,14 @@ options = [
 
     add_circular a c = case break ((==) ':') a of
         (nm,':':r) -> case reads r of
-            [(l,[])] | l > 0 -> return $ c { circulars = add_circular' (S.pack nm) l (circulars c) }
+            [(l,[])] | l > 0 -> return $ c { circulars = add_circular' (fromString nm) l (circulars c) }
             _ -> fail $ "couldn't parse length " ++ show r ++ " for " ++ show nm
         _ -> fail $ "couldn't parse \"circular\" argument " ++ show a
 
     add_circular' nm l io refs = do
         (m1, refs') <- io refs
         case filter (S.isPrefixOf nm . sq_name . snd) $ zip [0..] $ toList refs' of
-            [(k,a)] | sq_length a >= l -> let m2     = IM.insert k (sq_name a,l) m1
+            [(k,a)] | sq_length a >= l -> let m2     = I.insert k (sq_name a,l) m1
                                               refs'' = Z.update k (a { sq_length = l }) refs'
                                           in return (m2, refs'')
                     | otherwise -> fail $ "cannot wrap " ++ show nm ++ " to " ++ show l
@@ -199,7 +186,7 @@ main = do
        let tbl = mk_rg_tbl hdr
        unless (M.null tbl) $ liftIO $ do
                 debug "mapping of read groups to libraries:\n"
-                mapM_ debug [ unpackSeqid k ++ " --> " ++ unpackSeqid v ++ "\n" | (k,v) <- M.toList tbl ]
+                mapM_ debug [ unpack k ++ " --> " ++ unpack v ++ "\n" | (k,v) <- M.toList tbl ]
 
        let filters = progressBam "Rmdup at " debug refs' ><>
                      mapChunks (mapMaybe (transform . unpackBam)) ><>
@@ -216,7 +203,7 @@ main = do
               normalizeSortWith circtable ><>
               filterStream (\b -> b_mapq b >= min_qual) ><>
               rmdup (get_label tbl) strand_preserved (co keep_all) $
-              count_all (get_label tbl) `I.zip` ou
+              count_all (get_label tbl) `zipStreams` ou
 
        let do_copy = do liftIO $ debug "\27[Krmdup done; copying junk\n" ; joinI (filters ou')
            do_bail = do liftIO $ debug "\27[Krmdup done\n" ; lift (run ou')
@@ -237,7 +224,7 @@ do_report lbl Counts{..} = intercalate "\t" fs
     fs = label : showNum tin : showNum tout : showNum good_total : showNum good_singles :
          report_estimate (estimateComplexity good_total good_singles)
 
-    label = if S.null lbl then "--" else unpackSeqid lbl
+    label = if S.null lbl then "--" else unpack lbl
 
     report_estimate  Nothing                = [ "N/A" ]
     report_estimate (Just good_grand_total) =
@@ -258,8 +245,8 @@ do_report lbl Counts{..} = intercalate "\t" fs
 -- don't double count mate pairs, while still working mostly sensibly in
 -- the presence of broken BAM files.
 
-count_all :: Functor m => (BamRec -> Seqid) -> Iteratee [BamRec] m (M.HashMap Seqid Counts)
-count_all lbl = M.map fixup `fmap` I.foldl' plus M.empty
+count_all :: Monad m => (BamRec -> Seqid) -> Iteratee [BamRec] m (M.HashMap Seqid Counts)
+count_all lbl = M.map fixup `liftM` foldStream plus M.empty
   where
     plus m b = M.insert (lbl b) cs m
       where
@@ -330,18 +317,18 @@ decodeWithIndex enum fp k0 = do
 
 writeLibBamFiles :: (MonadIO m, MonadMask m)
                  => FilePath -> (BamRec -> Seqid) -> BamMeta -> Iteratee [BamRec] m ()
-writeLibBamFiles fp lbl hdr = tryHead >>= loop M.empty
+writeLibBamFiles fp lbl hdr = tryHead >>= go M.empty
   where
-    loop m  Nothing  = liftIO . mapM_ run $ M.elems m
-    loop m (Just br) = do
+    go m  Nothing  = liftIO . mapM_ run $ M.elems m
+    go m (Just br) = do
         let !l = lbl br
         let !it = M.lookupDefault (writeBamFile (fp `subst` l) hdr) l m
         it' <- liftIO $ enumPure1Chunk [br] it
         let !m' = M.insert l it' m
-        tryHead >>= loop m'
+        tryHead >>= go m'
 
     subst [            ] _ = []
-    subst ('%':'s':rest) l = unpackSeqid l ++ subst rest l
+    subst ('%':'s':rest) l = unpack l ++ subst rest l
     subst ('%':'%':rest) l = '%' : subst rest l
     subst ( c :    rest) l =  c  : subst rest l
 
@@ -369,14 +356,14 @@ clean_multi_flags b = return $ if extAsInt 1 "HI" b /= 1 then Nothing else Just 
 -- groups as list, apply a function to the argument and the list, pass
 -- the result on.  Absent groups are passed on as they are.  Note that
 -- ordering within groups is messed up (it doesn't matter here).
-mapAtGroups :: Monad m => IM.IntMap a -> (a -> [BamRec] -> [BamRec]) -> Enumeratee [BamRec] [BamRec] m b
+mapAtGroups :: Monad m => IntMap a -> (a -> [BamRec] -> [BamRec]) -> Enumeratee [BamRec] [BamRec] m b
 mapAtGroups m f = eneeCheckIfDonePass no_group
   where
     no_group k (Just e) = idone (liftI k) $ EOF (Just e)
     no_group k Nothing  = tryHead >>= maybe (idone (liftI k) $ EOF Nothing) (\a -> no_group_1 a k Nothing)
 
     no_group_1 _ k (Just e) = idone (liftI k) $ EOF (Just e)
-    no_group_1 a k Nothing  = case IM.lookup (b_rname_int a) m of
+    no_group_1 a k Nothing  = case I.lookup (b_rname_int a) m of
             Nothing  -> eneeCheckIfDonePass no_group . k $ Chunk [a]
             Just arg -> cont_group (b_rname a) arg [a] k Nothing
 
@@ -390,11 +377,11 @@ mapAtGroups m f = eneeCheckIfDonePass no_group
 
     b_rname_int = fromIntegral . unRefseq . b_rname
 
-normalizeSortWith :: Monad m => IM.IntMap (Seqid, Int) -> Enumeratee [BamRec] [BamRec] m a
+normalizeSortWith :: Monad m => IntMap (Seqid, Int) -> Enumeratee [BamRec] [BamRec] m a
 normalizeSortWith m = mapAtGroups m $ \(nm,l) -> sortPos . map (normalizeTo nm l)
 
-wrapSortWith :: Monad m => IM.IntMap (Seqid, Int) -> Enumeratee [BamRec] [BamRec] m a
+wrapSortWith :: Monad m => IntMap (Seqid, Int) -> Enumeratee [BamRec] [BamRec] m a
 wrapSortWith m = mapAtGroups m $ \(_,l) -> sortPos . concatMap (wrapTo l)
 
 sortPos :: [BamRec] -> [BamRec]
-sortPos l = VV.toList $ runST (VV.unsafeThaw (VV.fromList l) >>= \vm -> sortBy (comparing b_pos) vm >> VV.unsafeFreeze vm)
+sortPos l = VV.toList $ runST (VV.unsafeThaw (VV.fromList l) >>= \vm -> VV.sortBy (comparing b_pos) vm >> VV.unsafeFreeze vm)

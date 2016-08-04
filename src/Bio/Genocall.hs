@@ -3,11 +3,7 @@ module Bio.Genocall where
 
 import Bio.Adna
 import Bio.Bam.Pileup
-import Bio.Base
-import Control.Applicative
-import Data.Foldable hiding ( sum, product )
-import Data.List ( inits, tails, sortBy )
-import Data.Ord
+import Bio.Prelude
 import Data.Vec.Base ( (:.)(..) )
 import Data.Vec.LinAlg
 import Data.Vec.Packed
@@ -83,10 +79,10 @@ simple_snp_call from_qual ploidy vars = snp_gls (simple_call ploidy mkpls vars) 
 -- diploidy and two alleles (common indels).
 
 simple_call :: Int -> (a -> [Prob]) -> [a] -> GL
-simple_call ploidy pls = foldl1' (V.zipWith (*)) . map step
+simple_call ploidy pls = foldl10 (V.zipWith (*)) . map step
   where
-    foldl1' _ [    ] = V.singleton 1
-    foldl1' f (a:as) = foldl' f a as
+    foldl10 _ [    ] = V.singleton 1
+    foldl10 f (a:as) = foldl' f a as
 
     !mag = recip $ toProb (fromIntegral ploidy)
 
