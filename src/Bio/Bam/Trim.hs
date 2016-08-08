@@ -2,11 +2,12 @@
 -- | Trimming of reads as found in BAM files.  Implements trimming low
 -- quality sequence from the 3' end.
 
-module Bio.Bam.Trim  {- (trim_3', trim_3, trim_low_quality) -}  where
+module Bio.Bam.Trim where
 
 import Bio.Bam.Header
 import Bio.Bam.Rec
 import Bio.Base
+import Bio.Iteratee
 import Prelude
 
 import Data.Bits
@@ -142,17 +143,15 @@ merge_overlap r1 ads1 r2 ads2 =
                           , store_quals s1 s2 $ merged_read l (fromIntegral . min 63 $ s2-s1)
                           , s2 - s1, plain_score - s1 )
 
-    -- How do we actually trim the read?
-    -- - compute new sequence, new qualities
-    -- - limit qualities to YM
-    merged_read l qmax | V.length merged_seq == l
-        = nullBamRec {
-            b_qname = b_qname r1,
-            b_flag  = flagUnmapped .|. complement pair_flags .&. b_flag r1,
-            b_seq   = V.unstream $ S.map fst $ V.stream merged_seq,
-            b_qual  = V.unstream $ S.map snd $ V.stream merged_seq,
-            b_exts  = let ff = if l < V.length (b_seq r1) then eflagTrimmed else 0
-                      in updateE "FF" (Int $ extAsInt 0 "FF" r1 .|. eflagMerged .|. ff) $ b_exts r1 }
+    merged_read l qmax
+        | V.length merged_seq /= l = error $ "Logic error in merged_read: " ++ show (V.length merged_seq, l)
+        | otherwise = nullBamRec {
+                b_qname = b_qname r1,
+                b_flag  = flagUnmapped .|. complement pair_flags .&. b_flag r1,
+                b_seq   = V.unstream $ S.map fst $ V.stream merged_seq,
+                b_qual  = V.unstream $ S.map snd $ V.stream merged_seq,
+                b_exts  = let ff = if l < V.length (b_seq r1) then eflagTrimmed else 0
+                          in updateE "FF" (Int $ extAsInt 0 "FF" r1 .|. eflagMerged .|. ff) $ b_exts r1 }
       where
         merged_seq = V.concat
                 [ V.take (l - V.length rq2) rq1
@@ -173,8 +172,35 @@ merge_overlap r1 ads1 r2 ads2 =
 -- merge with an empty second read.  Results in up to two reads (the
 -- original, possibly flagged, and the trimmed one, definitely flagged,
 -- and two qualities).
--- trim_adapter :: BamRec -> [???] -> Maybe (BamRec, BamRec, Qual, Qual)
+trim_adapter :: BamRec -> [ U.Vector Nucleotides ] -> Maybe ( BamRec, BamRec, Int, Int )
+trim_adapter r1 ads1 =
+    case possible_trims of
+        [                             ] -> Nothing
+        (score,  len) : [             ] -> result len score  plain_score
+        (score1, len) : (score2, _) : _ -> result len score1 score2
+  where
+    rq1 = Hybrid.V (b_seq r1) (b_qual r1)
 
+    -- the "merge" score if there is no trimming
+    plain_score = 6 * fromIntegral (V.length rq1)
+
+    possible_trims = sortOn fst $ [ ( merge_score ads1 [V.empty] rq1 V.empty l, l )
+                                  | l <- [0 .. V.length rq1 - 1] ]
+
+    flag_vestigial    br = br { b_exts = updateE "FF" (Int $ extAsInt 0 "FF" br .|. eflagVestigial) $ b_exts br }
+    store_quals s1 s2 br = br { b_exts = updateE "YM" (Int $ s2          - s1) $
+                                         updateE "YN" (Int $ plain_score - s1) $ b_exts br }
+
+    result l s1 s2 = Just ( store_quals s1 s2 $ flag_vestigial r1
+                          , store_quals s1 s2 $ trimmed_read l
+                          , s2 - s1, plain_score - s1 )
+
+    trimmed_read l = nullBamRec {
+            b_qname = b_qname r1,
+            b_flag  = flagUnmapped .|. b_flag r1,
+            b_seq   = V.take l $ b_seq  r1,
+            b_qual  = V.take l $ b_qual r1,
+            b_exts  = updateE "FF" (Int $ extAsInt 0 "FF" r1 .|. eflagTrimmed) $ b_exts r1 }
 
 
 -- | For merging, we don't need the complete adapters (length around 70!),
@@ -241,3 +267,19 @@ merge_score fwd_adapters rev_adapters read1 read2 l
     match_reads rd1 rd2 = S.foldl' (+) 0 $
                           S.zipWith (\(!n1, Q !q1) (!n2, Q !q2) -> if n1 == compls n2 then 0 else fromIntegral $ min q1 q2)
                                     (V.stream rd1) (V.streamR rd2)
+
+mergeTrimBam :: Monad m => [U.Vector Nucleotides] -> [U.Vector Nucleotides] -> Enumeratee [BamRec] [BamRec] m a
+mergeTrimBam fwd_ads rev_ads = convStream go
+  where
+    go = do r1 <- headStream
+            if isPaired r1
+              then tryHead >>= go2 r1
+              else case trim_adapter r1 fwd_ads of
+                    Nothing                -> return [r1]
+                    Just (r1',r1t,_q1,_q2) -> return [r1t,r1']
+
+    go2 r1  Nothing  = error $ "Lone mate found: " ++ show (b_qname r1)
+    go2 r1 (Just r2) = case merge_overlap r1 fwd_ads r2 rev_ads of
+                    Nothing                   -> return [r1,r2]
+                    Just (r1',r2',rm,_q1,_q2) -> return [rm,r1',r2']
+
