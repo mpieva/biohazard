@@ -185,7 +185,8 @@ trim_adapter r1 ads1 =
     -- the "merge" score if there is no trimming
     plain_score = 6 * fromIntegral (V.length rq1)
 
-    possible_trims = sortOn fst $ [ ( merge_score ads1 [V.empty] rq1 V.empty l, l )
+    possible_trims = sortBy (\a b -> fst a `compare` fst b)
+                                  [ ( merge_score ads1 [V.empty] rq1 V.empty l, l )
                                   | l <- [0 .. V.length rq1 - 1] ]
 
     flag_vestigial    br = br { b_exts = updateE "FF" (Int $ extAsInt 0 "FF" br .|. eflagVestigial) $ b_exts br }
