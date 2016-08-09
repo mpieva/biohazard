@@ -11,7 +11,7 @@ import Bio.Iteratee
 import Prelude
 
 import Data.Bits
-import Data.List ( inits, sortOn )
+import Data.List ( inits, sortBy )
 
 import qualified Data.Vector.Fusion.Stream      as S
 import qualified Data.Vector.Hybrid.Internal    as Hybrid
@@ -131,7 +131,8 @@ merge_overlap r1 ads1 r2 ads2 =
     -- the "merge" score if there is no overlap
     plain_score = 6 * fromIntegral (V.length rq1 + V.length rq2)
 
-    possible_merges = sortOn fst $ [ ( merge_score ads1 ads2 rq1 rq2 l, l )
+    possible_merges = sortBy (\a b -> fst a `compare` fst b)
+                                   [ ( merge_score ads1 ads2 rq1 rq2 l, l )
                                    | l <- [0 .. V.length rq1 + V.length rq2 - 1] ]
 
     flag_vestigial    br = br { b_exts = updateE "FF" (Int $ extAsInt 0 "FF" br .|. eflagVestigial) $ b_exts br }
