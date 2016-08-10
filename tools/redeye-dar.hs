@@ -71,4 +71,4 @@ main = do
     estimateDamageFromFiles conf_lmin conf_params files >>= pprint
 
     -- XXX  Many optimizations fit only one parameter.  Newton-Iteration
-    -- should be more efficient that the generic CG method.
+    -- should be more efficient than the generic CG method.

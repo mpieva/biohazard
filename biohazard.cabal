@@ -1,5 +1,5 @@
 Name:                biohazard
-Version:             0.6.6.1
+Version:             0.6.6.3
 Synopsis:            bioinformatics support library
 Description:         This is a collection of modules I separated from
                      various bioinformatics tools.  The hope is to make
@@ -38,7 +38,7 @@ source-repository head
 source-repository this
   type:     git
   location: https://bitbucket.org/ustenzel/biohazard.git
-  tag:      0.6.6.1
+  tag:      0.6.6.3
 
 
 Library
@@ -155,7 +155,6 @@ Executable redeye-pileup
                        bytestring,
                        containers,
                        filepath,
-                       iteratee,
                        text,
                        unordered-containers,
                        Vec,
@@ -171,7 +170,7 @@ Executable redeye-single
                        biohazard,
                        bytestring,
                        containers,
-                       iteratee,
+                       directory,
                        filepath,
                        random,
                        text,
@@ -210,7 +209,6 @@ Executable afroengineer
                        bytestring,
                        containers,
                        directory,
-                       iteratee,
                        unordered-containers,
                        vector
 
@@ -220,11 +218,15 @@ Executable bam-fixpair
   -- Ghc-options:         -Wall -threaded -rtsopts -with-rtsopts=-N
   Extensions:          NoImplicitPrelude, OverloadedStrings, BangPatterns
   Hs-Source-Dirs:      tools
-  Build-depends:       base,
+  Build-depends:       async,
+                       base,
                        binary,
                        biohazard,
                        bytestring,
+                       process,
+                       stm,
                        transformers,
+                       unix,
                        vector
 
 Executable bam-meld
@@ -270,7 +272,6 @@ Executable bam-rmdup
                        biohazard,
                        bytestring,
                        containers,
-                       iteratee,
                        unordered-containers,
                        vector,
                        vector-algorithms
@@ -295,7 +296,6 @@ Executable fastq2bam
                        biohazard,
                        bytestring,
                        containers,
-                       iteratee,
                        vector
 
 Executable jivebunny

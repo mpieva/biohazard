@@ -6,12 +6,9 @@ import Bio.Prelude
 import System.Console.GetOpt
 import System.IO
 
-import qualified Data.ByteString as B
+import qualified Data.ByteString       as B
 import qualified Data.ByteString.Char8 as S
-import qualified Data.Vector.Generic as V
-
--- TODO:
--- - optional(!) GZip
+import qualified Data.Vector.Generic   as V
 
 data Opts = Opts { output :: BamMeta -> Iteratee [BamRec] IO ()
                  , inputs :: [Input]
@@ -22,34 +19,41 @@ defaultOpts = Opts { output = protectTerm . pipeBamOutput
                    , inputs = []
                    , verbose = False }
 
-data Input = Input { _read1 :: FilePath
-                   ,  read2 :: Maybe FilePath
-                   , index1 :: Maybe FilePath
-                   , index2 :: Maybe FilePath }
+data Input = Input { _read1 :: FilePath         -- ^ file with first read (or other stuff)
+                   ,  read2 :: Maybe FilePath   -- ^ optional file with second read
+                   , index1 :: Maybe FilePath   -- ^ optional file with first index
+                   , index2 :: Maybe FilePath   -- ^ optional file with second index
+                   , lindex1 :: Int }           -- ^ length of first index contained in first read
   deriving Show
+
+plainInput :: FilePath -> Input
+plainInput fn = Input fn Nothing Nothing Nothing 0
 
 getopts :: [String] -> ([Opts -> IO Opts], [String], [String])
 getopts = getOpt (ReturnInOrder add_read1) options
   where
     options =
-        [ Option "o" ["output"] (ReqArg set_output "FILE") "Write output to FILE"
-        , Option "1" ["read-one"] (ReqArg add_read1 "FILE") "Parse FILE for anything"
-        , Option "2" ["read-two"] (ReqArg add_read2 "FILE") "Parse FILE for second mates"
-        , Option "I" ["index-one"] (ReqArg add_idx1 "FILE") "Parse FILE for first index"
-        , Option "J" ["index-two"] (ReqArg add_idx2 "FILE") "Parse FILE for second index"
-        , Option "v" ["verbose"] (NoArg set_verbose) "Print progress information"
-        , Option "h?" ["help","usage"] (NoArg usage) "Print this helpful message" ]
+        [ Option "o" ["output"]         (ReqArg set_output "FILE") "Write output to FILE"
+        , Option "1" ["read-one"]        (ReqArg add_read1 "FILE") "Parse FILE for anything"
+        , Option "2" ["read-two"]        (ReqArg add_read2 "FILE") "Parse FILE for second mates"
+        , Option "I" ["index-one"]        (ReqArg add_idx1 "FILE") "Parse FILE for first index"
+        , Option "J" ["index-two"]        (ReqArg add_idx2 "FILE") "Parse FILE for second index"
+        , Option "l" ["length-index-one"] (ReqArg set_lidx1 "NUM") "Read 1 ends on NUM index bases"
+        , Option "v" ["verbose"]               (NoArg set_verbose) "Print progress information"
+        , Option "h?" ["help","usage"]               (NoArg usage) "Print this helpful message" ]
 
     set_output "-" c = return $ c { output = pipeBamOutput }
     set_output  fn c = return $ c { output = writeBamFile fn }
     set_verbose    c = return $ c { verbose = True }
 
-    add_read1 fn c = return $ c { inputs = Input fn Nothing Nothing Nothing : inputs c }
+    add_read1 fn c = return $ c { inputs = plainInput fn : inputs c }
     add_read2 fn c = return $ c { inputs = at_head (\i -> i { read2  = Just fn }) (inputs c) }
     add_idx1  fn c = return $ c { inputs = at_head (\i -> i { index1 = Just fn }) (inputs c) }
     add_idx2  fn c = return $ c { inputs = at_head (\i -> i { index2 = Just fn }) (inputs c) }
 
-    at_head f [    ] = [ f $ Input "-" Nothing Nothing Nothing ]
+    set_lidx1  a c = readIO a >>= \n -> return $  c { inputs = at_head (\i -> i { lindex1 = n}) (inputs c) }
+
+    at_head f [    ] = [ f $ plainInput "-" ]
     at_head f (i:is) = f i : is
 
     usage _ = do pn <- getProgName
@@ -65,13 +69,13 @@ main = do (opts, [], errors) <- getopts `fmap` getArgs
           conf <- foldl (>>=) (return defaultOpts) opts
           pgm <- addPG Nothing
 
-          let eff_inputs = if null (inputs conf) then [ Input "-" Nothing Nothing Nothing ] else inputs conf
-          hPrint stderr $ eff_inputs
+          let eff_inputs = if null (inputs conf) then [ plainInput "-" ] else inputs conf
+          mapM_ (hPrint stderr) $ eff_inputs
 
           foldr ((>=>) . enum_input) run (reverse eff_inputs) $
                 joinI $ progress (verbose conf) $
                 joinI $ mapChunks concatDuals $
-                ilift liftIO $ output conf (pgm mempty)
+                output conf (pgm mempty)
 
 
 type UpToTwo a = (a, Maybe a)
@@ -95,13 +99,25 @@ fromFastq :: (MonadIO m, MonadMask m) => FilePath -> Enumerator [BamRec] m a
 fromFastq fp = enumAny fp $= enumInflateAny $= parseFastqCassava $= mapStream removeWarts
   where
     enumAny "-" = enumHandle defaultBufSize stdin
-    enumAny  f  = enumFile defaultBufSize f
+    enumAny  f  = enumFile   defaultBufSize   f
 
 enum_input :: (MonadIO m, MonadMask m) => Input -> Enumerator [UpToTwo BamRec] m a
-enum_input inp@(Input r1 mr2 mi1 mi2) o = do
-    liftIO $ hPrint stderr inp
-    (withIndex mi1 "XI" "YI" $ withIndex mi2 "XJ" "YJ" $
-        case mr2 of Nothing -> fromFastq r1 $= mapStream one ; Just r2 -> enumDual r1 r2) o
+enum_input (Input r1 mr2 mi1 mi2 il1) = enum $= mapStream (addIdx il1)
+  where
+    enum = withIndex mi1 "XI" "YI" $ withIndex mi2 "XJ" "YJ" $
+           maybe (fromFastq r1 $= mapStream one) (enumDual r1) mr2
+
+addIdx :: Int -> UpToTwo BamRec -> UpToTwo BamRec
+addIdx 0 brs = brs
+addIdx l (br1, mbr2) = ( doext br1', fmap doext mbr2 )
+  where
+    l' = V.length (b_seq br1) - l
+
+    br1'     = br1 { b_seq  = V.take l' (b_seq br1), b_qual = V.take l' (b_qual br1) }
+    doext br = br  { b_exts = updateE "XI" (Text xi) $ updateE "YI" (Text yi) $ b_exts br }
+
+    xi = S.pack . map showNucleotides . V.toList . V.drop l' $ b_seq  br1
+    yi = B.pack . map ((+) 33 . unQ)  . V.toList . V.drop l' $ b_qual br1
 
 -- Given an enumerator and maybe a filename, read index sequences from
 -- the file and merge them with the numerator.

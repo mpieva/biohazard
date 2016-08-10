@@ -1,6 +1,5 @@
-{-# LANGUAGE OverloadedStrings, RecordWildCards, FlexibleContexts #-}
+{-# LANGUAGE OverloadedStrings, RecordWildCards, FlexibleContexts, CPP #-}
 {-# LANGUAGE BangPatterns, FlexibleInstances, DeriveGeneric, DeriveAnyClass #-}
-
 -- | Metadata necessary for a sensible genotyping workflow.
 module Bio.Genocall.Metadata where
 
@@ -13,6 +12,9 @@ import Data.Binary
 import Data.Binary.Get                      ( runGetOrFail )
 import Data.Binary.Put                      ( runPut )
 import Data.ByteString.Lazy                 ( readFile )
+import Data.Text.Encoding                   ( decodeUtf8', encodeUtf8 )
+import System.Posix.Files                   ( rename, removeLink )
+import System.Posix.IO
 
 import qualified Data.HashMap.Strict as M
 import qualified Data.Vector.Unboxed as U
@@ -167,6 +169,16 @@ instance Binary DivTable where
 
 instance ToJSON DivTable where
     toJSON (DivTable a b) = toJSON [toJSON a, toJSON b]
+
+#if !MIN_VERSION_text(1,2,1)
+instance Binary Text where
+    put = put . encodeUtf8
+    get = do
+      bs <- get
+      case decodeUtf8' bs of
+          Left exn -> fail $ show exn
+          Right  a -> return a
+#endif
 
 putObject :: Binary value => M.HashMap Text value -> Put
 putObject m = put (M.size m) >> M.foldrWithKey (\k v a -> put k >> put v >> a) (return ()) m

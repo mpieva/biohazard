@@ -23,7 +23,6 @@ import System.Directory                     ( doesFileExist )
 import qualified Bio.Iteratee.ZLib          as ZLib
 import qualified Data.ByteString.Char8      as S
 import qualified Data.ByteString.Lazy.Char8 as L
-import qualified Data.Iteratee              as I
 import qualified Data.Sequence              as Z
 import qualified Data.Vector.Generic        as V
 
@@ -141,7 +140,7 @@ roundN :: Monad m
             (RefSeq, [QueryRec])                        -- new reference & queries out
 roundN rs out = do
     ((), (rs', xtab), qry') <- mapStream aln =$ filterStream good =$
-                               I.zip3 out mkref collect
+                               zipStreams3 out mkref collect
     return (rs', reverse $ map (xlate xtab) qry')
 
   where
