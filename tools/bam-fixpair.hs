@@ -32,12 +32,18 @@ import Bio.Bam                           hiding ( mergeInputs, combineCoordinate
 import Bio.Prelude                       hiding ( yield )
 import Bio.PriorityQueue
 import Bio.Util.Numeric                         ( showNum )
+import Control.Concurrent.Async
+import Control.Concurrent.STM.TQueue
+import Control.Concurrent.STM.TVar
 import Control.Monad.Trans.Class
 import Data.Binary
 import Paths_biohazard                          ( version )
 import System.Console.GetOpt
+import System.Process                    hiding ( createPipe )
+import System.Posix.IO                          ( fdToHandle, createPipe )
 
 import qualified Data.ByteString as S
+import qualified Data.ByteString.Builder as B
 import qualified Data.Vector.Generic as V
 
 data Verbosity = Silent | Errors | Warnings | Notices deriving (Eq, Ord)
@@ -59,7 +65,8 @@ config0 = return $ CF True True False True False True Errors KillNone (protectTe
 
 options :: [OptDescr (Config -> IO Config)]
 options = [
-    Option "o" ["output"] (ReqArg set_output "FILE") "Write output to FILE",
+    Option "o" ["output"]       (ReqArg set_output "FILE") "Write output to FILE",
+    Option "X" ["exec"]                    (NoArg  return) "Send FastQ output to a program",
     Option "n" ["dry-run","validate"] (NoArg set_validate) "No output, validate only",
     Option "k" ["kill-lone"]  (NoArg (\c -> return $ c { killmode = KillAll  })) "Delete all lone mates",
     Option "u" ["kill-unmap"] (NoArg (\c -> return $ c { killmode = KillUu   })) "Delete unmapped lone mates",
@@ -104,13 +111,70 @@ options = [
     set_validate   c = return $ c { output = \_ -> skipToEof }
     set_fixsven  a c = readIO a >>= \q -> return $ c { fixsven = Just q }
 
+pipe_to :: FilePath -> [String] -> ([Config -> IO Config], t1, t2) -> ([Config -> IO Config], t1, t2)
+pipe_to cmd args (opts, errs, fs) = (mkout : opts, errs, fs)
+  where
+    mkout cfg = do
+        (clowns_out, clowns_in) <- createPipe
+        (jokers_out, jokers_in) <- createPipe
+
+        let subst "CLOWNS" = "/dev/fd/" ++ show clowns_out
+            subst "JOKERS" = "/dev/fd/" ++ show jokers_out
+            subst        x = x
+
+        _ <- spawnProcess cmd $ map subst args
+
+        clowns_queue <- newTQueueIO
+        jokers_queue <- newTQueueIO
+        num_clowns <- newTVarIO (0::Int)
+        num_jokers <- newTVarIO (0::Int)
+
+        pidl <- async . flush_fastq clowns_queue num_clowns =<< fdToHandle clowns_in
+        pidr <- async . flush_fastq jokers_queue num_jokers =<< fdToHandle jokers_in
+
+        let test_cap = do nl <- readTVar num_clowns
+                          nr <- readTVar num_jokers
+                          when (min nl nr > 64) retry
+
+            flush_bam br | isFirstMate  br = do test_cap
+                                                modifyTVar' num_clowns succ
+                                                writeTQueue clowns_queue (Just br)
+                         | isSecondMate br = do test_cap
+                                                modifyTVar' num_jokers succ
+                                                writeTQueue jokers_queue (Just br)
+                         | otherwise       = do return ()
+
+        return $ cfg { output = \_ -> do
+                    mapStreamM_ (atomically . flush_bam)
+                    liftIO $ do atomically $ do writeTQueue clowns_queue Nothing
+                                                writeTQueue jokers_queue Nothing
+                                wait pidl
+                                wait pidr
+                    return () }
+
+    flush_fastq qq nn fd = do
+            mbr <- atomically $ readTQueue qq <* modifyTVar' nn pred
+            case mbr of
+                Just br -> do B.hPutBuilder fd $
+                                    B.char8 '@' <> B.byteString (b_qname br) <>
+                                    (if isFirstMate  br then B.char8 '/' <> B.char8 '1' else mempty) <>
+                                    (if isSecondMate br then B.char8 '/' <> B.char8 '2' else mempty) <>
+                                    B.char8 '\n' <> V.foldr ((<>) . B.char8 . showNucleotides) mempty (b_seq br) <>
+                                    B.char8 '\n' <> B.char8 '+' <> B.char8 '\n' <>
+                                    V.foldr ((<>) . B.word8 . (+) 33 . unQ) (B.char8 '\n') (b_qual br)
+                              flush_fastq qq nn fd
+                Nothing -> return ()
+
 
 -- XXX placeholder...
 pqconf :: PQ_Conf
 pqconf = PQ_Conf 1000 "/var/tmp/"
 
 main :: IO ()
-main = do (opts, files, errors) <- getOpt Permute options `fmap` getArgs
+main = do (args,cmd) <- break (`elem` ["-X","--exec"]) `fmap` getArgs
+          let (opts, files, errors) = (case cmd of _:cmd':args' -> pipe_to cmd' args' ; _ -> id)
+                                      $ getOpt Permute options args
+
           unless (null errors) $ mapM_ (hPutStrLn stderr) errors >> exitFailure
           config <- foldl (>>=) config0 opts
           add_pg <- addPG $ Just version
