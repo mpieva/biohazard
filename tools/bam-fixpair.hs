@@ -57,11 +57,13 @@ data Config = CF { report_mrnm :: !Bool
                  , report_ixs :: !Bool
                  , verbosity :: Verbosity
                  , killmode :: KillMode
+                 , infilter :: BamPair -> Bool
                  , output :: BamMeta -> Iteratee [BamRec] IO ()
                  , fixsven :: Maybe Int }
 
 config0 :: IO Config
-config0 = return $ CF True True False True False True Errors KillNone (protectTerm . pipeBamOutput) Nothing
+config0 = return $ CF True True False True False True Errors KillNone
+                      (const True) (protectTerm . pipeBamOutput) Nothing
 
 options :: [OptDescr (Config -> IO Config)]
 options = [
@@ -90,6 +92,7 @@ options = [
     Option "" ["no-report-fflag"] (NoArg (\c -> return $ c { report_fflag = False })) "Do not report commonly inconsistent flags",
     Option "" ["no-report-fflag"] (NoArg (\c -> return $ c { report_ixs = False })) "Do not report mismatched index fields",
 
+    Option "" ["only-mapped"] (NoArg (\c -> return $ c { infilter = mapped_only })) "Ignore totally unmapped input",
     Option "" ["fix-sven"] (ReqArg set_fixsven "QUAL") "Trim 3' ends of avg qual lower than QUAL",
 
     Option "h?" ["help","usage"] (NoArg usage) "Print this helpful message and exit",
@@ -110,6 +113,14 @@ options = [
     set_output  f  c = return $ c { output = writeBamFile f }
     set_validate   c = return $ c { output = \_ -> skipToEof }
     set_fixsven  a c = readIO a >>= \q -> return $ c { fixsven = Just q }
+
+mapped_only :: BamPair -> Bool
+mapped_only p = case p of
+        Singleton a -> okay a
+        LoneMate  a -> okay a
+        Pair    a b -> okay a || okay b
+  where
+    okay = (\r -> not (isUnmapped r) || (isPaired r && not (isMateUnmapped r))) . unpackBam
 
 pipe_to :: FilePath -> [String] -> ([Config -> IO Config], t1, t2) -> ([Config -> IO Config], t1, t2)
 pipe_to cmd args (opts, errs, fs) = (mkout : opts, errs, fs)
@@ -180,6 +191,7 @@ main = do (args,cmd) <- break (`elem` ["-X","--exec"]) `fmap` getArgs
           add_pg <- addPG $ Just version
           withQueues                                           $ \queues ->
             mergeInputs files >=> run                          $ \hdr ->
+            filterStream (infilter config)                    =$
             re_pair queues config (meta_refs hdr)             =$
             mapChunks (maybe id do_trim (fixsven config))     =$
             (output config) (add_pg hdr)
