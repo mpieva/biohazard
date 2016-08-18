@@ -20,19 +20,16 @@ module Bio.Adna (
     noDamage,
     univDamage,
     empDamage,
-    memoDamageModel,
-    Mat44,
-    Mat44D
+    -- memoDamageModel,
+    Mat44D(..)
                 ) where
 
 import Bio.Bam
 import Bio.Prelude
 import Bio.TwoBit
 import Bio.Util.Pretty
-import Data.Vec ( Mat44, Mat44D, identity, getElem, Vec4, (:.)((:.)) )
 
 import qualified Data.Vector.Generic            as G
-import qualified Data.Vector                    as V
 import qualified Data.Vector.Storable           as VS
 import qualified Data.Vector.Unboxed            as U
 import qualified Data.Vector.Unboxed.Mutable    as UM
@@ -52,13 +49,16 @@ import qualified Data.Vector.Unboxed.Mutable    as UM
 -- this is a vector of packed vectors.  Conveniently, each of the packed
 -- vectors represents all transition /into/ the given nucleotide.
 
+newtype Mat44D = Mat44D (U.Vector Double)
+  deriving Show
 
 -- | A 'DamageModel' is a function that gives substitution matrices for
--- each position in a read.  The 'DamageModel' can depend on the length
--- of the read and whether its alignment is reversed.  In practice, we
--- should probably memoize precomputed damage models somehow.
+-- each position in a read.  The 'DamageModel' can depend on whether the
+-- alignment is reversed, the length of the read and the position.  (In
+-- practice, we should probably memoize precomputed damage models
+-- somehow.)
 
-type DamageModel a = Bool -> Int -> V.Vector (Mat44 a)
+type DamageModel = Bool -> Int -> Int -> Mat44D
 data Subst = Nucleotide :-> Nucleotide deriving (Eq, Ord, Ix, Show)
 
 infix 9 :->
@@ -68,16 +68,18 @@ infix 8 `bang`
 -- mnemonic reading.
 {-# INLINE bang #-}
 bang :: Mat44D -> Subst -> Double
-bang m (N x :-> N y) = getElem (fromIntegral x) $ getElem (fromIntegral y) m
+bang (Mat44D v) (N x :-> N y) = v U.! (fromIntegral x + 4 * fromIntegral y)
 
 -- | 'DamageModel' for undamaged DNA.  The likelihoods follow directly
 -- from the quality score.  This needs elaboration to see what to do
 -- with amibiguity codes (even though those haven't actually been
 -- observed in the wild).
 
-{-# SPECIALIZE noDamage :: DamageModel Double #-}
-noDamage :: Num a => DamageModel a
-noDamage _ l = V.replicate l identity
+noDamage :: DamageModel
+noDamage _ _ _ = Mat44D $ U.fromListN 16 [ 1, 0, 0, 0
+                                         , 0, 1, 0, 0
+                                         , 0, 0, 1, 0
+                                         , 0, 0, 0, 1 ]
 
 
 -- | Parameters for the universal damage model.
@@ -145,29 +147,23 @@ instance (Parse  (v f), Parse  f) => Parse  (GenDamageParameters v f)
 -- to the single stranded or undamaged case.
 
 {-# INLINE genSubstMat #-}
-genSubstMat :: Fractional a => a -> a -> Mat44 a
-genSubstMat p q = vec4 ( vec4  1   0     q   0 )
-                       ( vec4  0 (1-p)   0   0 )
-                       ( vec4  0   0   (1-q) 0 )
-                       ( vec4  0   p     0   1 )
-  where
-    vec4 :: a -> a -> a -> a -> Vec4 a
-    vec4 a b c d = a :. b :. c :. d :. ()
+genSubstMat :: Double -> Double -> Mat44D
+genSubstMat p q = Mat44D $ U.fromListN 16 [ 1,  0,   q,  0
+                                          , 0, 1-p,  0,  0
+                                          , 0,  0,  1-q, 0
+                                          , 0,  p,   0,  1 ]
 
-memoDamageModel :: DamageModel a -> DamageModel a
+{- memoDamageModel :: DamageModel -> DamageModel
 memoDamageModel f = \r l -> if l > 512 || l < 0 then f r l
                             else if r then V.unsafeIndex rev l
                             else           V.unsafeIndex fwd l
   where
     rev = V.generate 512 $ f True
-    fwd = V.generate 512 $ f False
+    fwd = V.generate 512 $ f False -}
 
-{-# SPECIALIZE univDamage :: DamageParameters Double -> DamageModel Double #-}
-univDamage :: Fractional a => DamageParameters a -> DamageModel a
-univDamage DP{..} r l = V.generate l mat
-  where
-    mat i = genSubstMat (p1+p2) (q1+q2)
-      where
+univDamage :: DamageParameters Double -> DamageModel
+univDamage DP{..} r l i = genSubstMat (p1+p2) (q1+q2)
+    where
         (p1, q1) = if r then let lam5 = ssd_lambda ^ (l-i)
                                  lam3 = ssd_kappa ^ (1+i)
                                  lam  = lam3 + lam5 - lam3 * lam5
@@ -184,11 +180,11 @@ univDamage DP{..} r l = V.generate l mat
         lam5_ds = dsd_lambda ^ (1+i)
         lam3_ds = dsd_lambda ^ (l-i)
 
-{-# SPECIALIZE empDamage :: NewDamageParameters U.Vector Double -> DamageModel Double #-}
-empDamage :: (G.Vector v a, Fractional a, Floating a) => NewDamageParameters v a -> DamageModel a
+{-# SPECIALIZE empDamage :: NewDamageParameters U.Vector Double -> DamageModel #-}
+empDamage :: G.Vector v Double => NewDamageParameters v Double -> DamageModel
 empDamage NDP{..} r l
-    | r         = V.generate l (get (flip genSubstMat'))
-    | otherwise = V.generate l (get       genSubstMat' )
+    | r         = get (flip genSubstMat')
+    | otherwise = get       genSubstMat'
   where
     get k i | i+i  <  l = k (fromMaybe dp_alpha (dp_alpha5 G.!? i))
                             (fromMaybe dp_beta  (dp_beta5  G.!? i))

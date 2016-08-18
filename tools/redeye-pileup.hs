@@ -41,7 +41,6 @@ import Bio.Util.Pretty
 import Data.Aeson
 import Data.Avro
 import Data.Text.Encoding            ( decodeUtf8 )
-import Data.Vec.Packed               ( packMat )
 import System.Console.GetOpt
 
 import qualified Data.ByteString.Char8          as S
@@ -161,7 +160,7 @@ enumLibrary report (Lib fs mdp) mrgn output = do
                                  NewDamage ndp -> ("empirical damage parameters " ++ show ndp, empDamage ndp)
 
     liftIO . report $ "using " ++ msg ++ " for " ++ show fs
-    liftIO $ mapM_ print $ [ dmg False 30 V.! i | i <- [0..29] ]
+    liftIO $ mapM_ print $ [ dmg False 30 i | i <- [0..29] ]
 
 
     mergeInputRgns combineCoordinates mrgn (reverse fs)
@@ -169,7 +168,7 @@ enumLibrary report (Lib fs mdp) mrgn output = do
         $== mapMaybeStream (\br ->
                 let b = unpackBam br
                     m = dmg (isReversed b) (VS.length (b_qual b))
-                in decompose (map packMat $ V.toList m) br)
+                in decompose (map m [0..]) br)
         $ output
 
 mergeInputRgns :: (MonadIO m, MonadMask m)

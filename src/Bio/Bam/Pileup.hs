@@ -2,12 +2,11 @@
 {-# OPTIONS_GHC -funbox-strict-fields #-}
 module Bio.Bam.Pileup where
 
+import Bio.Adna ( Mat44D )
 import Bio.Bam.Header
 import Bio.Bam.Rec
 import Bio.Iteratee
 import Bio.Prelude hiding ( yield )
-
-import Data.Vec.Packed ( Mat44D )
 
 import qualified Data.ByteString        as B
 import qualified Data.Vector.Generic    as V

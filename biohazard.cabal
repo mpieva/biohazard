@@ -105,7 +105,6 @@ Library
                        transformers             >= 0.3 && < 0.6,
                        unix                     >= 2.5 && < 2.8,
                        unordered-containers     >= 0.2.3 && < 0.3,
-                       Vec                      == 1.*,
                        vector                   >= 0.9 && < 0.11,
                        vector-algorithms        >= 0.3 && < 1.0,
                        vector-th-unbox          == 0.2.*,
@@ -157,7 +156,6 @@ Executable redeye-pileup
                        filepath,
                        text,
                        unordered-containers,
-                       Vec,
                        vector
 
 Executable redeye-single

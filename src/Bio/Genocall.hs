@@ -4,13 +4,9 @@ module Bio.Genocall where
 import Bio.Adna
 import Bio.Bam.Pileup
 import Bio.Prelude
-import Data.Vec.Base ( (:.)(..) )
-import Data.Vec.LinAlg
-import Data.Vec.Packed
 
 import qualified Data.Set               as Set
 import qualified Data.Vector.Unboxed    as V
-import qualified Data.Vec               as Vec
 
 -- | Simple indel calling.  We don't bother with it too much, so here's
 -- the gist:  We collect variants (simply different variants, details
@@ -132,7 +128,7 @@ mk_snp_gts ploidy = go ploidy alleles
     --   - the genotypes that can be made from 0 alleles is an empty list
 
     go !p as | p == 0    = [ Vec4D 0 0 0 0 ]
-             | otherwise = [ gt + mag * last as' | as'@(_:_) <- inits as, gt <- go (p-1) as' ]
+             | otherwise = [ macsvv mag (last as') gt {-gt + mag * last as'-} | as'@(_:_) <- inits as, gt <- go (p-1) as' ]
 
 -- | SNP call according to maq/samtools/bsnp model.  The matrix k counts
 -- how many errors we made, approximately.
@@ -147,32 +143,32 @@ maq_snp_call ploidy theta bases = snp_gls (V.fromList $ map l $ mk_snp_gts ploid
 
     ref = case bases of (_, DB _ _ r _) : _ -> r ; _ -> nucsN
 
-    everynuc :: Vec.Vec4 Nucleotide
-    everynuc = nucA :. nucC :. nucG :. nucT :. ()
-
+    nullMat = Mat44D $ V.generate 16 (const 0)
     -- L(G)
-    l gt = l' gt (toProb 1) (0 :: Mat44D) bases'
+    l gt = l' gt (toProb 1) nullMat bases'
 
     l' !_  !acc !_ [     ] = acc
     l' !gt !acc !k (!x:xs) =
         let
             -- P(X|Q,H), a vector of four (x is fixed, h is not)
             -- this is the simple form where we set all w to 1/4
-            p_x__q_h_ = Vec.map (\h -> 0.25 * fromQualRaised (theta ** (k `bang` h :-> db_call x)) (db_qual x)) everynuc
+            p_x__q_h_ :: Vec4D
+            p_x__q_h_ = vecNucs $ \h -> 0.25 * fromQualRaised (theta ** (k `bang` h :-> db_call x)) (db_qual x)
 
             -- eh, this is cumbersome... what was I thinking?!
-            p_x__q_h  = Vec.zipWith (\p h -> if db_call x == h then 1 + p - Vec.sum p_x__q_h_ else p) p_x__q_h_ everynuc
+            p_x__q_h  :: Vec4D
+            p_x__q_h  = vecZipNucs (\p h -> if db_call x == h then 1 + p - vecSum p_x__q_h_ else p) p_x__q_h_
 
             -- P(H|X), again a vector of four
-            p_x__q   = dot p_x__q_h dg
-            p_h__x   = Vec.zipWith (\p p_h -> p / p_x__q * p_h) p_x__q_h dg
-            dg = db_dmg x `multmv` gt
+            p_x__q    = dot p_x__q_h dg
+            p_h__x    = vecZip (\p p_h -> p / p_x__q * p_h) p_x__q_h dg
+            dg        = db_dmg x `multmv` gt
 
-            kk = Vec.getElem (fromIntegral . unN $ db_call x) k + pack p_h__x
-            k' = Vec.setElem (fromIntegral . unN $ db_call x) kk k
+            kk = vecZip (+) (getRow (fromIntegral . unN $ db_call x) k) p_h__x
+            k' = setRow (fromIntegral . unN $ db_call x) kk k
 
             acc' = acc * toProb p_x__q
-            meh = Vec.map (\h -> k `bang` h :-> db_call x) everynuc -- XXX
+            meh = vecNucs $ \h -> k `bang` h :-> db_call x
         in {- trace (unlines ["gt " ++ show gt
                           ,"p(x|q,h) " ++ show p_x__q_h
                           ,"dg " ++ show dg ++ ", call = " ++ show (db_call x)
@@ -180,6 +176,13 @@ maq_snp_call ploidy theta bases = snp_gls (V.fromList $ map l $ mk_snp_gts ploid
                           ,"k  " ++ show k
                           ,"k' " ++ show k'
                           ,"meh " ++ show meh]) $ -} l' gt acc' k' xs
+
+getRow :: Int -> Mat44D -> Vec4D
+getRow i (Mat44D v) = Vec4D (v V.! (4*i)) (v V.! (4*i+1)) (v V.! (4*i+2)) (v V.! (4*i+3))
+
+setRow :: Int -> Vec4D -> Mat44D -> Mat44D
+setRow i (Vec4D a b c d) (Mat44D v) = Mat44D $ v V.// [ (4*i,a), (4*i+1,b), (4*i+2,c), (4*i+3,d) ]
+
 
 {-
 smoke_test :: IO ()
@@ -226,3 +229,27 @@ snp_gls pls ref | ref == nucsT = Snp_GLs (pls `V.backpermute` V.fromList [9,6,0,
                 | ref == nucsC = Snp_GLs (pls `V.backpermute` V.fromList [2,1,0,4,3,5,7,6,8,9]) ref
                 | otherwise    = Snp_GLs pls ref
 
+
+data Vec4D = Vec4D {-# UNPACK #-} !Double {-# UNPACK #-} !Double {-# UNPACK #-} !Double {-# UNPACK #-} !Double
+
+vecNucs :: (Nucleotide -> Double) -> Vec4D
+vecNucs f = Vec4D (f nucA) (f nucC) (f nucG) (f nucT)
+
+vecSum :: Vec4D -> Double
+vecSum (Vec4D a b c d)  = a + b + c + d
+
+dot :: Vec4D -> Vec4D -> Double
+dot (Vec4D a b c d) (Vec4D w x y z) = a*w + b*x + c*y + d*z
+
+multmv :: Mat44D -> Vec4D -> Vec4D
+multmv = undefined -- XXX  kein Bock :(
+
+-- | 'macsvv s u v' computes s*u+v.
+macsvv :: Double -> Vec4D -> Vec4D -> Vec4D
+macsvv s (Vec4D a b c d) (Vec4D w x y z) = Vec4D (s*a+w) (s*b+x) (s*c+y) (s*d+z)
+
+vecZip :: (Double -> Double -> Double) -> Vec4D -> Vec4D -> Vec4D
+vecZip f (Vec4D a b c d) (Vec4D w x y z) = Vec4D (f a w) (f b x) (f c y) (f d z)
+
+vecZipNucs :: (Double -> Nucleotide -> Double) -> Vec4D -> Vec4D
+vecZipNucs f (Vec4D a b c d) = Vec4D (f a nucA) (f b nucC) (f c nucG) (f d nucT)
