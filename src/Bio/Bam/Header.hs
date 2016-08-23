@@ -107,8 +107,8 @@ instance Monoid BamMeta where
     mempty = BamMeta mempty noRefs [] []
     a `mappend` b = BamMeta { meta_hdr = meta_hdr a `mappend` meta_hdr b
                             , meta_refs = meta_refs a >< meta_refs b
-                            , meta_other_shit = meta_other_shit a ++ meta_other_shit b
-                            , meta_comment = meta_comment a ++ meta_comment b }
+                            , meta_other_shit = nub $ meta_other_shit a ++ meta_other_shit b
+                            , meta_comment = nub $ meta_comment a ++ meta_comment b }
 
 data BamHeader = BamHeader {
         hdr_version :: (Int, Int),
