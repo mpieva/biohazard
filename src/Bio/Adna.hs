@@ -20,8 +20,8 @@ module Bio.Adna (
     noDamage,
     univDamage,
     empDamage,
-    -- memoDamageModel,
-    Mat44D(..)
+    Mat44D(..),
+    scalarMat
                 ) where
 
 import Bio.Bam
@@ -49,8 +49,7 @@ import qualified Data.Vector.Unboxed.Mutable    as UM
 -- this is a vector of packed vectors.  Conveniently, each of the packed
 -- vectors represents all transition /into/ the given nucleotide.
 
-newtype Mat44D = Mat44D (U.Vector Double)
-  deriving Show
+newtype Mat44D = Mat44D (U.Vector Double) deriving Show
 
 -- | A 'DamageModel' is a function that gives substitution matrices for
 -- each position in a read.  The 'DamageModel' can depend on whether the
@@ -70,16 +69,19 @@ infix 8 `bang`
 bang :: Mat44D -> Subst -> Double
 bang (Mat44D v) (N x :-> N y) = v U.! (fromIntegral x + 4 * fromIntegral y)
 
+scalarMat :: Double -> Mat44D
+scalarMat s = Mat44D $ U.fromListN 16 [ s, 0, 0, 0
+                                      , 0, s, 0, 0
+                                      , 0, 0, s, 0
+                                      , 0, 0, 0, s ]
+
 -- | 'DamageModel' for undamaged DNA.  The likelihoods follow directly
 -- from the quality score.  This needs elaboration to see what to do
 -- with amibiguity codes (even though those haven't actually been
 -- observed in the wild).
 
 noDamage :: DamageModel
-noDamage _ _ _ = Mat44D $ U.fromListN 16 [ 1, 0, 0, 0
-                                         , 0, 1, 0, 0
-                                         , 0, 0, 1, 0
-                                         , 0, 0, 0, 1 ]
+noDamage _ _ _ = scalarMat 1
 
 
 -- | Parameters for the universal damage model.
@@ -152,14 +154,6 @@ genSubstMat p q = Mat44D $ U.fromListN 16 [ 1,  0,   q,  0
                                           , 0, 1-p,  0,  0
                                           , 0,  0,  1-q, 0
                                           , 0,  p,   0,  1 ]
-
-{- memoDamageModel :: DamageModel -> DamageModel
-memoDamageModel f = \r l -> if l > 512 || l < 0 then f r l
-                            else if r then V.unsafeIndex rev l
-                            else           V.unsafeIndex fwd l
-  where
-    rev = V.generate 512 $ f True
-    fwd = V.generate 512 $ f False -}
 
 univDamage :: DamageParameters Double -> DamageModel
 univDamage DP{..} r l i = genSubstMat (p1+p2) (q1+q2)

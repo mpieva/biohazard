@@ -242,7 +242,8 @@ dot :: Vec4D -> Vec4D -> Double
 dot (Vec4D a b c d) (Vec4D w x y z) = a*w + b*x + c*y + d*z
 
 multmv :: Mat44D -> Vec4D -> Vec4D
-multmv = undefined -- XXX  kein Bock :(
+multmv m v = Vec4D (dot (getRow 0 m) v) (dot (getRow 1 m) v)
+                   (dot (getRow 2 m) v) (dot (getRow 3 m) v)
 
 -- | 'macsvv s u v' computes s*u+v.
 macsvv :: Double -> Vec4D -> Vec4D -> Vec4D
