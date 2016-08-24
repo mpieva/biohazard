@@ -196,14 +196,24 @@ data DivTable = DivTable !Double !(U.Vector Int) deriving (Show, Generic)
 instance Pretty DivTable
 instance Parse  DivTable
 
+instance Monoid DivTable where
+    mempty = DivTable 0 U.empty
+
+    DivTable a u `mappend` DivTable b v = DivTable (a+b) w
+      where w | U.null  u = v
+              | U.null  v = u
+              | otherwise = U.zipWith (+) u v
+
 -- | Divergence estimate.  Lists contain three or four floats, these are
 -- divergence, heterozygosity at W sites, heterozygosity at S sites, and
 -- optionally gappiness in this order.
 data DivEst = DivEst {
     point_est :: [Double],
     conf_region :: [( [Double], [Double] )]
-  } deriving Show
+  } deriving (Show, Generic)
 
+instance Pretty DivEst
+instance Parse  DivEst
 
 -- XXX we should estimate an indel rate, to be appended as the fourth
 -- result (but that needs different tables)

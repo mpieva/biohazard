@@ -6,14 +6,16 @@ import GHC.Generics
 import Text.PrettyPrint.Leijen.Text ( (<+>), (<$>), (</>) )
 
 import qualified Data.Attoparsec.Text           as A
+import qualified Data.Vector.Unboxed            as U
 import qualified Text.PrettyPrint.Leijen.Text   as P
-
-import qualified Data.Vector.Unboxed as U
 
 -- ^ I can has generic pretty printer?
 
 pprint :: Pretty a => a -> IO ()
 pprint = (>> putStrLn []) . P.displayIO stdout . P.renderPretty 0.75 132 . pretty 0
+
+pshow :: Pretty a => a -> LazyText
+pshow = P.displayT . P.renderPretty 0.75 132 . pretty 0
 
 pparse :: Parse a => Text -> Either String a
 pparse = A.parseOnly (parse 0)
@@ -26,6 +28,9 @@ parseList = a_brackets $ parse 0 `A.sepBy` a_comma
 
 a_brackets :: A.Parser a -> A.Parser a
 a_brackets p = A.char '[' *> A.skipSpace *> p <* A.skipSpace <* A.char ']' <* A.skipSpace
+
+a_parens :: A.Parser a -> A.Parser a
+a_parens p = A.char '(' *> A.skipSpace *> p <* A.skipSpace <* A.char ')' <* A.skipSpace
 
 a_comma :: A.Parser Char
 a_comma = A.char ',' <* A.skipSpace
@@ -47,6 +52,15 @@ instance Pretty Double where pretty _ = P.double
 
 instance Parse    Int where parse _ = A.signed A.decimal
 instance Parse Double where parse _ = A.double
+
+instance (Pretty a, Pretty b) => Pretty (a,b) where
+    pretty p (a,b) = P.parens $ pretty p a <> P.char ',' <+> pretty p b
+
+instance (Parse  a, Parse  b) => Parse  (a,b) where
+    parse  p = a_parens $ pure (,) <*> parse p <* A.char ',' <* A.skipSpace <*> parse p
+
+instance Pretty a => Pretty [a] where pretty _ = prettyList
+instance Parse  a => Parse  [a] where parse  _ = parseList
 
 instance (Pretty a, U.Unbox a) => Pretty (U.Vector a) where pretty _ = prettyList . U.toList
 instance (Parse a,  U.Unbox a) => Parse  (U.Vector a) where parse  _ = U.fromList `fmap` parseList

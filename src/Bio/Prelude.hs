@@ -5,12 +5,12 @@ module Bio.Prelude (
     module System.Posix.Files,
     module System.Posix.IO,
     module System.Posix.Types,
-    Bytes,
+    Bytes, LazyBytes,
     HashMap,
     HashSet,
     IntMap,
     IntSet,
-    Text,
+    Text, LazyText,
     Pair(..),
 #ifndef __HADDOCK__
 #ifdef __GLASGOW_HASKELL__
@@ -56,13 +56,15 @@ import System.Posix.Files
 import System.Posix.IO
 import System.Posix.Types
 
-import qualified Data.ByteString        as B
 import qualified Data.ByteString.Unsafe as B
-import qualified Data.ByteString.Lazy   as L
+import qualified Data.ByteString.Lazy   as BL
 import qualified Data.ByteString.Char8  as S
 import qualified Data.Text              as T
+import qualified Data.Text.Lazy         as TL
 
-type Bytes = ByteString
+type Bytes     =    ByteString
+type LazyBytes = BL.ByteString
+type LazyText  = TL.Text
 
 infixl 2 :!:
 
@@ -90,14 +92,14 @@ isLeft = either (const False) (const True)
 isRight = either (const True) (const False)
 #endif
 
-fdPut :: Fd -> B.ByteString -> IO ()
+fdPut :: Fd -> Bytes -> IO ()
 fdPut fd s =
     B.unsafeUseAsCStringLen s $ \(p,l) ->
     throwErrnoIf_ (/= fromIntegral l) "fdPut" $
     fdWriteBuf fd (castPtr p) (fromIntegral l)
 
-fdPutLazy :: Fd -> L.ByteString -> IO ()
-fdPutLazy fd = mapM_ (fdPut fd) . L.toChunks
+fdPutLazy :: Fd -> LazyBytes -> IO ()
+fdPutLazy fd = mapM_ (fdPut fd) . BL.toChunks
 
 withFd :: FilePath -> OpenMode -> Maybe FileMode -> OpenFileFlags
        -> (Fd -> IO a) -> IO a

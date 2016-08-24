@@ -136,7 +136,7 @@ data GenDamageParameters vec float
     = UnknownDamage
     | OldDamage (DamageParameters float)
     | NewDamage (NewDamageParameters vec float)
-  deriving (Show, Generic)
+  deriving (Show, Generic, Read)
 
 instance (Pretty (v f), Pretty f) => Pretty (GenDamageParameters v f)
 instance (Parse  (v f), Parse  f) => Parse  (GenDamageParameters v f)

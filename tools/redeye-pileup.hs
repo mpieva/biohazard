@@ -96,7 +96,7 @@ options = [
     set_theta "N" c = return $ c { conf_theta = Nothing }
     set_theta   a c = (\t  ->  c { conf_theta = Just  t }) <$> readIO a
 
-    set_dmg     a c = let upd d = return $ c { conf_libs = Lib [] d : conf_libs c }
+    set_dmg     a c = let upd d = return $ c { conf_libs = Lib [] (NewDamage d) : conf_libs c }
                       in either fail upd . pparse . fromString $ a
 
     set_chrom   a c = return $ c { conf_chrom  = a }
@@ -113,7 +113,7 @@ main = do
     Conf{..} <- foldl (>>=) (return defaultConf) opts
     unless (null errs) $ mapM_ (hPutStrLn stderr) errs >> exitFailure
 
-    (tab,()) <- withFd (conf_output ++ ".#") WriteOnly Nothing defaultFileFlags                 $ \ohdl ->
+    (tab,()) <- withFd (conf_output ++ ".#") WriteOnly (Just 0o666) defaultFileFlags            $ \ohdl ->
                 mergeLibraries conf_report (reverse conf_libs) conf_chrom >=> run               $ \hdr ->
                 progressPos (\(rs, p, _) -> (rs, p)) "GT call at " conf_report (meta_refs hdr) =$
                 pileup                                                                         =$
@@ -160,8 +160,7 @@ enumLibrary report (Lib fs mdp) mrgn output = do
                                  NewDamage ndp -> ("empirical damage parameters " ++ show ndp, empDamage ndp)
 
     liftIO . report $ "using " ++ msg ++ " for " ++ show fs
-    liftIO $ mapM_ print $ [ dmg False 30 i | i <- [0..29] ]
-
+    -- liftIO $ mapM_ print $ [ dmg False 30 V.! i | i <- [0..29] ]
 
     mergeInputRgns combineCoordinates mrgn (reverse fs)
         $== takeWhileE (isValidRefseq . b_rname . unpackBam)
