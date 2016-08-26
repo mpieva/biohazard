@@ -166,29 +166,40 @@ data MVector_Nucs_half s a = MVector_Nucs_half !Int !Int !(ForeignPtr Word8)
 type instance V.Mutable Vector_Nucs_half = MVector_Nucs_half
 
 instance V.Vector Vector_Nucs_half Nucleotides where
+    {-# INLINE basicUnsafeFreeze #-}
     basicUnsafeFreeze (MVector_Nucs_half o l fp) = return $  Vector_Nucs_half o l fp
+    {-# INLINE basicUnsafeThaw #-}
     basicUnsafeThaw    (Vector_Nucs_half o l fp) = return $ MVector_Nucs_half o l fp
 
+    {-# INLINE basicLength #-}
     basicLength          (Vector_Nucs_half _ l  _) = l
+    {-# INLINE basicUnsafeSlice #-}
     basicUnsafeSlice s l (Vector_Nucs_half o _ fp) = Vector_Nucs_half (o + s) l fp
 
+    {-# INLINE basicUnsafeIndexM #-}
     basicUnsafeIndexM (Vector_Nucs_half o _ fp) i
         | even (o+i) = return . Ns $ (b `shiftR` 4) .&. 0xF
         | otherwise  = return . Ns $  b             .&. 0xF
       where !b = unsafeInlineIO $ withForeignPtr fp $ \p -> peekByteOff p ((o+i) `shiftR` 1)
 
 instance VM.MVector MVector_Nucs_half Nucleotides where
+    {-# INLINE basicLength #-}
     basicLength          (MVector_Nucs_half _ l  _) = l
+    {-# INLINE basicUnsafeSlice #-}
     basicUnsafeSlice s l (MVector_Nucs_half o _ fp) = MVector_Nucs_half (o + s) l fp
 
+    {-# INLINE basicOverlaps #-}
     basicOverlaps (MVector_Nucs_half _ _ fp1) (MVector_Nucs_half _ _ fp2) = fp1 == fp2
+    {-# INLINE basicUnsafeNew #-}
     basicUnsafeNew l = unsafePrimToPrim $ MVector_Nucs_half 0 l <$> mallocForeignPtrBytes ((l+1) `shiftR` 1)
 
+    {-# INLINE basicUnsafeRead #-}
     basicUnsafeRead (MVector_Nucs_half o _ fp) i
         | even (o+i) = liftM (Ns . (.&.) 0xF . (`shiftR` 4)) b
         | otherwise  = liftM (Ns . (.&.) 0xF               ) b
       where b = unsafePrimToPrim $ withForeignPtr fp $ \p -> peekByteOff p ((o+i) `shiftR` 1)
 
+    {-# INLINE basicUnsafeWrite #-}
     basicUnsafeWrite (MVector_Nucs_half o _ fp) i (Ns x) =
         unsafePrimToPrim $ withForeignPtr fp $ \p -> do
             y <- peekByteOff p ((o+i) `shiftR` 1)

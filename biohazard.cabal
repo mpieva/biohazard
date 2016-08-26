@@ -111,7 +111,7 @@ Library
                        wl-pprint-text           == 1.1.*,
                        zlib                     >= 0.5 && < 0.7
 
-  Ghc-options:         -Wall -auto-all
+  Ghc-options:         -Wall -fprof-auto
   Extensions:          NoImplicitPrelude, OverloadedStrings, BangPatterns
   Hs-source-dirs:      src
   Install-Includes:    src/cbits/myers_align.h
@@ -132,7 +132,7 @@ Library
 Executable test-pileup
   Main-is:             test-pileup.hs
   Hs-Source-Dirs:      tests
-  Ghc-options:         -Wall -auto-all
+  Ghc-options:         -Wall -fprof-auto
   Extensions:          NoImplicitPrelude, OverloadedStrings, BangPatterns
   Build-depends:       async,
                        base,
