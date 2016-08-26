@@ -1,5 +1,5 @@
 {-# LANGUAGE OverloadedStrings, RecordWildCards, FlexibleContexts, CPP #-}
-{-# LANGUAGE BangPatterns, FlexibleInstances, DeriveGeneric, DeriveAnyClass #-}
+{-# LANGUAGE BangPatterns, FlexibleInstances, DeriveGeneric #-}
 -- | Metadata necessary for a sensible genotyping workflow.
 module Bio.Genocall.Metadata where
 
