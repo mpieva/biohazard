@@ -1,0 +1,45 @@
+module Bio.Illumina.Locs where
+
+-- ^ Parsing Illumina location files.  It appears we have to support
+-- pos.txt, locs and clocs files; don't know if they come in compressed
+-- versions, too.
+
+-- Pos files are text, the first two words on each line are x and y
+-- coordinate (signed decimal floating point numbers).  They are rounded
+-- to integers and clamped to a minimum of zero.
+--
+-- Locs files have three header words (4 bytes, little endian), the third
+-- is the number of clusters.  They are followed by two floats (IEEE
+-- single precision, little endian) for (x,y) of each cluster.
+--
+-- clocs files store position data for successive clusters, compressed in bins as follows:
+--     Byte 0   : unused
+--     Byte 1-4 : unsigned int numBins
+--     The rest of the file consists of bins/blocks, where a bin consists of an integer
+--     indicating number of blocks, followed by that number of blocks and a block consists
+--     of an x-y coordinate pair.  In otherwords:
+--
+--     for each bin
+--         byte 1: Unsigned int numBlocks
+--         for each block:
+--             byte 1 : byte xRelativeCoordinate
+--             byte 2 : byte yRelativeCoordinate
+--
+--     Actual x and y values are computed using the following algorithm
+--
+--     xOffset = yOffset = 0
+--     imageWidth = 2048
+--     blockSize = 25
+--     maxXbins = ceil(imageWidth/blockSize)
+--     for each bin:
+--         for each block:
+--             x = xRelativeCoordinate/10 + xoffset
+--             y = yRelativeCoordinate/10 + yoffset
+--
+--         if (binIndex > 0 && ((binIndex + 1) % maxXbins == 0)):
+--            xOffset = 0
+--            yOffset += blockSize
+--         else:
+--            xOffset += blockSize-
+--
+-- (what an ugly read)
