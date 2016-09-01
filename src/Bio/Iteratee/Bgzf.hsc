@@ -1,6 +1,3 @@
-{-# LANGUAGE ForeignFunctionInterface, BangPatterns, EmptyDataDecls #-}
-{-# LANGUAGE MultiParamTypeClasses, OverloadedStrings #-}
-
 -- | Handling of BGZF files.  Right now, we have an Enumeratee each for
 -- input and output.  The input iteratee can optionally supply virtual
 -- file offsets, so that seeking is possible.

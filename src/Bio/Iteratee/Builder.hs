@@ -1,4 +1,3 @@
-{-# LANGUAGE RecordWildCards, FlexibleContexts, BangPatterns, OverloadedStrings #-}
 -- | Buffer builder to assemble Bgzf blocks.  (This will probably be
 -- renamed.)  The plan is to serialize stuff (BAM and BCF) into a
 -- buffer, then Bgzf chunks from the buffer and reuse it.  This /should/
@@ -14,11 +13,11 @@
 -- reasoning behind the binary-serialise-cbor package, it would be more
 -- clever to have a representation of the things we can 'Push' that's
 -- similar to a list, and then a function (an Iteratee?) that consumes
--- the list of tokens and fills a buffer.  
+-- the list of tokens and fills a buffer.
 
 module Bio.Iteratee.Builder where
 
-import Bio.Iteratee hiding ( NullPoint ) 
+import Bio.Iteratee hiding ( NullPoint )
 import Bio.Iteratee.Bgzf
 import Bio.Prelude
 import Data.NullPoint ( NullPoint(..) )

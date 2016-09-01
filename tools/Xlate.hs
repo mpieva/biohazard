@@ -1,5 +1,3 @@
-{-# LANGUAGE BangPatterns #-}
-{-# OPTIONS_GHC -Wall #-}
 module Xlate where
 
 import qualified Data.ByteString.Char8  as S

@@ -1,5 +1,3 @@
-{-# LANGUAGE BangPatterns, OverloadedStrings, RecordWildCards, PatternGuards, FlexibleContexts #-}
-{-# OPTIONS_GHC -funbox-strict-fields #-}
 module Bio.Bam.Index (
     BamIndex(..),
     readBamIndex,
@@ -43,24 +41,24 @@ import qualified Data.Vector.Algorithms.Intro   as N
 
 data BamIndex a = BamIndex {
     -- | Minshift parameter from CSI
-    minshift :: !Int,
+    minshift :: {-# UNPACK #-} !Int,
 
     -- | Depth parameter from CSI
-    depth :: !Int,
+    depth :: {-# UNPACK #-} !Int,
 
     -- | Best guess at where the unaligned records start
-    unaln_off :: !Int64,
+    unaln_off :: {-# UNPACK #-} !Int64,
 
     -- | Room for stuff (needed for tabix)
     extensions :: a,
 
     -- | Records for the binning index, where each bin has a list of
     -- segments belonging to it.
-    refseq_bins :: !(V.Vector Bins),
+    refseq_bins :: {-# UNPACK #-} !(V.Vector Bins),
 
     -- | Known checkpoints of the form (pos,off) where off is the
     -- virtual offset of the first record crossing pos.
-    refseq_ckpoints :: !(V.Vector Ckpoints) }
+    refseq_ckpoints :: {-# UNPACK #-} !(V.Vector Ckpoints) }
 
   deriving Show
 
@@ -99,7 +97,7 @@ type Ckpoints = IntMap Int64
 
 -- | A 'Segment' has a start and an end offset, and an "end coordinate"
 -- from the originating region.
-data Segment = Segment !Int64 !Int64 !Int deriving Show
+data Segment = Segment {-# UNPACK #-} !Int64 {-# UNPACK #-} !Int64 {-# UNPACK #-} !Int deriving Show
 
 segmentLists :: BamIndex a -> Refseq -> R.Subsequence -> [[Segment]]
 segmentLists bi@BamIndex{..} (Refseq ref) (R.Subsequence imap)

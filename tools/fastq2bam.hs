@@ -1,4 +1,3 @@
-{-# LANGUAGE BangPatterns, OverloadedStrings #-}
 import Bio.Bam
 import Bio.Bam.Evan ( removeWarts )
 import Bio.Iteratee.ZLib

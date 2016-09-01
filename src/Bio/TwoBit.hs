@@ -1,4 +1,3 @@
-{-# LANGUAGE BangPatterns, NamedFieldPuns, RecordWildCards #-}
 module Bio.TwoBit (
         TwoBitFile(..),
         TwoBitSequence(..),

@@ -1,5 +1,3 @@
-{-# LANGUAGE OverloadedStrings, RecordWildCards, FlexibleContexts, CPP #-}
-{-# LANGUAGE BangPatterns, FlexibleInstances, DeriveGeneric #-}
 -- Genotype call a bunch of samples.  Dependency-driven, in parallel.
 -- Or something.
 --

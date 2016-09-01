@@ -1,4 +1,3 @@
-{-# LANGUAGE OverloadedStrings, BangPatterns #-}
 module Bio.Bam.Header (
         BamMeta(..),
         parseBamMeta,

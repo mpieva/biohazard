@@ -1,4 +1,4 @@
-{-# LANGUAGE RecordWildCards, DeriveGeneric #-}
+{-# LANGUAGE DeriveGeneric #-}
 module Bio.Genocall.Estimators where
 
 import Bio.Adna
@@ -193,8 +193,8 @@ estimateDamageFromFiles lmin params fs = do
 
 data DivTable = DivTable !Double !(U.Vector Int) deriving (Show, Generic)
 
-instance Pretty DivTable
-instance Parse  DivTable
+instance Pretty DivTable where pretty = default_pretty
+instance Parse  DivTable where parse  = default_parse
 
 instance Monoid DivTable where
     mempty = DivTable 0 U.empty
@@ -212,8 +212,8 @@ data DivEst = DivEst {
     conf_region :: [( [Double], [Double] )]
   } deriving (Show, Generic)
 
-instance Pretty DivEst
-instance Parse  DivEst
+instance Pretty DivEst where pretty = default_pretty
+instance Parse  DivEst where parse  = default_parse
 
 -- XXX we should estimate an indel rate, to be appended as the fourth
 -- result (but that needs different tables)

@@ -1,5 +1,4 @@
-{-# LANGUAGE RecordWildCards, BangPatterns, TypeFamilies, FlexibleContexts #-}
-{-# LANGUAGE OverloadedStrings, FlexibleInstances, MultiParamTypeClasses   #-}
+{-# LANGUAGE TypeFamilies #-}
 
 -- | Parsers and Printers for BAM and SAM.  We employ an @Iteratee@
 -- interface, and we strive to support everything possible in BAM.  So
@@ -16,7 +15,6 @@
 -- - Same for statistics.  Something like "flagstats" could always be
 --   written.  Actually, having @writeBamHandle@ return enhanced
 --   flagstats as a result might be even better.
---
 
 module Bio.Bam.Rec (
     BamRaw,

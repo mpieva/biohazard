@@ -1,6 +1,3 @@
-{-# LANGUAGE OverloadedStrings, BangPatterns, RecordWildCards #-}
-{-# OPTIONS_GHC -Wall #-}
-
 module Align where
 
 import Bio.Bam

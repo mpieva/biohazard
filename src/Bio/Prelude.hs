@@ -1,4 +1,4 @@
-{-# LANGUAGE CPP, TypeOperators, TypeSynonymInstances, FlexibleInstances #-}
+{-# LANGUAGE CPP, TypeOperators #-}
 module Bio.Prelude (
     module Bio.Base,
     module BasePrelude,

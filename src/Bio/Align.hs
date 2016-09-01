@@ -1,4 +1,3 @@
-{-# LANGUAGE ForeignFunctionInterface #-}
 module Bio.Align (
     Mode(..),
     myersAlign,

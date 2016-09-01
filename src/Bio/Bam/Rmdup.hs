@@ -1,5 +1,3 @@
-{-# LANGUAGE ExistentialQuantification, RecordWildCards, NamedFieldPuns #-}
-{-# LANGUAGE OverloadedStrings, BangPatterns, FlexibleContexts #-}
 module Bio.Bam.Rmdup(
             rmdup, Collapse, cons_collapse, cheap_collapse,
             cons_collapse_keep, cheap_collapse_keep,

@@ -27,7 +27,7 @@ Extra-Source-Files:  man/man7/biohazard.7
 Data-Files:          index_db.json
 Data-Dir:            data
 
-Cabal-version:       >=1.9.2
+Cabal-version:       >= 1.10
 Build-type:          Custom
 Tested-With:         GHC == 7.6.2, GHC == 7.8.4, GHC == 7.10.1
 
@@ -112,7 +112,29 @@ Library
                        zlib                     >= 0.5 && < 0.7
 
   Ghc-options:         -Wall -fprof-auto
-  Extensions:          NoImplicitPrelude, OverloadedStrings, BangPatterns
+
+  Default-Language:    Haskell2010
+
+  Default-Extensions:  BangPatterns,
+                       FlexibleContexts,
+                       FlexibleInstances,
+                       MultiParamTypeClasses,
+                       NoImplicitPrelude,
+                       OverloadedStrings,
+                       RecordWildCards,
+                       TypeSynonymInstances
+
+  Other-Extensions:    CPP,
+                       DeriveGeneric,
+                       ExistentialQuantification,
+                       GeneralizedNewtypeDeriving,
+                       PatternGuards,
+                       Rank2Types,
+                       ScopedTypeVariables,
+                       TemplateHaskell,
+                       TypeFamilies,
+                       TypeOperators
+
   Hs-source-dirs:      src
   Install-Includes:    src/cbits/myers_align.h
   C-sources:           src/cbits/myers_align.c
@@ -133,7 +155,8 @@ Executable test-pileup
   Main-is:             test-pileup.hs
   Hs-Source-Dirs:      tests
   Ghc-options:         -Wall -fprof-auto
-  Extensions:          NoImplicitPrelude, OverloadedStrings, BangPatterns
+  Default-Language:    Haskell2010
+  Default-Extensions:  NoImplicitPrelude, OverloadedStrings, BangPatterns
   Build-depends:       async,
                        base,
                        biohazard,
@@ -148,7 +171,9 @@ Executable redeye-dar
   Main-is:             redeye-dar.hs
   Hs-Source-Dirs:      tools
   Ghc-options:         -Wall -threaded -rtsopts -with-rtsopts=-N
-  Extensions:          NoImplicitPrelude, OverloadedStrings, BangPatterns
+  Default-Language:    Haskell2010
+  Default-Extensions:  NoImplicitPrelude, OverloadedStrings,
+                       BangPatterns, RecordWildCards
   Build-depends:       async,
                        base,
                        biohazard,
@@ -160,8 +185,11 @@ Executable redeye-dar
 
 Executable redeye-pileup
   Main-is:             redeye-pileup.hs
-  Ghc-options:         -Wall -threaded -rtsopts -with-rtsopts=-N
-  Extensions:          NoImplicitPrelude, OverloadedStrings, BangPatterns
+  Ghc-options:         -Wall
+  -- Ghc-options:         -Wall -threaded -rtsopts -with-rtsopts=-N
+  Default-Language:    Haskell2010
+  Default-Extensions:  NoImplicitPrelude, OverloadedStrings,
+                       BangPatterns, RecordWildCards, FlexibleContexts
   Hs-Source-Dirs:      tools
   Build-depends:       aeson,
                        base,
@@ -176,7 +204,9 @@ Executable redeye-pileup
 Executable redeye-single
   Main-is:             redeye-single.hs
   Ghc-options:         -Wall -rtsopts
-  Extensions:          NoImplicitPrelude, OverloadedStrings, BangPatterns
+  Default-Language:    Haskell2010
+  Default-Extensions:  NoImplicitPrelude, OverloadedStrings,
+                       BangPatterns, RecordWildCards, FlexibleContexts
   Hs-Source-Dirs:      tools
   Build-depends:       aeson,
                        base,
@@ -194,17 +224,20 @@ Executable redeye-single
 Executable redeye-flow
   Main-is:             redeye-flow.hs
   Ghc-options:         -Wall -rtsopts
-  Extensions:          NoImplicitPrelude, OverloadedStrings, BangPatterns
+  Default-Language:    Haskell2010
+  Default-Extensions:  NoImplicitPrelude, OverloadedStrings,
+                       BangPatterns, DeriveGeneric
   Hs-Source-Dirs:      tools
-  Build-depends:       shake == 0.15.*,
-                       base,
+  Build-depends:       base,
                        biohazard,
+                       shake == 0.15.*,
                        text
 
 -- Executable gt-scan
   -- Main-is:             gt-scan.hs
   -- Ghc-options:         -Wall -rtsopts
-  -- Extensions:          NoImplicitPrelude, OverloadedStrings, BangPatterns
+  -- Extensions:          NoImplicitPrelude, OverloadedStrings,
+  --                      BangPatterns, TypeFamilies
   -- Hs-Source-Dirs:      tools
   -- Build-depends:       aeson,
                        -- base,
@@ -224,7 +257,9 @@ Executable afroengineer
   Main-is:             afroengineer.hs
   Ghc-options:         -Wall -rtsopts
   -- Ghc-options:         -Wall -threaded -rtsopts -with-rtsopts=-N
-  Extensions:          NoImplicitPrelude, OverloadedStrings, BangPatterns
+  Default-Language:    Haskell2010
+  Default-Extensions:  NoImplicitPrelude, OverloadedStrings,
+                       BangPatterns, RecordWildCards, Rank2Types
   Hs-source-dirs:      tools
   Other-Modules:       Align, SimpleSeed
   Build-Depends:       base,
@@ -239,7 +274,9 @@ Executable bam-fixpair
   Main-is:             bam-fixpair.hs
   Ghc-options:         -Wall -rtsopts
   -- Ghc-options:         -Wall -threaded -rtsopts -with-rtsopts=-N
-  Extensions:          NoImplicitPrelude, OverloadedStrings, BangPatterns
+  Default-Language:    Haskell2010
+  Default-Extensions:  NoImplicitPrelude, OverloadedStrings,
+                       BangPatterns, RecordWildCards, FlexibleContexts
   Hs-Source-Dirs:      tools
   Build-depends:       async,
                        base,
@@ -256,7 +293,9 @@ Executable bam-meld
   Main-is:             bam-meld.hs
   Ghc-options:         -Wall -rtsopts
   -- Ghc-options:         -Wall -threaded -rtsopts -with-rtsopts=-N
-  Extensions:          NoImplicitPrelude, OverloadedStrings, BangPatterns
+  Default-Language:    Haskell2010
+  Default-Extensions:  NoImplicitPrelude, OverloadedStrings,
+                       BangPatterns, FlexibleContexts
   Hs-Source-Dirs:      tools
   Build-depends:       base,
                        biohazard,
@@ -267,7 +306,8 @@ Executable bam-resample
   Main-is:             bam-resample.hs
   Ghc-options:         -Wall -rtsopts
   -- Ghc-options:         -Wall -threaded -rtsopts -with-rtsopts=-N
-  Extensions:          NoImplicitPrelude, OverloadedStrings, BangPatterns
+  Default-Language:    Haskell2010
+  Default-Extensions:  NoImplicitPrelude, OverloadedStrings, BangPatterns
   Hs-Source-Dirs:      tools
   Build-depends:       base,
                        biohazard,
@@ -278,7 +318,8 @@ Executable bam-rewrap
   Main-is:             bam-rewrap.hs
   Ghc-options:         -Wall -rtsopts
   -- Ghc-options:         -Wall -threaded -rtsopts -with-rtsopts=-N
-  Extensions:          NoImplicitPrelude, OverloadedStrings, BangPatterns
+  Default-Language:    Haskell2010
+  Default-Extensions:  NoImplicitPrelude, OverloadedStrings, BangPatterns
   Hs-Source-Dirs:      tools
   Build-depends:       base,
                        biohazard,
@@ -289,7 +330,9 @@ Executable bam-rmdup
   Main-is:             bam-rmdup.hs
   Ghc-options:         -Wall -rtsopts
   -- Ghc-options:         -Wall -threaded -rtsopts -with-rtsopts=-N
-  Extensions:          NoImplicitPrelude, OverloadedStrings, BangPatterns
+  Default-Language:    Haskell2010
+  Default-Extensions:  NoImplicitPrelude, OverloadedStrings,
+                       BangPatterns, RecordWildCards, FlexibleContexts
   Hs-Source-Dirs:      tools
   Build-depends:       base,
                        biohazard,
@@ -303,7 +346,8 @@ Executable bam-trim
   Main-is:             bam-trim.hs
   Ghc-options:         -Wall -rtsopts
   -- Ghc-options:         -Wall -threaded -rtsopts -with-rtsopts=-N
-  Extensions:          NoImplicitPrelude, OverloadedStrings, BangPatterns
+  Default-Language:    Haskell2010
+  Default-Extensions:  NoImplicitPrelude, OverloadedStrings, BangPatterns
   Hs-Source-Dirs:      tools
   Build-depends:       base,
                        biohazard,
@@ -313,7 +357,8 @@ Executable fastq2bam
   Main-is:             fastq2bam.hs
   Ghc-options:         -Wall -rtsopts
   -- Ghc-options:         -Wall -threaded -rtsopts -with-rtsopts=-N
-  Extensions:          NoImplicitPrelude, OverloadedStrings, BangPatterns
+  Default-Language:    Haskell2010
+  Default-Extensions:  NoImplicitPrelude, OverloadedStrings, BangPatterns
   Hs-Source-Dirs:      tools
   Build-depends:       base,
                        biohazard,
@@ -328,7 +373,9 @@ Executable jivebunny
   CC-options:          -std=c99 -ffast-math
   Ghc-options:         -Wall -rtsopts
   -- Ghc-options:         -Wall -threaded -rtsopts -with-rtsopts=-N
-  Extensions:          NoImplicitPrelude, OverloadedStrings, BangPatterns
+  Default-Language:    Haskell2010
+  Default-Extensions:  NoImplicitPrelude, OverloadedStrings,
+                       BangPatterns, TypeFamilies, RecordWildCards
   Other-modules:       Index
   Build-depends:       aeson,
                        base,
@@ -348,7 +395,9 @@ Executable mt-anno
   Main-is:             mt-anno.hs
   Ghc-options:         -Wall -rtsopts
   -- Ghc-options:         -Wall -threaded -rtsopts -with-rtsopts=-N
-  Extensions:          NoImplicitPrelude, OverloadedStrings, BangPatterns
+  Default-Language:    Haskell2010
+  Default-Extensions:  NoImplicitPrelude, OverloadedStrings,
+                       BangPatterns, RecordWildCards
   Hs-Source-Dirs:      tools
   Other-Modules:       Anno, Seqs, Xlate
   Build-Depends:       base,
@@ -360,7 +409,9 @@ Executable mt-ccheck
   Main-is:             mt-ccheck.hs
   Ghc-options:         -Wall -rtsopts
   -- Ghc-options:         -Wall -threaded -rtsopts -with-rtsopts=-N
-  Extensions:          NoImplicitPrelude, OverloadedStrings, BangPatterns
+  Default-Language:    Haskell2010
+  Default-Extensions:  NoImplicitPrelude, OverloadedStrings,
+                       BangPatterns, RecordWildCards
   Hs-Source-Dirs:      tools
   Build-Depends:       base,
                        bytestring,

@@ -1,4 +1,3 @@
-{-# LANGUAGE BangPatterns #-}
 -- Re-wrap alignments to obey the given length of the reference
 -- sequence.
 --

@@ -1,5 +1,5 @@
-{-# LANGUAGE GeneralizedNewtypeDeriving, TypeFamilies, FlexibleInstances, CPP #-}
-{-# LANGUAGE MultiParamTypeClasses, BangPatterns, TemplateHaskell, RankNTypes #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving, TypeFamilies, CPP #-}
+{-# LANGUAGE ExistentialQuantification, TemplateHaskell    #-}
 -- | Common data types used everywhere.  This module is a collection of
 -- very basic "bioinformatics" data types that are simple, but don't
 -- make sense to define over and over.

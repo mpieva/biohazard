@@ -1,5 +1,3 @@
-{-# LANGUAGE RecordWildCards #-}
-{-# OPTIONS_GHC -Wall #-}
 import Anno
 import Seqs
 import Xlate

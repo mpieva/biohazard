@@ -1,4 +1,3 @@
-{-# LANGUAGE OverloadedStrings, BangPatterns, RecordWildCards #-}
 -- Simple Mitochondrial Contamination Check on BAM files.
 --
 -- This is based on Ye Olde Contamination Check for the Neanderthal

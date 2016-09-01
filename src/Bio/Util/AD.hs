@@ -1,4 +1,3 @@
-{-# LANGUAGE BangPatterns #-}
 module Bio.Util.AD
           ( AD(..), paramVector, minimize
           , module Numeric.Optimization.Algorithms.HagerZhang05

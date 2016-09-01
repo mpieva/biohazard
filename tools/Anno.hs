@@ -1,5 +1,3 @@
-{-# LANGUAGE RecordWildCards #-}
-{-# OPTIONS_GHC -Wall #-}
 module Anno where
 
 import Data.List

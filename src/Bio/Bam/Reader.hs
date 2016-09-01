@@ -1,4 +1,3 @@
-{-# LANGUAGE BangPatterns, OverloadedStrings, FlexibleContexts #-}
 module Bio.Bam.Reader (
     Block(..),
     decompressBgzfBlocks,

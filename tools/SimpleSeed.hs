@@ -1,5 +1,3 @@
-{-# LANGUAGE OverloadedStrings, BangPatterns, RecordWildCards #-}
-{-# OPTIONS_GHC -Wall #-}
 module SimpleSeed where
 
 import Bio.Bam.Rec

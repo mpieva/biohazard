@@ -1,6 +1,4 @@
-{-# LANGUAGE OverloadedStrings, FlexibleInstances, TemplateHaskell #-}
-{-# LANGUAGE RecordWildCards, BangPatterns, FlexibleContexts #-}
-{-# LANGUAGE PatternGuards #-}
+{-# LANGUAGE TemplateHaskell #-}
 module Data.Avro where
 
 import Bio.Iteratee
@@ -141,7 +139,7 @@ instance Avro Float where
 
 instance Avro Double where
     toSchema _ = return $ String "double"
-    toBin      = putWord64le . cast 
+    toBin      = putWord64le . cast
     fromBin    = cast <$> getWord64le
     toAvron    = Number . fromFloatDigits
 

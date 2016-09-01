@@ -1,4 +1,3 @@
-{-# LANGUAGE RecordWildCards, BangPatterns, OverloadedStrings, FlexibleContexts #-}
 -- Command line driver for simple genotype calling.  We have three
 -- separate steps:  Pileup from a BAM file (or multiple merged files) to
 -- produce likelihoods (and some auxillary statistics).  These are

@@ -1,4 +1,4 @@
-{-# LANGUAGE TemplateHaskell, OverloadedStrings, PatternGuards #-}
+{-# LANGUAGE TemplateHaskell #-}
 module Bio.Genocall.AvroFile where
 
 import Bio.Bam.Header

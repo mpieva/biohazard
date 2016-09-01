@@ -1,11 +1,5 @@
-{-# LANGUAGE CPP #-}
-{-# LANGUAGE DeriveDataTypeable #-}
-{-# LANGUAGE ForeignFunctionInterface #-}
-
-{-# OPTIONS -Wall -fno-warn-unused-do-bind #-}
-
-{- Stolen from iteratee-compress module, which doesn't work due to
-   dependency problems.  Modified for proper early-out behaviour. -}
+-- Stolen from iteratee-compress module, which doesn't work due to
+-- dependency problems.  Modified for proper early-out behaviour.
 module Bio.Iteratee.ZLib
   (
     -- * Enumeratees
@@ -655,9 +649,9 @@ mkCompress frm cp
         Right (c, m, b, l, s) -> do
             zstr <- mallocForeignPtrBytes #{size z_stream}
             withForeignPtr zstr $ \zptr -> do
-                memset (castPtr zptr) 0 #{size z_stream}
-                deflateInit2 zptr c m b l s `finally`
-                    addForeignPtrFinalizer deflateEnd zstr
+                _ <- memset (castPtr zptr) 0 #{size z_stream}
+                _ <- deflateInit2 zptr c m b l s `finally`
+                        addForeignPtrFinalizer deflateEnd zstr
                 for_ (compressDictionary cp) $ \(PS fp off len) ->
                     withForeignPtr fp $ \ptr ->
                         deflateSetDictionary zptr (ptr `plusPtr` off)
@@ -672,15 +666,15 @@ mkDecompress frm (DecompressParams w _ md)
         Right wB' -> do
             zstr <- mallocForeignPtrBytes #{size z_stream}
             v <- withForeignPtr zstr $ \zptr -> do
-                memset (castPtr zptr) 0 #{size z_stream}
-                inflateInit2 zptr wB' `finally`
-                    addForeignPtrFinalizer inflateEnd zstr
+                _ <- memset (castPtr zptr) 0 #{size z_stream}
+                _ <- inflateInit2 zptr wB' `finally`
+                        addForeignPtrFinalizer inflateEnd zstr
                 case (md, frm) of
                     (Just (PS fp off len), Raw) -> do
-                        withForeignPtr fp $ \ptr ->
-                            inflateSetDictionary zptr (ptr `plusPtr` off)
-                                                      (fromIntegral len)
-                        return $! Nothing
+                        _ <- withForeignPtr fp $ \ptr ->
+                                inflateSetDictionary zptr (ptr `plusPtr` off)
+                                                          (fromIntegral len)
+                        return Nothing
                     (Nothing, _) -> return $! Nothing
                     (Just bs, _) -> return $! (Just bs)
             return $! Right $! (Initial $ ZStream zstr, v)
@@ -718,10 +712,10 @@ enumInflate f dp@(DecompressParams _ size _md) iter = do
                   ret <- inflate' zstr param
                   case fromErrno ret of
                       Left NeedDictionary -> do
-                          withForeignPtr fp $ \ptr ->
-                              withZStream zstr $ \zptr ->
-                                  inflateSetDictionary zptr (ptr `plusPtr` off)
-                                                            (fromIntegral len)
+                          _ <- withForeignPtr fp $ \ptr ->
+                                  withZStream zstr $ \zptr ->
+                                      inflateSetDictionary zptr (ptr `plusPtr` off)
+                                                                (fromIntegral len)
                           inflate' zstr param
                       _ -> return ret
             in insertOut size inflate'' init' iter

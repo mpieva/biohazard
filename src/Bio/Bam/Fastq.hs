@@ -1,7 +1,4 @@
-{-# LANGUAGE OverloadedStrings, FlexibleContexts #-}
-module Bio.Bam.Fastq (
-    parseFastq, parseFastq', parseFastqCassava
-                     ) where
+module Bio.Bam.Fastq ( parseFastq, parseFastq', parseFastqCassava ) where
 
 import Bio.Bam.Header
 import Bio.Bam.Rec

@@ -1,4 +1,3 @@
-{-# LANGUAGE BangPatterns #-}
 -- Resample m out of n `virtual' BAM records.
 --
 -- Strategy for fair down sampling:  we first count the number of

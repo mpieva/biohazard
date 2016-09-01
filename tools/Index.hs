@@ -1,5 +1,5 @@
-{-# LANGUAGE TemplateHaskell, GeneralizedNewtypeDeriving #-}
-{-# LANGUAGE MultiParamTypeClasses, TypeFamilies, CPP #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving, TemplateHaskell #-}
+{-# LANGUAGE TypeFamilies, MultiParamTypeClasses, CPP    #-}
 module Index where
 
 -- ^ This tiny module defines the 'Index' type and derives the 'Unbox'

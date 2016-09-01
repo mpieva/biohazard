@@ -1,5 +1,3 @@
-{-# LANGUAGE PatternGuards, BangPatterns, DeriveDataTypeable #-}
-
 -- | Basically a reexport of "Data.Iteratee" less the names that clash
 -- with "Prelude" plus a handful of utilities.
 

@@ -1,4 +1,3 @@
-{-# LANGUAGE CPP, ForeignFunctionInterface #-}
 -- | The absolute minimum necessary for regex matching using POSIX regexec.
 module Bio.Util.Regex ( Regex, regComp, regMatch ) where
 

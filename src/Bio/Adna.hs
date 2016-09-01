@@ -1,4 +1,4 @@
-{-# LANGUAGE BangPatterns, RecordWildCards, FlexibleContexts, DeriveGeneric #-}
+{-# LANGUAGE DeriveGeneric #-}
 module Bio.Adna (
     DmgStats(..),
     CompositionStats,
@@ -115,8 +115,8 @@ data DamageParameters float = DP { ssd_sigma  :: !float         -- deamination r
                                  , dsd_lambda :: !float }       -- param for geom. distribution, DS model
   deriving (Read, Show, Generic)
 
-instance Pretty f => Pretty (DamageParameters f)
-instance Parse f  => Parse  (DamageParameters f)
+instance Pretty f => Pretty (DamageParameters f) where pretty = default_pretty
+instance Parse f  => Parse  (DamageParameters f) where parse  = default_parse
 
 data NewDamageParameters vec float = NDP { dp_gc_frac :: !float
                                          , dp_mu      :: !float
@@ -129,8 +129,8 @@ data NewDamageParameters vec float = NDP { dp_gc_frac :: !float
                                          , dp_beta3   :: !(vec float) }
   deriving (Read, Show, Generic)
 
-instance (Pretty (v f), Pretty f) => Pretty (NewDamageParameters v f)
-instance (Parse  (v f), Parse  f) => Parse  (NewDamageParameters v f)
+instance (Pretty (v f), Pretty f) => Pretty (NewDamageParameters v f) where pretty = default_pretty
+instance (Parse  (v f), Parse  f) => Parse  (NewDamageParameters v f) where parse  = default_parse
 
 data GenDamageParameters vec float
     = UnknownDamage
@@ -138,8 +138,8 @@ data GenDamageParameters vec float
     | NewDamage (NewDamageParameters vec float)
   deriving (Show, Generic, Read)
 
-instance (Pretty (v f), Pretty f) => Pretty (GenDamageParameters v f)
-instance (Parse  (v f), Parse  f) => Parse  (GenDamageParameters v f)
+instance (Pretty (v f), Pretty f) => Pretty (GenDamageParameters v f) where pretty = default_pretty
+instance (Parse  (v f), Parse  f) => Parse  (GenDamageParameters v f) where parse  = default_parse
 
 
 

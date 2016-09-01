@@ -1,4 +1,3 @@
-{-# LANGUAGE OverloadedStrings, FlexibleContexts #-}
 -- | Trimming of reads as found in BAM files.  Implements trimming low
 -- quality sequence from the 3' end.
 

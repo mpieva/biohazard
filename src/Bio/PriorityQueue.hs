@@ -1,4 +1,3 @@
-{-# LANGUAGE BangPatterns #-}
 module Bio.PriorityQueue (
         Sizeable(..),
         PQ_Conf(..),

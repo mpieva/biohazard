@@ -1,4 +1,3 @@
-{-# LANGUAGE FlexibleContexts, OverloadedStrings #-}
 -- Reads multiple BAM files, melds them by keeping the best hit for
 -- every entry.  All input files must be parallel (same reads, same
 -- order, no omissions).  The best hit and the new mapq are calculated

@@ -1,4 +1,3 @@
-{-# LANGUAGE BangPatterns, RecordWildCards, OverloadedStrings, FlexibleContexts #-}
 -- Genotype calling for a single individual on a subset of the genome.
 -- It takes the appropriate set of .av files as input, along with priors
 -- for divergence, indel rate, etc.  These also have sensible defaults.

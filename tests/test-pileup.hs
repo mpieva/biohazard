@@ -1,6 +1,3 @@
-{-# LANGUAGE RecordWildCards, OverloadedStrings, FlexibleInstances, BangPatterns #-}
-{-# LANGUAGE FlexibleContexts                                                    #-}
-
 import Bio.Adna                     ( scalarMat )
 import Bio.Bam
 import Bio.Bam.Pileup

@@ -1,4 +1,3 @@
-{-# LANGUAGE RecordWildCards, NamedFieldPuns #-}
 -- Estimates aDNA damage.  Crude first version.
 --
 -- - Read or subsample a BAM file, make compact representation of the reads.

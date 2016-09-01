@@ -1,4 +1,4 @@
-{-# LANGUAGE DefaultSignatures, TypeOperators, FlexibleContexts, FlexibleInstances, ScopedTypeVariables #-}
+{-# LANGUAGE TypeOperators, ScopedTypeVariables #-}
 module Bio.Util.Pretty where
 
 import Bio.Prelude hiding ( Prefix, Infix, (<+>), (<$>) )
@@ -38,14 +38,14 @@ a_comma = A.char ',' <* A.skipSpace
 class Pretty a where
     pretty :: Int -> a -> P.Doc
 
-    default pretty :: (Generic a, GPretty (Rep a)) => Int -> a -> P.Doc
-    pretty i x = gpretty Pref i (from x)
+default_pretty :: (Generic a, GPretty (Rep a)) => Int -> a -> P.Doc
+default_pretty i x = gpretty Pref i (from x)
 
 class Parse a where
     parse :: Int -> A.Parser a
 
-    default parse :: (Generic a, GParse (Rep a)) => Int -> A.Parser a
-    parse i = to `fmap` gparse Pref i
+default_parse :: (Generic a, GParse (Rep a)) => Int -> A.Parser a
+default_parse i = to `fmap` gparse Pref i
 
 instance Pretty    Int where pretty _ = P.int
 instance Pretty Double where pretty _ = P.double

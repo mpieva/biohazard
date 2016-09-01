@@ -1,4 +1,3 @@
-{-# LANGUAGE RecordWildCards, BangPatterns, FlexibleContexts, OverloadedStrings #-}
 import Bio.Bam
 import Bio.Bam.Rmdup
 import Bio.Prelude

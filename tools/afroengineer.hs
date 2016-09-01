@@ -1,6 +1,3 @@
-{-# LANGUAGE OverloadedStrings, BangPatterns, RecordWildCards, RankNTypes #-}
-{-# OPTIONS_GHC -Wall -funbox-strict-fields #-}
-
 -- Cobble up a mitochondrion, or something similar.  This is not an
 -- assembly, but something that could serve in stead of one :)
 --

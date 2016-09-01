@@ -1,5 +1,4 @@
-{-# LANGUAGE TypeFamilies, FlexibleInstances, CPP #-}
-{-# LANGUAGE MultiParamTypeClasses, TemplateHaskell #-}
+{-# LANGUAGE TypeFamilies, CPP, TemplateHaskell #-}
 module Data.MiniFloat ( Mini(..), float2mini, mini2float ) where
 
 import Data.Bits

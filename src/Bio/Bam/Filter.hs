@@ -1,10 +1,9 @@
-{-# LANGUAGE FlexibleContexts #-}
 module Bio.Bam.Filter (
     filterPairs, QualFilter,
     complexSimple, complexEntropy,
     qualityAverage, qualityMinimum,
     qualityFromOldIllumina, qualityFromNewIllumina
-                           ) where
+                      ) where
 
 import Bio.Bam.Header
 import Bio.Bam.Rec

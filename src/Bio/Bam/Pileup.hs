@@ -1,5 +1,4 @@
-{-# LANGUAGE BangPatterns, Rank2Types, RecordWildCards, OverloadedStrings #-}
-{-# OPTIONS_GHC -funbox-strict-fields #-}
+{-# LANGUAGE Rank2Types #-}
 module Bio.Bam.Pileup where
 
 import Bio.Adna ( Mat44D )

@@ -1,4 +1,3 @@
-{-# LANGUAGE OverloadedStrings, BangPatterns, RecordWildCards, FlexibleContexts, TypeFamilies #-}
 -- Scan file with GT likelihoods, fit something...
 --
 -- First iteration:  Mitochondrion only.   We don't need to fit

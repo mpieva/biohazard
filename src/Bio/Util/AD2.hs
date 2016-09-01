@@ -1,4 +1,3 @@
-{-# LANGUAGE BangPatterns #-}
 module Bio.Util.AD2 ( AD2(..), paramVector2, IsDouble(..), confidenceIntervals ) where
 
 import Bio.Util.AD                      ( IsDouble(..) )

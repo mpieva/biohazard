@@ -1,6 +1,3 @@
-{-# LANGUAGE OverloadedStrings, BangPatterns, ForeignFunctionInterface #-}
-{-# LANGUAGE RecordWildCards, MultiParamTypeClasses, TypeFamilies #-}
-
 -- Two-stage demultiplexing.
 --
 -- We assume we know the list of i7 and i5 index oligos.  We seek to

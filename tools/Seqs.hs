@@ -1,5 +1,3 @@
-{-# LANGUAGE OverloadedStrings #-}
-{-# OPTIONS_GHC -Wall #-}
 module Seqs where
 
 import Data.ByteString.Char8 (ByteString)

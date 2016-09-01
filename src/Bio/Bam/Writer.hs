@@ -1,4 +1,3 @@
-{-# LANGUAGE RecordWildCards, OverloadedStrings, FlexibleContexts #-}
 module Bio.Bam.Writer (
     IsBamRec(..),
     encodeBamWith,

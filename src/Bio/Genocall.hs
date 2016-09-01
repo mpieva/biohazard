@@ -1,4 +1,3 @@
-{-# LANGUAGE BangPatterns #-}
 module Bio.Genocall where
 
 import Bio.Adna
