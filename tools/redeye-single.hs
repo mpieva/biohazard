@@ -20,11 +20,10 @@ import Bio.Bam.Pileup
 import Bio.Genocall.AvroFile
 import Bio.Iteratee.Builder
 import Bio.Prelude
-import Bio.Util.Regex                   ( regComp, regMatch )
 import Data.Avro
 import Data.MiniFloat
 import System.Console.GetOpt
-import System.FilePath           hiding ( combine )
+import System.FilePath
 import System.Random
 
 import qualified Data.ByteString.Char8          as S
@@ -61,8 +60,8 @@ defaultConf = Conf { conf_report = \_ -> return ()
 options :: [OptDescr (Conf -> IO Conf)]
 options = [
     Option "o"  ["output"]            (ReqArg set_output "FILE") "Set output file pattern to FILE",
-    Option "1"  ["haploid-chromosomes"] (ReqArg set_hap "REGEX") "Targets matching REGEX are haploid",
-    Option "2"  ["diploid-chromosomes"] (ReqArg set_dip "REGEX") "Targets matching REGEX are diploid",
+    Option "1"  ["haploid-chromosomes"]  (ReqArg set_hap "PREF") "Targets starting with PREF are haploid",
+    Option "2"  ["diploid-chromosomes"]  (ReqArg set_dip "PREF") "Targets starting with PREF are diploid",
     Option "s"  ["sample-genotypes"]     (OptArg set_rnd "SEED") "Sample genotypes from posterior",
     Option "N"  ["name"]                (ReqArg set_name "NAME") "Set sample name to NAME",
     Option "d"  ["divergence"]           (ReqArg set_div "PROB") "Set probability of a hom. SNP to PROB",
@@ -79,8 +78,8 @@ options = [
 
     be_verbose       c = return $ c { conf_report = IO.hPutStrLn stderr }
 
-    set_hap        a c = return $ c { conf_ploidy = \ch -> if regMatch (regComp a) ch then 1 else conf_ploidy c ch }
-    set_dip        a c = return $ c { conf_ploidy = \ch -> if regMatch (regComp a) ch then 2 else conf_ploidy c ch }
+    set_hap        a c = return $ c { conf_ploidy = \ch -> if a `isPrefixOf` ch then 1 else conf_ploidy c ch }
+    set_dip        a c = return $ c { conf_ploidy = \ch -> if a `isPrefixOf` ch then 2 else conf_ploidy c ch }
 
     set_output    fn c = return $ c { outfile     =       fn }
     set_name      nm c = return $ c { sample_name = const nm }
@@ -184,13 +183,13 @@ toBcf refs smps (snp_call, indel_call) gen0 = eneeCheckIfDone go
             vcf_header refs smps <> pushByte 0 <> endRecord
 
     -- encode :: GenoCallBlock -> gen -> (Push, gen)
-    encode GenoCallBlock{..} = combine start_position called_sites
+    encode GenoCallBlock{..} = meld start_position called_sites
       where
-        combine !_ [    ] gen = (mempty, gen)
-        combine !p (s:ss) gen = (p1 <> p2, g2)
+        meld !_ [    ] gen = (mempty, gen)
+        meld !p (s:ss) gen = (p1 <> p2, g2)
           where
             (p1, g1) = encode1 reference_name p s gen
-            (p2, g2) = combine (succ p) ss g1
+            (p2, g2) = meld (succ p) ss g1
 
     -- encode1 :: Refseq -> Int -> GenoCallSite -> gen -> (Push, gen)
     encode1 ref pos site g0 = (p1 <> p2, g2)

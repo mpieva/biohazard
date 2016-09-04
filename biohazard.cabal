@@ -72,7 +72,6 @@ Library
                        Bio.Util.AD2,
                        Bio.Util.Numeric,
                        Bio.Util.Pretty,
-                       Bio.Util.Regex,
                        Data.Avro,
                        Data.MiniFloat
 
