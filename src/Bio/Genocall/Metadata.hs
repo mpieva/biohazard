@@ -10,7 +10,6 @@ import Data.Binary.Get                      ( runGetOrFail )
 import Data.Binary.Put                      ( runPut )
 import Data.ByteString.Lazy                 ( toChunks, readFile )
 import Data.ByteString.Unsafe               ( unsafeUseAsCStringLen )
-import Data.Text.Encoding                   ( decodeUtf8', encodeUtf8 )
 import Foreign.Ptr                          ( castPtr )
 import System.Posix.Files                   ( rename, removeLink )
 import System.Posix.IO

@@ -52,9 +52,9 @@ Library
                        Bio.Bam.Header,
                        Bio.Bam.Index,
                        Bio.Bam.Pileup,
-                       Bio.Bam.Regions,
                        Bio.Bam.Reader
                        Bio.Bam.Rec,
+                       Bio.Bam.Regions,
                        Bio.Bam.Rmdup,
                        Bio.Bam.Trim,
                        Bio.Bam.Writer,
@@ -72,10 +72,9 @@ Library
                        Bio.Util.AD2,
                        Bio.Util.Numeric,
                        Bio.Util.Regex,
+                       Data.Avro,
                        Data.MiniFloat,
-                       Data.Avro
-
-  Other-modules:       Paths_biohazard
+                       Paths_biohazard
 
   Build-depends:       aeson                    >= 0.7 && < 0.9,
                        async                    == 2.0.*,
