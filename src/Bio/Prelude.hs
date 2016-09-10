@@ -74,4 +74,11 @@ instance Unpack String     where unpack = id
 isLeft, isRight :: Either a b -> Bool
 isLeft = either (const False) (const True)
 isRight = either (const True) (const False)
+
+first :: (a->b) -> (a,c) -> (b,c)
+first f (x,y) = (f x, y)
+
+second :: (a->b) -> (c,a) -> (c,b)
+second f (x,y) = (x, f y)
 #endif
+
