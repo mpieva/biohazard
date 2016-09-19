@@ -2,16 +2,65 @@ module Bio.Illumina.Locs where
 
 -- ^ Parsing Illumina location files.  It appears we have to support
 -- pos.txt, locs and clocs files; don't know if they come in compressed
--- versions, too.
+-- versions, too.  Either way, we have one file per tile, and it lists X
+-- and Y coordinates for each cluster.  We turn them into 16-bit integers.
+--
+-- Unfortunately, these files don't have any easy way to recognize the
+-- format.  So we expose three different readers and a higher level
+-- needs to decide which to call.
+
+import Bio.Prelude
+import Bio.Util.Zlib
+import Data.Vector.Fusion.Stream.Monadic    ( Stream(..), Step(..) )
+import Data.Vector.Fusion.Stream.Size       ( Size(..) )
+import Data.Vector.Generic                  ( unstream )
+import Foreign.C.Types                      ( CChar )
+import Foreign.Marshal.Utils
+import Foreign.Ptr
+
+import qualified Data.ByteString.Unsafe          as B
+import qualified Data.ByteString.Lazy            as L
+import qualified Data.ByteString.Lazy.Char8      as C
+import qualified Data.ByteString.Lex.Lazy.Double as C
+import qualified Data.Vector.Storable            as S
+import qualified Data.Vector.Storable.Mutable    as SM
+import qualified Data.Vector.Unboxed             as U
+
+newtype Locs = Locs (U.Vector (Word32,Word32))
+
 
 -- Pos files are text, the first two words on each line are x and y
 -- coordinate (signed decimal floating point numbers).  They are rounded
 -- to integers and clamped to a minimum of zero.
---
--- Locs files have three header words (4 bytes, little endian), the third
--- is the number of clusters.  They are followed by two floats (IEEE
--- single precision, little endian) for (x,y) of each cluster.
---
+readPosTxt :: FilePath -> IO Locs
+readPosTxt fp = Locs . U.unfoldr step . decompressGzip <$> L.readFile fp
+  where
+    round' :: Double -> Word32
+    round' = round . max 0
+
+    step inp
+        = case C.readDouble (C.dropWhile isSpace inp) of
+            Just (x,in1) -> case C.readDouble (C.dropWhile isSpace in1) of
+                Just (y,in2) ->
+                    Just ( (round' x, round' y)
+                         , C.drop 1 (C.dropWhile (/= '\n') in2) )
+                _ -> Nothing
+            _ -> Nothing
+
+-- | Locs files have three header words (4 bytes, little endian), the
+-- third is the number of clusters.  They are followed by two floats
+-- (IEEE single precision, little endian) for (x,y) of each cluster.  We
+-- round them off and clamp at zero.
+
+readLocs :: FilePath -> IO Locs
+readLocs fp = fmap conv . vec_from_lbs . L.drop 12 . decompressGzip =<< L.readFile fp
+  where
+    conv vec = Locs $ U.unfoldrN (S.length vec) step (vec :: S.Vector Float)
+    step vec | S.length vec < 2 = Nothing
+             | otherwise        = Just ((round' $ vec S.! 0, round' $ vec S.! 1), S.drop 2 vec)
+    round' = round . max 0
+
+
 -- clocs files store position data for successive clusters, compressed in bins as follows:
 --     Byte 0   : unused
 --     Byte 1-4 : unsigned int numBins
@@ -43,3 +92,49 @@ module Bio.Illumina.Locs where
 --            xOffset += blockSize-
 --
 -- (what an ugly read)
+
+readClocs :: FilePath -> IO Locs
+readClocs fp = Locs . unstream . (\inp -> Stream (return . decode) (inp :!: 0 :!: 0 :!: 0 :!: -1) Unknown)
+                    . L.drop 5 . decompressGzip <$> L.readFile fp
+  where
+    imageWidth = 2048
+    blockSize  = 25
+    maxXbins   = (imageWidth + blockSize -1) `div` blockSize
+
+    decode (inp :!: xo :!: yo :!: 0 :!: ibin)
+        = case L.uncons inp of
+            Just (numb, inp')
+
+                | succ ibin == 0
+                    -> Skip $! inp' :!: 0 :!: 0 :!: numb :!: succ ibin
+
+                | succ ibin `mod` maxXbins == 0
+                    -> Skip $! inp' :!: 0 :!:  yo + blockSize :!: numb :!: succ ibin
+
+                | otherwise
+                    -> Skip $! inp' :!: xo + blockSize :!: yo :!: numb :!: succ ibin
+
+            Nothing -> Done
+
+    decode (inp :!: xo :!: yo :!: numb :!: ibin)
+        = case L.uncons inp of
+            Just (xrel, inp1) -> case L.uncons inp1 of
+                Just (yrel, inp2) ->
+                    Yield ( xo + (fromIntegral xrel + 5) `div` 10
+                          , yo + (fromIntegral yrel + 5) `div` 10 )
+                          $! inp2 :!: xo :!: yo :!: pred numb :!: ibin
+                Nothing -> Done
+            Nothing -> Done
+
+
+vec_from_lbs :: Storable a => L.ByteString -> IO (S.Vector a)
+vec_from_lbs lbs = do
+    v <- SM.new $ fromIntegral $ L.length lbs
+    _ <- SM.unsafeWith (v :: SM.IOVector CChar) $ \pv ->
+            foldM step pv (L.toChunks lbs)
+    S.unsafeFreeze (SM.unsafeCast v)
+  where
+    step pv str =
+        B.unsafeUseAsCStringLen str $ \(ps,len) -> do
+            copyBytes pv ps len
+            return $! plusPtr pv len
