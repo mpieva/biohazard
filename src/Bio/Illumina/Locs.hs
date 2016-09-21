@@ -7,7 +7,7 @@ module Bio.Illumina.Locs where
 --
 -- Unfortunately, these files don't have any easy way to recognize the
 -- format.  So we expose three different readers and a higher level
--- needs to decide which to call.
+-- needs to decide which one to call.
 
 import Bio.Prelude
 import Bio.Util.Zlib
@@ -58,7 +58,7 @@ readLocs fp = fmap conv . vec_from_lbs . L.drop 12 . decompressGzip =<< L.readFi
     conv vec = Locs $ U.unfoldrN (S.length vec) step (vec :: S.Vector Float)
     step vec | S.length vec < 2 = Nothing
              | otherwise        = Just ((round' $ vec S.! 0, round' $ vec S.! 1), S.drop 2 vec)
-    round' = round . max 0
+    round' = round . max 0 . (+) 1000 . (*) 10
 
 
 -- clocs files store position data for successive clusters, compressed in bins as follows:
@@ -93,36 +93,37 @@ readLocs fp = fmap conv . vec_from_lbs . L.drop 12 . decompressGzip =<< L.readFi
 --
 -- (what an ugly read)
 
+data CLocs_Args = CLocs_Args !L.ByteString !Word32 !Word32 !Word8 !Int
+
 readClocs :: FilePath -> IO Locs
-readClocs fp = Locs . unstream . (\inp -> Stream (return . decode) (inp :!: 0 :!: 0 :!: 0 :!: -1) Unknown)
+readClocs fp = Locs . unstream . (\inp -> Stream (return . decode) (CLocs_Args inp 0 0 0 (-1)) Unknown)
                     . L.drop 5 . decompressGzip <$> L.readFile fp
   where
-    imageWidth = 2048
-    blockSize  = 25
-    maxXbins   = (imageWidth + blockSize -1) `div` blockSize
+    imageWidth = 20480
+    blockSize  = 250
+    maxXbins   = fromIntegral $ (imageWidth + blockSize -1) `div` blockSize
 
-    decode (inp :!: xo :!: yo :!: 0 :!: ibin)
+    decode (CLocs_Args inp xo yo 0 ibin)
         = case L.uncons inp of
             Just (numb, inp')
 
                 | succ ibin == 0
-                    -> Skip $! inp' :!: 0 :!: 0 :!: numb :!: succ ibin
+                    -> Skip $! CLocs_Args inp' 1000 1000 numb (succ ibin)
 
                 | succ ibin `mod` maxXbins == 0
-                    -> Skip $! inp' :!: 0 :!:  yo + blockSize :!: numb :!: succ ibin
+                    -> Skip $! CLocs_Args inp' 1000 (yo + blockSize) numb (succ ibin)
 
                 | otherwise
-                    -> Skip $! inp' :!: xo + blockSize :!: yo :!: numb :!: succ ibin
+                    -> Skip $! CLocs_Args inp' (xo + blockSize) yo numb (succ ibin)
 
             Nothing -> Done
 
-    decode (inp :!: xo :!: yo :!: numb :!: ibin)
+    decode (CLocs_Args inp xo yo numb ibin)
         = case L.uncons inp of
             Just (xrel, inp1) -> case L.uncons inp1 of
                 Just (yrel, inp2) ->
-                    Yield ( xo + (fromIntegral xrel + 5) `div` 10
-                          , yo + (fromIntegral yrel + 5) `div` 10 )
-                          $! inp2 :!: xo :!: yo :!: pred numb :!: ibin
+                    Yield ( xo + fromIntegral xrel, yo + fromIntegral yrel )
+                          $! CLocs_Args inp2 xo yo (pred numb) ibin
                 Nothing -> Done
             Nothing -> Done
 

@@ -120,6 +120,21 @@ Library
   C-sources:           src/cbits/myers_align.c
   CC-options:          -fPIC
 
+Executable bcl2bam
+  Main-is:             bcl2bam.hs
+  Hs-Source-Dirs:      tools
+  -- Ghc-options:         -Wall -threaded -rtsopts -with-rtsopts=-N
+  Ghc-options:         -Wall
+  Extensions:          NoImplicitPrelude, OverloadedStrings,
+                       BangPatterns, RecordWildCards
+  Build-depends:       async,
+                       base,
+                       biohazard,
+                       vector,
+                       directory,
+                       filepath,
+                       containers
+
   -- Modules not exported by this package.
   -- Other-modules:       
 
