@@ -1,4 +1,4 @@
-{-# LANGUAGE RecordWildCards, PatternGuards #-}
+{-# LANGUAGE RecordWildCards, PatternGuards, Arrows #-}
 -- BCL to BAM command line driver
 -- This should become part of Jivebunny; we'll see if the standalone
 -- version will retain any value.
@@ -21,7 +21,9 @@ import Bio.Bam
 import Bio.Prelude
 import System.Directory
 import System.FilePath
+import Text.XML.HXT.Core
 
+import qualified Data.ByteString as B
 import qualified Data.Set as S
 import qualified Data.Vector as VV
 import qualified Data.Vector.Generic as V
@@ -41,19 +43,39 @@ data Tile = Tile
     , tile_bcls :: !(VV.Vector BCL) }
 
 
--- XXX  Single read, for now.  It needs the read length definitions to
--- be correct.
-tileToBam :: String -> Tile -> [BamRec]
-tileToBam expnm Tile{ tile_locs = Locs vlocs, ..} =
-    V.ifoldr one_cluster [] vlocs
-
+tileToBam :: LaneDef -> Tile -> [[BamRec]]
+tileToBam LaneDef{..} Tile{ tile_locs = Locs vlocs, ..}
+    = zipWith one_cluster [0..] (V.toList vlocs)
   where
-    one_cluster i (px,py) = (:) nullBamRec {
-        b_qname = fromString (printf "%s:%d:%d:%d" expnm tile_nbr px py),
-        b_flag  = flagUnmapped,
-        b_seq   = V.convert $ V.map (get_nucs i) tile_bcls,
-        b_qual  = V.convert $ V.map (get_qual i) tile_bcls,
-        b_exts  = [] }
+    -- XXX  Need to generate up to two index reads and up to two BAM records.
+    one_cluster i (px,py) =
+        nullBamRec { b_qname = qname,
+                     b_flag  = maybe flagsSingle (const flagsReadOne) cycles_read_two,
+                     b_seq   = V.convert $ get_seq cycles_read_one,
+                     b_qual  = V.convert $ get_quals cycles_read_one,
+                     b_exts  = common_exts } :
+        case cycles_read_two of
+            Nothing -> []
+            Just r2 -> nullBamRec { b_qname = qname,
+                                    b_flag  = flagsReadTwo,
+                                    b_seq   = V.convert $ get_seq r2,
+                                    b_qual  = V.convert $ get_quals r2,
+                                    b_exts  = common_exts } : []
+      where
+        qname       = fromString (printf "%s:%d:%d:%d" experiment tile_nbr px py)
+        common_exts = maybe id (indexRead "XI" "YI") cycles_index_one $
+                      maybe id (indexRead "XJ" "YJ") cycles_index_two $ []
+
+        get_seq   (ra,re) = V.map (get_nucs i) $ V.slice (ra-1) (re-ra+1) tile_bcls
+        get_quals (ra,re) = V.map (get_qual i) $ V.slice (ra-1) (re-ra+1) tile_bcls
+
+        indexRead k1 k2 rng
+            = insertE k1 (Text . fromString . V.toList . V.map showNucleotides          $ get_seq   rng)
+            . insertE k2 (Text . B.pack . V.toList . V.map ((+33) . fromIntegral . unQ) $ get_quals rng)
+
+    flagsSingle = flagUnmapped
+    flagsReadOne = flagUnmapped .|. flagMateUnmapped .|. flagPaired .|. flagFirstMate
+    flagsReadTwo = flagUnmapped .|. flagMateUnmapped .|. flagPaired .|. flagSecondMate
 
     get_qual i (BCL v) = Q . maybe 0 (`shiftR` 2) $ v V.!? i
     get_nucs i (BCL v) = maybe nucsN code_to_nucs $ v V.!? i
@@ -80,6 +102,15 @@ data LaneDef = LaneDef {
     -- | Cycles in the first business read.
     cycles_read_one :: (Int,Int),
 
+    -- | Cycles in the second business read, if present.
+    cycles_read_two :: Maybe (Int,Int),
+
+    -- | Cycles in the first index read, if present.
+    cycles_index_one :: Maybe (Int,Int),
+
+    -- | Cycles in the second index read, if present.
+    cycles_index_two :: Maybe (Int,Int),
+
     -- | List of basenames, one for each tile.
     tiles :: [String] }
   deriving Show
@@ -102,8 +133,21 @@ lanesFromRun rundir = fmap catMaybes . forM [1..8] $ \lane_number -> do
         cycles <- mapMaybe get_cycle <$> getDirectoryContents path_bcl
         if null cycles || null tiles
           then return Nothing
-          else let cycles_read_one = (minimum cycles, maximum cycles)
-               in return $ Just LaneDef{..}
+          else do ri <- expand_ri (maximum cycles) 1 <$> getRunInfo rundir
+                  let (cycles_read_one, cycles_read_two)
+                        = case map fst $ filter ((Just True /=) . snd) ri of
+                            r1:r2:_ -> (r1, Just r2)
+                            r1:_    -> (r1, Nothing)
+                            _       -> error "shouldn't happen"
+
+                  let (cycles_index_one, cycles_index_two)
+                        = case map fst $ filter ((Just False /=) . snd) ri of
+                            r1:r2:_ -> (Just r1, Just r2)
+                            r1:_    -> (Just r1, Nothing)
+                            _       -> (Nothing, Nothing)
+
+                  return $ Just LaneDef{..}
+
       else return Nothing
 
   where
@@ -115,17 +159,21 @@ lanesFromRun rundir = fmap catMaybes . forM [1..8] $ \lane_number -> do
     get_cycle ('C':fn) | (l,".1") <- break (== '.') fn, [(c,[])] <- reads l = Just c
     get_cycle        _                                                      = Nothing
 
+    expand_ri total count [           ] = if count <= total then [((count,total),Nothing)] else []
+    expand_ri total count ((l,isix):rs) = ((count,count+l-1),Just isix) : expand_ri total (count+l) rs
 
 
 -- For each tile, read locs and all the bcls.  Run tileToBam and emit.
 bamFromBcl :: LaneDef -> Enumerator [BamRec] IO b
-bamFromBcl LaneDef{..} iter0 =
+bamFromBcl ld@LaneDef{..} iter0 =
     foldM (\iter fn -> do tile <- one_tile fn
-                          enumPure1Chunk (tileToBam experiment tile) iter)
+                          enumList (tileToBam ld tile) iter)
           iter0 tiles
-
   where
-    (c1,ce) = cycles_read_one
+    !ce = maybe id (max . snd) cycles_index_two $
+          maybe id (max . snd) cycles_index_one $
+          maybe id (max . snd) cycles_read_two  $
+          snd cycles_read_one
 
     one_tile :: FilePath -> IO Tile
     one_tile fn = Tile nbr <$> get_locs <*> get_bcls
@@ -141,7 +189,7 @@ bamFromBcl LaneDef{..} iter0 =
                         try_read_or (fn_locs <.> ".locs") readLocs $
                             return (Locs V.empty)
 
-        get_bcls = fmap V.fromList . forM [c1..ce] $ \ncycle -> do
+        get_bcls = fmap V.fromList . forM [1..ce] $ \ncycle -> do
             let fn_bcl = path_bcl ++ "/C" ++ show ncycle ++ ".1/" ++ fn ++ ".bcl"
             try_read_or (fn_bcl <.> "gz") readBCL $
                 try_read_or fn_bcl readBCL $
@@ -151,6 +199,34 @@ bamFromBcl LaneDef{..} iter0 =
                                if e then r f else k
 
 
-main = do
-    lanedefs <- getArgs >>= mapM lanesFromRun >>= return . concat
+main  = do
+    rs <- getArgs
+
+    lanedefs <- mapM lanesFromRun rs >>= return . concat
+    hPutStrLn stderr $ show lanedefs
     foldr ((>=>) . bamFromBcl) run lanedefs $ pipeBamOutput mempty
+
+
+-- Look for a useable XML file, either RunInfo.xml, or
+-- RunParameters.xml.  We'll match case insensitively, because
+-- sometimes case gets mangled during the network copy.
+getRunInfo :: FilePath -> IO [(Int,Bool)]
+getRunInfo dir = do
+    xmls <- filter (\f -> map toLower f == "runinfo.xml" || map toLower f == "runparameters.xml")
+            <$> getDirectoryContents dir
+    case xmls of
+        fp:_ -> fmap (map snd . sort) .
+                runX $ readDocument [ withValidate no ] (dir </> fp)
+                       >>> deep (isElem >>> hasName "Reads")
+                       >>> getChildren >>> hasName "Read"
+                       >>> toReadDef ()
+        [  ] -> return []
+
+toReadDef :: ArrowXml a => t -> a XmlTree (Int, (Int, Bool))
+toReadDef _ = ( getAttrValue "Number" >>> readA ) &&&
+              ( getAttrValue "NumCycles" >>> readA ) &&&
+              ( getAttrValue "IsIndexedRead" >>> arr boolF )
+  where
+    readA = arrL $ \s -> case reads (dropWhile isSpace s) of
+                            [(a,b)] | all isSpace b -> [a] ; _ -> []
+    boolF s = if s == "Y" || s == "y" then True else False

@@ -124,16 +124,18 @@ Executable bcl2bam
   Main-is:             bcl2bam.hs
   Hs-Source-Dirs:      tools
   -- Ghc-options:         -Wall -threaded -rtsopts -with-rtsopts=-N
-  Ghc-options:         -Wall
+  Ghc-options:         -Wall -auto-all
   Extensions:          NoImplicitPrelude, OverloadedStrings,
                        BangPatterns, RecordWildCards
   Build-depends:       async,
                        base,
                        biohazard,
+                       bytestring,
                        vector,
                        directory,
                        filepath,
-                       containers
+                       containers,
+                       hxt
 
   -- Modules not exported by this package.
   -- Other-modules:       

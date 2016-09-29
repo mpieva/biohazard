@@ -16,12 +16,10 @@ module Bio.Illumina.BCL where
 -- header words:  zero, format version number, number of clusters.  The
 -- remainder is one byte(!) per cluster, bit 0 is the filter flag.
 
+import Bio.Prelude
 import Bio.Util.Zlib                    ( decompressGzip )
-import Control.Exception                ( evaluate )
 import Data.Vector.Fusion.Util          ( Id )
 import Data.Vector.Generic              ( unstream )
-import Data.Word                        ( Word8 )
-import Prelude
 
 import qualified Data.ByteString                    as B
 import qualified Data.ByteString.Lazy               as L
@@ -39,8 +37,9 @@ newtype BCL = BCL (U.Vector Word8)
 -- liberally with zeroes.  The file is read and decompressed strictly.
 
 readBCL :: FilePath -> IO BCL
-readBCL fp = evaluate . BCL . vec_from_string . L.drop 4
-           . decompressGzip . L.fromChunks . (:[]) =<< B.readFile fp
+readBCL fp = do hPutStrLn stderr $ "Reading " ++ fp
+                evaluate . BCL . vec_from_string . L.drop 4 .
+                    decompressGzip . L.fromChunks . (:[]) =<< B.readFile fp
 
 -- | Turns a lazy bytestring into a vector of words.  A straight
 -- forward @fromList . toList@ would have done it, but this version
