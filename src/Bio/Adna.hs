@@ -1,4 +1,4 @@
-{-# LANGUAGE BangPatterns, RecordWildCards, FlexibleContexts #-}
+{-# LANGUAGE BangPatterns, RecordWildCards, FlexibleContexts, CPP #-}
 module Bio.Adna (
     DmgStats(..),
     damagePatternsIter,
@@ -53,7 +53,7 @@ import qualified Data.Vector.Unboxed.Mutable    as UM
 -- should probably memoize precomputed damage models somehow.
 
 type DamageModel a = Bool -> Int -> V.Vector (Mat44 a)
-data To = Nucleotide :-> Nucleotide
+data To = Nucleotide :-> Nucleotide deriving Show
 
 infix 9 :->
 infix 8 `bang`
@@ -185,6 +185,7 @@ data DmgStats a = DmgStats {
     substs5cpg :: [( To, U.Vector Int )],
     substs3cpg :: [( To, U.Vector Int )],
     stats_more :: a }
+  deriving Show
 
 data FragType = Complete | Leading | Trailing deriving (Show, Eq)
 type NPair = ( Nucleotides, Nucleotides )
@@ -285,8 +286,12 @@ damagePatternsIter ctx rng get_ref_and_aln leeHom it = do
     acc_cg <- liftIO $ UM.replicate (2 * 2 * 4 *     rng) (0::Int)
 
     let do_bc br = case fmap revcom_both $ get_ref_and_aln br of
-            Nothing                         -> return []
+            Nothing                              -> return []
             Just (b@BamRec{..}, ref, a_sequence) -> liftIO $ do
+#ifdef DEBUG
+              when (U.any (<0) ref || U.any (>4) ref) . error $
+                    "Unexpected value in reference fragment: " ++ show ref
+#endif
 
               let good_pairs     = U.indexed             a_sequence
                   good_pairs_rev = U.indexed $ U.reverse a_sequence
@@ -298,9 +303,14 @@ damagePatternsIter ctx rng get_ref_and_aln leeHom it = do
                                   | otherwise                        = Leading
 
               -- basecompositon near 5' end, near 3' end
-              let width  = ctx + min rng (alignedLength b_cigar `div` 2)
-              mapM_ (\i -> bump (fromIntegral (ref U.!  i                   ) * maxwidth + i) acc_bc) [0 .. width-1]
-              mapM_ (\i -> bump (fromIntegral (ref U.! (i + U.length ref) +6) * maxwidth + i) acc_bc) [-width .. -1]
+              let (width5, width3) = case a_fragment_type of
+                                            Leading -> (full_width, 0)
+                                            Trailing -> (0, full_width)
+                                            Complete -> (half_width, half_width)
+                        where full_width = min (U.length ref) $ ctx + min rng (alignedLength b_cigar)
+                              half_width = min (U.length ref) $ ctx + min rng (alignedLength b_cigar `div` 2)
+              mapM_ (\i -> bump (fromIntegral (ref U.!  i                   ) * maxwidth + i) acc_bc) [0 .. width5-1]
+              mapM_ (\i -> bump (fromIntegral (ref U.! (i + U.length ref) +6) * maxwidth + i) acc_bc) [-width3 .. -1]
 
               -- For substitutions, decide what damage class we're in:
               -- 0 - no damage, 1 - damaged 5' end, 2 - damaged 3' end, 3 - both
@@ -350,7 +360,11 @@ damagePatternsIter ctx rng get_ref_and_aln leeHom it = do
                                                         , (Ns v,y) <- zip [nucsA, nucsC, nucsG, nucsT] [0,1,2,3] ]
 
             {-# INLINE bump #-}
+#ifdef DEBUG
+            bump i v = UM.read v i >>= UM.write v i . succ
+#else
             bump i v = UM.unsafeRead v i >>= UM.unsafeWrite v i . succ
+#endif
 
             {-# INLINE withNs #-}
             withNs ns k | ns == nucsA = k 0
@@ -362,7 +376,7 @@ damagePatternsIter ctx rng get_ref_and_aln leeHom it = do
 
     it'  <- concatMapStreamM do_bc it
 
-    let nsubsts = 2*4*4*rng
+    let nsubsts = 4*4*rng
         mk_substs off = sequence [ (,) (n1 :-> n2) <$> U.unsafeFreeze (UM.slice ((4*i+j)*rng + off*nsubsts) rng acc_st)
                                  | (i,n1) <- zip [0..] [nucA..nucT]
                                  , (j,n2) <- zip [0..] [nucA..nucT] ]
@@ -408,7 +422,7 @@ revcom_both (b, ref, pairs)
     | isReversed b = ( b, revcom_ref ref, revcom_pairs pairs )
     | otherwise    = ( b,            ref,              pairs )
   where
-    revcom_ref   = U.reverse . U.map (xor 2)
+    revcom_ref   = U.reverse . U.map (\c -> if c > 3 then c else xor c 2)
     revcom_pairs = U.reverse . U.map (compls *** compls)
 
 
