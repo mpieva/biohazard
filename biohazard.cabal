@@ -1,5 +1,5 @@
 Name:                biohazard
-Version:             0.6.6.3
+Version:             0.6.6.4
 Synopsis:            bioinformatics support library
 Description:         This is a collection of modules I separated from
                      various bioinformatics tools.  The hope is to make
@@ -38,8 +38,12 @@ source-repository head
 source-repository this
   type:     git
   location: https://bitbucket.org/ustenzel/biohazard.git
-  tag:      0.6.6.3
+  tag:      0.6.6.4
 
+Flag debug
+  Description: enable additional sanity checks
+  Default:     False
+  Manual:      True
 
 Library
   Exposed-modules:     Bio.Base,
