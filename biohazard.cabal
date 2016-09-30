@@ -40,6 +40,10 @@ source-repository this
   location: https://bitbucket.org/ustenzel/biohazard.git
   tag:      0.6.7
 
+Flag debug
+  Description: enable additional sanity checks
+  Default:     False
+  Manual:      True
 
 Library
   Exposed-modules:     Bio.Base,
