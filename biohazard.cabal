@@ -56,15 +56,17 @@ Library
                        Bio.Bam.Header,
                        Bio.Bam.Index,
                        Bio.Bam.Pileup,
-                       Bio.Bam.Regions,
                        Bio.Bam.Reader
                        Bio.Bam.Rec,
+                       Bio.Bam.Regions,
                        Bio.Bam.Rmdup,
                        Bio.Bam.Trim,
                        Bio.Bam.Writer,
                        Bio.Genocall,
                        Bio.Genocall.AvroFile,
                        Bio.Genocall.Estimators,
+                       Bio.Illumina.BCL,
+                       Bio.Illumina.Locs,
                        Bio.Iteratee,
                        Bio.Iteratee.Bgzf,
                        Bio.Iteratee.Builder,
@@ -76,10 +78,10 @@ Library
                        Bio.Util.AD2,
                        Bio.Util.Numeric,
                        Bio.Util.Pretty,
+                       Bio.Util.Zlib,
                        Data.Avro,
-                       Data.MiniFloat
-
-  Other-modules:       Paths_biohazard
+                       Data.MiniFloat,
+                       Paths_biohazard
 
   Build-depends:       aeson                    >= 0.7 && < 0.9,
                        async                    == 2.0.*,
@@ -88,6 +90,7 @@ Library
                        base-prelude             == 1.0.*,
                        binary                   >= 0.7 && < 0.9,
                        bytestring               >= 0.10.2 && < 0.11,
+                       bytestring-lexing        == 0.4.*,
                        bytestring-mmap          >= 0.2 && < 1.0,
                        containers               >= 0.4.1 && < 0.6,
                        deepseq                  >= 1.3 && < 1.5,
@@ -96,6 +99,7 @@ Library
                        filepath                 >= 1.3 && < 2.0,
                        hashable                 >= 1.0 && < 1.3,
                        hmatrix                  == 0.16.*,
+                       hybrid-vectors           == 0.2.*,
                        iteratee                 >= 0.8.9.6 && < 0.8.10,
                        ListLike                 >= 3.0 && < 5.0,
                        nonlinear-optimization   == 0.3.*,
@@ -142,6 +146,23 @@ Library
   Install-Includes:    src/cbits/myers_align.h
   C-sources:           src/cbits/myers_align.c
   CC-options:          -fPIC
+
+Executable bcl2bam
+  Main-is:             bcl2bam.hs
+  Hs-Source-Dirs:      tools
+  -- Ghc-options:         -Wall -threaded -rtsopts -with-rtsopts=-N
+  Ghc-options:         -Wall -auto-all
+  Extensions:          NoImplicitPrelude, OverloadedStrings,
+                       BangPatterns, RecordWildCards
+  Build-depends:       async,
+                       base,
+                       biohazard,
+                       bytestring,
+                       vector,
+                       directory,
+                       filepath,
+                       containers,
+                       hxt
 
   -- Modules not exported by this package.
   -- Other-modules:       

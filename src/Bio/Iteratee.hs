@@ -89,7 +89,7 @@ import Data.Binary.Get
 import Data.Iteratee.Binary
 import Data.Iteratee.Char
 import Data.Iteratee.IO              hiding ( defaultBufSize )
-import Data.Iteratee.Iteratee        hiding ( identity, empty, mapChunks, mapChunksM )
+import Data.Iteratee.Iteratee        hiding ( identity, empty, mapChunks, mapChunksM, (>>>) )
 import Data.ListLike                        ( ListLike )
 import System.IO                            ( hIsTerminalDevice )
 

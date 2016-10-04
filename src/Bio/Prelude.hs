@@ -23,6 +23,11 @@ module Bio.Prelude (
     isRight,
 #endif
 
+#if !MIN_VERSION_base(4,8,0)
+    first,
+    second,
+#endif
+
     Hashable(..),
     Unpack(..),
     hPutStr,
@@ -39,6 +44,11 @@ module Bio.Prelude (
 import BasePrelude  hiding ( EOF )
 #else
 import BasePrelude  hiding ( EOF, block )
+#endif
+
+#if !MIN_VERSION_base(4,8,0)
+-- Not as nice as Data.Bifunctor, but still useful.
+import Control.Arrow       ( first, second )
 #endif
 
 import Bio.Base

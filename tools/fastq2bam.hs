@@ -9,19 +9,21 @@ import qualified Data.ByteString       as B
 import qualified Data.ByteString.Char8 as S
 import qualified Data.Vector.Generic   as V
 
-data Opts = Opts { output :: BamMeta -> Iteratee [BamRec] IO ()
-                 , inputs :: [Input]
-                 , verbose :: Bool }
+data Opts = Opts { output  :: BamMeta -> Iteratee [BamRec] IO ()
+                 , inputs  :: [Input]
+                 , verbose :: Bool
+                 , merge   :: Bool }
 
 defaultOpts :: Opts
-defaultOpts = Opts { output = protectTerm . pipeBamOutput
-                   , inputs = []
-                   , verbose = False }
+defaultOpts = Opts { output  = protectTerm . pipeBamOutput
+                   , inputs  = []
+                   , verbose = False
+                   , merge   = False }
 
-data Input = Input { _read1 :: FilePath         -- ^ file with first read (or other stuff)
-                   ,  read2 :: Maybe FilePath   -- ^ optional file with second read
-                   , index1 :: Maybe FilePath   -- ^ optional file with first index
-                   , index2 :: Maybe FilePath   -- ^ optional file with second index
+data Input = Input { _read1  :: FilePath         -- ^ file with first read (or other stuff)
+                   ,  read2  :: Maybe FilePath   -- ^ optional file with second read
+                   , index1  :: Maybe FilePath   -- ^ optional file with first index
+                   , index2  :: Maybe FilePath   -- ^ optional file with second index
                    , lindex1 :: Int }           -- ^ length of first index contained in first read
   deriving Show
 
@@ -38,12 +40,14 @@ getopts = getOpt (ReturnInOrder add_read1) options
         , Option "I" ["index-one"]        (ReqArg add_idx1 "FILE") "Parse FILE for first index"
         , Option "J" ["index-two"]        (ReqArg add_idx2 "FILE") "Parse FILE for second index"
         , Option "l" ["length-index-one"] (ReqArg set_lidx1 "NUM") "Read 1 ends on NUM index bases"
+        , Option "m" ["merge-overlap"]           (NoArg set_merge) "Attempt to merge or trim reads"
         , Option "v" ["verbose"]               (NoArg set_verbose) "Print progress information"
         , Option "h?" ["help","usage"]               (NoArg usage) "Print this helpful message" ]
 
-    set_output "-" c = return $ c { output = pipeBamOutput }
-    set_output  fn c = return $ c { output = writeBamFile fn }
+    set_output "-" c = return $ c { output  = pipeBamOutput }
+    set_output  fn c = return $ c { output  = writeBamFile fn }
     set_verbose    c = return $ c { verbose = True }
+    set_merge      c = return $ c { merge   = True }
 
     add_read1 fn c = return $ c { inputs = plainInput fn : inputs c }
     add_read2 fn c = return $ c { inputs = at_head (\i -> i { read2  = Just fn }) (inputs c) }
@@ -73,7 +77,7 @@ main = do (opts, [], errors) <- getopts `fmap` getArgs
 
           foldr ((>=>) . enum_input) run (reverse eff_inputs) $
                 joinI $ progress (verbose conf) $
-                joinI $ mapChunks concatDuals $
+                joinI $ mapChunks (if merge conf then mergeDuals else concatDuals) $
                 output conf (pgm mempty)
 
 
@@ -92,6 +96,19 @@ concatDuals :: [UpToTwo a] -> [a]
 concatDuals ((a,Just  b):ds) = a : b : concatDuals ds
 concatDuals ((a,Nothing):ds) = a : concatDuals ds
 concatDuals [              ] = []
+
+mergeDuals :: [UpToTwo BamRec] -> [BamRec]
+mergeDuals ((r1,Just  r2):ds)
+    = case merge_overlap r1 default_fwd_adapters r2 default_rev_adapters of
+        Nothing                   ->      r1  : r2  : mergeDuals ds
+        Just (r1',r2',rm,_q1,_q2) -> rm : r1' : r2' : mergeDuals ds
+
+mergeDuals ((r1,Nothing):ds)
+    = case trim_adapter r1 default_fwd_adapters of
+        Nothing                ->       r1  : mergeDuals ds
+        Just (r1',r1t,_q1,_q2) -> r1t : r1' : mergeDuals ds
+
+mergeDuals [] = []
 
 -- Enumerates a file.  Sequence and quality end up in b_seq and b_qual.
 fromFastq :: (MonadIO m, MonadMask m) => FilePath -> Enumerator [BamRec] m a
@@ -171,7 +188,7 @@ progress True  = eneeCheckIfDonePass (icont . go 0 0)
         let !n' = n + length as
             !nm = b_qname (fst a)
             !l' = l `max` S.length nm
-        when (n `div` 2048 /= n' `div` 2048) $ liftIO $ do
+        when (n .&. complement 0x1fff /= n' .&. complement 0x1fff) $ liftIO $ do
             hPutStr stderr $ "\27[K" ++
                 replicate (l' - S.length nm) ' '
                 ++ S.unpack nm ++ ", "

@@ -285,6 +285,8 @@ unlessQuiet :: Monad m => Loudness -> m () -> m ()
 unlessQuiet Quiet _ = return ()
 unlessQuiet     _ k = k
 
+-- should I have a config for merging here?  adapter lists?
+-- does it ever make sense to skip the merging?
 data Conf = Conf {
         cf_index_list :: FilePath,
         cf_output     :: Maybe (BamMeta -> Iteratee [BamRec] IO ()),
@@ -295,7 +297,8 @@ data Conf = Conf {
         cf_single     :: Bool,
         cf_samplesize :: Int,
         cf_readgroups :: [FilePath],
-        cf_implied    :: [T.Text] }
+        cf_implied    :: [T.Text],
+        cf_merge      :: Maybe ([U.Vector Nucleotides], [U.Vector Nucleotides]) }
 
 defaultConf :: IO Conf
 defaultConf = do ixdb <- getDataFileName "index_db.json"
@@ -309,22 +312,25 @@ defaultConf = do ixdb <- getDataFileName "index_db.json"
                         cf_single     = False,
                         cf_samplesize = 50000,
                         cf_readgroups = [],
-                        cf_implied    = [default_rgs] }
+                        cf_implied    = [default_rgs],
+                        cf_merge      = Nothing }
 
 options :: [OptDescr (Conf -> IO Conf)]
 options = [
-    Option "o" ["output"]         (ReqArg set_output   "FILE") "Send output to FILE",
-    Option "I" ["index-database"] (ReqArg set_index_db "FILE") "Read index database from FILE",
-    Option "r" ["read-groups"]    (ReqArg set_rgs      "FILE") "Read read group definitions from FILE",
-    Option "s" ["single-index"]   (NoArg           set_single) "Only consider first index",
-    Option [ ] ["threshold"]      (ReqArg set_thresh   "FRAC") "Iterate till uncertainty is below FRAC",
-    Option [ ] ["sample"]         (ReqArg set_sample    "NUM") "Sample NUM reads for mixture estimation",
-    Option [ ] ["components"]     (ReqArg set_compo     "NUM") "Print NUM components of the mixture",
-    Option [ ] ["nocontrol"]      (NoArg       set_no_control) "Suppress implied read groups for controls",
-    Option "v" ["verbose"]        (NoArg             set_loud) "Print more diagnostic messages",
-    Option "q" ["quiet"]          (NoArg            set_quiet) "Print fewer diagnostic messages",
-    Option "h?" ["help", "usage"] (NoArg        (const usage)) "Print this message and exit",
-    Option "V"  ["version"]       (NoArg         (const vrsn)) "Display version number and exit" ]
+    Option "o" ["output"]          (ReqArg set_output   "FILE") "Send output to FILE",
+    Option "I" ["index-database"]  (ReqArg set_index_db "FILE") "Read index database from FILE",
+    Option "r" ["read-groups"]     (ReqArg set_rgs      "FILE") "Read read group definitions from FILE",
+    Option "s" ["single-index"]    (NoArg           set_single) "Only consider first index",
+    Option [ ] ["threshold"]       (ReqArg set_thresh   "FRAC") "Iterate till uncertainty is below FRAC",
+    Option [ ] ["sample"]          (ReqArg set_sample    "NUM") "Sample NUM reads for mixture estimation",
+    Option [ ] ["components"]      (ReqArg set_compo     "NUM") "Print NUM components of the mixture",
+    Option [ ] ["nocontrol"]       (NoArg       set_no_control) "Suppress implied read groups for controls",
+    Option "F" ["forward-adapter"] (ReqArg set_forward   "SEQ") "SEQ is a possible forward adapter",
+    Option "R" ["reverse-adapter"] (ReqArg set_reverse   "SEQ") "SEQ is a possible reverse adapter",
+    Option "v" ["verbose"]         (NoArg             set_loud) "Print more diagnostic messages",
+    Option "q" ["quiet"]           (NoArg            set_quiet) "Print fewer diagnostic messages",
+    Option "h?"["help", "usage"]   (NoArg        $ const usage) "Print this message and exit",
+    Option "V" ["version"]         (NoArg        $  const vrsn) "Display version number and exit" ]
   where
     set_output  "-" c = return $ c { cf_output = Just $ pipeBamOutput, cf_stats_hdl = stderr }
     set_output   fp c = return $ c { cf_output = Just $ writeBamFile fp }
@@ -337,6 +343,9 @@ options = [
     set_thresh    a c = readIO a >>= \x -> return $ c { cf_threshold = x }
     set_sample    a c = readIO a >>= \x -> return $ c { cf_samplesize = x }
     set_compo     a c = readIO a >>= \x -> return $ c { cf_num_stats = const x }
+
+    set_forward   a c = readIO a >>= \x -> return $ c { cf_merge = Just $ first  (x:) $ fromMaybe ([],[]) $ cf_merge c }
+    set_reverse   a c = readIO a >>= \x -> return $ c { cf_merge = Just $ second (x:) $ fromMaybe ([],[]) $ cf_merge c }
 
     usage = do pn <- getProgName
                putStrLn $ usageInfo ("Usage: " ++ pn ++ " [options] [bam-files]\n" ++
@@ -454,6 +463,8 @@ main = do
                                                 _                          -> b { b_exts = ex
                                                                                 , b_flag = b_flag b .&. complement flagFailsQC }) =$
                                progressNum "writing " info =$
+                               maybe (mergeTrimBam default_fwd_adapters default_rev_adapters)
+                                     (uncurry mergeTrimBam) cf_merge =$
                                out (add_pg hdr')
 
                         unlessQuiet cf_loudness $ do
