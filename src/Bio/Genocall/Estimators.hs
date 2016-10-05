@@ -185,13 +185,10 @@ estimateDamageFromFiles lmin params fs = do
                             not (isUnmapped (unpackBam b)) &&
                             V.length (b_seq (unpackBam b)) >= lmin)     =$
                      takeStream 100000                                  =$
-                     damagePatternsIterMD 50 (leehom hdr) skipToEof)
+                     addFragType hdr                                    =$
+                     damagePatternsIterMD 50 skipToEof)
           mempty fs
     >>= estimateDamage params
-  where
-    leehom :: BamMeta -> Bool
-    leehom meta = not $ null [ () | ("PG",line) <- meta_other_shit meta
-                                  , ("PN","mergeTrimReadsBAM") <- line ]
 
 data DivTable = DivTable !Double !(U.Vector Int) deriving (Show, Generic)
 

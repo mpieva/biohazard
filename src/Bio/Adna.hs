@@ -3,6 +3,7 @@ module Bio.Adna (
     DmgStats(..),
     CompositionStats,
     SubstitutionStats,
+    addFragType,
     damagePatternsIter,
     damagePatternsIterMD,
     damagePatternsIter2Bit,
@@ -243,6 +244,17 @@ data Alignment = ALN
     { a_sequence :: !(U.Vector NPair)       -- the alignment proper
     , a_fragment_type :: !FragType }    -- was the adapter trimmed?
 
+addFragType :: Monad m => BamMeta -> Enumeratee [BamRaw] [(BamRaw,FragType)] m b
+addFragType meta = mapStream $ \br -> (br, case unpackBam br of
+    b | isFirstMate  b && isPaired     b -> Leading
+      | isSecondMate b && isPaired     b -> Trailing
+      | not sane                         -> Complete     -- leeHom fscked it up
+      | isFirstMate  b || isSecondMate b -> Complete     -- old style flagging
+      | isTrimmed    b || isMerged     b -> Complete     -- new style flagging
+      | otherwise                        -> Leading)
+  where
+    sane = null [ () | ("PG",line) <- meta_other_shit meta
+                     , ("PN","mergeTrimReadsBAM") <- line ]
 
 -- | Enumeratee (almost) that computes some statistics from plain BAM
 -- (no MD field needed) and a 2bit file.  The 'Alignment' is also
@@ -257,27 +269,26 @@ data Alignment = ALN
 --   to reconstruct the alignment.
 --
 -- Arguments are the table of reference names, the 2bit file with the
--- reference, the amount of context outside the alignment desired, the
--- amount of context inside desired, and whether to compensate for
--- leeHom breakage.
+-- reference, the amount of context outside the alignment desired, and
+-- the amount of context inside desired.
 --
 -- For 'Complete' fragments, we cut the read in the middle, so the 5'
 -- and 3' plots stay clean from each other's influence.  'Leading' and
 -- 'Trailing' fragments count completely towards the appropriate end.
 
 damagePatternsIter2Bit :: MonadIO m
-                       => Refs -> TwoBitFile -> Int -> Int -> Bool
+                       => Refs -> TwoBitFile -> Int -> Int
                        -> Iteratee [Alignment] m b
-                       -> Iteratee [BamRaw] m (DmgStats b)
-damagePatternsIter2Bit refs tbf ctx rng leeHom it =
-    mapMaybeStream (\br -> do
+                       -> Iteratee [(BamRaw,FragType)] m (DmgStats b)
+damagePatternsIter2Bit refs tbf ctx rng it =
+    mapMaybeStream (\(br,ft) -> do
         let b@BamRec{..} = unpackBam br
         guard (not $ isUnmapped b)
         let ref_nm = sq_name $ getRef refs b_rname
             ref    = getFragment tbf ref_nm (b_pos - ctx) (alignedLength b_cigar + 2*ctx)
             pairs  = aln_from_ref (U.drop ctx ref) b_seq b_cigar
-        return (b, ref, pairs)) =$
-    damagePatternsIter ctx rng leeHom it
+        return (b, ft, ref, pairs)) =$
+    damagePatternsIter ctx rng it
 
 -- | Enumeratee (almost) that computes some statistics from plain BAM
 -- with a valid MD field.  The 'Alignment' is also reconstructed and
@@ -288,27 +299,24 @@ damagePatternsIter2Bit refs tbf ctx rng leeHom it =
 -- * Filter the alignment to get the reference sequence, accumulate it.
 -- * Accumulate everything over the alignment.
 --
--- Arguments are just the amount of context inside desired.
--- Arguments are the amount of context inside desired, and whether to
--- compensate for leeHom breakage.
+-- The argument is the amount of context inside desired.
 --
 -- For 'Complete' fragments, we cut the read in the middle, so the 5'
 -- and 3' plots stay clean from each other's influence.  'Leading' and
 -- 'Trailing' fragments count completely towards the appropriate end.
 
 damagePatternsIterMD :: MonadIO m
-                     => Int -> Bool
-                     -> Iteratee [Alignment] m b
-                     -> Iteratee [BamRaw] m (DmgStats b)
-damagePatternsIterMD rng leeHom it =
-    mapMaybeStream (\br -> do
+                     => Int -> Iteratee [Alignment] m b
+                     -> Iteratee [(BamRaw,FragType)] m (DmgStats b)
+damagePatternsIterMD rng it =
+    mapMaybeStream (\(br,ft) -> do
         let b@BamRec{..} = unpackBam br
         guard (not $ isUnmapped b)
         md <- getMd b
         let pairs = aln_from_md b_seq b_cigar md
             ref   = U.map fromN $ U.filter ((/=) gap . fst) pairs
-        return (b, ref, pairs)) =$
-    damagePatternsIter 0 rng leeHom it
+        return (b, ft, ref, pairs)) =$
+    damagePatternsIter 0 rng it
   where
     fromN (ns,_) | ns == nucsA = 2
                  | ns == nucsC = 1
@@ -322,27 +330,21 @@ damagePatternsIterMD rng leeHom it =
 -- strand of the reference; we reverse-complement it if necessary.
 damagePatternsIter :: MonadIO m
                    => Int -> Int
-                   -> Bool -> Iteratee [Alignment] m b
-                   -> Iteratee [(BamRec, U.Vector Word8, U.Vector NPair)] m (DmgStats b)
-damagePatternsIter ctx rng leeHom it = mapStream revcom_both =$ do
+                   -> Iteratee [Alignment] m b
+                   -> Iteratee [(BamRec, FragType, U.Vector Word8, U.Vector NPair)] m (DmgStats b)
+damagePatternsIter ctx rng it = mapStream revcom_both =$ do
     let maxwidth = ctx + rng
     acc_bc <- liftIO $ UM.replicate (2 * 5 *    maxwidth) (0::Int)
     acc_st <- liftIO $ UM.replicate (2 * 4 * 4 * 4 * rng) (0::Int)
     acc_cg <- liftIO $ UM.replicate (2 * 2 * 4 *     rng) (0::Int)
 
-    it' <- flip mapStreamM it $ \(b@BamRec{..}, ref, a_sequence) -> liftIO $ do
+    it' <- flip mapStreamM it $ \(BamRec{..}, a_fragment_type, ref, a_sequence) -> liftIO $ do
 #ifdef DEBUG
               when (U.any (<0) ref || U.any (>4) ref) . error $
                     "Unexpected value in reference fragment: " ++ show ref
 #endif
               let good_pairs     = U.indexed             a_sequence
                   good_pairs_rev = U.indexed $ U.reverse a_sequence
-                  a_fragment_type | isFirstMate  b && isPaired     b = Leading
-                                  | isSecondMate b && isPaired     b = Trailing
-                                  | leeHom                           = Complete
-                                  | isFirstMate  b || isSecondMate b = Complete     -- old style flagging
-                                  | isTrimmed    b || isMerged     b = Complete     -- new style flagging
-                                  | otherwise                        = Leading
 
               -- basecompositon near 5' end, near 3' end
               let (width5, width3) = case a_fragment_type of
@@ -492,11 +494,11 @@ instance Monoid a => Monoid (DmgStats a) where
                                      | otherwise        = (x :-> y, U.zipWith (+) u v)
 
 
-revcom_both :: ( BamRec, U.Vector Word8, U.Vector (Nucleotides, Nucleotides) )
-            -> ( BamRec, U.Vector Word8, U.Vector (Nucleotides, Nucleotides) )
-revcom_both (b, ref, pairs)
-    | isReversed b = ( b, revcom_ref ref, revcom_pairs pairs )
-    | otherwise    = ( b,            ref,              pairs )
+revcom_both :: ( BamRec, FragType, U.Vector Word8, U.Vector (Nucleotides, Nucleotides) )
+            -> ( BamRec, FragType, U.Vector Word8, U.Vector (Nucleotides, Nucleotides) )
+revcom_both (b, ft, ref, pairs)
+    | isReversed b = ( b, ft, revcom_ref ref, revcom_pairs pairs )
+    | otherwise    = ( b, ft,            ref,              pairs )
   where
     revcom_ref   = U.reverse . U.map (\c -> if c > 3 then c else xor c 2)
     revcom_pairs = U.reverse . U.map (compls *** compls)
