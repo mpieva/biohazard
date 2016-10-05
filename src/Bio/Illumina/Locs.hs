@@ -1,6 +1,4 @@
-module Bio.Illumina.Locs where
-
--- ^ Parsing Illumina location files.  It appears we have to support
+-- | Parsing Illumina location files.  It appears we have to support
 -- pos.txt, locs and clocs files; don't know if they come in compressed
 -- versions, too.  Either way, we have one file per tile, and it lists X
 -- and Y coordinates for each cluster.  We turn them into 16-bit integers.
@@ -8,6 +6,8 @@ module Bio.Illumina.Locs where
 -- Unfortunately, these files don't have any easy way to recognize the
 -- format.  So we expose three different readers and a higher level
 -- needs to decide which one to call.
+
+module Bio.Illumina.Locs where
 
 import Bio.Prelude
 import Bio.Util.Zlib

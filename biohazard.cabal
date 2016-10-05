@@ -17,6 +17,7 @@ Maintainer:          udo.stenzel@eva.mpg.de
 Copyright:           (C) 2010-2016 Udo Stenzel
 
 Extra-Source-Files:  man/man7/biohazard.7
+                     man/man1/bam-fixpair.1
                      man/man1/bam-meld.1
                      man/man1/bam-rewrap.1
                      man/man1/bam-rmdup.1
@@ -114,6 +115,7 @@ Library
                        unordered-containers     >= 0.2.3 && < 0.3,
                        vector                   >= 0.9 && < 0.11,
                        vector-algorithms        >= 0.3 && < 1.0,
+                       vector-binary-instances  == 0.2.*,
                        vector-th-unbox          == 0.2.*,
                        wl-pprint-text           == 1.1.*,
                        zlib                     >= 0.5 && < 0.7
@@ -152,7 +154,8 @@ Executable bcl2bam
   Hs-Source-Dirs:      tools
   -- Ghc-options:         -Wall -threaded -rtsopts -with-rtsopts=-N
   Ghc-options:         -Wall -auto-all
-  Extensions:          NoImplicitPrelude, OverloadedStrings,
+  Default-Language:    Haskell2010
+  Default-Extensions:  NoImplicitPrelude, OverloadedStrings,
                        BangPatterns, RecordWildCards
   Build-depends:       async,
                        base,
@@ -200,6 +203,7 @@ Executable redeye-dar
                        BangPatterns, RecordWildCards
   Build-depends:       async,
                        base,
+                       binary,
                        biohazard,
                        bytestring,
                        filepath,
@@ -217,6 +221,7 @@ Executable redeye-pileup
   Hs-Source-Dirs:      tools
   Build-depends:       aeson,
                        base,
+                       binary,
                        biohazard,
                        bytestring,
                        containers,
@@ -253,7 +258,9 @@ Executable redeye-flow
                        BangPatterns, DeriveGeneric
   Hs-Source-Dirs:      tools
   Build-depends:       base,
+                       binary,
                        biohazard,
+                       bytestring,
                        shake == 0.15.*,
                        text
 

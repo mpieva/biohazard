@@ -42,6 +42,7 @@ import Data.Avro
 import Data.Text.Encoding            ( decodeUtf8 )
 import System.Console.GetOpt
 
+import qualified Data.Binary                    as Bin
 import qualified Data.ByteString.Char8          as S
 import qualified Data.ByteString.Lazy           as BL
 import qualified Data.Foldable                  as F
@@ -122,7 +123,7 @@ main = do
     rename (conf_output ++ ".#") conf_output
 
     if conf_table
-      then pprint tab
+      then BL.hPut stdout $ Bin.encode tab
       else do
         (de1,de2) <- estimateSingle tab
         putStrLn $ unlines $

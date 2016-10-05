@@ -25,14 +25,16 @@
 import Bio.Genocall.Estimators      ( estimateSingle )
 import Bio.Prelude
 import Bio.Util.Pretty              ( pshow, pparse )
+import Data.Binary                  ( decodeOrFail )
 
 import Development.Shake
 import Development.Shake.Command
 import Development.Shake.FilePath
 import Development.Shake.Util
 
-import qualified Data.Text.Lazy    as T
-import qualified Data.Text.Lazy.IO as T
+import qualified Data.ByteString.Lazy   as L
+import qualified Data.Text.Lazy         as T
+import qualified Data.Text.Lazy.IO      as T
 
 data Sample = Sample {
     sample_name      :: Text,
@@ -84,26 +86,33 @@ main = shakeArgs shakeOptions { shakeFiles = "_shake" } $ do
 
             "build/*.auto.divest" %> \out -> do
                 let stem = dropExtension $ dropExtension out
-                mapM (\c -> readFile' $ stem ++ "." ++ show c ++ ".divtab") [1..22::Int] >>=
-                    either fail (\tabs -> liftIO $ do
-                            (de1,de2) <- estimateSingle $ mconcat tabs
+                mapM (\c -> lReadFile' $ stem ++ "." ++ show c ++ ".divtab") [1..22::Int] >>=
+                    either fail_decode (\tabs -> liftIO $ do
+                            (de1,de2) <- estimateSingle $ mconcat [ t | (_,_,t) <- tabs ]
                             T.writeFile out $ T.unlines [ pshow de1, pshow de2 ])
-                        . mapM (pparse . fromString)
+                        . mapM decodeOrFail
                 -- xxx divergence estimate goes here!
 
             "build/*.X.divest" %> \out -> do
-                readFile' (out -<.> "divtab") >>=
-                    either fail (\tab -> liftIO $ do
+                lReadFile' (out -<.> "divtab") >>=
+                    either fail_decode (\(_,_,tab) -> liftIO $ do
                             (de1,de2) <- estimateSingle tab
                             T.writeFile out $ T.unlines [ pshow de1, pshow de2 ])
-                        . pparse . fromString
+                        . decodeOrFail
+                -- xxx divergence estimate goes here!
 
             "build/*.Y.divest" %> \out -> do
-                readFile' (out -<.> "divtab") >>=
-                    either fail (\tab -> liftIO $ do
+                lReadFile' (out -<.> "divtab") >>=
+                    either fail_decode (\(_,_,tab) -> liftIO $ do
                             (de1,de2) <- estimateSingle tab
                             T.writeFile out $ T.unlines [ pshow de1, pshow de2 ])
-                        . pparse . fromString
+                        . decodeOrFail
+                -- xxx divergence estimate goes here!
+  where
+    fail_decode (rest,off,msg) = error $
+        msg ++ " at " ++ shows off " near " ++ show (L.take 16 rest)
+
+    lReadFile' x = need [x] >> liftIO (L.readFile x)
 
 
 

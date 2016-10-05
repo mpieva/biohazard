@@ -73,7 +73,7 @@ main = do (opts, [], errors) <- getopts `fmap` getArgs
           pgm <- addPG Nothing
 
           let eff_inputs = if null (inputs conf) then [ plainInput "-" ] else inputs conf
-          mapM_ (hPrint stderr) $ eff_inputs
+          when (verbose conf) $ mapM_ (hPrint stderr) eff_inputs
 
           foldr ((>=>) . enum_input) run (reverse eff_inputs) $
                 joinI $ progress (verbose conf) $

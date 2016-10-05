@@ -10,9 +10,9 @@ fastq2bam \- convert fastq files to bam
 .B ... ]
 .SH DESCRIPTION
 .B fastq2bam
-takes FastQ or FastA files as input and converts them to BAM, following
-various conventions.  Paired end and singly or doubly indexed reads are
-supported in most encodings encountered in the wild.
+takes FastQ or FastA files as input and converts them to BAM, honoring
+various common conventions.  Paired end and singly or doubly indexed
+reads are supported in most encodings encountered in the wild.
 
 Most syntactic conventions employed in FastQ are recognized, see below.
 Multiple files can be given as input, they are combined sensibly and
@@ -44,7 +44,10 @@ Read
 and interpret the contents as second mates of read pairs.  Each read is
 paired up with one from the source previously given with
 .I --read-one
-(or stdin).
+(or stdin if no
+.I --read-one
+was encountered), and the pair is appropriately flagged a 1st mate and
+2nd mate.
 
 .IP "-I, --index-one file"
 Read 
@@ -52,7 +55,9 @@ Read
 and interpret the contents as the first index sequence, which is
 combined with reads from the source previously given with
 .I --read-one
-(or stdin).
+(or stdin if no
+.I --read-one
+was encountered).  
 
 .IP "-J, --index-two file"
 Read 
@@ -60,7 +65,9 @@ Read
 and interpret the contents as the second index sequence, which is
 combined with reads from the source previously given with
 .I --read-one
-(or stdin).
+(or stdin if no
+.I --read-one
+was encountered).
 
 .IP "-v, --verbose"
 Causes
@@ -69,8 +76,8 @@ to print a progress report to stderr.
 
 .SH INPUT FILES
 
-Input files can be FastQ or FastA, even a mix of the two, optionally
-compressed using 
+Input files can be FastQ or FastA, even a mix of the two,
+optionally compressed using 
 .IR gzip "(1)."
 If the input is FastA, the output will not have quality scores
 associated with the sequences, but nothing else changes.  Many
@@ -82,28 +89,28 @@ mate flag, respectively (Illumina convention).
 
 .IP \(bu 4
 The name prefixes "F_" and "R_" are turned into the first mate or
-second mate flag, respectively (legacy MPI convention).
+second mate flag, respectively (legacy MPI EVAN convention).
 
 .IP \(bu 4
 The name prefix "M_" flags the sequence as unpaired and merged (legacy
-MPI convention).
+MPI EVAN convention).
 
 .IP \(bu 4 
 The name prefix "T_" flags the sequence as unpaired and trimmed
-(legacy MPI convention).
+(legacy MPI EVAN convention).
 
 .IP \(bu 4
 The name prefix of "C_", either before or after any of the other
 prefixes, is turned into the extra flag 
 .IR XP:i:-1 ,
 meaning the result of duplicate removal with unknown duplicate count
-(legacy MPI convention, I'm sorry for this one).
+(legacy MPI EVAN convention, I'm really sorry for this one).
 
 .IP \(bu 4
-A nucleotide sequence separated from the name by an octothorpe is
+A nucleotide sequence separated from the name by an octothorpe ("#") is
 removed and treated as the first index.  Two such sequences, separated
 by a comma, are treated as first and second index (legacy convention,
-possibly MPI only).
+possibly MPI EVAN only).
 
 .IP \(bu 4
 If the first word of the description has at least four colon separated
@@ -113,7 +120,7 @@ value
 respectively, the second is interpreted as the "QC failed" flag if it
 has the value
 .IR Y ,
-, and the fourth is the first index sequence.
+, and the fourth is used as the first index sequence.
 
 If multiple files are read and combined, later files override the
 appropriate values parsed from earlier files.  This makes it possible
@@ -129,22 +136,42 @@ flags.  In addition, the first index sequence is placed into the
 .I XI
 field with string type, its quality score into the 
 .I YI
-field with string type, encoded just like in FastQ file.  Likewise, the
-second index goes into
+field with string type, encoded just like in FastQ files.
+Likewise, the second index goes into
 .IR XJ and YJ .
 If a read is recognized as being a replacement for a cluster of
 duplicates, this is encoded by setting
 .I XP
-to -1 with integer type.  If a read is to be flagged as trimmed, the 
+to
+.I -1 
+with integer type.  If a read is to be flagged as trimmed, the 
 .I FF
-field is set to 1, or to two if the read resulted from merging of a read
-pair (MPI convention).
+field is set to
+.I 1
+, or to 
+.I 2
+if the read resulted from merging of a read pair (MPI EVAN convention).
 
-.SH BUGS
+.SH NOTES
 
-In principle, multiple files given with
+Whenever multiple files are to be combined, they must run parallel, that
+is, each file must contain sequences with the same read names in the
+same order.
+
+If only a
 .I --read-one
-should be concatenated.  This doesn't seem to work right now.
+argument is combined with one or two index files, the normal parsing
+logic applies, so a mix of paired and unpaired reads, even with indices
+is allowed.  The index sequences are overridden with those from the
+separate input files.
+
+If one 
+.I --read-one
+argument is combined with one
+.I --read-two
+argument, the pairing flags are forced.  While the normal parsing logic
+still applies, a mix of paired and unpaired reads will not work as
+desired and will probably lead to errors.
 
 .SH AUTHOR
 Udo Stenzel <udo_stenzel@eva.mpg.de>

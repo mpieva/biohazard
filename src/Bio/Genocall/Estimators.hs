@@ -8,6 +8,8 @@ import Bio.Util.AD
 import Bio.Util.AD2
 import Bio.Util.Numeric              ( log1p )
 import Bio.Util.Pretty
+import Data.Binary
+import Data.Vector.Binary            ()
 
 import qualified Data.Vector.Generic as V
 import qualified Data.Vector.Unboxed as U
@@ -95,9 +97,9 @@ smat gc mu nu a b =
 est_gc_frac :: DmgStats a -> Double
 est_gc_frac DmgStats{..} = fromIntegral gc_counts / fromIntegral (at_counts+gc_counts)
   where
-    get n = maybe 0 U.sum . lookup (Just n)
-    at_counts = sum [ get n v | n <- [nucA,nucT], v <- [basecompo5, basecompo3] ]
-    gc_counts = sum [ get n v | n <- [nucG,nucC], v <- [basecompo5, basecompo3] ]
+    getV n = maybe 0 U.sum . lookup (Just n)
+    at_counts = sum [ getV n v | n <- [nucA,nucT], v <- [basecompo5, basecompo3] ]
+    gc_counts = sum [ getV n v | n <- [nucG,nucC], v <- [basecompo5, basecompo3] ]
 
 -- | Estimates mutation rates for transitions and transversion.  We
 -- write down the likelihood function with just two general deamination
@@ -193,6 +195,7 @@ estimateDamageFromFiles lmin params fs = do
 
 data DivTable = DivTable !Double !(U.Vector Int) deriving (Show, Generic)
 
+instance Binary DivTable
 instance Pretty DivTable where pretty = default_pretty
 instance Parse  DivTable where parse  = default_parse
 

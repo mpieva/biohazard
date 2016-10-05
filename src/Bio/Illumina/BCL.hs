@@ -1,6 +1,4 @@
-module Bio.Illumina.BCL where
-
--- ^ Handling of Illumina BCL files.
+-- | Handling of Illumina BCL files.
 -- We will support plain BCL, gzipped BCL and bgzf'ed BCL.  Plain BCL
 -- starts with a cluster count (4 bytes, little-endian).  Base calls
 -- follow with one byte per base:  bits [0..1] encode the base in the
@@ -15,6 +13,8 @@ module Bio.Illumina.BCL where
 -- The BCLs come with a companion 'filter' file.  These start with three
 -- header words:  zero, format version number, number of clusters.  The
 -- remainder is one byte(!) per cluster, bit 0 is the filter flag.
+
+module Bio.Illumina.BCL where
 
 import Bio.Prelude
 import Bio.Util.Zlib                    ( decompressGzip )

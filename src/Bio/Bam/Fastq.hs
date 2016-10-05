@@ -61,7 +61,6 @@ import qualified Data.Vector.Generic                as V
 -- followed immediately by a header or end-of-file.  Whitespace is
 -- ignored.
 
-{-# WARNING parseFastq "parseFastq no longer removes syntactic warts!" #-}
 parseFastq :: Monad m => Enumeratee Bytes [ BamRec ] m a
 parseFastq = parseFastq' (const id)
 

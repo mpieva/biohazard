@@ -14,10 +14,10 @@ In the end, the code will work...
    is streamed.
  - well, if the input is sorted properly, in which case most reads
    stream, but improper pairs need to queue until the mate is reached.
- - reasonably, if there are occasional lone mates, which will be queued
+ - reasonably, if there are occasional widows, which will be queued
    to the very end and sorted by hashed-qname before they are recognized
    and repaired.
- - awkwardly, if sorting is violated, flags are wrong or lone mates are
+ - awkwardly, if sorting is violated, flags are wrong or widows are
    the rule, because then it degenerates to a full sort by qname.
 
 TODO:
@@ -55,21 +55,21 @@ data Config = CF { report_mrnm :: !Bool
                  , verbosity :: Verbosity
                  , killmode :: KillMode
                  , infilter :: BamPair -> Bool
-                 , output :: BamMeta -> Iteratee [BamRec] IO ()
+                 , output :: BamMeta -> Iteratee [BamRec] IO ExitCode
                  , fixsven :: Maybe Int }
 
 config0 :: IO Config
 config0 = return $ CF True True False True False True Errors KillNone
-                      (const True) (protectTerm . pipeBamOutput) Nothing
+                      (const True) (fmap (const ExitSuccess) . protectTerm . pipeBamOutput) Nothing
 
 options :: [OptDescr (Config -> IO Config)]
 options = [
     Option "o" ["output"]       (ReqArg set_output "FILE") "Write output to FILE",
     Option "X" ["exec"]                    (NoArg  return) "Send FastQ output to a program",
     Option "n" ["dry-run","validate"] (NoArg set_validate) "No output, validate only",
-    Option "k" ["kill-lone"]  (NoArg (\c -> return $ c { killmode = KillAll  })) "Delete all lone mates",
-    Option "u" ["kill-unmap"] (NoArg (\c -> return $ c { killmode = KillUu   })) "Delete unmapped lone mates",
-    Option [ ] ["kill-none"]  (NoArg (\c -> return $ c { killmode = KillNone })) "Never delete lone mates (default)",
+    Option "k" ["kill-widows"] (NoArg (\c -> return $ c { killmode = KillAll })) "Delete all widows",
+    Option "u" ["kill-unmapped"](NoArg (\c -> return $ c { killmode = KillUu })) "Delete unmapped widows",
+    Option [ ] ["kill-none"]  (NoArg (\c -> return $ c { killmode = KillNone })) "Never delete widows (default)",
 
     Option "v" ["verbose"]  (NoArg (\c -> return $ c { verbosity = Notices  })) "Print informational messages",
     Option "w" ["warnings"] (NoArg (\c -> return $ c { verbosity = Warnings })) "Print warnings and errors",
@@ -81,13 +81,14 @@ options = [
     Option "" ["report-isize"] (NoArg (\c -> return $ c { report_isize = True })) "Report wrong insert size (default no)",
     Option "" ["report-flags"] (NoArg (\c -> return $ c { report_flags = True })) "Report wrong flags (default yes)",
     Option "" ["report-fflag"] (NoArg (\c -> return $ c { report_fflag = True })) "Report commonly inconsistent flags (default no)",
+    Option "" ["report-ixs"]    (NoArg (\c -> return $ c { report_ixs = False })) "Report mismatched index fields (default yes)",
 
     Option "" ["no-report-mrnm"]  (NoArg (\c -> return $ c { report_mrnm  = False })) "Do not report wrong mate reference name",
     Option "" ["no-report-mpos"]  (NoArg (\c -> return $ c { report_mpos  = False })) "Do not report wrong mate position",
     Option "" ["no-report-isize"] (NoArg (\c -> return $ c { report_isize = False })) "Do not report wrong insert size",
     Option "" ["no-report-flags"] (NoArg (\c -> return $ c { report_flags = False })) "Do not report wrong flags",
     Option "" ["no-report-fflag"] (NoArg (\c -> return $ c { report_fflag = False })) "Do not report commonly inconsistent flags",
-    Option "" ["no-report-fflag"] (NoArg (\c -> return $ c { report_ixs = False })) "Do not report mismatched index fields",
+    Option "" ["no-report-ixs"]     (NoArg (\c -> return $ c { report_ixs = False })) "Do not report mismatched index fields",
 
     Option "" ["only-mapped"] (NoArg (\c -> return $ c { infilter = mapped_only })) "Ignore totally unmapped input",
     Option "" ["fix-sven"] (ReqArg set_fixsven "QUAL") "Trim 3' ends of avg qual lower than QUAL",
@@ -106,9 +107,9 @@ options = [
                 hPutStrLn stderr $ pn ++ ", version " ++ showVersion version
                 exitSuccess
 
-    set_output "-" c = return $ c { output = pipeBamOutput }
-    set_output  f  c = return $ c { output = writeBamFile f }
-    set_validate   c = return $ c { output = \_ -> skipToEof }
+    set_output "-" c = return $ c { output = fmap (const ExitSuccess) . pipeBamOutput }
+    set_output  f  c = return $ c { output = fmap (const ExitSuccess) . writeBamFile f }
+    set_validate   c = return $ c { output = \_ -> ExitSuccess <$ skipToEof }
     set_fixsven  a c = readIO a >>= \q -> return $ c { fixsven = Just q }
 
 mapped_only :: BamPair -> Bool
@@ -130,7 +131,7 @@ pipe_to cmd args (opts, errs, fs) = (mkout : opts, errs, fs)
             subst "JOKERS" = "/dev/fd/" ++ show jokers_out
             subst        x = x
 
-        _ <- spawnProcess cmd $ map subst args
+        pid_cmd <- spawnProcess cmd $ map subst args
 
         clowns_queue <- newTQueueIO
         jokers_queue <- newTQueueIO
@@ -158,7 +159,7 @@ pipe_to cmd args (opts, errs, fs) = (mkout : opts, errs, fs)
                                                 writeTQueue jokers_queue Nothing
                                 wait pidl
                                 wait pidr
-                    return () }
+                                waitForProcess pid_cmd }
 
     flush_fastq qq nn fd = do
             mbr <- atomically $ readTQueue qq <* modifyTVar' nn pred
@@ -178,7 +179,7 @@ pipe_to cmd args (opts, errs, fs) = (mkout : opts, errs, fs)
 pqconf :: PQ_Conf
 pqconf = PQ_Conf 1000 "/var/tmp/"
 
-main :: IO ()
+main :: IO ExitCode
 main = do (args,cmd) <- break (`elem` ["-X","--exec"]) `fmap` getArgs
           let (opts, files, errors) = (case cmd of _:cmd':args' -> pipe_to cmd' args' ; _ -> id)
                                       $ getOpt Permute options args
@@ -277,7 +278,7 @@ fixmate r s | isFirstMate (unpackBam r) && isSecondMate (unpackBam s) = sequence
             add_new y = foldr (:) y $ zip index_fields $ map Text is
             remove_old y = foldr deleteE y index_fields
 
--- | Turns a lone mate into a single.  Basically removes the pairing
+-- | Turns a widow into a single.  Basically removes the pairing
 -- related flags and clear the information concerning the mate.
 divorce :: BamRec -> BamRec
 divorce b = b { b_flag = b_flag b .&. complement pair_flags
@@ -310,7 +311,7 @@ divorce b = b { b_flag = b_flag b .&. complement pair_flags
 data MatingStats = MS { total_in   :: !Int
                       , total_out  :: !Int
                       , singletons :: !Int
-                      , lone_mates :: !Int
+                      , widows     :: !Int
                       , num_mrnm :: !Int
                       , num_mpos :: !Int
                       , num_isize :: !Int
@@ -323,7 +324,7 @@ report_stats ms = unlines [
     "number of records read:          " ++ showNum (total_in ms),
     "number of records written:       " ++ showNum (total_out ms),
     "number of true singletons:       " ++ showNum (singletons ms),
-    "number of lone mates:            " ++ showNum (lone_mates ms),
+    "number of widows:                " ++ showNum (widows ms),
     "number of repaired MRNM values:  " ++ showNum (num_mrnm ms),
     "number of repaired MPOS values:  " ++ showNum (num_mpos ms),
     "number of repaired ISIZE values: " ++ showNum (num_isize ms),
@@ -397,7 +398,7 @@ no_mate_ever :: MonadIO m => BamRaw -> Mating r m ()
 no_mate_ever b = do let b' = unpackBam b
                     err $ "record " ++ shows (b_qname b') " (" ++
                           shows (extAsInt 1 "XI" b') ") did not have a mate at all."
-                    modify $ \c -> c { lone_mates = 1 + lone_mates c }
+                    modify $ \c -> c { widows = 1 + widows c }
                     kill <- tells killmode
                     case kill of
                         KillAll  -> return ()
