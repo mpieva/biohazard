@@ -161,11 +161,11 @@ Executable bcl2bam
                        base,
                        biohazard,
                        bytestring,
-                       vector,
+                       containers,
                        directory,
                        filepath,
-                       containers,
-                       hxt
+                       vector,
+                       xml
 
   -- Modules not exported by this package.
   -- Other-modules:       

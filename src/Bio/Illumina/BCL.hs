@@ -37,8 +37,7 @@ newtype BCL = BCL (U.Vector Word8)
 -- liberally with zeroes.  The file is read and decompressed strictly.
 
 readBCL :: FilePath -> IO BCL
-readBCL fp = do hPutStrLn stderr $ "Reading " ++ fp
-                evaluate . BCL . vec_from_string . L.drop 4 .
+readBCL fp = evaluate . BCL . vec_from_string . L.drop 4 .
                     decompressGzip . L.fromChunks . (:[]) =<< B.readFile fp
 
 -- | Turns a lazy bytestring into a vector of words.  A straight
