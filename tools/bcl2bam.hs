@@ -19,6 +19,8 @@
 
 import Bio.Bam
 import Bio.Prelude
+import Paths_biohazard ( version )
+import System.Console.GetOpt
 import System.Directory
 import System.FilePath
 import Text.XML.HXT.Core
@@ -47,7 +49,6 @@ tileToBam :: LaneDef -> Tile -> [[BamRec]]
 tileToBam LaneDef{..} Tile{ tile_locs = Locs vlocs, ..}
     = zipWith one_cluster [0..] (V.toList vlocs)
   where
-    -- XXX  Need to generate up to two index reads and up to two BAM records.
     one_cluster i (px,py) =
         nullBamRec { b_qname = qname,
                      b_flag  = maybe flagsSingle (const flagsReadOne) cycles_read_two,
@@ -115,6 +116,115 @@ data LaneDef = LaneDef {
     tiles :: [String] }
   deriving Show
 
+default_lanedef :: Int -> LaneDef
+default_lanedef ln = LaneDef
+    { experiment       = ""
+    , lane_number      = ln
+    , path_bcl         = error "need path to BCL files"
+    , path_locs        = error "need path to LOCS files"
+    , cycles_read_one  = error "need cycles for read 1"             -- XXX should be inferred
+    , cycles_read_two  = Nothing
+    , cycles_index_one = Nothing
+    , cycles_index_two = Nothing
+    , tiles            = error "I didn't think about this" }        -- XXX should be inferred
+
+data Cfg = Cfg
+        { cfg_output :: BamMeta -> Iteratee [BamRec] IO ()
+        , cfg_report :: String -> IO ()
+        -- | only used when no run folder is speficied
+        , cfg_lanes :: [Int]
+        -- | applied to the LaneDefs derived from a RunInfo.xml
+        , cfg_overrides :: [LaneDef] -> [LaneDef] }
+
+default_cfg :: Cfg
+default_cfg = Cfg { cfg_output    = protectTerm . pipeBamOutput
+                  , cfg_report    = const $ return ()
+                  , cfg_lanes     = [1]
+                  , cfg_overrides = id }
+
+options :: [OptDescr (Cfg -> IO Cfg)]
+options = [
+    Option "o" ["output"]               (ReqArg set_output    "FILE") "Write output to FILE",
+    Option "l" ["lanes"]                (ReqArg set_lanes     "LIST") "Process only lanes in LIST",
+    Option "r" ["tile"]                 (ReqArg set_tiles     "LIST") "Process only tiles in LIST",
+    Option "e" ["experiment-name"]      (ReqArg set_expname   "NAME") "Override experiment name to NAME",
+    Option "b" ["bcl-path"]             (ReqArg set_bcl_path  "PATH") "Override path to BCL files",
+    Option "p" ["pos-path","locs-path"] (ReqArg set_locs_path "PATH") "Override path to POS files",
+    Option "r" ["read1"]                (ReqArg set_read1    "RANGE") "Read 1 comprises cycles in RANGE",
+    Option "R" ["read2"]                (ReqArg set_read2    "RANGE") "Read 2 comprises cycles in RANGE",
+    Option "i" ["index1"]               (ReqArg set_index1   "RANGE") "Index 1 comprises cycles in RANGE",
+    Option "I" ["index2"]               (ReqArg set_index2   "RANGE") "Index 2 comprises cycles in RANGE",
+    Option "v" ["verbose"]              (NoArg           set_verbose) "Enable progress reporting",
+    Option "V" ["version"]              (NoArg          disp_version) "Display program version and exit",
+    Option "h?"["help","usage"]         (NoArg            disp_usage) "Display this usage information and exit" ]
+
+  where
+    set_lanes     a = override . filter $ \l -> lane_number l `elem` readWith pint_list a
+    set_bcl_path  a = override $ map (\l -> l { path_bcl  = a }) . take 1
+    set_locs_path a = override $ map (\l -> l { path_locs = a }) . take 1
+
+    set_expname   a = override . map $ \l -> l { experiment       =                  a }
+    set_read1     a = override . map $ \l -> l { cycles_read_one  = readWith  prange a }
+    set_read2     a = override . map $ \l -> l { cycles_read_two  = readWith pmrange a }
+    set_index1    a = override . map $ \l -> l { cycles_index_one = readWith pmrange a }
+    set_index2    a = override . map $ \l -> l { cycles_index_one = readWith pmrange a }
+
+    set_output  a c = return $ c { cfg_output = writeBamFile a }
+    set_verbose   c = return $ c { cfg_report = hPutStrLn stderr }
+
+    set_tiles   a c = override (map (\l -> l { tiles = snub $ readWith pstring_list a })) $
+                      c { cfg_lanes = case complete $ pint_list a of
+                                            [ts] -> snub ts ; _ -> cfg_lanes c }
+
+    disp_version _ = do pn <- getProgName
+                        hPutStrLn stderr $ pn ++ ", version " ++ showVersion version
+                        exitSuccess
+
+    disp_usage   _ = do p <- getProgName
+                        hPutStrLn stderr $ "Usage: " ++ usageInfo p options
+                        exitSuccess
+
+    override f c = return $ c { cfg_overrides = f . cfg_overrides c }
+
+snub :: Ord a => [a] -> [a]
+snub = S.toList . S.fromList
+
+complete :: [(a,String)] -> [a]
+complete = map fst . filter (all isSpace . snd)
+
+readWith :: ReadS a -> String -> a
+readWith r s = case complete $ r s of
+    [a] -> a ; _ -> error $ "couldn't parse " ++ show s
+
+pmrange :: ReadS (Maybe (Int,Int))
+pmrange "-" = [ (Nothing, "") ]
+pmrange  s  = [ (Just r, s') | (r,s') <- prange s ]
+
+prange :: ReadS (Int,Int)
+prange s = [ ((a,b), s'') | (a,c:s') <- reads s,  c == ',' || c == '-'
+                          , (b, s'') <- reads s', all isSpace s'', b >= a ]
+        ++ [ ((a,a), s') | (a,s') <- reads s ]
+
+pint_list :: ReadS [Int]
+pint_list s = [ (as,s') | (as,s') <- pprim_list s ]
+           ++ [ (as++as',s') | (as,',':s1) <- pprim_list s
+                             , (as',s') <- pint_list s1 ]
+
+pstring_list :: ReadS [String]
+pstring_list = \s -> [ (as,s') | (as,s') <- patom s ] ++
+                     [ (as++as',s') | (as,',':s1) <- patom s
+                                    , (as',s') <- pstring_list s1 ]
+  where
+    patom = \s -> case complete $ pprim_list s of
+        [ ] -> [ ([a],s') ] where (a,s') = break (==',') s
+        pps -> [ (map show as,[]) | as <- pps ]
+
+pprim_list :: ReadS [Int]
+pprim_list s = [ ([a],s') | (a,s') <- reads s ]
+            ++ [ ([a..b],s') | (a,'-':s1) <- reads s
+                             , (b,s') <- reads s1
+                             , b >= a ]
+
 -- | Takes a run folder and derives the lane definitions.
 lanesFromRun :: FilePath -> IO [LaneDef]
 lanesFromRun rundir = fmap catMaybes . forM [1..8] $ \lane_number -> do
@@ -164,9 +274,10 @@ lanesFromRun rundir = fmap catMaybes . forM [1..8] $ \lane_number -> do
 
 
 -- For each tile, read locs and all the bcls.  Run tileToBam and emit.
-bamFromBcl :: LaneDef -> Enumerator [BamRec] IO b
-bamFromBcl ld@LaneDef{..} iter0 =
-    foldM (\iter fn -> do tile <- one_tile fn
+bamFromBcl :: (String -> IO ()) -> LaneDef -> Enumerator [BamRec] IO b
+bamFromBcl report ld@LaneDef{..} iter0 =
+    foldM (\iter fn -> do report fn
+                          tile <- one_tile fn
                           enumList (tileToBam ld tile) iter)
           iter0 tiles
   where
@@ -181,35 +292,45 @@ bamFromBcl ld@LaneDef{..} iter0 =
         nbr = case reads . reverse . takeWhile (/= '_') . reverse $ fn of
                     [(n,"")] -> n ; _ -> 0
 
-        get_locs = do
+        get_locs =
             let fn_locs = path_locs </> fn
-            try_read_or (fn_locs <.> ".clocs.gz") readClocs $
-                try_read_or (fn_locs <.> ".clocs") readClocs $
-                    try_read_or (fn_locs <.> ".locs.gz") readLocs $
-                        try_read_or (fn_locs <.> ".locs") readLocs $
-                            return (Locs V.empty)
+            in try_read_or (fn_locs <.> ".clocs.gz") readClocs $
+               try_read_or (fn_locs <.> ".clocs") readClocs $
+               try_read_or (fn_locs <.> ".locs.gz") readLocs $
+               try_read_or (fn_locs <.> ".locs") readLocs $
+               return (Locs V.empty)
 
-        get_bcls = fmap V.fromList . forM [1..ce] $ \ncycle -> do
+        get_bcls = fmap V.fromList . forM [1..ce] $ \ncycle ->
             let fn_bcl = path_bcl ++ "/C" ++ show ncycle ++ ".1/" ++ fn ++ ".bcl"
-            try_read_or (fn_bcl <.> "gz") readBCL $
-                try_read_or fn_bcl readBCL $
-                    return (BCL V.empty)
+            in try_read_or (fn_bcl <.> "gz") readBCL $
+               try_read_or fn_bcl readBCL $
+               return (BCL V.empty)
 
         try_read_or f r k = do e <- doesFileExist f
                                if e then r f else k
 
+main :: IO ()
+main = do
+    (opts, rs, errors) <- getOpt Permute options <$> getArgs
+    unless (null errors) $ mapM_ (hPutStrLn stderr) errors >> exitFailure
+    Cfg{..} <- foldl (>>=) (return default_cfg) opts
+    add_pg <- addPG $ Just version
 
-main  = do
-    rs <- getArgs
+    lanedefs <- case (rs, cfg_lanes) of
+                    ([],[ln]) -> return $ cfg_overrides [ default_lanedef ln ]
+                    ([],_   ) -> fail "need at least one run or exactly one lane number"
+                    ( _,_   ) -> cfg_overrides . concat <$> mapM lanesFromRun rs
 
-    lanedefs <- mapM lanesFromRun rs >>= return . concat
     hPutStrLn stderr $ show lanedefs
-    foldr ((>=>) . bamFromBcl) run lanedefs $ pipeBamOutput mempty
+    foldr ((>=>) . bamFromBcl cfg_report) run lanedefs $
+            cfg_output (add_pg mempty)
 
 
 -- Look for a useable XML file, either RunInfo.xml, or
 -- RunParameters.xml.  We'll match case insensitively, because
 -- sometimes case gets mangled during the network copy.
+--
+-- XXX Rewrite to not depend on heavywight HXT?  (xml might be okay)
 getRunInfo :: FilePath -> IO [(Int,Bool)]
 getRunInfo dir = do
     xmls <- filter (\f -> map toLower f == "runinfo.xml" || map toLower f == "runparameters.xml")
