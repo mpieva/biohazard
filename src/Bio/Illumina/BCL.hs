@@ -12,7 +12,9 @@
 
 -- The BCLs come with a companion 'filter' file.  These start with three
 -- header words:  zero, format version number, number of clusters.  The
--- remainder is one byte(!) per cluster, bit 0 is the filter flag.
+-- remainder is one byte(!) per cluster, bit 0 is the filter flag.  We
+-- expect one folder that contains the filter files and per-cycle
+-- subfolders.
 
 module Bio.Illumina.BCL where
 
@@ -29,7 +31,8 @@ import qualified Data.Vector.Fusion.Stream.Monadic  as S
 import qualified Data.Vector.Fusion.Stream.Size     as S
 import qualified Data.Vector.Unboxed                as U
 
-newtype BCL = BCL (U.Vector Word8)
+newtype BCL  = BCL  (U.Vector Word8)
+newtype Filt = Filt (U.Vector Word8)
 
 -- | Reads a BCL file, which can be plain, or gzip'ed, or bgzf'ed.
 -- We ignore the record count in the first quadword and convert
@@ -37,7 +40,13 @@ newtype BCL = BCL (U.Vector Word8)
 -- liberally with zeroes.  The file is read and decompressed strictly.
 
 readBCL :: FilePath -> IO BCL
-readBCL fp = evaluate . BCL . vec_from_string . L.drop 4 .
+readBCL fp = BCL <$> readVec fp 4
+
+readFilt :: FilePath -> IO Filt
+readFilt fp = Filt <$> readVec fp 12
+
+readVec :: FilePath -> Int64 -> IO (U.Vector Word8)
+readVec fp n = evaluate . vec_from_string . L.drop n .
                     decompressGzip . L.fromChunks . (:[]) =<< B.readFile fp
 
 -- | Turns a lazy bytestring into a vector of words.  A straight

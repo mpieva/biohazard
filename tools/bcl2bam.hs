@@ -36,23 +36,24 @@ import Bio.Illumina.Locs
 data Tile = Tile
     { tile_nbr :: !Int
     , tile_locs :: !Locs
+    , tile_filter :: !Filt
     , tile_bcls :: !(VV.Vector BCL) }
 
 
 tileToBam :: LaneDef -> Tile -> [[BamRec]]
-tileToBam LaneDef{..} Tile{ tile_locs = Locs vlocs, ..}
+tileToBam LaneDef{..} Tile{ tile_locs = Locs vlocs, tile_filter = Filt vfilt, ..}
     = zipWith one_cluster [0..] (V.toList vlocs)
   where
     one_cluster i (px,py) =
         nullBamRec { b_qname = qname,
-                     b_flag  = maybe flagsSingle (const flagsReadOne) cycles_read_two,
+                     b_flag  = maybe flagsSingle flagsReadOne cycles_read_two .|. get_flag i,
                      b_seq   = V.convert $ get_seq $ fromJust cycles_read_one,
                      b_qual  = V.convert $ get_quals $ fromJust cycles_read_one,
                      b_exts  = common_exts } :
         case cycles_read_two of
             Nothing -> []
             Just r2 -> nullBamRec { b_qname = qname,
-                                    b_flag  = flagsReadTwo,
+                                    b_flag  = flagsReadTwo .|. get_flag i,
                                     b_seq   = V.convert $ get_seq r2,
                                     b_qual  = V.convert $ get_quals r2,
                                     b_exts  = common_exts } : []
@@ -68,10 +69,11 @@ tileToBam LaneDef{..} Tile{ tile_locs = Locs vlocs, ..}
             = insertE k1 (Text . fromString . V.toList . V.map showNucleotides          $ get_seq   rng)
             . insertE k2 (Text . B.pack . V.toList . V.map ((+33) . fromIntegral . unQ) $ get_quals rng)
 
-    flagsSingle = flagUnmapped
-    flagsReadOne = flagUnmapped .|. flagMateUnmapped .|. flagPaired .|. flagFirstMate
-    flagsReadTwo = flagUnmapped .|. flagMateUnmapped .|. flagPaired .|. flagSecondMate
+    flagsSingle    = flagUnmapped
+    flagsReadOne _ = flagUnmapped .|. flagMateUnmapped .|. flagPaired .|. flagFirstMate
+    flagsReadTwo   = flagUnmapped .|. flagMateUnmapped .|. flagPaired .|. flagSecondMate
 
+    get_flag i         = case vfilt V.!? i of Just x | odd x -> flagFailsQC ; _ -> 0
     get_qual i (BCL v) = Q . maybe 0 (`shiftR` 2) $ v V.!? i
     get_nucs i (BCL v) = maybe nucsN code_to_nucs $ v V.!? i
     code_to_nucs x |    x    == 0 = nucsN
@@ -286,18 +288,23 @@ bamFromBcl report ld@LaneDef{..} iter0 =
           snd $ fromJust cycles_read_one
 
     one_tile :: FilePath -> IO Tile
-    one_tile fn = Tile nbr <$> get_locs <*> get_bcls
+    one_tile fn = Tile nbr <$> get_locs <*> get_filt <*> get_bcls
       where
         nbr = case reads . reverse . takeWhile (/= '_') . reverse $ fn of
                     [(n,"")] -> n ; _ -> 0
 
         get_locs =
             let fn_locs = path_locs </> fn
-            in try_read_or (fn_locs <.> ".clocs.gz") readClocs $
-               try_read_or (fn_locs <.> ".clocs") readClocs $
-               try_read_or (fn_locs <.> ".locs.gz") readLocs $
-               try_read_or (fn_locs <.> ".locs") readLocs $
+            in try_read_or (fn_locs <.> "clocs.gz") readClocs $
+               try_read_or (fn_locs <.> "clocs") readClocs $
+               try_read_or (fn_locs <.> "locs.gz") readLocs $
+               try_read_or (fn_locs <.> "locs") readLocs $
                return (Locs V.empty)
+
+        get_filt = let fn_filt = path_bcl </> fn <.> "filter"
+                   in try_read_or (fn_filt <.> "gz") readFilt $
+                      try_read_or  fn_filt           readFilt $
+                      return (Filt V.empty)
 
         get_bcls = fmap V.fromList . forM [1..ce] $ \ncycle ->
             let fn_bcl = path_bcl ++ "/C" ++ show ncycle ++ ".1/" ++ fn ++ ".bcl"
