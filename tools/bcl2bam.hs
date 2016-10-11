@@ -142,7 +142,7 @@ options :: [OptDescr (Cfg -> IO Cfg)]
 options = [
     Option "o" ["output"]               (ReqArg set_output    "FILE") "Write output to FILE",
     Option "l" ["lanes"]                (ReqArg set_lanes     "LIST") "Process only lanes in LIST",
-    Option "r" ["tile"]                 (ReqArg set_tiles     "LIST") "Process only tiles in LIST",
+    Option "t" ["tiles"]                (ReqArg set_tiles     "LIST") "Process only tiles in LIST",
     Option "e" ["experiment-name"]      (ReqArg set_expname   "NAME") "Override experiment name to NAME",
     Option "b" ["bcl-path"]             (ReqArg set_bcl_path  "PATH") "Override path to BCL files",
     Option "p" ["pos-path","locs-path"] (ReqArg set_locs_path "PATH") "Override path to POS files",
@@ -324,8 +324,14 @@ main = do
 
     lanedefs <- case (rs, cfg_lanes) of
                     ([],[ln]) -> do let [ldef] = cfg_overrides [ default_lanedef ln ]
-                                    cs <- maybe ((,) 1 . maximum <$> listCycles (path_bcl ldef)) return $ cycles_read_one ldef
-                                    ts <- maybe                     (listTiles (path_locs ldef)) return $ tiles ldef
+                                    cs <- case cycles_read_one ldef of
+                                            Just zz -> return zz
+                                            Nothing -> do m <- maximum <$> listCycles (path_bcl ldef)
+                                                          return . (,) 1
+                                                            . maybe id (max . fst) (cycles_read_two  ldef)
+                                                            . maybe id (max . fst) (cycles_index_one ldef)
+                                                            . maybe id (max . fst) (cycles_index_two ldef) $ m
+                                    ts <- maybe (listTiles (path_locs ldef)) return $ tiles ldef
                                     return [ ldef { cycles_read_one = Just cs, tiles = Just ts } ]
                     ([],_   ) -> fail "need at least one run or exactly one lane number"
                     ( _,_   ) -> cfg_overrides . concat <$> mapM lanesFromRun rs
