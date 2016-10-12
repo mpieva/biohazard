@@ -9,4 +9,8 @@ pipelines:
   default:
     - step:
         script:
+          - cabal install --only-dep
+          - cabal configure --enable-tests
           - cabal build
+          - cabal haddock
+          - cabal test
