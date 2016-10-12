@@ -5,12 +5,8 @@ module Bio.Bam.Trim where
 
 import Bio.Bam.Header
 import Bio.Bam.Rec
-import Bio.Base
 import Bio.Iteratee
-import Prelude
-
-import Data.Bits
-import Data.List ( inits, sortBy )
+import Bio.Prelude
 
 import qualified Data.Vector.Fusion.Stream      as S
 import qualified Data.Vector.Hybrid.Internal    as Hybrid
