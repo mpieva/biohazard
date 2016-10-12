@@ -104,6 +104,7 @@
     "95": "CGAGATC",
     "96": "CGCAGCC",
 
+    "501": "GCGATCTA",
     "502": "ATAGAGAG",
     "503": "AGAGGATA",
     "504": "TCTACTCT",
@@ -113,7 +114,23 @@
     "508": "AGGCTTAG",
     "510": "ATTAGACG",
     "511": "CGGAGAGA",
+    "513": "CTAGTCGA",
+    "515": "AGCTAGAA",
+    "516": "ACTCTAGG",
     "517": "TCTTACGC",
+    "518": "CTTAATAG",
+    "520": "ATAGCCTT",
+    "521": "TAAGGCTC",
+    "522": "TCGCATAA",
+
+    "592": "GATTTCCA",
+    "593": "ATCATGTT",
+    "594": "TTTCATCA",
+    "595": "AGTCCGAC",
+    "596": "GCTAGAAA",
+    "597": "CTTGGTTA",
+    "598": "CGATACAC",
+    "599": "TTGATGGA",
 
     "t1": "ATCACG",
     "t2": "CGATGT",
@@ -554,6 +571,11 @@
     "727": "CGATCAGT",
     "728": "TGCAGCTA",
     "729": "TCGACGTC",
+
+    "796": "TGGATCTG",
+    "797": "CCGTTTGT",
+    "798": "TGCTGGGT",
+    "799": "AGGTTGGG",
 
     "PhiX": "TTGCCGC",
     "PhiA": "AAAAAAAA",
