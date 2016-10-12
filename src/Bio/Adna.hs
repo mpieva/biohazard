@@ -22,8 +22,9 @@ module Bio.Adna (
     univDamage,
     empDamage,
     Mat44D(..),
-    scalarMat
-                ) where
+    scalarMat,
+    bwa_cal_maxdiff
+  ) where
 
 import Bio.Bam
 import Bio.Prelude
@@ -560,4 +561,41 @@ aln_from_md qry0 cig0 md0 = U.fromList $ step qry0 cig0 md0
     step' qry Nop _ cig                 md  =                                            step           qry  cig md
     step' qry Pad _ cig                 md  =                                            step           qry  cig md
 
+-- | Number of mismatches allowed by BWA.
+-- @bwa_cal_maxdiff thresh len@ returns the number of mismatches
+-- @bwa aln -n $tresh@ would allow in a read of length @len@.  For
+-- reference, here is the code from BWA that computes it (we assume @err
+-- = 0.02@, just like BWA):
+--
+-- @
+-- int bwa_cal_maxdiff(int l, double err, double thres)
+--   {
+--      double elambda = exp(-l * err);
+--      double sum, y = 1.0;
+--      int k, x = 1;
+--      for (k = 1, sum = elambda; k < 1000; ++k) {
+--          y *= l * err;
+--          x *= k;
+--          sum += elambda * y / x;
+--          if (1.0 - sum < thres) return k;
+--      }
+--      return 2;
+--   }
+-- @
+--
+
+bwa_cal_maxdiff :: Double -> Int -> Int
+bwa_cal_maxdiff thresh len = k_fin-1
+  where
+    (k_fin, _, _, _) : _ = dropWhile bad $ iterate step (1,elambda,1,1)
+
+    err = 0.02
+    elambda = exp . negate $ fromIntegral len * err
+
+    step (k, s, x, y) = (k+1, s', x', y')
+      where y' = y * fromIntegral len * err
+            x' = x * fromIntegral k
+            s' = s + elambda * y' / x'
+
+    bad (_, s, _, _) = 1-s >= thresh
 
