@@ -8,7 +8,10 @@ import Bio.Bam.Rec
 import Bio.Iteratee
 import Bio.Prelude
 
-import qualified Data.Vector.Fusion.Stream      as S
+import qualified Data.Vector.Fusion.Bundle.Size         as S
+import qualified Data.Vector.Fusion.Bundle.Monadic      as S
+import qualified Data.Vector.Fusion.Stream.Monadic      as SS
+import qualified Data.Vector.Fusion.Util                as SS
 import qualified Data.Vector.Hybrid.Internal    as Hybrid
 import qualified Data.Vector.Generic            as V
 import qualified Data.Vector.Unboxed            as U
@@ -144,8 +147,8 @@ merge_overlap r1 ads1 r2 ads2 =
         | otherwise = nullBamRec {
                 b_qname = b_qname r1,
                 b_flag  = flagUnmapped .|. complement pair_flags .&. b_flag r1,
-                b_seq   = V.unstream $ S.map fst $ V.stream merged_seq,
-                b_qual  = V.unstream $ S.map snd $ V.stream merged_seq,
+                b_seq   = V.unstream $ flip S.fromStream (S.Exact $ V.length merged_seq) $ SS.map fst $ S.elements $ V.stream merged_seq,
+                b_qual  = V.unstream $ flip S.fromStream (S.Exact $ V.length merged_seq) $ SS.map snd $ S.elements $ V.stream merged_seq,
                 b_exts  = let ff = if l < V.length (b_seq r1) then eflagTrimmed else 0
                           in updateE "FF" (Int $ extAsInt 0 "FF" r1 .|. eflagMerged .|. ff) $ b_exts r1 }
       where
@@ -256,14 +259,14 @@ merge_score fwd_adapters rev_adapters read1 read2 l
                     (V.take l $ V.drop (l - V.length read1) read2)                          -- read2, overlap with read1
   where
     -- match_adapter :: u (Nucleotides, Qual) -> v Nucleotides -> Double
-    match_adapter rd ad = S.foldl' (+) 0 $
-                          S.zipWith (\(!n, Q !q) m -> if n == m then 0 else min 25 (fromIntegral q))
-                                    (V.stream rd) (V.stream ad)
+    match_adapter rd ad = SS.unId $ SS.foldl' (+) 0 $
+                          SS.zipWith (\(!n, Q !q) m -> if n == m then 0 else min 25 (fromIntegral q))
+                                     (S.elements $ V.stream rd) (S.elements $ V.stream ad)
 
     -- match_reads :: u (Nucleotides, Qual) -> u (Nucleotides, Qual) -> Double
-    match_reads rd1 rd2 = S.foldl' (+) 0 $
-                          S.zipWith (\(!n1, Q !q1) (!n2, Q !q2) -> if n1 == compls n2 then 0 else fromIntegral $ min q1 q2)
-                                    (V.stream rd1) (V.streamR rd2)
+    match_reads rd1 rd2 = SS.unId $ SS.foldl' (+) 0 $
+                          SS.zipWith (\(!n1, Q !q1) (!n2, Q !q2) -> if n1 == compls n2 then 0 else fromIntegral $ min q1 q2)
+                                     (S.elements $ V.stream rd1) (S.elements $ V.streamR rd2)
 
 mergeTrimBam :: Monad m => [U.Vector Nucleotides] -> [U.Vector Nucleotides] -> Enumeratee [BamRec] [BamRec] m a
 mergeTrimBam fwd_ads rev_ads = convStream go

@@ -113,12 +113,13 @@ main = do
     Conf{..} <- foldl (>>=) (return defaultConf) opts
     unless (null errs) $ mapM_ (hPutStrLn stderr) errs >> exitFailure
 
-    (tab,()) <- withFd (conf_output ++ ".#") WriteOnly (Just 0o666) defaultFileFlags            $ \ohdl ->
+    (tab   ) <- withFd (conf_output ++ ".#") WriteOnly (Just 0o666) defaultFileFlags            $ \ohdl ->
                 mergeLibraries conf_report (reverse conf_libs) conf_chrom >=> run               $ \hdr ->
                 progressPos (\(rs, p, _) -> (rs, p)) "GT call at " conf_report (meta_refs hdr) =$
                 pileup                                                                         =$
                 mapStream (calls conf_theta)                                                   =$
-                zipStreams tabulateSingle (output_avro ohdl $ meta_refs hdr)
+                tabulateSingle
+                -- zipStreams tabulateSingle (output_avro ohdl $ meta_refs hdr)
 
     rename (conf_output ++ ".#") conf_output
 

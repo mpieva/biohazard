@@ -39,7 +39,7 @@ module Bio.Base(
     findAuxFile
 ) where
 
-import BasePrelude
+import BasePrelude           hiding ( log1p )
 import Bio.Util.Numeric             ( log1p )
 import Data.ByteString.Internal     ( c2w, w2c )
 import Data.Vector.Unboxed.Deriving ( derivingUnbox )

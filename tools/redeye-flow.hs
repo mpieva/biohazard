@@ -86,12 +86,11 @@ main = shakeArgs shakeOptions { shakeFiles = "_shake" } $ do
 
             "build/*.auto.divest" %> \out -> do
                 let stem = dropExtension $ dropExtension out
-                mapM (\c -> lReadFile' $ stem ++ "." ++ show c ++ ".divtab") [1..22::Int] >>=
+                lReadFiles' [ stem ++ "." ++ show c ++ ".divtab" | c <- [1..22::Int] ] >>=
                     either fail_decode (\tabs -> liftIO $ do
                             (de1,de2) <- estimateSingle $ mconcat [ t | (_,_,t) <- tabs ]
                             T.writeFile out $ T.unlines [ pshow de1, pshow de2 ])
                         . mapM decodeOrFail
-                -- xxx divergence estimate goes here!
 
             "build/*.X.divest" %> \out -> do
                 lReadFile' (out -<.> "divtab") >>=
@@ -99,7 +98,6 @@ main = shakeArgs shakeOptions { shakeFiles = "_shake" } $ do
                             (de1,de2) <- estimateSingle tab
                             T.writeFile out $ T.unlines [ pshow de1, pshow de2 ])
                         . decodeOrFail
-                -- xxx divergence estimate goes here!
 
             "build/*.Y.divest" %> \out -> do
                 lReadFile' (out -<.> "divtab") >>=
@@ -107,12 +105,12 @@ main = shakeArgs shakeOptions { shakeFiles = "_shake" } $ do
                             (de1,de2) <- estimateSingle tab
                             T.writeFile out $ T.unlines [ pshow de1, pshow de2 ])
                         . decodeOrFail
-                -- xxx divergence estimate goes here!
   where
     fail_decode (rest,off,msg) = error $
         msg ++ " at " ++ shows off " near " ++ show (L.take 16 rest)
 
-    lReadFile' x = need [x] >> liftIO (L.readFile x)
+    lReadFile'   x = need [x] >> liftIO (L.readFile x)
+    lReadFiles' xs = need  xs >> liftIO (mapM L.readFile xs)
 
 
 
@@ -128,15 +126,19 @@ buildSample smp = do
 
     [ "build/" ++ unpack (sample_name smp) ++ ".*.av",
       "build/" ++ unpack (sample_name smp) ++ ".*.divtab" ] &%> \[av,tab] -> do
-        -- need [ "build/" ++ unpack (library_name lib) ++ ".dmgest" | lib <- sample_libraries smp ]
+        need [ "build/" ++ unpack (library_name lib) ++ ".dmgest" | lib <- sample_libraries smp ]
         let '.':c = takeExtension $ dropExtension av
 
         libinputs <- sequence [ do de <- readFile' $ "build/" ++ unpack (library_name lib) ++ ".dmgest"
                                    return $ "-D" : flatten de : map unpack (library_files lib)
                               | lib <- sample_libraries smp ]
 
-        command [ FileStdout tab ] "redeye-pileup" $
-                "-o" : av : "-c" : c : "-T" : concat libinputs
+        command [ FileStdout tab ] "qrsh" $
+                "-now" : "no" : "-cwd" :
+                "redeye-pileup" : "-o" : av : "-c" : c : "-T" : "-v" : concat libinputs
+
+        -- command [ FileStdout tab ] "redeye-pileup" $
+        --         "-o" : av : "-c" : c : "-T" : "-v" : concat libinputs
 
     mapM_ buildLib $ sample_libraries smp
   where

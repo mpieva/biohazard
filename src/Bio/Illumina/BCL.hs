@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP #-}
 -- | Handling of Illumina BCL files.
 -- We will support plain BCL, gzipped BCL and bgzf'ed BCL.  Plain BCL
 -- starts with a cluster count (4 bytes, little-endian).  Base calls
@@ -27,8 +28,9 @@ import qualified Data.ByteString                    as B
 import qualified Data.ByteString.Lazy               as L
 import qualified Data.ByteString.Lazy.Internal      as L ( ByteString(..) )
 import qualified Data.ByteString.Unsafe             as B ( unsafeIndex )
-import qualified Data.Vector.Fusion.Stream.Monadic  as S
-import qualified Data.Vector.Fusion.Stream.Size     as S
+import qualified Data.Vector.Fusion.Stream.Monadic  as SS
+import qualified Data.Vector.Fusion.Bundle.Monadic  as S
+import qualified Data.Vector.Fusion.Bundle.Size     as S
 import qualified Data.Vector.Unboxed                as U
 
 newtype BCL  = BCL  (U.Vector Word8)
@@ -55,15 +57,15 @@ readVec fp n = evaluate . vec_from_string . L.drop n .
 vec_from_string :: L.ByteString -> U.Vector Word8
 vec_from_string = unstream . S.concatMap stream_bs . stream_lbs
   where
-    stream_bs :: B.ByteString -> S.Stream Id Word8
-    stream_bs bs = S.Stream step 0 (S.Exact $ B.length bs)
+    stream_bs :: B.ByteString -> S.Bundle Id v Word8
+    stream_bs bs = S.fromStream (SS.Stream step 0) (S.Exact $ B.length bs)
       where
-        step i | i == B.length bs = return $ S.Done
-               | otherwise        = return $ S.Yield (B.unsafeIndex bs i) (i+1)
+        step i | i == B.length bs = return $ SS.Done
+               | otherwise        = return $ SS.Yield (B.unsafeIndex bs i) (i+1)
 
-    stream_lbs :: L.ByteString -> S.Stream Id B.ByteString
-    stream_lbs lbs = S.Stream step lbs S.Unknown
+    stream_lbs :: L.ByteString -> S.Bundle Id v B.ByteString
+    stream_lbs lbs = S.fromStream (SS.Stream step lbs) S.Unknown
       where
-        step  L.Empty       = return $ S.Done
-        step (L.Chunk c cs) = return $ S.Yield c cs
+        step  L.Empty       = return $ SS.Done
+        step (L.Chunk c cs) = return $ SS.Yield c cs
 

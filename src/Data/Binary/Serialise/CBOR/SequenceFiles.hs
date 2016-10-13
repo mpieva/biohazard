@@ -1,5 +1,14 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 
+-- | Support for "CBOR sequence files".
+-- Stolen from Duncan Coutts
+-- (https://gist.github.com/dcoutts/798812e040a61ad969c27a45549943c0).
+--
+-- With this, we can write sequences of things into a file, the
+-- sequences don't even need to have the same type.  We can read it back
+-- as a sequence (now it needs to be homogenous); there should be ways
+-- to get single items, too.
+
 module Data.Binary.Serialise.CBOR.SequenceFiles (
    writeBinaryFileSequence,
    appendBinaryFileSequence,
@@ -13,7 +22,6 @@ import           Control.Exception
 import           Data.Monoid
 import qualified Data.Binary.Serialise.CBOR    as B
 import qualified Data.Binary.Serialise.CBOR.Write as B
--- import qualified Data.Binary.Get               as B
 import qualified Data.ByteString               as BS
 import qualified Data.ByteString.Lazy          as LBS
 import qualified Data.ByteString.Builder.Extra as BS

@@ -11,8 +11,9 @@ module Bio.Illumina.Locs where
 
 import Bio.Prelude
 import Bio.Util.Zlib
+import Data.Vector.Fusion.Bundle.Monadic    ( fromStream )
+import Data.Vector.Fusion.Bundle.Size       ( Size(..) )
 import Data.Vector.Fusion.Stream.Monadic    ( Stream(..), Step(..) )
-import Data.Vector.Fusion.Stream.Size       ( Size(..) )
 import Data.Vector.Generic                  ( unstream )
 import Foreign.C.Types                      ( CChar )
 import Foreign.Marshal.Utils
@@ -96,7 +97,7 @@ readLocs fp = fmap conv . vec_from_lbs . L.drop 12 . decompressGzip =<< L.readFi
 data CLocs_Args = CLocs_Args !L.ByteString !Word32 !Word32 !Word8 !Int
 
 readClocs :: FilePath -> IO Locs
-readClocs fp = Locs . unstream . (\inp -> Stream (return . decode) (CLocs_Args inp 0 0 0 (-1)) Unknown)
+readClocs fp = Locs . unstream . (\inp -> fromStream (Stream (return . decode) (CLocs_Args inp 0 0 0 (-1))) Unknown)
                     . L.drop 5 . decompressGzip <$> L.readFile fp
   where
     imageWidth = 20480

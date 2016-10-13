@@ -3,7 +3,7 @@ module Bio.Genocall.Estimators where
 
 import Bio.Adna
 import Bio.Bam
-import Bio.Prelude
+import Bio.Prelude            hiding ( log1p )
 import Bio.Util.AD
 import Bio.Util.AD2
 import Bio.Util.Numeric              ( log1p )
@@ -62,7 +62,7 @@ import qualified Data.Vector.Unboxed as U
 -- * Dumb mistake to be avoided:  The likelihood of any substitution has
 --   to be multiplied with the base frequency of the original base.
 
-smat :: (Num a, Floating a, IsDouble a) => Double -> a -> a -> a -> a -> [a]
+smat :: (Floating a, IsDouble a) => Double -> a -> a -> a -> a -> [a]
 smat gc mu nu a b =
        [ pA * (1 - nu*pC - mu*pG - nu*pT + mu*pG * tr (-b))
                    , pA * (nu*pC * tr a)
