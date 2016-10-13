@@ -121,7 +121,7 @@ instance (GParse f, Constructor c) => GParse (M1 C c f) where
                                            record_form <|> prefix_form
                | otherwise = fmap M1 $ case conFixity c of
                     Prefix    -> a_parensIf (i > appPrec1 && not (basic' fp)) $ prefix_form
-                    Infix _ m -> a_parensIf (i > appPrec1 && not (basic' fp)) $ prefix_form
+                    Infix _ _ -> a_parensIf (i > appPrec1 && not (basic' fp)) $ prefix_form
       where
         record_form = A.string (fromString (conName c)) *> A.skipSpace *> a_braces (gparse Rec i)
         prefix_form = A.string (fromString (conName c)) *> A.skipSpace *> gparse t appPrec1

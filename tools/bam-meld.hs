@@ -65,10 +65,10 @@ enum_bam_files  etee (f1:fs1) = go (decodeAnyBamOrSamFile f1 $== find_pairs $== 
 
 data BamPair = Single BamRec | Pair BamRec BamRec
 
-find_pairs :: Monad m => Enumeratee [BamRec] [BamPair] m a
+find_pairs :: Enumeratee [BamRec] [BamPair] m a
 find_pairs = mapStream Single
 
-unpair :: Monad m => Enumeratee [BamPair] [BamRec] m a
+unpair :: Enumeratee [BamPair] [BamRec] m a
 unpair = mapChunks (concatMap unpair1)
   where
     unpair1 (Single a) = [a]

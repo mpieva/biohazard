@@ -119,7 +119,7 @@ sizePQ (PQ pq) = snd `fmap` readIORef pq
 -- We need an in-memory heap anyway.  Here's a skew heap.
 data SkewHeap a = Empty | Node a (SkewHeap a) (SkewHeap a)
 
-singleton :: Ord a => a -> SkewHeap a
+singleton :: a -> SkewHeap a
 singleton x = Node x Empty Empty
 
 union :: Ord a => SkewHeap a -> SkewHeap a -> SkewHeap a
@@ -132,7 +132,7 @@ t1@(Node x1 l1 r1) `union` t2@(Node x2 l2 r2)
 insert :: Ord a => a -> SkewHeap a -> SkewHeap a
 insert x heap = singleton x `union` heap
 
-getMin :: Ord a => SkewHeap a -> Maybe a
+getMin :: SkewHeap a -> Maybe a
 getMin Empty        = Nothing
 getMin (Node x _ _) = Just x
 

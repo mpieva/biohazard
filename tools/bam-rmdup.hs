@@ -314,7 +314,7 @@ decodeWithIndex enum fp k0 = do
     decodeAnyBamFile fp >=> run $ enum idx . k0
 
 
-writeLibBamFiles :: (MonadIO m, MonadMask m)
+writeLibBamFiles :: MonadIO m
                  => FilePath -> (BamRec -> Seqid) -> BamMeta -> Iteratee [BamRec] m ()
 writeLibBamFiles fp lbl hdr = tryHead >>= go M.empty
   where

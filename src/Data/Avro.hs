@@ -168,7 +168,7 @@ zig :: (Storable a, Bits a) => a -> a
 zig x = (x `shiftL` 1) `xor` (x `shiftR` (8 * sizeOf x -1))
 
 -- | Reverses Zig-Zag-Coding like in Protocol Buffers and Avro.
-zag :: (Storable a, Bits a, Num a) => a -> a
+zag :: (Bits a, Num a) => a -> a
 zag x = negate (x .&. 1) `xor` ((x .&. complement 1) `rotateR` 1)
 
 -- | Encodes a word of any size using a variable length "base 128"
@@ -193,7 +193,7 @@ encodeIntBase128 = encodeWordBase128 . zig
 
 -- | Decodes an int of any size by combining the zig-zag decoding with
 -- the base 128 decoding.
-decodeIntBase128 :: (Integral a, Bits a, Storable a) => Get a
+decodeIntBase128 :: (Integral a, Bits a) => Get a
 decodeIntBase128 = zag <$> decodeWordBase128
 
 zigInt :: Int -> Builder

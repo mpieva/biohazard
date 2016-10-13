@@ -192,11 +192,11 @@ n `choose` k = product [n-k+1 .. n] `div` product [2..k]
 -- | Kind-of sigmoid function that maps the reals to the interval
 -- @[0,1)@.  Good to compute a probability without introducing boundary
 -- conditions.
-sigmoid2 :: (Num a, Fractional a, Floating a) => a -> a
+sigmoid2 :: (Fractional a, Floating a) => a -> a
 sigmoid2 x = y*y where y = (exp x - 1) / (exp x + 1)
 
 -- | Inverse of 'sigmoid2'.
-isigmoid2 :: (Num a, Fractional a, Floating a) => a -> a
+isigmoid2 :: (Fractional a, Floating a) => a -> a
 isigmoid2 y = log $ (1 + sqrt y) / (1 - sqrt y)
 
 

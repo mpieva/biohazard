@@ -124,8 +124,8 @@ instance FromJSON Both where
 
         both as7 as5 = Both (canonical as7) (canonical as5)
           where
-            canonical pairs =
-                let hm = HM.toList $ HM.fromListWith (++) [ (fromS v,[k]) | (k,v) <- pairs ]
+            canonical pps =
+                let hm = HM.toList $ HM.fromListWith (++) [ (fromS v,[k]) | (k,v) <- pps ]
                 in IndexTab (U.fromList $ map fst hm)
                             (V.fromList $ map (head . snd) hm)
                             (HM.fromList $ [ (k,i) | (i, ks) <- zip [0..] (map snd hm), k <- ks ])
@@ -274,9 +274,9 @@ phredPow x = exp $ -0.1 * log 10 * fromIntegral x
 -- indices, the p7 and p5 index collections, and a prior mixture; output
 -- is the posterior mixture.
 iterEM :: U.Vector (Index, Index) -> U.Vector Index -> U.Vector Index -> Mix -> IO Mix
-iterEM pairs p7 p5 prior = do
+iterEM pps p7 p5 prior = do
     acc <- VSM.replicate (VS.length prior) 0
-    U.mapM_ (unmix1 p7 p5 prior acc) pairs
+    U.mapM_ (unmix1 p7 p5 prior acc) pps
     VS.unsafeFreeze acc
 
 data Loudness = Quiet | Normal | Loud

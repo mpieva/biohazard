@@ -338,7 +338,7 @@ foreign import ccall unsafe "zlib.h crc32" c_crc32 ::
 -- stream contains the offset of the current block in the upper 48 bits
 -- and the current offset into that block in the lower 16 bits.  This
 -- scheme is compatible with the way BAM files are indexed.
-getOffset :: Monad m => Iteratee Block m FileOffset
+getOffset :: Iteratee Block m FileOffset
 getOffset = liftI step
   where
     step s@(EOF _) = icont step (Just (setEOF s))

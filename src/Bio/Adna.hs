@@ -245,7 +245,7 @@ data Alignment = ALN
     { a_sequence :: !(U.Vector NPair)       -- the alignment proper
     , a_fragment_type :: !FragType }    -- was the adapter trimmed?
 
-addFragType :: Monad m => BamMeta -> Enumeratee [BamRaw] [(BamRaw,FragType)] m b
+addFragType :: BamMeta -> Enumeratee [BamRaw] [(BamRaw,FragType)] m b
 addFragType meta = mapStream $ \br -> (br, case unpackBam br of
     b | isFirstMate  b && isPaired     b -> Leading
       | isSecondMate b && isPaired     b -> Trailing

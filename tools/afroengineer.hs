@@ -271,7 +271,7 @@ maybe_read_two fp e1 = (\k -> liftIO (check_r2 fp) >>= maybe (rd1 k) (rd2 k))
                               (convStream unite_pairs) k
 
 -- No, we don't need to 'removeWarts'.  This input is, of course, a special case.  :-(
-unzipFastq :: (MonadIO m, MonadMask m) => Enumeratee S.ByteString [BamRec] m b
+unzipFastq :: MonadIO m => Enumeratee S.ByteString [BamRec] m b
 unzipFastq = ZLib.enumInflateAny ><> parseFastq
 
 unite_pairs :: Monad m => Iteratee [BamRec] (Iteratee [BamRec] m) [BamRec]

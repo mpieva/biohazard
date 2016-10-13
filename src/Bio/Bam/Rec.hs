@@ -191,6 +191,10 @@ instance VM.MVector MVector_Nucs_half Nucleotides where
     basicOverlaps (MVector_Nucs_half _ _ fp1) (MVector_Nucs_half _ _ fp2) = fp1 == fp2
     {-# INLINE basicUnsafeNew #-}
     basicUnsafeNew l = unsafePrimToPrim $ MVector_Nucs_half 0 l <$> mallocForeignPtrBytes ((l+1) `shiftR` 1)
+    {-# INLINE basicInitialize #-}
+    basicInitialize (MVector_Nucs_half _ _ _) = return ()
+            -- This should actually be done properly, initializing
+            -- everything to zero, but efficiently.    XXX
 
     {-# INLINE basicUnsafeRead #-}
     basicUnsafeRead (MVector_Nucs_half o _ fp) i
@@ -255,7 +259,7 @@ unpackBam br = BamRec {
         l_seq       = getInt32 16
         l_cigar     = getInt16 12
 
-        getInt8 :: (Num a, Bits a) => Int -> a
+        getInt8 :: Num a => Int -> a
         getInt8  o = fromIntegral (B.unsafeIndex (raw_data br) o)
 
         getInt16 :: (Num a, Bits a) => Int -> a

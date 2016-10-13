@@ -108,7 +108,7 @@ import qualified Data.Vector.Generic.Mutable    as VM
 -- produces the same result.  If @proj e@ changes or the input ends, the
 -- pair of @proj e@ and the result of @run i@ is passed to @outer@.  At
 -- end of input, the resulting @outer@ is returned.
-groupStreamOn :: (Monad m, LL.ListLike l e, Eq t1, NullPoint l, Nullable l)
+groupStreamOn :: (Monad m, LL.ListLike l e, Eq t1, Nullable l)
               => (e -> t1)
               -> (t1 -> m (Iteratee l m t2))
               -> Enumeratee l [(t1, t2)] m a
@@ -146,7 +146,7 @@ groupStreamOn proj inner = eneeCheckIfDonePass (icont . step)
 -- true.  Else, the result of @run i@ is passed to @outer@ and
 -- 'groupStreamBy' restarts.  At end of input, the resulting @outer@ is
 -- returned.
-groupStreamBy :: (Monad m, LL.ListLike l t, NullPoint l, Nullable l)
+groupStreamBy :: (Monad m, LL.ListLike l t, Nullable l)
               => (t -> t -> Bool)
               -> m (Iteratee l m t2)
               -> Enumeratee l [t2] m a
@@ -202,7 +202,7 @@ iLookAhead = go mempty
 
 -- | Collects a string of a given length.  Don't use this for long
 -- strings, use 'takeStream' instead.
-iGetString :: Monad m => Int -> Iteratee S.ByteString m S.ByteString
+iGetString :: Int -> Iteratee S.ByteString m S.ByteString
 iGetString 0 = idone S.empty (Chunk S.empty)
 iGetString n = liftI $ step [] 0
   where
@@ -220,7 +220,7 @@ iterLoop it a = do e <- I.isFinished
 
 -- | Convert a 'Get' into an 'Iteratee'.  The 'Get' is applied once, the
 -- decoded data is returned, unneded input remains in the stream.
-iterGet :: Monad m => Get a -> Iteratee S.ByteString m a
+iterGet :: Get a -> Iteratee S.ByteString m a
 iterGet = go . runGetIncremental
   where
     go (Fail  _ _ err) = throwErr (iterStrExc err)
@@ -292,7 +292,7 @@ mergeEnums' e1 e2 etee i = e1 $ \hi -> e2 (\ho -> joinI . etee ho $ ilift lift (
 -- | Apply a function to the elements of a stream, concatenate the
 -- results into a stream.  No giant intermediate list is produced.
 {-# INLINE concatMapStream #-}
-concatMapStream :: (Monad m, ListLike s a, NullPoint s, ListLike t b) => (a -> t) -> Enumeratee s t m r
+concatMapStream :: (Monad m, ListLike s a, NullPoint s) => (a -> t) -> Enumeratee s t m r
 concatMapStream f = eneeCheckIfDone (liftI . go)
   where
     go k (EOF   mx)              = idone (liftI k) (EOF mx)
@@ -302,7 +302,7 @@ concatMapStream f = eneeCheckIfDone (liftI . go)
 -- | Apply a monadic function to the elements of a stream, concatenate
 -- the results into a stream.  No giant intermediate list is produced.
 {-# INLINE concatMapStreamM #-}
-concatMapStreamM :: (Monad m, ListLike s a, NullPoint s, ListLike t b) => (a -> m t) -> Enumeratee s t m r
+concatMapStreamM :: (Monad m, ListLike s a, NullPoint s) => (a -> m t) -> Enumeratee s t m r
 concatMapStreamM f = eneeCheckIfDone (liftI . go)
   where
     go k (EOF   mx)              = idone (liftI k) (EOF mx)
@@ -311,7 +311,7 @@ concatMapStreamM f = eneeCheckIfDone (liftI . go)
                                    eneeCheckIfDone (flip go (Chunk (LL.tail xs))) . k . Chunk
 
 {-# INLINE mapMaybeStream #-}
-mapMaybeStream :: (Monad m, ListLike s a, NullPoint s, ListLike t b) => (a -> Maybe b) -> Enumeratee s t m r
+mapMaybeStream :: (ListLike s a, NullPoint s, ListLike t b) => (a -> Maybe b) -> Enumeratee s t m r
 mapMaybeStream f = mapChunks mm
   where
     mm l = if LL.null l then LL.empty else
@@ -320,12 +320,12 @@ mapMaybeStream f = mapChunks mm
 
 -- | Apply a filter predicate to an 'Iteratee'.
 {-# INLINE filterStream #-}
-filterStream :: (Monad m, ListLike s a, NullPoint s) => (a -> Bool) -> Enumeratee s s m r
+filterStream :: (ListLike s a, NullPoint s) => (a -> Bool) -> Enumeratee s s m r
 filterStream = mapChunks . LL.filter
 
 -- | Apply a monadic filter predicate to an 'Iteratee'.
 {-# INLINE filterStreamM #-}
-filterStreamM :: (Monad m, ListLike s a, Nullable s, NullPoint s) => (a -> m Bool) -> Enumeratee s s m r
+filterStreamM :: (Monad m, ListLike s a, Nullable s) => (a -> m Bool) -> Enumeratee s s m r
 filterStreamM k = mapChunksM (go id)
   where
     go acc s | LL.null s = return $! acc LL.empty
@@ -352,7 +352,7 @@ mapChunksM f = eneeCheckIfDonePass (icont . step)
 -- "Data.Iteratee.ListLike" in so far that it doesn't pass on an 'EOF'
 -- received in the input, which is the expected behavior.
 {-# INLINE mapStream #-}
-mapStream :: (ListLike (s el) el, ListLike (s el') el', NullPoint (s el), LooseMap s el el')
+mapStream :: (ListLike (s el) el, ListLike (s el') el', NullPoint (s el))
           => (el -> el') -> Enumeratee (s el) (s el') m a
 mapStream = mapChunks . LL.map
 
@@ -366,7 +366,7 @@ rigidMapStream = mapChunks . LL.rigidMap
 
 -- | Map a monadic function over an 'Iteratee'.
 {-# INLINE mapStreamM #-}
-mapStreamM :: (Monad m, ListLike (s el) el, ListLike (s el') el', NullPoint (s el), LooseMap s el el')
+mapStreamM :: (Monad m, ListLike (s el) el, ListLike (s el') el', NullPoint (s el))
            => (el -> m el') -> Enumeratee (s el) (s el') m a
 mapStreamM = mapChunksM . LL.mapM
 
@@ -475,7 +475,7 @@ protectTerm itr = do
     err = error "cowardly refusing to write binary data to terminal"
 
 -- | A simple progress indicator that prints the number of records.
-progressNum :: (MonadIO m, Nullable s, NullPoint s, ListLike s a)
+progressNum :: (MonadIO m, Nullable s, ListLike s a)
             => String -> (String -> IO ()) -> Enumeratee s s m b
 progressNum msg put = eneeCheckIfDonePass (icont . go 0)
   where
@@ -529,7 +529,7 @@ data ParseError = ParseError {errorContexts :: [String], errorMessage :: String}
 instance Exception ParseError
 
 -- | A function to convert attoparsec 'Parser's into 'Iteratee's.
-parserToIteratee :: (Monad m) => A.Parser a -> Iteratee S.ByteString m a
+parserToIteratee :: A.Parser a -> Iteratee S.ByteString m a
 parserToIteratee p = icont (f (A.parse p)) Nothing
   where
     f k (EOF Nothing) =
