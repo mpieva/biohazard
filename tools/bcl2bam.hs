@@ -234,9 +234,9 @@ lanesFromRun rundir = fmap catMaybes . forM [1..8] $ \lane_number -> do
                      <*> doesDirectoryExist path_locs
 
     if has_both then do
-        tiles <- Just <$> listTiles path_locs
+        ts     <- listTiles path_locs
         cycles <- listCycles path_bcl
-        if null cycles || null tiles
+        if null cycles || null ts
           then return Nothing
           else do ri <- expand_ri (maximum cycles) 1 <$> getRunInfo rundir
                   let (cycles_read_one, cycles_read_two)
@@ -251,7 +251,7 @@ lanesFromRun rundir = fmap catMaybes . forM [1..8] $ \lane_number -> do
                             r1:_    -> (Just r1, Nothing)
                             _       -> (Nothing, Nothing)
 
-                  return $ Just LaneDef{..}
+                  return $ Just LaneDef{ tiles = Just ts, .. }
 
       else return Nothing
 

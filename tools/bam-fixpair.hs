@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP #-}
 {-
 This is a validator/fixup for paired end BAM files, that is more
 efficient than 'samtools sort -n' followed by 'samtools fixmate'.
@@ -37,7 +38,10 @@ import Control.Monad.Trans.Class
 import Data.Binary
 import Paths_biohazard                          ( version )
 import System.Console.GetOpt
-import System.Process                    hiding ( createPipe )
+import System.Process
+#if MIN_VERSION_process(1,2,1)
+                                         hiding ( createPipe )
+#endif
 
 import qualified Data.ByteString as S
 import qualified Data.ByteString.Builder as B

@@ -1,4 +1,4 @@
-{-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE TemplateHaskell, CPP #-}
 module Data.Avro where
 
 import Bio.Iteratee
@@ -312,8 +312,13 @@ deriveAvro nm = reify nm >>= case_info
     record_cons (RecC _ _) = True
     record_cons _          = False
 
+#if MIN_VERSION_template_haskell(2,11,0)
     case_dec (NewtypeD _cxt _name _tyvarbndrs _kind _con _) = err $ "don't know what to do for NewtypeD"
     case_dec (DataD    _cxt _name _tyvarbndrs _kind cons _)
+#else
+    case_dec (NewtypeD _cxt _name _tyvarbndrs _con _) = err $ "don't know what to do for NewtypeD"
+    case_dec (DataD    _cxt _name _tyvarbndrs cons _)
+#endif
         | all simple_cons cons = mk_enum_inst [ nm1 | NormalC nm1 [] <- cons ]
         | all record_cons cons = mk_record_inst [ (nm1, vsts) | RecC nm1 vsts <- cons ]
         | otherwise            = err $ "don't know how to make an instance with these constructors"

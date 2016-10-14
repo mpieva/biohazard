@@ -18,19 +18,15 @@ module Data.Binary.Serialise.CBOR.SequenceFiles (
    withBinaryFileSequence,
  ) where
 
-import           Control.Exception
-import           Data.Monoid
+import           Bio.Prelude
 import qualified Data.Binary.Serialise.CBOR    as B
 import qualified Data.Binary.Serialise.CBOR.Write as B
 import qualified Data.ByteString               as BS
 import qualified Data.ByteString.Lazy          as LBS
 import qualified Data.ByteString.Builder.Extra as BS
-import           Data.IORef
 import           Foreign
 import           GHC.ForeignPtr (mallocPlainForeignPtrBytes)
-import           Prelude
 import           System.IO
-import           System.IO.Error
 
 
 -- | Write a file consisting of a sequence of items. The items are written out

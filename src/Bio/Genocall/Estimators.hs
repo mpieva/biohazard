@@ -3,7 +3,7 @@ module Bio.Genocall.Estimators where
 
 import Bio.Adna
 import Bio.Bam
-import Bio.Prelude            hiding ( log1p )
+import Bio.Prelude
 import Bio.Util.AD
 import Bio.Util.AD2
 import Bio.Util.Numeric              ( log1p )

@@ -32,7 +32,7 @@ Data-Dir:            data
 
 Cabal-version:       >= 1.10
 Build-type:          Custom
-Tested-With:         GHC == 7.6.2, GHC == 7.8.4, GHC == 7.10.1
+Tested-With:         GHC == 7.8.4, GHC == 7.10.1, GHC == 8.0.1
 
 source-repository head
   type:     git
@@ -103,7 +103,7 @@ Library
                        exceptions               >= 0.6 && < 0.9,
                        filepath                 >= 1.3 && < 2.0,
                        hashable                 >= 1.0 && < 1.3,
-                       hmatrix                  == 0.17.*,
+                       hmatrix                  >= 0.16 && < 0.18,
                        hybrid-vectors           == 0.2.*,
                        iteratee                 >= 0.8.9.6 && < 0.8.10,
                        ListLike                 >= 3.0 && < 5.0,
@@ -114,7 +114,7 @@ Library
                        stm                      == 2.4.*,
                        template-haskell         == 2.*,
                        text                     >= 1.0 && < 2.0,
-                       transformers             >= 0.3 && < 0.6,
+                       transformers             >= 0.4.1 && < 0.6,
                        unix                     >= 2.5 && < 2.8,
                        unordered-containers     >= 0.2.3 && < 0.3,
                        vector                   == 0.11.*,
@@ -129,6 +129,7 @@ Library
   Default-Language:    Haskell2010
 
   Default-Extensions:  BangPatterns,
+                       DeriveDataTypeable,
                        FlexibleContexts,
                        FlexibleInstances,
                        MultiParamTypeClasses,

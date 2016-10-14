@@ -40,10 +40,13 @@ module Bio.Prelude (
     stdin
                    ) where
 
-#if MIN_VERSION_base(4,7,0)
-import BasePrelude  hiding ( EOF )
+import BasePrelude
+#if MIN_VERSION_base(4,9,0)
+                    hiding ( EOF, log1p )
+#elif MIN_VERSION_base(4,7,0)
+                    hiding ( EOF )
 #else
-import BasePrelude  hiding ( EOF, block )
+                    hiding ( EOF, block )
 #endif
 
 #if !MIN_VERSION_base(4,8,0)
