@@ -20,8 +20,9 @@ import Bio.Bam.Pileup
 import Bio.Genocall.AvroFile
 import Bio.Iteratee.Builder
 import Bio.Prelude
-import Data.Avro
 import Data.MiniFloat
+import Data.Binary.Serialise.CBOR
+import Data.Binary.Serialise.CBOR.SequenceFiles
 import System.Console.GetOpt
 import System.FilePath
 import System.Random
@@ -99,13 +100,18 @@ main = do
     unless (null errs) $ mapM_ (IO.hPutStrLn stderr) errs >> exitFailure
     conf@Conf{..} <- foldl (>>=) (return defaultConf) opts
 
-    withOutputFd outfile                                                                                    $ \ofd ->
-      concatAvs infiles >=> run                                                                             $ \av_meta ->
-        progressPos (reference_name &&& start_position) "calling at " conf_report (getRefseqs av_meta)     =$
-        bcf_to_fd ofd (getRefseqs av_meta) [fromString $ sample_name conf] conf_random
-                      ( call (prior_div/3) (prior_het conf)
-                      , call (prior_indel conf) (prior_het_indel conf) )
 
+    withOutputFd outfile                                                                 $ \ofd ->
+      concatAvs infiles >=> run                                                          $ do
+        GenoFileHeader meta <- headStream
+
+        let callz = ( call (prior_div/3) (prior_het conf)
+                    , call (prior_indel conf) (prior_het_indel conf) )
+
+        toBcf (header_refs meta) [fromString $ sample_name conf] callz conf_random     ><>
+          encodeBgzfWith 9                                                              =$
+            mapChunksM_ (liftIO . fdPut ofd)
+        -- progressPos (reference_name &&& start_position) "calling at " conf_report (getRefseqs av_meta)     =$
 
 withOutputFd :: FilePath -> (Fd -> IO a) -> IO a
 withOutputFd "-" k = k stdOutput
@@ -114,17 +120,17 @@ withOutputFd  f  k = do
     rename (f++".#") f
     return r
 
+concatAvs :: Serialise a => [FilePath] -> Enumerator [a] IO b
+concatAvs = foldr ((>=>) . iterBinaryFileSequence) return
+  -- where
+    -- enum1 "-" = enumHandle defaultBufSize stdin readAvroContainer >>= run
+    -- enum1  fp = enumFile   defaultBufSize    fp readAvroContainer >>= run
 
-concatAvs :: (MonadIO m, MonadMask m, Avro a) => [FilePath] -> Enumerator' AvroMeta [a] m b
-concatAvs [        ] = \k -> enumHandle defaultBufSize stdin (readAvroContainer k) >>= run
-concatAvs (fp0:fps0) = \k -> enum1 fp0 k >>= go fps0
-  where
-    enum1 "-" k1 = enumHandle defaultBufSize stdin (readAvroContainer k1) >>= run
-    enum1  fp k1 = enumFile   defaultBufSize    fp (readAvroContainer k1) >>= run
-
-    go [       ] = return
-    go (fp1:fps) = enum1 fp1 . const >=> go fps
-
+iterBinaryFileSequence :: Serialise a => FilePath -> Enumerator [a] IO b
+iterBinaryFileSequence fp it0 =
+        withBinaryFileSequence fp $ \get ->
+            let go it = get >>= maybe (return it) (\x -> enumPure1Chunk [x] it >>= go)
+            in go it0
 
 call :: Double -> Double -> U.Vector (Prob' Float) -> Maybe StdGen -> (Int,Maybe StdGen)
 call prior_d prior_h lks gen = case gen of
@@ -139,16 +145,6 @@ call prior_d prior_h lks gen = case gen of
                              U.// [ (0, toProb . realToFrac $ (1-prior_d) * (1-prior_h)) ]
                              U.// [ (i, toProb . realToFrac $ (1-prior_d) * prior_h)
                                   | i <- takeWhile (< U.length lks) (scanl (+) 2 [3..]) ]
-
-
--- | Generates BCF and writes it to a 'Handle'.  For the necessary VCF
--- header, we get the /names/ of the reference sequences from the Avro
--- schema and the /lengths/ from the biohazard.refseq_length entry in
--- the meta data.
-bcf_to_fd :: MonadIO m => Fd -> Refs -> [S.ByteString] -> gen -> CallFuncs gen -> Iteratee [GenoCallBlock] m ()
-bcf_to_fd hdl refs name gen callz =
-    toBcf refs name callz gen ><> encodeBgzfWith 9 =$
-    mapChunksM_ (liftIO . fdPut hdl)
 
 
 -- A function from likelihoods to called index.  It's allowed to require
@@ -170,26 +166,29 @@ vcf_header refs smps = foldr (\a b -> pushByteString a <> pushByte 10 <> b) memp
 
 
 -- XXX Ploidy is being ignored.
-toBcf :: Monad m => Refs -> [S.ByteString] -> CallFuncs gen -> gen -> Enumeratee [GenoCallBlock] Push m r
-toBcf refs smps (snp_call, indel_call) gen0 = eneeCheckIfDone go
+toBcf :: Monad m => Refs -> [S.ByteString] -> CallFuncs gen -> gen -> Enumeratee [GenoFileRec] Push m r
+toBcf refs smps (snp_call, indel_call) gen0 = eneeCheckIfDone (go invalidRefseq 0)
   where
-    go  k = eneeCheckIfDone (go2 gen0) . k $ Chunk hdr
-    go2 g k = tryHead >>= \mblock -> case mblock of
-                    Nothing -> return $ liftI k
-                    Just bl -> let (p,g1) = encode bl g
-                               in eneeCheckIfDone (go2 g1) . k $ Chunk p
+    go  !ref !pos   k = eneeCheckIfDone (go2 ref pos gen0) . k $ Chunk hdr
+    go2 !ref !pos g k = tryHead >>= \zz -> case zz of
+                    Nothing                 -> return $ liftI k
+                    Just (GenoFileHeader _) -> go2 ref pos g k
+                    Just (GenoFileFooter _) -> go2 ref pos g k
+                    Just (GenoFileBlock  b) -> go2 (reference_name b) (start_position b) g k
+                    Just (GenoFileSite   s) -> let (p,g1) = encode1 ref pos s g
+                                               in eneeCheckIfDone (go2 ref (succ pos) g1) . k $ Chunk p
 
     hdr   = pushByteString "BCF\2\2" <> setMark <>
             vcf_header refs smps <> pushByte 0 <> endRecord
 
     -- encode :: GenoCallBlock -> gen -> (Push, gen)
-    encode GenoCallBlock{..} = meld start_position called_sites
+    {- encode GenoCallBlock{..} = meld start_position called_sites
       where
         meld !_ [    ] gen = (mempty, gen)
         meld !p (s:ss) gen = (p1 <> p2, g2)
           where
             (p1, g1) = encode1 reference_name p s gen
-            (p2, g2) = meld (succ p) ss g1
+            (p2, g2) = meld (succ p) ss g1 -}
 
     -- encode1 :: Refseq -> Int -> GenoCallSite -> gen -> (Push, gen)
     encode1 ref pos site g0 = (p1 <> p2, g2)

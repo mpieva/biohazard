@@ -295,6 +295,51 @@ L_l &= - \sum_{i} R_i - \sum_{i} \ln \left( \frac{1}{1+e^\delta} +
 yield anything that simplifies, so I applied Automatic
 Differentiation and handed it over to Hager-Zhang.}
 
+\section{Combined Approach}
+
+The approach of first estimating damage on a set of alignments, which is
+then fed into a caller that takes damage as constant, didn't work out so
+far.  My hunch is that divergence, damage and sequencing error conspire
+in such a way that an unbiased estimate of damage is impossible.  At any
+rate, I don't have a better idea.  (The latest attempt combined two
+position dependent deamination rates with the HKY substitution matrix
+and isotropic error.  Apparently, it underestimated damage badly.)
+
+My hunch is that we can't make too many assumptions about sequencing
+error, we need to treat it as a completely empirical substitution
+matrix.  Now we have to remove divergence from the picture.
+
+To concretize it in a tractable way:  Firstly, we ignore quality scores.
+(Quality scores can never exceed the map quality, typically 25 or 37,
+which is already very ad-hoc.  By far most of our data is at the maximum
+quality anyway.)  The only concession to quality is that we ignore reads
+of mapq less than three and bases of quality lower than three.
+
+We now roll error and damage into a single, position specific
+substitution matrix, and we seek to estimate this matrix for the first
+few (say twelve) positions, the last few positions, and another one for
+everything in between.
+
+To remove divergence from these calculations, we need to know the
+correct genotype.  Put another way, we need to co-estimate position
+specific substitutions, genotypes, and therefore also the parameters for
+the prior distribution of genotypes.  We start with calling one sample
+in isolation, so these are divergence and heterozygosity.
+
+The EM algorithm looks like a practical way to estimate.  Starting with
+arbitrary substitution matrices, divergence and heterozygosity, we run
+\texttt{pileup}.  We compute posterior genotype probabilities, and with
+those, we can directly update the substitution matrices.  We tabulate
+likelihood ratios as before and estimate div/het at the end as before.
+Then we recurse until nothing changes anymore.
+
+The scanning algorithm will need a vector of old substitution matrices,
+a mutable vector of new substitution counts, old div/het parameters, the
+mutable accumulating table for new div/het.  Substitution matrices are
+library specific.  It's probably best if \texttt{decompose} puts a
+library number and a position into the fragments.  Could be a pointer,
+though.
+
 \section{Testing Method}
 
 \subsection{Handcrafted Data}

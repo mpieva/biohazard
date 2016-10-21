@@ -218,7 +218,7 @@ Executable redeye-dar
 
 Executable redeye-pileup
   Main-is:             redeye-pileup.hs
-  Ghc-options:         -Wall
+  Ghc-options:         -Wall -fprof-auto -rtsopts
   -- Ghc-options:         -Wall -threaded -rtsopts -with-rtsopts=-N
   Default-Language:    Haskell2010
   Default-Extensions:  NoImplicitPrelude, OverloadedStrings,
@@ -244,6 +244,7 @@ Executable redeye-single
   Hs-Source-Dirs:      tools
   Build-depends:       aeson,
                        base,
+                       binary-serialise-cbor,
                        biohazard,
                        bytestring,
                        containers,

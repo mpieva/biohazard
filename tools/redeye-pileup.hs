@@ -37,18 +37,13 @@ import Bio.Genocall.AvroFile
 import Bio.Genocall.Estimators
 import Bio.Prelude
 import Bio.Util.Pretty
-import Data.Aeson
-import Data.Avro
-import Data.Text.Encoding            ( decodeUtf8 )
+import Data.Binary.Serialise.CBOR.SequenceFiles
 import System.Console.GetOpt
+import System.IO
 
 import qualified Data.Binary                    as Bin
-import qualified Data.ByteString.Char8          as S
 import qualified Data.ByteString.Lazy           as BL
-import qualified Data.Foldable                  as F
-import qualified Data.HashMap.Strict            as H
 import qualified Data.Vector.Storable           as VS
-import qualified Data.Vector                    as V
 import qualified Data.Vector.Unboxed            as U
 import qualified Data.Vector.Unboxed.Mutable    as M
 import qualified Data.Sequence                  as Z
@@ -59,7 +54,7 @@ data Conf = Conf {
     conf_chrom  :: String,
     conf_theta  :: Maybe Double,
     conf_report :: Reporter,
-    conf_table  :: Bool }
+    conf_table  :: Maybe FilePath }
 
 -- | We pair libraries with their appropriate damage models.  Right now,
 -- we specify the damage model (\"-D\", complete data structure in
@@ -70,7 +65,7 @@ defaultConf = Conf { conf_output = error "no output file"
                    , conf_chrom  = ""
                    , conf_theta  = Nothing
                    , conf_report = \_ -> return ()
-                   , conf_table  = False }
+                   , conf_table  = Nothing }
 
 options :: [OptDescr (Conf -> IO Conf)]
 options = [
@@ -78,7 +73,7 @@ options = [
     Option "c"  chrom      (ReqArg set_chrom  "NAME") "Restrict to chromosome NAME",
     Option "D"  ["damage"] (ReqArg set_dmg   "PARMS") "Set damage parameters to PARMS",
     Option "t"  dep_param  (ReqArg set_theta  "FRAC") "Set dependency coefficient to FRAC (\"N\" to turn off)",
-    Option "T"  ["table"]          (NoArg want_table) "Print table for divergence estimation",
+    Option "T"  ["table"]  (ReqArg want_table "FILE") "Print table for divergence estimation to FILE",
     Option "v"  ["verbose"]        (NoArg be_verbose) "Print more diagnostics",
     Option "h?" ["help","usage"]   (NoArg disp_usage) "Display this message" ]
   where
@@ -91,7 +86,7 @@ options = [
                          exitSuccess
 
     be_verbose    c = return $ c { conf_report = hPutStrLn stderr }
-    want_table    c = return $ c { conf_table  = True }
+    want_table fp c = return $ c { conf_table  = Just fp }
 
     set_theta "N" c = return $ c { conf_theta = Nothing }
     set_theta   a c = (\t  ->  c { conf_theta = Just  t }) <$> readIO a
@@ -113,25 +108,23 @@ main = do
     Conf{..} <- foldl (>>=) (return defaultConf) opts
     unless (null errs) $ mapM_ (hPutStrLn stderr) errs >> exitFailure
 
-    (tab   ) <- withFd (conf_output ++ ".#") WriteOnly (Just 0o666) defaultFileFlags            $ \ohdl ->
+    (tab,()) <- withFile (conf_output ++ ".#") WriteMode                                        $ \ohdl ->
                 mergeLibraries conf_report (reverse conf_libs) conf_chrom >=> run               $ \hdr ->
                 progressPos (\(rs, p, _) -> (rs, p)) "GT call at " conf_report (meta_refs hdr) =$
                 pileup                                                                         =$
                 mapStream (calls conf_theta)                                                   =$
-                tabulateSingle
-                -- zipStreams tabulateSingle (output_avro ohdl $ meta_refs hdr)
+                zipStreams tabulateSingle (output_cbor ohdl $ meta_refs hdr)
 
     rename (conf_output ++ ".#") conf_output
 
-    if conf_table
-      then BL.hPut stdout $ Bin.encode tab
-      else do
-        (de1,de2) <- estimateSingle tab
-        putStrLn $ unlines $
-                showRes (point_est de1) :
-                [ "[ " ++ showRes u ++ " .. " ++ showRes v ++ " ]" | (u,v) <- conf_region de1 ] ++
-                [] : showRes (point_est de2) :
-                [ "[ " ++ showRes u ++ " .. " ++ showRes v ++ " ]" | (u,v) <- conf_region de2 ]
+    maybe (return ()) (BL.hPut stdout . Bin.encode) conf_table
+
+    (de1,de2) <- estimateSingle tab
+    putStrLn $ unlines $
+            showRes (point_est de1) :
+            [ "[ " ++ showRes u ++ " .. " ++ showRes v ++ " ]" | (u,v) <- conf_region de1 ] ++
+            [] : showRes (point_est de2) :
+            [ "[ " ++ showRes u ++ " .. " ++ showRes v ++ " ]" | (u,v) <- conf_region de2 ]
   where
     showRes     [dv,h] = "D  = " ++ showFFloat (Just 6) dv ", " ++
                          "H  = " ++ showFFloat (Just 6) h ""
@@ -161,7 +154,6 @@ enumLibrary report (Lib fs mdp) mrgn output = do
                                  NewDamage ndp -> ("empirical damage parameters " ++ show ndp, empDamage ndp)
 
     liftIO . report $ "using " ++ msg ++ " for " ++ show fs
-    -- liftIO $ mapM_ print $ [ dmg False 30 V.! i | i <- [0..29] ]
 
     mergeInputRgns combineCoordinates mrgn (reverse fs)
         $== takeWhileE (isValidRefseq . b_rname . unpackBam)
@@ -224,52 +216,32 @@ calls (Just theta) pile = pile { p_snp_pile = s, p_indel_pile = i }
 -- write an Avro file, but we add another blocking layer on top so we
 -- don't need to endlessly repeat coordinates.
 
-compileBlocks :: Monad m => Enumeratee [Calls] [GenoCallBlock] m a
-compileBlocks = convStream $ do
-        c1 <- headStream
-        tailBlock (p_refseq c1) (p_pos c1) (p_pos c1) . (:[]) $! pack c1
+compileBlocks :: Monad m => Enumeratee [Calls] [GenoFileRec] m a
+compileBlocks = unfoldConvStream conv_one (Refseq 0, 0)
   where
-    tailBlock !rs !p0 !po acc = do
-        mc <- peekStream
-        case mc of
-            Just c1 | rs == p_refseq c1 && po+1 == p_pos c1 && po - p0 < 65536 -> do
-                    _ <- headStream
-                    tailBlock rs p0 (po+1) . (:acc) $! pack c1
+    conv_one (!rs,!po) = do
+        cc <- headStream
 
-            _ -> return [ GenoCallBlock
-                    { reference_name = rs
-                    , start_position = p0
-                    , called_sites   = reverse acc } ]
+        let Snp_GLs snp_pls ref_allele = p_snp_pile cc
+            snp_stats         = p_snp_stat cc
+            indel_stats       = p_indel_stat cc
+            snp_likelihoods   = compact_likelihoods snp_pls
+            indel_likelihoods = compact_likelihoods $ fst $ p_indel_pile cc
+            indel_variants    = snd $ p_indel_pile cc
 
-    pack c1 = rlist indel_variants `seq` GenoCallSite{..}
-      where
-        Snp_GLs snp_pls !ref_allele = p_snp_pile c1
-
-        !snp_stats         = p_snp_stat c1
-        !indel_stats       = p_indel_stat c1
-        !snp_likelihoods   = compact_likelihoods snp_pls
-        !indel_likelihoods = compact_likelihoods $ fst $ p_indel_pile c1
-        !indel_variants    = snd $ p_indel_pile c1
-
-        rlist [] = ()
-        rlist (x:xs) = x `seq` rlist xs
+            blk_hdr = if rs == p_refseq cc && po == p_pos cc
+                            then id
+                            else (:) ( GenoFileBlock (GenoCallBlock
+                                     { reference_name = p_refseq cc, start_position = p_pos cc }))
+        return ( (p_refseq cc, p_pos cc + 1), blk_hdr [ GenoFileSite GenoCallSite{..} ] )
 
 
-output_avro :: Fd -> Refs -> Iteratee [Calls] IO ()
-output_avro hdl refs = compileBlocks =$
-                       writeAvroContainer ContainerOpts{..} =$
-                       mapChunksM_ (fdPut hdl)
-  where
-    objects_per_block = 16
-    filetype_label = "Genotype Likelihoods V0.1"
-    initial_schemas = H.singleton "Refseq" $
-        object [ "type" .= String "enum"
-               , "name" .= String "Refseq"
-               , "symbols" .= Array
-                    (V.fromList . map (String . decodeUtf8 . sq_name) $ F.toList refs) ]
-    meta_info = H.singleton "biohazard.refseq_length" $
-                S.concat $ BL.toChunks $ encode $ Array $ V.fromList
-                [ Number (fromIntegral (sq_length s)) | s <- F.toList refs ]
+output_cbor :: Handle -> Refs -> Iteratee [Calls] IO ()
+output_cbor hdl refs =
+    ( lift . enumPure1Chunk [GenoFileHeader (GenoHeader 0 refs)]    >=>
+      compileBlocks                                                 >=>
+      lift . enumPure1Chunk [GenoFileFooter GenoFooter] )            =$
+    mapChunksM_ (hPutBinaryFileSequence hdl)
 
 
 maxD :: Int

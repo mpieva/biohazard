@@ -31,6 +31,7 @@ import Bio.Prelude
 import Bio.TwoBit
 import Bio.Util.Pretty
 
+import qualified Data.Vector                    as V
 import qualified Data.Vector.Generic            as G
 import qualified Data.Vector.Storable           as VS
 import qualified Data.Vector.Unboxed            as U
@@ -83,7 +84,8 @@ scalarMat s = Mat44D $ U.fromListN 16 [ s, 0, 0, 0
 -- observed in the wild).
 
 noDamage :: DamageModel
-noDamage _ _ _ = scalarMat 1
+noDamage _ _ _ = one
+  where !one = scalarMat 1
 
 
 -- | Parameters for the universal damage model.
@@ -176,8 +178,36 @@ univDamage DP{..} r l i = genSubstMat (p1+p2) (q1+q2)
         lam5_ds = dsd_lambda ^ (1+i)
         lam3_ds = dsd_lambda ^ (l-i)
 
-{-# SPECIALIZE empDamage :: NewDamageParameters U.Vector Double -> DamageModel #-}
-empDamage :: G.Vector v Double => NewDamageParameters v Double -> DamageModel
+empDamage :: NewDamageParameters U.Vector Double -> DamageModel
+empDamage NDP{..} =
+    \r l i -> if i+i < l then
+                if r then fromMaybe middleRev (rev5 V.!? i)
+                     else fromMaybe middle    (fwd5 V.!? i)
+              else
+                if r then fromMaybe middleRev (rev3 V.!? (l-i-1))
+                     else fromMaybe middle    (fwd3 V.!? (l-i-1))
+  where
+    !middle    = genSubstMat' dp_alpha dp_beta
+    !middleRev = genSubstMat' dp_beta dp_alpha
+
+    !fwd5 = V.zipWith genSubstMat' (G.convert dp_alpha5) (G.convert dp_beta5)
+    !fwd3 = V.zipWith genSubstMat' (G.convert dp_alpha3) (G.convert dp_beta3)
+
+    !rev5 = V.zipWith genSubstMat' (G.convert dp_beta5) (G.convert dp_alpha5)
+    !rev3 = V.zipWith genSubstMat' (G.convert dp_beta3) (G.convert dp_alpha3)
+
+    -- | r         = get (flip genSubstMat')
+    -- | otherwise = get       genSubstMat'
+  -- where
+    -- get k i | i+i  <  l = k (fromMaybe dp_alpha (dp_alpha5 G.!? i))
+                            -- (fromMaybe dp_beta  (dp_beta5  G.!? i))
+            -- | otherwise = k (fromMaybe dp_alpha (dp_alpha3 G.!? (l-i-1)))
+                            -- (fromMaybe dp_beta  (dp_beta3  G.!? (l-i-1)))
+
+    genSubstMat' a b = genSubstMat (recip $ 1 + exp (-a)) (recip $ 1 + exp (-b))
+
+
+{-empDamage :: NewDamageParameters U.Vector Double -> DamageModel
 empDamage NDP{..} r l
     | r         = get (flip genSubstMat')
     | otherwise = get       genSubstMat'
@@ -187,7 +217,7 @@ empDamage NDP{..} r l
             | otherwise = k (fromMaybe dp_alpha (dp_alpha3 G.!? (l-i-1)))
                             (fromMaybe dp_beta  (dp_beta3  G.!? (l-i-1)))
 
-    genSubstMat' a b = genSubstMat (recip $ 1 + exp (-a)) (recip $ 1 + exp (-b))
+    genSubstMat' a b = genSubstMat (recip $ 1 + exp (-a)) (recip $ 1 + exp (-b)) -}
 
 -- | Collected \"traditional\" statistics:
 --

@@ -1,4 +1,4 @@
-{-# LANGUAGE Rank2Types #-}
+{-# LANGUAGE Rank2Types, DeriveGeneric #-}
 module Bio.Bam.Pileup where
 
 import Bio.Adna ( Mat44D )
@@ -100,7 +100,7 @@ type PosPrimChunks = (Refseq, Int, PrimChunks)
 data DamagedBase = DB { db_call :: {-# UNPACK #-} !Nucleotide           -- ^ called base
                       , db_qual :: {-# UNPACK #-} !Qual                 -- ^ quality of called base
                       , db_ref  :: {-# UNPACK #-} !Nucleotides          -- ^ reference base from MD field
-                      , db_dmg  :: {-# UNPACK #-} !Mat44D }             -- ^ damage matrix
+                      , db_dmg  ::                !Mat44D }             -- ^ damage matrix
 
 instance Show DamagedBase where
     showsPrec _ (DB n q r _)
@@ -250,7 +250,7 @@ data CallStats = CallStats { read_depth       :: {-# UNPACK #-} !Int       -- nu
                            , reads_mapq0      :: {-# UNPACK #-} !Int       -- number of (non-)contributing reads with MAPQ==0
                            , sum_mapq         :: {-# UNPACK #-} !Int       -- sum of map qualities of contributing reads
                            , sum_mapq_squared :: {-# UNPACK #-} !Int }     -- sum of squared map qualities of contributing reads
-  deriving (Show, Eq)
+  deriving (Show, Eq, Generic)
 
 instance Monoid CallStats where
     mempty      = CallStats { read_depth       = 0
@@ -282,7 +282,7 @@ newtype V_Nuc  = V_Nuc  (U.Vector Nucleotide)  deriving (Eq, Ord, Show)
 newtype V_Nucs = V_Nucs (U.Vector Nucleotides) deriving (Eq, Ord, Show)
 
 data IndelVariant = IndelVariant { deleted_bases  :: !V_Nucs, inserted_bases :: !V_Nuc }
-      deriving (Eq, Ord, Show)
+      deriving (Eq, Ord, Show, Generic)
 
 
 -- | Map quality and a list of encountered bases, with damage

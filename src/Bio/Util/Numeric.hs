@@ -2,6 +2,7 @@ module Bio.Util.Numeric (
     wilson, invnormcdf, choose,
     estimateComplexity, showNum, showOOM,
     log1p, expm1, (<#>),
+    log1mexp, log1pexp,
     lsum, llerp,
     sigmoid2, isigmoid2
                 ) where
@@ -148,7 +149,7 @@ estimateComplexity total singles | total   <= singles = Nothing
 infixl 5 <#>
 {-# INLINE (<#>) #-}
 (<#>) :: (Floating a, Ord a) => a -> a -> a
-x <#> y = if x >= y then x + log1p (exp (y-x)) else y + log1p (exp (x-y))
+x <#> y = if x >= y then x + log1pexp (y-x) else y + log1pexp (x-y)
 
 -- | Computes @log (1+x)@ to a relative precision of @10^-8@ even for
 -- very small @x@.  Stolen from http://www.johndcook.com/cpp_log_one_plus_x.html
@@ -164,15 +165,31 @@ log1p x | x < -1 = error "log1p: argument must be greater than -1"
 
 -- | Computes @exp x - 1@ to a relative precision of @10^-10@ even for
 -- very small @x@.  Stolen from http://www.johndcook.com/cpp_expm1.html
+{-# INLINE expm1 #-}
 expm1 :: (Floating a, Ord a) => a -> a
 expm1 x | x > -0.00001 && x < 0.00001 = (1 + 0.5 * x) * x       -- Taylor approx
         | otherwise                   = exp x - 1               -- direct eval
+
+-- | Computes @log (1 - exp x)@, following Martin Mächler.
+{-# INLINE log1mexp #-}
+log1mexp :: (Floating a, Ord a) => a -> a
+log1mexp x | x > - log 2 = log (- expm1 x)
+           | otherwise   = log1p (- exp x)
+
+-- | Computes @log (1 + exp x)@, following Martin Mächler.
+{-# INLINE log1pexp #-}
+log1pexp :: (Floating a, Ord a) => a -> a
+log1pexp x | x <=  -37 = exp x
+           | x <=   18 = log1p $ exp x
+           | x <= 33.3 = x + exp (-x)
+           | otherwise = x
+
 
 -- | Computes \( \log ( \sum_i e^{x_i} ) \) sensibly.  The list must be
 -- sorted in descending(!) order.
 {-# INLINE lsum #-}
 lsum :: (Floating a, Ord a) => [a] -> a
-lsum xs = foldl1' (\x y -> if x >= y then x + log1p (exp (y-x)) else err) xs
+lsum xs = foldl1' (\x y -> if x >= y then x + log1pexp (y-x) else err) xs
     where err = error $ "lsum: argument list must be in descending order"
 
 -- | Computes \( \log \left( c e^x + (1-c) e^y \right) \).
@@ -180,8 +197,8 @@ lsum xs = foldl1' (\x y -> if x >= y then x + log1p (exp (y-x)) else err) xs
 llerp :: (Floating a, Ord a) => a -> a -> a -> a
 llerp c x y | c <= 0.0  = y
             | c >= 1.0  = x
-            | x >= y    = log     c  + x + log1p ( (1-c)/c * exp (y-x) )
-            | otherwise = log1p (-c) + y + log1p ( c/(1-c) * exp (x-y) )
+            | x >= y    = log     c  + x + log1p ( (1-c)/c * exp (y-x) )        -- Hmm.
+            | otherwise = log1p (-c) + y + log1p ( c/(1-c) * exp (x-y) )        -- Hmm.
 
 -- | Binomial coefficient:  @n `choose` k == n! / ((n-k)! k!)@
 {-# INLINE choose #-}

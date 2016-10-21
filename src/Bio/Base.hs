@@ -41,9 +41,9 @@ module Bio.Base(
 
 import BasePrelude
 #if MIN_VERSION_base(4,9,0)
-                             hiding ( log1p )
+                             hiding ( log1pexp, log1mexp )
 #endif
-import Bio.Util.Numeric             ( log1p )
+import Bio.Util.Numeric             ( log1pexp, log1mexp )
 import Data.ByteString.Internal     ( c2w, w2c )
 import Data.Vector.Unboxed.Deriving ( derivingUnbox )
 import System.Directory             ( doesFileExist )
@@ -125,12 +125,19 @@ instance RealFloat a => Show (Prob' a) where
       where q = - 10 * p / log 10
 
 instance (Floating a, Ord a) => Num (Prob' a) where
+    {-# INLINE fromInteger #-}
     fromInteger a = Pr (log (fromInteger a))
-    Pr x + Pr y = Pr $ if x >= y then x + log1p (  exp (y-x)) else y + log1p (exp (x-y))
-    Pr x - Pr y = Pr $ if x >= y then x + log1p (- exp (y-x)) else error "no negative error probabilities"
+    {-# INLINE (+) #-}
+    Pr x + Pr y = Pr $ if x >= y then x + log1pexp (y-x) else y + log1pexp (x-y)
+    {-# INLINE (-) #-}
+    Pr x - Pr y = Pr $ if x >= y then x + log1mexp (y-x) else error "no negative error probabilities"
+    {-# INLINE (*) #-}
     Pr a * Pr b = Pr $ a + b
+    {-# INLINE negate #-}
     negate    _ = Pr $ error "no negative error probabilities"
+    {-# INLINE abs #-}
     abs       x = x
+    {-# INLINE signum #-}
     signum    _ = Pr 0
 
 instance (Floating a, Fractional a, Ord a) => Fractional (Prob' a) where

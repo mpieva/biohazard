@@ -133,9 +133,10 @@ buildSample smp = do
                                    return $ "-D" : flatten de : map unpack (library_files lib)
                               | lib <- sample_libraries smp ]
 
-        command [ FileStdout tab ] "qrsh" $
+        command [] "qrsh" $
                 "-now" : "no" : "-cwd" :
-                "redeye-pileup" : "-o" : av : "-c" : c : "-T" : "-v" : concat libinputs
+                "-l" : "h_vmem=3.4G,s_vmem=3.4G,virtual_free=3.4G,s_stack=2M" :
+                "redeye-pileup" : "-o" : av : "-c" : c : "-T" : tab : "-v" : concat libinputs
 
         -- command [ FileStdout tab ] "redeye-pileup" $
         --         "-o" : av : "-c" : c : "-T" : "-v" : concat libinputs

@@ -42,7 +42,7 @@ module Bio.Prelude (
 
 import BasePrelude
 #if MIN_VERSION_base(4,9,0)
-                    hiding ( EOF, log1p )
+                    hiding ( EOF, log1p, log1pexp, log1mexp, expm1 )
 #elif MIN_VERSION_base(4,7,0)
                     hiding ( EOF )
 #else

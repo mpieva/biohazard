@@ -26,7 +26,7 @@ import qualified Data.Vector.Unboxed    as V
 simple_indel_call :: Int -> IndelPile -> (GL, [IndelVariant])
 simple_indel_call      _  [ ] = ( V.empty, [] )
 simple_indel_call      _  [_] = ( V.empty, [] )
-simple_indel_call ploidy vars = ( simple_call ploidy mkpls vars, vars' )
+simple_indel_call ploidy vars = ( simple_call ploidy $ map mkpls vars, vars' )
   where
     vars' = IndelVariant (V_Nucs V.empty) (V_Nuc V.empty) :
             (Set.toList . Set.fromList)
@@ -39,11 +39,11 @@ simple_indel_call ploidy vars = ( simple_call ploidy mkpls vars, vars' )
                                              p' = fromQual q
                                          in toProb $ p + p' - p * p'
 
-    mkpls :: (Qual, ([Nucleotides], [DamagedBase])) -> [Prob]
-    mkpls (q,(d,i)) = [ qualToProb q +
-                        if length d /= V.length dr || length i /= V.length ir
-                        then 0 else product (match i $ V.toList ir)
-                      | IndelVariant (V_Nucs dr) (V_Nuc ir) <- vars' ]
+    mkpls :: (Qual, ([Nucleotides], [DamagedBase])) -> V.Vector Prob
+    mkpls (q,(d,i)) = V.fromList [ qualToProb q +
+                                   if length d /= V.length dr || length i /= V.length ir
+                                   then 0 else product (match i $ V.toList ir)
+                                 | IndelVariant (V_Nucs dr) (V_Nuc ir) <- vars' ]
 
 -- | Naive SNP call; essentially the GATK model.  We create a function
 -- that computes a likelihood for a given base, then hand over to simple
@@ -51,10 +51,12 @@ simple_indel_call ploidy vars = ( simple_call ploidy mkpls vars, vars' )
 -- the face of damage.
 
 simple_snp_call :: (Qual -> Double) -> Int -> BasePile -> Snp_GLs
-simple_snp_call from_qual ploidy vars = snp_gls (simple_call ploidy mkpls vars) ref
+simple_snp_call from_qual ploidy vars = snp_gls (simple_call ploidy $ map mkpls vars) ref
   where
     ref = case vars of (_, DB _ _ r _) : _ -> r ; _ -> nucsN
-    mkpls (q, DB b qq _ m) = [ toProb $ x + pe*(s-x) | n <- [0..3], let x = m `bang` N n :-> b ]
+    mkpls (q, DB b qq _ m) = V.generate 4 $ \n ->
+                                let x = m `bang` N (fromIntegral n) :-> b
+                                in toProb $ x + pe*(s-x)
       where
         !p1 = from_qual q
         !p2 = from_qual qq
@@ -65,36 +67,52 @@ simple_snp_call from_qual ploidy vars = snp_gls (simple_call ploidy mkpls vars) 
 -- we sample 'ploidy' alleles with equal probability and assume that
 -- errors occur independently from each other.
 --
--- The argument 'pls' is a function that computes the likelihood for
--- getting the current read, for every variant assuming that variant was
--- sampled.
---
 -- XXX  This eats up ~40% of total runtime; it *screams out* for
 -- specialization to diploidy and four alleles (common SNPs) and maybe
 -- diploidy and two alleles (common indels).
 
-simple_call :: Int -> (a -> [Prob]) -> [a] -> GL
-simple_call ploidy pls = foldl10 (V.zipWith (*)) . map step
+simple_call :: Int -> [V.Vector Prob] -> GL
+simple_call     !_ [      ]                    = V.empty
+simple_call      0        _                    = V.empty
+simple_call      1 (gl:gls)                    = foldl' (V.zipWith (*)) gl gls
+simple_call      2 (gl:gls) | V.length gl == 2 = foldl' (V.zipWith (*)) (step2 gl) $ map step2 gls
   where
-    foldl10 _ [    ] = V.singleton 1
-    foldl10 f (a:as) = foldl' f a as
+    step2 v = V.fromListN 3 [ x0, (x0+x1) / 2, x1 ]
+      where x0 = V.unsafeIndex v 0
+            x1 = V.unsafeIndex v 1
 
+simple_call      2 (gl:gls) | V.length gl == 4 = foldl' (V.zipWith (*)) (step4 gl) $ map step4 gls
+  where
+    step4 v = V.fromListN 10 [ x0
+                             , (x0+x1)/2, x1
+                             , (x0+x2)/2, (x1+x2)/2, x2
+                             , (x0+x3)/2, (x1+x3)/2, (x2+x3)/2, x3 ]
+      where x0 = V.unsafeIndex v 0
+            x1 = V.unsafeIndex v 1
+            x2 = V.unsafeIndex v 2
+            x3 = V.unsafeIndex v 3
+
+simple_call ploidy (gl:gls)                    = foldl' (V.zipWith (*)) (step gl) $ map step gls
+  where
     !mag = recip $ toProb (fromIntegral ploidy)
 
-    -- XXX This could probably be simplified given the mk_pls function
-    -- below.
-    step = V.fromList . map (* mag) . reverse . mk_pls ploidy . reverse . pls
+    step = mk_pls ploidy 0 . V.map (mag *)
 
     -- Meh.  Pointless, but happens to be the unit.
-    mk_pls 0  _ = return 0
+    mk_pls 0 !acc  !_ = V.singleton acc
 
     -- Okay, we sample ONE allele.  Likelihood of the data is simply the
     -- GL value that was passed to us.
-    mk_pls 1 ls = ls
+    mk_pls 1 !acc !ls = V.map (acc +) ls
 
     -- We extend the genotype and sample another allele.
-    mk_pls n ls = do ls'@(hd:_) <- tails ls
-                     (+) hd <$> mk_pls (n-1) ls'
+
+    mk_pls n !acc !ls = V.concatMap (\i ->
+                                 let hd  = V.unsafeIndex ls i
+                                     ls' = V.unsafeTake (i+1) ls
+                                 in (mk_pls (n-1) (hd + acc) ls'))
+                             (V.enumFromN 0 l)
+            where l = V.length ls
 
 
 -- | Make a list of genotypes, each represented as a vector of allele

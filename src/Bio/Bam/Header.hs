@@ -114,7 +114,7 @@ data BamHeader = BamHeader {
         hdr_version :: (Int, Int),
         hdr_sorting :: !BamSorting,
         hdr_other_shit :: BamOtherShit
-    } deriving Show
+    } deriving (Show, Eq)
 
 instance Monoid BamHeader where
     mempty = BamHeader (1,0) Unknown []
@@ -126,7 +126,7 @@ data BamSQ = BamSQ {
         sq_name :: Seqid,
         sq_length :: Int,
         sq_other_shit :: BamOtherShit
-    } deriving Show
+    } deriving (Show, Eq)
 
 bad_seq :: BamSQ
 bad_seq = BamSQ (error "no SN field") (error "no LN field") []

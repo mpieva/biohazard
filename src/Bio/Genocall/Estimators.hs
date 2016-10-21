@@ -6,7 +6,7 @@ import Bio.Bam
 import Bio.Prelude
 import Bio.Util.AD
 import Bio.Util.AD2
-import Bio.Util.Numeric              ( log1p )
+import Bio.Util.Numeric              ( log1pexp )
 import Bio.Util.Pretty
 import Data.Binary
 import Data.Vector.Binary            ()
@@ -250,9 +250,9 @@ llk' tab base delta eta = block (base+0) g_RR g_RA g_AA
     !maxD2 = U.length tab `div` 12
     !maxD  = round (sqrt (fromIntegral maxD2) :: Double)
 
-    !g_AA = Pr delta / Pr (log1p (exp delta))
-    !g_RA =        1 / Pr (log1p (exp delta)) * Pr eta / Pr (log1p (exp eta))
-    !g_RR =        1 / Pr (log1p (exp delta)) *      1 / Pr (log1p (exp eta))
+    !g_AA = Pr delta / Pr (log1pexp delta)
+    !g_RA =        1 / Pr (log1pexp delta) * Pr eta / Pr (log1pexp eta)
+    !g_RR =        1 / Pr (log1pexp delta) *      1 / Pr (log1pexp eta)
 
     block ix g1 g2 g3 = U.ifoldl' step 0 $ U.slice (ix * maxD2) maxD2 tab
       where
