@@ -66,8 +66,8 @@ Library
                        Bio.Bam.Trim,
                        Bio.Bam.Writer,
                        Bio.Genocall,
-                       Bio.Genocall.AvroFile,
                        Bio.Genocall.Estimators,
+                       Bio.Genocall.LkFile,
                        Bio.Illumina.BCL,
                        Bio.Illumina.Locs,
                        Bio.Iteratee,
@@ -82,7 +82,6 @@ Library
                        Bio.Util.Numeric,
                        Bio.Util.Pretty,
                        Bio.Util.Zlib,
-                       Data.Avro,
                        Data.Binary.Serialise.CBOR.SequenceFiles,
                        Data.MiniFloat,
                        Paths_biohazard

@@ -17,7 +17,7 @@
 
 import Bio.Bam
 import Bio.Bam.Pileup
-import Bio.Genocall.AvroFile
+import Bio.Genocall.LkFile
 import Bio.Iteratee.Builder
 import Bio.Prelude
 import Data.MiniFloat

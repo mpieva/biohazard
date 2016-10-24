@@ -1,10 +1,10 @@
 -- Command line driver for simple genotype calling.  We have three
 -- separate steps:  Pileup from a BAM file (or multiple merged files) to
 -- produce likelihoods (and some auxillary statistics).  These are
--- written into an Avro container.  Next we need to estimate parameters,
+-- written into an CBOR sequence file.  Next we need to estimate parameters,
 -- in the simplest case divergence and heterozygosity.  We can save some
 -- time by fusing this with the first step.  The final step is calling
--- bases by scnaning the Avro container and applying some model, and
+-- bases by scnaning the CBOR sequence file and applying some model, and
 -- again, in the simplest case that's just divergence and
 -- heterozygosity.  We keep that separate, because different models will
 -- require different programs.  So here we produce likelihoods and
@@ -33,7 +33,7 @@ import Bio.Adna
 import Bio.Bam
 import Bio.Bam.Pileup
 import Bio.Genocall
-import Bio.Genocall.AvroFile
+import Bio.Genocall.LkFile
 import Bio.Genocall.Estimators
 import Bio.Prelude
 import Bio.Util.Pretty
@@ -212,7 +212,7 @@ calls (Just theta) pile = pile { p_snp_pile = s, p_indel_pile = i }
 
 
 -- | Serialize the results from genotype calling in a sensible way.  We
--- write an Avro file, but we add another blocking layer on top so we
+-- write a CBOR sequence file, but we use two different records, so we
 -- don't need to endlessly repeat coordinates.
 
 compileBlocks :: Monad m => Enumeratee [Calls] [GenoFileRec] m a
