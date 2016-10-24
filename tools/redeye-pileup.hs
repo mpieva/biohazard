@@ -116,8 +116,7 @@ main = do
                 zipStreams tabulateSingle (output_cbor ohdl $ meta_refs hdr)
 
     rename (conf_output ++ ".#") conf_output
-
-    maybe (return ()) (BL.hPut stdout . Bin.encode) conf_table
+    forM_ conf_table $ flip BL.writeFile $ Bin.encode tab
 
     (de1,de2) <- estimateSingle tab
     putStrLn $ unlines $
