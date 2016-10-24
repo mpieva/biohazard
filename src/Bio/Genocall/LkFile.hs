@@ -1,23 +1,19 @@
-{-# LANGUAGE DeriveGeneric, DeriveAnyClass, StandaloneDeriving #-}
+{-# LANGUAGE DeriveGeneric, StandaloneDeriving, CPP #-}
+#if __GLASGOW_HASKELL__ > 710
 {-# OPTIONS_GHC -Wno-orphans #-}
+#else
+{-# OPTIONS_GHC -fno-warn-orphans #-}
+#endif
+
 module Bio.Genocall.LkFile where
 
 import Bio.Bam.Header
 import Bio.Bam.Pileup
 import Bio.Prelude
-import Data.Binary.Builder
-import Data.Binary.Get
 import Data.Binary.Serialise.CBOR
 import Data.MiniFloat
-import Data.Scientific                      ( toBoundedInteger )
-import Data.Text.Encoding                   ( encodeUtf8 )
 
-import qualified Data.ByteString                as B
-import qualified Data.HashMap.Strict            as H
-import qualified Data.Text                      as T
-import qualified Data.Vector                    as V
 import qualified Data.Vector.Unboxed            as U
-import qualified Data.Sequence                  as Z
 
 -- ^ File format for genotype calls.
 --
@@ -32,15 +28,16 @@ data GenoFileRec
         | GenoFileBlock  GenoCallBlock
         | GenoFileSite   GenoCallSite
         | GenoFileFooter GenoFooter
-  deriving (Show, Eq, Generic, Serialise)
+  deriving (Show, Eq, Generic)
+
 
 data GenoHeader = GenoHeader
         { header_version :: Int
         , header_refs :: Refs }
-  deriving (Show, Eq, Generic, Serialise)
+  deriving (Show, Eq, Generic)
 
 data GenoFooter = GenoFooter
-  deriving (Show, Eq, Generic, Serialise)
+  deriving (Show, Eq, Generic)
 
 -- | To output a container file, we need to convert calls into a stream of
 -- sensible objects.  To cut down on redundancy, the object will have a
@@ -52,7 +49,7 @@ data GenoFooter = GenoFooter
 data GenoCallBlock = GenoCallBlock
         { reference_name :: {-# UNPACK #-} !Refseq
         , start_position :: {-# UNPACK #-} !Int }
-  deriving (Show, Eq, Generic, Serialise)
+  deriving (Show, Eq, Generic)
 
 data GenoCallSite = GenoCallSite
         { snp_stats         :: {-# UNPACK #-} !CallStats
@@ -64,7 +61,16 @@ data GenoCallSite = GenoCallSite
         , indel_stats       :: {-# UNPACK #-} !CallStats
         , indel_variants    ::                [ IndelVariant ]
         , indel_likelihoods :: {-# UNPACK #-} !(U.Vector Mini) } -- Bytes?
-  deriving (Show, Eq, Generic, Serialise)
+  deriving (Show, Eq, Generic)
+
+instance Serialise GenoFileRec
+instance Serialise GenoHeader
+instance Serialise GenoFooter
+instance Serialise GenoCallBlock
+instance Serialise GenoCallSite
+instance Serialise IndelVariant
+instance Serialise CallStats
+
 
 instance Serialise Refseq where
     encode = encode . unRefseq
@@ -77,9 +83,6 @@ instance Serialise Nucleotides where
 instance Serialise Nucleotide where
     encode = encode . unN
     decode = N <$> decode
-
-deriving instance Serialise IndelVariant
-deriving instance Serialise CallStats
 
 instance Serialise BamSQ where
     encode sq = encode (sq_name sq, sq_length sq)
