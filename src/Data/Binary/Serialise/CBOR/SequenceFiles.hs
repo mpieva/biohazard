@@ -104,16 +104,18 @@ withBuffer (Buffer fptr len) action =
 -- repeatedly to get each item. It eventually returns @Nothing@.
 --
 -- The file format is that used by 'writeBinaryFileSequence'.
---
 withBinaryFileSequence :: forall a b. B.Serialise a
                        => FilePath
                        -> (IO (Maybe a) -> IO b)
                        -> IO b
 withBinaryFileSequence file action = do
     trailingRef <- newIORef BS.empty
-    withFile file ReadMode $ \hnd ->
-      action (readNextChunk hnd trailingRef)
+    withFile' file $ \hnd -> action (readNextChunk hnd trailingRef)
   where
+    withFile' :: FilePath -> (Handle -> IO b) -> IO b
+    withFile' "-" k = k stdin
+    withFile'  f  k = withFile f ReadMode k
+
     readNextChunk :: Handle -> IORef BS.ByteString -> IO (Maybe a)
     readNextChunk hnd trailingRef = do
 

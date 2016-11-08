@@ -100,10 +100,11 @@ main = do
     unless (null errs) $ mapM_ (IO.hPutStrLn stderr) errs >> exitFailure
     conf@Conf{..} <- foldl (>>=) (return defaultConf) opts
 
-
     withOutputFd outfile                                                                 $ \ofd ->
-      concatAvs infiles >=> run                                                          $ do
-        GenoFileHeader meta <- headStream
+      foldr ((>=>) . iterBinaryFileSequence) run infiles                                 $ do
+        meta <- headStream >>= \x -> case x of
+                    GenoFileHeader h -> return h
+                    _                -> error $ show x
 
         let callz = ( call (prior_div/3) (prior_het conf)
                     , call (prior_indel conf) (prior_het_indel conf) )
@@ -119,12 +120,6 @@ withOutputFd  f  k = do
     r <- withFd (f++".#") WriteOnly (Just 0o666) defaultFileFlags k
     rename (f++".#") f
     return r
-
-concatAvs :: Serialise a => [FilePath] -> Enumerator [a] IO b
-concatAvs = foldr ((>=>) . iterBinaryFileSequence) return
-  -- where
-    -- enum1 "-" = enumHandle defaultBufSize stdin readAvroContainer >>= run
-    -- enum1  fp = enumFile   defaultBufSize    fp readAvroContainer >>= run
 
 iterBinaryFileSequence :: Serialise a => FilePath -> Enumerator [a] IO b
 iterBinaryFileSequence fp it0 =
@@ -181,16 +176,6 @@ toBcf refs smps (snp_call, indel_call) gen0 = eneeCheckIfDone (go invalidRefseq 
     hdr   = pushByteString "BCF\2\2" <> setMark <>
             vcf_header refs smps <> pushByte 0 <> endRecord
 
-    -- encode :: GenoCallBlock -> gen -> (Push, gen)
-    {- encode GenoCallBlock{..} = meld start_position called_sites
-      where
-        meld !_ [    ] gen = (mempty, gen)
-        meld !p (s:ss) gen = (p1 <> p2, g2)
-          where
-            (p1, g1) = encode1 reference_name p s gen
-            (p2, g2) = meld (succ p) ss g1 -}
-
-    -- encode1 :: Refseq -> Int -> GenoCallSite -> gen -> (Push, gen)
     encode1 ref pos site g0 = (p1 <> p2, g2)
       where
         (p1,g1) = encodeSNP site ref pos snp_call g0

@@ -237,7 +237,7 @@ Executable redeye-pileup
 
 Executable redeye-single
   Main-is:             redeye-single.hs
-  Ghc-options:         -Wall -rtsopts
+  Ghc-options:         -Wall -rtsopts -fprof-auto
   Default-Language:    Haskell2010
   Default-Extensions:  NoImplicitPrelude, OverloadedStrings,
                        BangPatterns, RecordWildCards, FlexibleContexts

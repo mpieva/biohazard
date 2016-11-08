@@ -114,7 +114,7 @@ buildSample :: Sample -> Rules ()
 buildSample smp = do
     -- final artefact: one BCF per chromosome, 'aight?
     let chromosomes = map show [1..22::Int] ++ [ "X", "Y" ]
-    want [ "build/" ++ unpack (sample_name smp) ++ "-" ++ chrom ++ ".bcf" | chrom <- chromosomes ]
+    want [ "build/" ++ unpack (sample_name smp) ++ "." ++ chrom ++ ".bcf" | chrom <- chromosomes ]
 
     -- want [ "build/" ++ unpack (sample_name smp) ++ "." ++ subset ++ ".divest"
          -- | subset <- [ "auto", "X", "Y" ] ]
@@ -148,8 +148,8 @@ buildSample smp = do
         command [] "qrsh" $
                 "-now" : "no" : "-cwd" :
                 "-l" : "h_vmem=3.4G,s_vmem=3.4G,virtual_free=3.4G,s_stack=2M" :
-                "redeye-single" : "-o" : bcf : "-c" : c : "-s"
-                    : "-N" : unpack (sample_name smp)
+                "redeye-single" : "-o" : bcf : (dropExtension bcf <.> "av")
+                    : "-N" : unpack (sample_name smp) : "-s"
                     : "-d" : show dv : "-D" : show ht
                     : "-i" : show (0.1*dv) : "-I" : show ht : []
 
