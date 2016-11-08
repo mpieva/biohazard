@@ -32,6 +32,14 @@ import Bio.Illumina.Locs
 -- parallelization:  we could read the many files in parallel, and we
 -- probably should.  We could also read the files for one tile while
 -- outputting another.)
+--
+-- XXX  We need to change this:  the vector of vectors is very likely to
+-- be extremely bad for the cache.  We should roll the BCLs into a
+-- single vector (a 2D array), and pad them while reading (in the
+-- unlikely case that a file is missing or truncated).  Current caches
+-- are 32kB in lines of 64B and 8-fold associative.  So we will pad each
+-- individual cycle to something that is 64B mod 32kB to ensure that
+-- successive cycles never map to the same cache line.
 
 data Tile = Tile
     { tile_nbr :: !Int
