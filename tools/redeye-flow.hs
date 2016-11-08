@@ -17,22 +17,19 @@
 
 -- Notes:
 -- - Small amounts of output land in files.  Annoying, but easy.
--- - redeye-pileup -T writes to stdout.  I could also give up and send
---   it to a file instead.
 -- - we want -pileup and -single to run on the SGE!  (-dar and estimate
 --   locally?  shouldn't be a problem)
 
-import Bio.Genocall.Estimators      ( estimateSingle )
+import Bio.Genocall.Estimators      ( estimateSingle, DivEst(..) )
 import Bio.Prelude
 import Bio.Util.Pretty              ( pshow, pparse )
 import Data.Binary                  ( decodeOrFail )
 
 import Development.Shake
-import Development.Shake.Command
 import Development.Shake.FilePath
-import Development.Shake.Util
 
 import qualified Data.ByteString.Lazy   as L
+import qualified Data.Text.IO           as S
 import qualified Data.Text.Lazy         as T
 import qualified Data.Text.Lazy.IO      as T
 
@@ -113,16 +110,14 @@ main = shakeArgs shakeOptions { shakeFiles = "_shake" } $ do
     lReadFiles' xs = need  xs >> liftIO (mapM L.readFile xs)
 
 
-
-chromosomes = map show [1..22::Int] ++ [ "X", "Y" ]
-
 buildSample :: Sample -> Rules ()
 buildSample smp = do
     -- final artefact: one BCF per chromosome, 'aight?
-    -- want [ "build/" ++ unpack (sample_name smp) ++ "-" ++ chr ++ ".bcf" | chr <- chromsomes ]
+    let chromosomes = map show [1..22::Int] ++ [ "X", "Y" ]
+    want [ "build/" ++ unpack (sample_name smp) ++ "-" ++ chrom ++ ".bcf" | chrom <- chromosomes ]
 
-    want [ "build/" ++ unpack (sample_name smp) ++ "." ++ subset ++ ".divest"
-         | subset <- [ "auto", "X", "Y" ] ]
+    -- want [ "build/" ++ unpack (sample_name smp) ++ "." ++ subset ++ ".divest"
+         -- | subset <- [ "auto", "X", "Y" ] ]
 
     [ "build/" ++ unpack (sample_name smp) ++ ".*.av",
       "build/" ++ unpack (sample_name smp) ++ ".*.divtab" ] &%> \[av,tab] -> do
@@ -141,6 +136,24 @@ buildSample smp = do
         -- command [ FileStdout tab ] "redeye-pileup" $
         --         "-o" : av : "-c" : c : "-T" : "-v" : concat libinputs
 
+    "build/" ++ unpack (sample_name smp) ++ ".*.bcf" %> \bcf -> do
+        let '.':c = takeExtension $ dropExtension bcf
+            dep = if c == "X" || c == "Y" then c else "auto"
+            divest_file = dropExtension (dropExtension bcf) ++ "." ++ dep ++ ".divest"
+
+        need [ dropExtension bcf <.> "av", divest_file ]
+
+        [dv,ht] <- either fail (return . point_est) . pparse =<< liftIO (S.readFile divest_file)
+
+        command [] "qrsh" $
+                "-now" : "no" : "-cwd" :
+                "-l" : "h_vmem=3.4G,s_vmem=3.4G,virtual_free=3.4G,s_stack=2M" :
+                "redeye-single" : "-o" : bcf : "-c" : c : "-s"
+                    : "-N" : unpack (sample_name smp)
+                    : "-d" : show dv : "-D" : show ht
+                    : "-i" : show (0.1*dv) : "-I" : show ht : []
+
+
     mapM_ buildLib $ sample_libraries smp
   where
     flatten = map $ \c -> if c == '\n' then ' ' else c
@@ -152,7 +165,7 @@ buildLib lib = do
         need lfs
         command [ FileStdout out ] "redeye-dar" ("-m" : "35" : lfs )
 
-
+samples :: [Sample]
 samples = [ Sample "HC" (map lib [ "A9368", "A9369", "A9401", "A9402", "A9403", "A9404", "B8747", "R5473" ]) ]
   where
     lib nm = Library nm [ nm <> ".bam" ]

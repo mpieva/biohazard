@@ -1,7 +1,6 @@
-{-# LANGUAGE Rank2Types, DeriveGeneric #-}
+{-# LANGUAGE Rank2Types, DeriveGeneric, ScopedTypeVariables #-}
 module Bio.Bam.Pileup where
 
-import Bio.Adna ( Mat44D )
 import Bio.Bam.Header
 import Bio.Bam.Rec
 import Bio.Iteratee
@@ -74,19 +73,19 @@ import qualified Data.Vector.Unboxed    as U
 -- length of a deleted sequence.  The logic is that we look at a base
 -- followed by some indel, and all those indels are combined into a
 -- single insertion and a single deletion.
-data PrimChunks = Seek Int PrimBase                             -- ^ skip to position (at start or after N operation)
-                | Indel [Nucleotides] [DamagedBase] PrimBase    -- ^ observed deletion and insertion between two bases
-                | EndOfRead                                     -- ^ nothing anymore
+data PrimChunks a = Seek Int (PrimBase a)                               -- ^ skip to position (at start or after N operation)
+                  | Indel [Nucleotides] [DamagedBase a] (PrimBase a)    -- ^ observed deletion and insertion between two bases
+                  | EndOfRead                                           -- ^ nothing anymore
   deriving Show
 
-data PrimBase = Base { _pb_wait   :: {-# UNPACK #-} !Int        -- ^ number of bases to wait due to a deletion
-                     , _pb_likes  :: DamagedBase                -- ^ four likelihoods
-                     , _pb_mapq   :: {-# UNPACK #-} !Qual       -- ^ map quality
-                     , _pb_rev    :: Bool                       -- ^ reverse strand?
-                     , _pb_chunks :: PrimChunks }               -- ^ more chunks
+data PrimBase a = Base { _pb_wait   :: {-# UNPACK #-} !Int              -- ^ number of bases to wait due to a deletion
+                       , _pb_likes  :: {-# UNPACK #-} !(DamagedBase a)
+                       , _pb_mapq   :: {-# UNPACK #-} !Qual             -- ^ map quality
+                       , _pb_rev    :: {-# UNPACK #-} !Int              -- ^ reverse strand?
+                       , _pb_chunks :: (PrimChunks a)}                  -- ^ more chunks
   deriving Show
 
-type PosPrimChunks = (Refseq, Int, PrimChunks)
+type PosPrimChunks a = (Refseq, Int, PrimChunks a)
 
 -- | Represents our knowledge about a certain base, which consists of
 -- the base itself (A,C,G,T, encoded as 0..3; no Ns), the quality score
@@ -96,14 +95,18 @@ type PosPrimChunks = (Refseq, Int, PrimChunks)
 --
 -- Unfortunately, none of this can be rolled into something more simple,
 -- because damage and sequencing error behave so differently.
+--
+-- Damage information is polymorphic.  We might run with a simple
+-- version (a matrix) for calling, but we need more (a matrix and a
+-- mutable matrix, I think) for estimation.
 
-data DamagedBase = DB { db_call :: {-# UNPACK #-} !Nucleotide           -- ^ called base
-                      , db_qual :: {-# UNPACK #-} !Qual                 -- ^ quality of called base
-                      , db_ref  :: {-# UNPACK #-} !Nucleotides          -- ^ reference base from MD field
-                      , db_dmg  ::                !Mat44D }             -- ^ damage matrix
+data DamagedBase a = DB { db_call :: {-# UNPACK #-} !Nucleotide           -- ^ called base
+                        , db_qual :: {-# UNPACK #-} !Qual                 -- ^ quality of called base
+                        , db_dmg  ::                !a                    -- ^ damage information
+                        , db_ref  :: {-# UNPACK #-} !Nucleotides }        -- ^ reference base from MD field
 
-instance Show DamagedBase where
-    showsPrec _ (DB n q r _)
+instance Show (DamagedBase a) where
+    showsPrec _ (DB n q _ r)
         | nucToNucs n == r = shows n .                     (:) '@' . shows q
         | otherwise        = shows n . (:) '/' . shows r . (:) '@' . shows q
 
@@ -113,14 +116,14 @@ instance Show DamagedBase where
 -- and quality as appropriate.  Clipped bases are removed/skipped as
 -- appropriate.  We also do apply a substitution matrix to each base,
 -- which must be supplied along with the read.
-
-decompose :: [Mat44D] -> BamRaw -> Maybe PosPrimChunks
-decompose matrices br =
+{-# INLINE decompose #-}
+decompose :: forall dmg .  (Int -> dmg) -> BamRaw -> Maybe (PosPrimChunks dmg)
+decompose dmod br =
     if isUnmapped b || isDuplicate b || not (isValidRefseq b_rname)
     then Nothing else Just (b_rname, b_pos, pchunks)
   where
     b@BamRec{..} = unpackBam br
-    pchunks = firstBase b_pos 0 0 (maybe [] id $ getMd b) matrices
+    pchunks = firstBase b_pos 0 0 (maybe [] id $ getMd b)
 
     !max_cig = V.length b_cigar
     !max_seq = V.length b_seq
@@ -131,49 +134,50 @@ decompose matrices br =
     -- and BAQ.  If QUAL is invalid, we replace it (arbitrarily) with
     -- 23 (assuming a rather conservative error rate of ~0.5%), BAQ is
     -- added to QUAL, and MAPQ is an upper limit for effective quality.
-    get_seq :: Int -> Nucleotides -> Mat44D -> DamagedBase
+    get_seq :: Int -> Nucleotides -> DamagedBase dmg
     get_seq i = case b_seq `V.unsafeIndex` i of                                 -- nucleotide
-            n | n == nucsA -> DB nucA qe
-              | n == nucsC -> DB nucC qe
-              | n == nucsG -> DB nucG qe
-              | n == nucsT -> DB nucT qe
-              | otherwise  -> DB nucA (Q 0)
+            n | n == nucsA -> DB nucA qe dmg
+              | n == nucsC -> DB nucC qe dmg
+              | n == nucsG -> DB nucG qe dmg
+              | n == nucsT -> DB nucT qe dmg
+              | otherwise  -> DB nucA (Q 0) dmg
       where
-        !q = case b_qual `V.unsafeIndex` i of Q 0xff -> Q 30 ; x -> x           -- quality; invalid (0xff) becomes 30
-        !q' | i >= B.length baq = q                                             -- no BAQ available
-            | otherwise = Q (unQ q + (B.index baq i - 64))                      -- else correct for BAQ
-        !qe = min q' b_mapq                                                     -- use MAPQ as upper limit
+        !q   = case b_qual `V.unsafeIndex` i of Q 0xff -> Q 30 ; x -> x         -- quality; invalid (0xff) becomes 30
+        !q'  | i >= B.length baq = q                                            -- no BAQ available
+             | otherwise = Q (unQ q + (B.index baq i - 64))                     -- else correct for BAQ
+        !qe  = min q' b_mapq                                                    -- use MAPQ as upper limit
+        !dmg = dmod $ if i+i > max_seq then max_seq - i else i
 
-    get_seq' :: Int -> Mat44D -> DamagedBase
+    get_seq' :: Int -> DamagedBase dmg
     get_seq' i = case b_seq `V.unsafeIndex` i of                                -- nucleotide
-            n | n == nucsA -> DB nucA qe nucsA
-              | n == nucsC -> DB nucC qe nucsC
-              | n == nucsG -> DB nucG qe nucsG
-              | n == nucsT -> DB nucT qe nucsT
-              | otherwise  -> DB nucA (Q 0) n
+            n | n == nucsA -> DB nucA qe dmg nucsA
+              | n == nucsC -> DB nucC qe dmg nucsC
+              | n == nucsG -> DB nucG qe dmg nucsG
+              | n == nucsT -> DB nucT qe dmg nucsT
+              | otherwise  -> DB nucA (Q 0) dmg n
       where
-        !q = case b_qual `V.unsafeIndex` i of Q 0xff -> Q 30 ; x -> x           -- quality; invalid (0xff) becomes 30
-        !q' | i >= B.length baq = q                                             -- no BAQ available
-            | otherwise = Q (unQ q + (B.index baq i - 64))                      -- else correct for BAQ
-        !qe = min q' b_mapq                                                     -- use MAPQ as upper limit
+        !q   = case b_qual `V.unsafeIndex` i of Q 0xff -> Q 30 ; x -> x         -- quality; invalid (0xff) becomes 30
+        !q'  | i >= B.length baq = q                                            -- no BAQ available
+             | otherwise = Q (unQ q + (B.index baq i - 64))                     -- else correct for BAQ
+        !qe  = min q' b_mapq                                                    -- use MAPQ as upper limit
+        !dmg = dmod $ if i+i > max_seq then max_seq - i else i
 
     -- Look for first base following the read's start or a gap (CIGAR
     -- code N).  Indels are skipped, since these are either bugs in the
     -- aligner or the aligner getting rid of essentially unalignable
     -- bases.
-    firstBase :: Int -> Int -> Int -> [MdOp] -> [Mat44D] -> PrimChunks
-    firstBase !_   !_  !_    _ [        ] = EndOfRead
-    firstBase !pos !is !ic mds mms@(m:ms)
+    firstBase :: Int -> Int -> Int -> [MdOp] -> PrimChunks dmg
+    firstBase !pos !is !ic mds
         | is >= max_seq || ic >= max_cig = EndOfRead
         | otherwise = case b_cigar `V.unsafeIndex` ic of
-            Ins :* cl ->            firstBase  pos (cl+is) (ic+1) mds mms
-            SMa :* cl ->            firstBase  pos (cl+is) (ic+1) mds mms
-            Del :* cl ->            firstBase (pos+cl) is  (ic+1) (drop_del cl mds) mms
-            Nop :* cl ->            firstBase (pos+cl) is  (ic+1) mds mms
-            HMa :*  _ ->            firstBase  pos     is  (ic+1) mds mms
-            Pad :*  _ ->            firstBase  pos     is  (ic+1) mds mms
-            Mat :*  0 ->            firstBase  pos     is  (ic+1) mds mms
-            Mat :*  _ -> Seek pos $ nextBase 0 pos     is   ic 0  mds m ms
+            Ins :* cl ->            firstBase  pos (cl+is) (ic+1) mds
+            SMa :* cl ->            firstBase  pos (cl+is) (ic+1) mds
+            Del :* cl ->            firstBase (pos+cl) is  (ic+1) (drop_del cl mds)
+            Nop :* cl ->            firstBase (pos+cl) is  (ic+1) mds
+            HMa :*  _ ->            firstBase  pos     is  (ic+1) mds
+            Pad :*  _ ->            firstBase  pos     is  (ic+1) mds
+            Mat :*  0 ->            firstBase  pos     is  (ic+1) mds
+            Mat :*  _ -> Seek pos $ nextBase 0 pos     is   ic 0  mds
       where
         -- We have to treat (MdNum 0), because samtools actually
         -- generates(!) it all over the place and if not handled as a
@@ -191,18 +195,18 @@ decompose matrices br =
     -- I don't think we can ever get (MdDel []), but then again, who
     -- knows what crazy shit samtools decides to generate.  There is
     -- little harm in special-casing it.
-    nextBase :: Int -> Int -> Int -> Int -> Int -> [MdOp] -> Mat44D -> [Mat44D] -> PrimBase
-    nextBase !wt !pos !is !ic !io mds m ms = case mds of
-        MdNum   0 : mds' -> nextBase wt pos is ic io mds' m ms
-        MdDel  [] : mds' -> nextBase wt pos is ic io mds' m ms
-        MdNum   1 : mds' -> nextBase' (get_seq' is       m) mds'
-        MdNum   n : mds' -> nextBase' (get_seq' is       m) (MdNum (n-1) : mds')
-        MdRep ref : mds' -> nextBase' (get_seq  is ref   m) mds'
-        MdDel   _ : _    -> nextBase' (get_seq  is nucsN m) mds
-        [              ] -> nextBase' (get_seq  is nucsN m) [ ]
+    nextBase :: Int -> Int -> Int -> Int -> Int -> [MdOp] -> PrimBase dmg
+    nextBase !wt !pos !is !ic !io mds = case mds of
+        MdNum   0 : mds' -> nextBase wt pos is ic io mds'
+        MdDel  [] : mds' -> nextBase wt pos is ic io mds'
+        MdNum   1 : mds' -> nextBase' (get_seq' is      ) mds'
+        MdNum   n : mds' -> nextBase' (get_seq' is      ) (MdNum (n-1) : mds')
+        MdRep ref : mds' -> nextBase' (get_seq  is ref  ) mds'
+        MdDel   _ : _    -> nextBase' (get_seq  is nucsN) mds
+        [              ] -> nextBase' (get_seq  is nucsN) [ ]
       where
-        nextBase' ref mds' = Base wt ref b_mapq (isReversed b)
-                           $ nextIndel  [] [] (pos+1) (is+1) ic (io+1) mds' ms
+        nextBase' ref mds' = Base wt ref b_mapq (fromEnum $ isReversed b)
+                           $ nextIndel  [] [] (pos+1) (is+1) ic (io+1) mds'
 
     -- Look for the next indel after a base.  We collect all indels (I
     -- and D codes) into one combined operation.  If we hit N or the
@@ -211,24 +215,23 @@ decompose matrices br =
     -- isn't valid in the middle of a read (H and S), but then what
     -- would we do about it anyway?  Just ignoring it is much easier and
     -- arguably at least as correct.
-    nextIndel :: [[DamagedBase]] -> [Nucleotides] -> Int -> Int -> Int -> Int -> [MdOp] -> [Mat44D] -> PrimChunks
-    nextIndel _   _   !_   !_  !_  !_   _  [        ] = EndOfRead
-    nextIndel ins del !pos !is !ic !io mds mms@(m:ms)
+    nextIndel :: [[DamagedBase dmg]] -> [Nucleotides] -> Int -> Int -> Int -> Int -> [MdOp] -> PrimChunks dmg
+    nextIndel ins del !pos !is !ic !io mds
         | is >= max_seq || ic >= max_cig = EndOfRead
         | otherwise = case b_cigar `V.unsafeIndex` ic of
-            Ins :* cl ->             nextIndel (isq cl) del   pos (cl+is) (ic+1) 0 mds (drop cl mms)
-            SMa :* cl ->             nextIndel  ins     del   pos (cl+is) (ic+1) 0 mds (drop cl mms)
-            Del :* cl ->             nextIndel ins (del++dsq) (pos+cl) is (ic+1) 0 mds' mms
+            Ins :* cl ->             nextIndel (isq cl) del   pos (cl+is) (ic+1) 0 mds -- (drop cl mms)
+            SMa :* cl ->             nextIndel  ins     del   pos (cl+is) (ic+1) 0 mds -- (drop cl mms)
+            Del :* cl ->             nextIndel ins (del++dsq) (pos+cl) is (ic+1) 0 mds'
                 where (dsq,mds') = split_del cl mds
-            Pad :*  _ ->             nextIndel  ins     del   pos     is  (ic+1) 0 mds mms
-            HMa :*  _ ->             nextIndel  ins     del   pos     is  (ic+1) 0 mds mms
-            Nop :* cl ->             firstBase               (pos+cl) is  (ic+1)   mds mms  -- ends up generating a 'Seek'
-            Mat :* cl | io == cl  -> nextIndel  ins     del   pos     is  (ic+1) 0 mds mms
-                      | otherwise -> indel del out $ nextBase (length del) pos is ic io mds m ms -- ends up generating a 'Base'
+            Pad :*  _ ->             nextIndel  ins     del   pos     is  (ic+1) 0 mds
+            HMa :*  _ ->             nextIndel  ins     del   pos     is  (ic+1) 0 mds
+            Nop :* cl ->             firstBase               (pos+cl) is  (ic+1)   mds -- ends up generating a 'Seek'
+            Mat :* cl | io == cl  -> nextIndel  ins     del   pos     is  (ic+1) 0 mds
+                      | otherwise -> indel del out $ nextBase (length del) pos is ic io mds -- ends up generating a 'Base'
       where
         indel d o k = rlist o `seq` Indel d o k
         out    = concat $ reverse ins
-        isq cl = zipWith ($) [ get_seq i gap | i <- [is..is+cl-1] ] (take cl mms) : ins
+        isq cl = {-zipWith ($)-} [ get_seq i gap | i <- [is..is+cl-1] ] {-(take cl mms)-} : ins
         rlist [] = ()
         rlist (a:as) = a `seq` rlist as
 
@@ -287,12 +290,12 @@ data IndelVariant = IndelVariant { deleted_bases  :: !V_Nucs, inserted_bases :: 
 
 -- | Map quality and a list of encountered bases, with damage
 -- information and reference base if known.
-type BasePile  = [( Qual,                  DamagedBase   )]
+type BasePile  a = [( Qual,                  DamagedBase a   )]
 
 -- | Map quality and a list of encountered indel variants.  The deletion
 -- has the reference sequence, if known, an insertion has the inserted
 -- sequence with damage information.
-type IndelPile = [( Qual, ([Nucleotides], [DamagedBase]) )]   -- a list of indel variants
+type IndelPile a = [( Qual, ([Nucleotides], [DamagedBase a]) )]   -- a list of indel variants
 
 -- | Running pileup results in a series of piles.  A 'Pile' has the
 -- basic statistics of a 'VarCall', but no GL values and a pristine list
@@ -308,7 +311,7 @@ data Pile' a b = Pile { p_refseq     :: {-# UNPACK #-} !Refseq
                       , p_indel_pile :: b }
   deriving Show
 
-type Pile  = Pile' (BasePile, BasePile) IndelPile
+type Pile a = Pile' (BasePile a, BasePile a) (IndelPile a)
 
 -- | The pileup enumeratee takes 'BamRaw's, decomposes them, interleaves
 -- the pieces appropriately, and generates 'Pile's.  The output will
@@ -321,7 +324,7 @@ type Pile  = Pile' (BasePile, BasePile) IndelPile
 -- encountered or a t end of file.
 
 {-# INLINE pileup #-}
-pileup :: Enumeratee [PosPrimChunks] [Pile] IO a
+pileup :: Enumeratee [PosPrimChunks a] [Pile a] IO b
 pileup = eneeCheckIfDonePass (icont . runPileM pileup' finish (Refseq 0) 0 [] Empty)
   where
     finish () _r _p [] Empty out inp = idone (liftI out) inp
@@ -338,7 +341,7 @@ pileup = eneeCheckIfDonePass (icont . runPileM pileup' finish (Refseq 0) 0 [] Em
 -- we also need CPS to interact with the mechanisms of 'Iteratee'.  It
 -- makes implementing 'yield', 'peek', and 'bump' straight forward.
 
-newtype PileM m a = PileM { runPileM :: forall r . (a -> PileF m r) -> PileF m r }
+newtype PileM d m a = PileM { runPileM :: forall r . (a -> PileF d m r) -> PileF d m r }
 
 -- | The things we drag along in 'PileM'.  Notes:
 -- * The /active/ queue is a simple stack.  We add at the front when we
@@ -349,46 +352,46 @@ newtype PileM m a = PileM { runPileM :: forall r . (a -> PileF m r) -> PileF m r
 --   understand than using a proper deque type, but it is cheaper.
 --   There may not be much point in the reversing, though.)
 
-type PileF m r = Refseq -> Int ->                               -- current position
-                 [PrimBase] ->                                  -- active queue
-                 Heap ->                                        -- waiting queue
-                 (Stream [Pile] -> Iteratee [Pile] m r) ->      -- output function
-                 Stream [PosPrimChunks] ->                      -- pending input
-                 Iteratee [PosPrimChunks] m (Iteratee [Pile] m r)
+type PileF a m r = Refseq -> Int ->                                 -- current position
+                   [PrimBase a] ->                                  -- active queue
+                   Heap a ->                                        -- waiting queue
+                   (Stream [Pile a] -> Iteratee [Pile a] m r) ->    -- output function
+                   Stream [PosPrimChunks a] ->                      -- pending input
+                   Iteratee [PosPrimChunks a] m (Iteratee [Pile a] m r)
 
-instance Functor (PileM m) where
+instance Functor (PileM d m) where
     {-# INLINE fmap #-}
     fmap f (PileM m) = PileM $ \k -> m (k . f)
 
-instance Applicative (PileM m) where
+instance Applicative (PileM d m) where
     {-# INLINE pure #-}
     pure a = PileM $ \k -> k a
     {-# INLINE (<*>) #-}
     u <*> v = PileM $ \k -> runPileM u (\a -> runPileM v (k . a))
 
-instance Monad (PileM m) where
+instance Monad (PileM d m) where
     {-# INLINE return #-}
     return a = PileM $ \k -> k a
     {-# INLINE (>>=) #-}
     m >>=  k = PileM $ \k' -> runPileM m (\a -> runPileM (k a) k')
 
 {-# INLINE get_refseq #-}
-get_refseq :: PileM m Refseq
+get_refseq :: PileM d m Refseq
 get_refseq = PileM $ \k r -> k r r
 
 {-# INLINE get_pos #-}
-get_pos :: PileM m Int
+get_pos :: PileM d m Int
 get_pos = PileM $ \k r p -> k p r p
 
 {-# INLINE upd_pos #-}
-upd_pos :: (Int -> Int) -> PileM m ()
+upd_pos :: (Int -> Int) -> PileM d m ()
 upd_pos f = PileM $ \k r p -> k () r $! f p
 
 -- | Sends one piece of output downstream.  You are not expected to
 -- understand how this works, but inlining 'eneeCheckIfDone' plugged an
 -- annoying memory leak.
 {-# INLINE yieldPile #-}
-yieldPile :: CallStats -> BasePile -> BasePile -> CallStats -> IndelPile -> PileM m ()
+yieldPile :: CallStats -> BasePile a -> BasePile a -> CallStats -> IndelPile a -> PileM a m ()
 yieldPile x1 x2a x2b x3 x4 = PileM $ \ !kont !r !p !a !w !out !inp -> Iteratee $ \od oc ->
       let recurse           = kont () r p a w
           onDone y s        = od (idone y s) inp
@@ -401,7 +404,7 @@ yieldPile x1 x2a x2b x3 x4 = PileM $ \ !kont !r !p !a !w !out !inp -> Iteratee $
 -- continue here.  Else find the coordinate to continue from, which is
 -- the minimum of the next /waiting/ coordinate and the next coordinate
 -- in input; if found, continue there, else we're all done.
-pileup' :: PileM m ()
+pileup' :: PileM a m ()
 pileup' = PileM $ \ !k !refseq !pos !active !waiting !out !inp ->
 
     let recurse     = runPileM pileup'  k refseq pos active waiting out
@@ -418,7 +421,7 @@ pileup' = PileM $ \ !k !refseq !pos !active !waiting !out !inp ->
                      | (refseq,nw) <= (r,p) -> cont2 refseq nw
                      | otherwise            -> cont2 r p
 
-pileup'' :: PileM m ()
+pileup'' :: PileM a m ()
 pileup'' = do
     -- Input is still 'BamRaw', since these can be relied on to be
     -- sorted.  First see if there is any input at the current location,
@@ -443,7 +446,7 @@ pileup'' = do
     pileup'
 
 -- | Feeds input as long as it starts at the current position
-p'feed_input :: PileM m ()
+p'feed_input :: PileM a m ()
 p'feed_input = PileM $ \kont rs po ac wt out inp -> case inp of
         Chunk [   ] -> liftI $ runPileM p'feed_input kont rs po ac wt out
         Chunk ((rs', po', prim):bs)
@@ -457,7 +460,7 @@ p'feed_input = PileM $ \kont rs po ac wt out inp -> case inp of
 
 -- | Checks /waiting/ queue.  If there is anything waiting for the
 -- current position, moves it to /active/ queue.
-p'check_waiting :: PileM m ()
+p'check_waiting :: PileM a m ()
 p'check_waiting = PileM $ \kont rs po ->
         let go ac !wt = case viewMinH wt of
                 Just (!mk, !pb, !wt') | mk == po -> go (pb:ac) wt'
@@ -470,9 +473,9 @@ p'check_waiting = PileM $ \kont rs po ->
 -- and deletions are pushed back to the /waiting/ queue, 'EndOfRead's
 -- are removed, and everything else is added to the fresh /active/
 -- queue.
-p'scan_active :: PileM m (( CallStats, [( Qual, DamagedBase )] ),
-                          ( CallStats, [( Qual, DamagedBase )] ),
-                          ( CallStats, [( Qual, ([Nucleotides], [DamagedBase]) )] ))
+p'scan_active :: PileM a m (( CallStats, [( Qual, DamagedBase a )] ),
+                            ( CallStats, [( Qual, DamagedBase a )] ),
+                            ( CallStats, [( Qual, ([Nucleotides], [DamagedBase a]) )] ))
 p'scan_active =
     PileM $ \kont rs pos ac0 wt -> go (\r -> kont r rs pos) [] wt mempty mempty mempty ac0
   where
@@ -480,12 +483,12 @@ p'scan_active =
     go k !ac !wt !bpileL !bpileR !ipile (Base nwt qs mq str pchunks : bs) =
         case pchunks of
             _ | nwt > 0 ->        b' `seq` go k  (b':ac)            wt     bpileL    bpileR     ipile  bs
-            Seek p' pb' | str           -> go k      ac (ins p' pb' wt) (z bpileL)   bpileR     ipile  bs
+            Seek p' pb' | str /= 0      -> go k      ac (ins p' pb' wt) (z bpileL)   bpileR     ipile  bs
                         | otherwise     -> go k      ac (ins p' pb' wt)    bpileL (z bpileR)    ipile  bs
-            Indel nd ni pb' | str       -> go k (pb':ac)            wt  (z bpileL)   bpileR  (y ipile) bs
+            Indel nd ni pb' | str /= 0  -> go k (pb':ac)            wt  (z bpileL)   bpileR  (y ipile) bs
                             | otherwise -> go k (pb':ac)            wt     bpileL (z bpileR) (y ipile) bs
                 where y  = put mq (nd,ni)
-            EndOfRead       | str       -> go k      ac             wt  (z bpileL)   bpileR     ipile  bs
+            EndOfRead       | str /= 0  -> go k      ac             wt  (z bpileL)   bpileR     ipile  bs
                             | otherwise -> go k      ac             wt     bpileL (z bpileR)    ipile  bs
         where
             b' = Base (nwt-1) qs mq str pchunks
@@ -502,20 +505,20 @@ p'scan_active =
 
 -- | We need a simple priority queue.  Here's a skew heap (specialized
 -- to strict 'Int' priorities and 'PrimBase' values).
-data Heap = Empty | Node {-# UNPACK #-} !Int PrimBase Heap Heap
+data Heap a = Empty | Node {-# UNPACK #-} !Int (PrimBase a) (Heap a) (Heap a)
 
-unionH :: Heap -> Heap -> Heap
+unionH :: Heap a -> Heap a -> Heap a
 Empty                 `unionH` t2                    = t2
 t1                    `unionH` Empty                 = t1
 t1@(Node k1 x1 l1 r1) `unionH` t2@(Node k2 x2 l2 r2)
    | k1 <= k2                                       = Node k1 x1 (t2 `unionH` r1) l1
    | otherwise                                      = Node k2 x2 (t1 `unionH` r2) l2
 
-getMinKeyH :: Heap -> Maybe Int
+getMinKeyH :: Heap a -> Maybe Int
 getMinKeyH Empty          = Nothing
 getMinKeyH (Node x _ _ _) = Just x
 
-viewMinH :: Heap -> Maybe (Int, PrimBase, Heap)
+viewMinH :: Heap a -> Maybe (Int, PrimBase a, Heap a)
 viewMinH Empty          = Nothing
 viewMinH (Node k v l r) = Just (k, v, l `unionH` r)
 

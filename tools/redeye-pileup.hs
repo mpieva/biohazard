@@ -33,35 +33,46 @@ import Bio.Adna
 import Bio.Bam
 import Bio.Bam.Pileup
 import Bio.Genocall
-import Bio.Genocall.LkFile
 import Bio.Genocall.Estimators
+import Bio.Genocall.LkFile
 import Bio.Prelude
 import Bio.Util.Pretty
+import Data.Aeson
 import Data.Binary.Serialise.CBOR.SequenceFiles
+import Data.Text.Encoding                       ( encodeUtf8 )
 import System.Console.GetOpt
 import System.IO
 
 import qualified Data.Binary                    as Bin
+import qualified Data.ByteString                as BS
 import qualified Data.ByteString.Lazy           as BL
+import qualified Data.HashMap.Strict            as H
+import qualified Data.Sequence                  as Z
+import qualified Data.Vector                    as V
 import qualified Data.Vector.Storable           as VS
 import qualified Data.Vector.Unboxed            as U
 import qualified Data.Vector.Unboxed.Mutable    as M
-import qualified Data.Sequence                  as Z
 
 data Conf = Conf {
     conf_output :: FilePath,
-    conf_libs   :: [Lib],
+    conf_dmg    :: HashMap Bytes SubstModel,
     conf_chrom  :: String,
     conf_theta  :: Maybe Double,
-    conf_report :: Reporter,
+    conf_report :: String -> IO (),
     conf_table  :: Maybe FilePath }
 
--- | We pair libraries with their appropriate damage models.  Right now,
--- we specify the damage model (\"-D\", complete data structure in
--- 'gparse' format), then list the libraries it applies to.
+instance FromJSONKey BS.ByteString where
+    fromJSONKey = FromJSONKeyText encodeUtf8
+    fromJSONKeyList = undefined -- XXX whatever
+
+instance FromJSON Mat44D
+instance FromJSON SubstModel
+
+-- | We map read groups to damage models.  The set of damage models is
+-- supplied in a JSON file.
 defaultConf :: Conf
 defaultConf = Conf { conf_output = error "no output file"
-                   , conf_libs   = []
+                   , conf_dmg    = mempty
                    , conf_chrom  = ""
                    , conf_theta  = Nothing
                    , conf_report = \_ -> return ()
@@ -71,7 +82,7 @@ options :: [OptDescr (Conf -> IO Conf)]
 options = [
     Option "o"  ["output"] (ReqArg set_output "FILE") "Set output filename to FILE",
     Option "c"  chrom      (ReqArg set_chrom  "NAME") "Restrict to chromosome NAME",
-    Option "D"  ["damage"] (ReqArg set_dmg   "PARMS") "Set damage parameters to PARMS",
+    Option "D"  ["damage"] (ReqArg set_dmg    "FILE") "Read damage model from FILE",
     Option "t"  dep_param  (ReqArg set_theta  "FRAC") "Set dependency coefficient to FRAC (\"N\" to turn off)",
     Option "T"  ["table"]  (ReqArg want_table "FILE") "Print table for divergence estimation to FILE",
     Option "v"  ["verbose"]        (NoArg be_verbose) "Print more diagnostics",
@@ -91,8 +102,9 @@ options = [
     set_theta "N" c = return $ c { conf_theta = Nothing }
     set_theta   a c = (\t  ->  c { conf_theta = Just  t }) <$> readIO a
 
-    set_dmg     a c = let upd d = return $ c { conf_libs = Lib [] (NewDamage d) : conf_libs c }
-                      in either fail upd . pparse . fromString $ a
+    set_dmg     a c = BL.readFile a >>= \s -> case eitherDecode' s of
+                            Left err -> error err
+                            Right ds -> return $ c { conf_dmg = ds }
 
     set_chrom   a c = return $ c { conf_chrom  = a }
     set_output fn c = return $ c { conf_output = fn }
@@ -100,16 +112,15 @@ options = [
 
 main :: IO ()
 main = do
-    (opts, [], errs) <- let put_file  f c = return $ c { conf_libs = put_file1 f $ conf_libs c }
-                            put_file1 f (Lib fs d : ls) =   Lib (f:fs) d : ls
-                            put_file1 f [             ] = [ Lib [f] UnknownDamage ]
-                        in getOpt (ReturnInOrder put_file) options <$> getArgs
+    (opts, files, errs) <- getOpt Permute options <$> getArgs
 
     Conf{..} <- foldl (>>=) (return defaultConf) opts
     unless (null errs) $ mapM_ (hPutStrLn stderr) errs >> exitFailure
 
     (tab,()) <- withFile (conf_output ++ ".#") WriteMode                                        $ \ohdl ->
-                mergeLibraries conf_report (reverse conf_libs) conf_chrom >=> run               $ \hdr ->
+                mergeInputs combineCoordinates files >=> run                                    $ \hdr ->
+                takeWhileE (isValidRefseq . b_rname . unpackBam)                               =$
+                mapMaybeStream (decompose_dmg_from conf_dmg)                                   =$
                 progressPos (\(rs, p, _) -> (rs, p)) "GT call at " conf_report (meta_refs hdr) =$
                 pileup                                                                         =$
                 mapStream (calls conf_theta)                                                   =$
@@ -133,36 +144,45 @@ main = do
     showRes          _ = error "Wtf? (showRes)"
 
 
-mergeLibraries :: (MonadIO m, MonadMask m)
-               => Reporter -> [Lib] -> String
-               -> Enumerator' BamMeta [PosPrimChunks] m b
-mergeLibraries       _ [    ]    _ = error "Need at least one library."
-mergeLibraries  report [ l  ] mrgn = enumLibrary report l mrgn
-mergeLibraries  report (l:ls) mrgn = mergeEnums' (mergeLibraries report ls mrgn) (enumLibrary report l mrgn) mm
+{-# INLINE decompose_dmg_from #-}
+decompose_dmg_from :: HashMap Bytes SubstModel -> BamRaw -> Maybe (PosPrimChunks Mat44D)
+decompose_dmg_from hm raw =
+    decompose (model (H.lookup (extAsString "RG" (unpackBam raw)) hm)) raw
+  where
+    model              Nothing  _ = scalarMat 1
+    model (Just SubstModel{..}) i
+        | i >= 0 &&   i  <  V.length  left_substs = V.unsafeIndex left_substs    i
+        | i <  0 && (-i) >= V.length right_substs = V.unsafeIndex right_substs (-i-1)
+        | otherwise                               = middle_substs
+
+
+{-mergeLibraries :: (MonadIO m, MonadMask m)
+               => [Lib] -> String -> Enumerator' BamMeta [PosPrimChunks Mat44D] m b
+mergeLibraries  [    ]    _ = error "Need at least one library."
+mergeLibraries  [ l  ] mrgn = enumLibrary l mrgn
+mergeLibraries  (l:ls) mrgn = mergeEnums' (mergeLibraries ls mrgn) (enumLibrary l mrgn) mm
   where
     mm _ = mergeSortStreams $ \(rs1, p1, _) (rs2, p2, _) -> if (rs1, p1) < (rs2, p2) then Less else NotLess
 
-data Lib = Lib [String] (GenDamageParameters U.Vector Double)
-type Reporter = String -> IO ()
+data Lib = Lib [String] SubstModel
+type Reporter = String -> IO () -}
 
-enumLibrary :: (MonadIO m, MonadMask m)
-            => Reporter -> Lib -> String -> Enumerator' BamMeta [PosPrimChunks] m b
-enumLibrary report (Lib fs mdp) mrgn output = do
-    let (msg, dmg) = case mdp of UnknownDamage -> ("no damage model",                               noDamage)
-                                 OldDamage  dp -> ("universal damage parameters " ++ show dp,  univDamage dp)
-                                 NewDamage ndp -> ("empirical damage parameters " ++ show ndp, empDamage ndp)
+{- enumLibrary :: (MonadIO m, MonadMask m)
+            => Lib -> String -> Enumerator' BamMeta [PosPrimChunks Mat44D] m b
+enumLibrary (Lib fs dmg) mrgn output = do
+    -- let (msg, dmg) = case mdp of UnknownDamage -> ("no damage model",                               noDamage)
+                                 -- OldDamage  dp -> ("universal damage parameters " ++ show dp,  univDamage dp)
+                                 -- NewDamage ndp -> ("empirical damage parameters " ++ show ndp, empDamage ndp)
 
-    liftIO . report $ "using " ++ msg ++ " for " ++ show fs
+    -- liftIO . report $ "using " ++ msg ++ " for " ++ show fs
 
     mergeInputRgns combineCoordinates mrgn (reverse fs)
         $== takeWhileE (isValidRefseq . b_rname . unpackBam)
-        $== mapMaybeStream (\br ->
-                let b = unpackBam br
-                    m = dmg (isReversed b) (VS.length (b_qual b))
-                in decompose (map m [0..]) br)
-        $ output
+        $== mapMaybeStream (decompose (select_from dmg))
+        $ output -}
 
-mergeInputRgns :: (MonadIO m, MonadMask m)
+
+{- mergeInputRgns :: (MonadIO m, MonadMask m)
                => (BamMeta -> Enumeratee [BamRaw] [BamRaw] (Iteratee [BamRaw] m) a)
                -> String -> [FilePath] -> Enumerator' BamMeta [BamRaw] m a
 mergeInputRgns  _   _ [        ] = \k -> return (k mempty)
@@ -176,7 +196,7 @@ mergeInputRgns (?) rs (fp0:fps0) = go fp0 fps0
                             in eneeBamRefseq idx (Refseq $ fromIntegral ri) $ k1 hdr
 
     go fp [       ] = enum1 fp
-    go fp (fp1:fps) = mergeEnums' (go fp1 fps) (enum1 fp) (?)
+    go fp (fp1:fps) = mergeEnums' (go fp1 fps) (enum1 fp) (?) -}
 
 
 -- | Ploidy is hardcoded as two here.  Can be changed if the need
@@ -186,16 +206,17 @@ mergeInputRgns (?) rs (fp0:fps0) = go fp0 fps0
 -- For the naive call, this doesn't matter.  For the MAQ call, it feels
 -- more correct to treat them separately and multiply (add?) the results.
 
-calls :: Maybe Double -> Pile -> Calls
+calls :: Maybe Double -> Pile Mat44D -> Calls
 calls Nothing pile = pile { p_snp_pile = s, p_indel_pile = i }
   where
-    !s = simple_snp_call fq 2 $ uncurry (++) $ p_snp_pile pile
+    !s = simple_snp_call   2 $ uncurry (++) $ p_snp_pile pile
     !i = simple_indel_call 2 $ p_indel_pile pile
-    -- XXX this should be a cmdline option
+    -- XXX this should be a cmdline option, if we ever look at qualities again
     -- fq = min 1 . (*) 1.333 . fromQual
-    fq = fromQual
+    -- fq = fromQual
 
-calls (Just theta) pile = pile { p_snp_pile = s, p_indel_pile = i }
+calls (Just theta) pile = error "Sorry, maq_snp_call is broken right now." -- XXX
+{- calls (Just theta) pile = pile { p_snp_pile = s, p_indel_pile = i }
   where
     !i = simple_indel_call 2 $ p_indel_pile pile
 
@@ -208,7 +229,7 @@ calls (Just theta) pile = pile { p_snp_pile = s, p_indel_pile = i }
        | otherwise  = Snp_GLs x r                       -- else use forward call (even if this is incorrect,
       where                                             -- there is nothing else we can do here)
         Snp_GLs x r  = maq_snp_call 2 theta $ fst $ p_snp_pile pile
-        Snp_GLs y r' = maq_snp_call 2 theta $ snd $ p_snp_pile pile
+        Snp_GLs y r' = maq_snp_call 2 theta $ snd $ p_snp_pile pile -}
 
 
 -- | Serialize the results from genotype calling in a sensible way.  We

@@ -22,6 +22,7 @@ module Bio.Adna (
     univDamage,
     empDamage,
     Mat44D(..),
+    MMat44D(..),
     scalarMat,
     bwa_cal_maxdiff
   ) where
@@ -52,7 +53,8 @@ import qualified Data.Vector.Unboxed.Mutable    as UM
 -- this is a vector of packed vectors.  Conveniently, each of the packed
 -- vectors represents all transition /into/ the given nucleotide.
 
-newtype Mat44D = Mat44D (U.Vector Double) deriving Show
+newtype Mat44D = Mat44D (U.Vector Double) deriving (Show, Generic)
+newtype MMat44D = MMat44D (UM.IOVector Double)
 
 -- | A 'DamageModel' is a function that gives substitution matrices for
 -- each position in a read.  The 'DamageModel' can depend on whether the

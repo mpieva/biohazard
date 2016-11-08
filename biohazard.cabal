@@ -79,6 +79,7 @@ Library
                        Bio.TwoBit,
                        Bio.Util.AD,
                        Bio.Util.AD2,
+                       Bio.Util.Jacobi,
                        Bio.Util.Numeric,
                        Bio.Util.Pretty,
                        Bio.Util.Zlib,
