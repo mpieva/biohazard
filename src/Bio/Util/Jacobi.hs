@@ -1,11 +1,11 @@
 -- | Jacobi algorithm for Eigen decomposition of symmetric matrices.
 
-module Bio.Util.Jacobi where
+module Bio.Util.Jacobi ( eigenS ) where
 
 import Bio.Prelude
 
-import qualified Data.Vector.Unboxed as U ( Vector, thaw, unsafeFreeze, fromListN, slice )
-import qualified Data.Vector.Unboxed.Mutable as U ( read, write, MVector, length, replicate )
+import qualified Data.Vector.Unboxed         as U ( Vector, thaw, unsafeFreeze, fromListN, slice )
+import qualified Data.Vector.Unboxed.Mutable as U ( read, write, MVector, length, replicate      )
 
 type Matrix = U.Vector Double
 type Vector = U.Vector Double
@@ -14,10 +14,10 @@ type MMatrix s = U.MVector s Double
 
 
 -- | Decomposes a symmetric matrix into a vector of eigenvalues and a
--- matrix of eigenvectors.
+-- vector of eigenvectors.
 
-eigen :: Matrix -> ( Vector, [Vector] )
-eigen mat = runST (do
+eigenS :: Matrix -> ( Vector, [Vector] )
+eigenS mat = runST (do
     m <- U.thaw mat
     let n = round (sqrt (fromIntegral (U.length m) :: Double))
 

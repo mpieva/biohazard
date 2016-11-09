@@ -9,10 +9,9 @@ pipelines:
   default:
     - step:
         script:
-          - apt-get install liblapack-dev libblas-dev
           - cabal update
           - cabal install --only-dep
-          - cabal configure --enable-tests --disable-library-profiling --disable-executable-profiling
+          - cabal configure --enable-tests --disable-library-profiling --disable-executable-profiling -O0
           - cabal build
           - cabal haddock
           - cabal test

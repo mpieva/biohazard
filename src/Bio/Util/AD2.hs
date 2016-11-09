@@ -1,11 +1,10 @@
 module Bio.Util.AD2 ( AD2(..), paramVector2, IsDouble(..), confidenceIntervals ) where
 
 import Bio.Util.AD                      ( IsDouble(..) )
-import Numeric.LinearAlgebra.HMatrix    ( eigSH', (><), toRows, scale )
+import Bio.Util.Jacobi
 import Prelude
 
 import qualified Data.Vector.Unboxed            as U
-import qualified Data.Vector.Storable           as VS
 
 -- | Simple forward-mode AD to get a scalar valued function
 -- with gradient and Hessian.
@@ -139,13 +138,13 @@ paramVector2 xs = [ D2 x (U.generate l (\j -> if i == j then 1 else 0)) nil
 -- | Confidence region:  PCA on Hessian matrix, then for each
 -- eigenvalue λ add/subtract 1.96 / sqrt λ times the corresponding
 -- eigenvalue to the estimate.  Should describe a nice spheroid.
-confidenceIntervals :: ([AD2] -> AD2) -> VS.Vector Double -> [(VS.Vector Double, VS.Vector Double)]
+confidenceIntervals :: ([AD2] -> AD2) -> U.Vector Double -> [(U.Vector Double, U.Vector Double)]
 confidenceIntervals fun fit = intervs
   where
-    D2 _val grd hss = fun (paramVector2 $ VS.toList fit)
-    d               = U.length grd
-    (evals, evecs)  = eigSH' $ (d >< d) (U.toList hss)
-    intervs         = [ (fit + scale lam evec, fit + scale (-lam) evec)
-                      | (eval, evec) <- zip (VS.toList evals) (toRows evecs), let lam = 1.96 / sqrt eval ]
-
+    D2 _val _grd hss = fun (paramVector2 $ U.toList fit)
+    (evals, evecs)   = eigenS hss
+    intervs          = [ ( U.zipWith (\a b -> a + lam * b) fit evec
+                         , U.zipWith (\a b -> a - lam * b) fit evec )
+                       | (eval, evec) <- zip (U.toList evals) evecs
+                       , let lam = 1.96 / sqrt eval ]
 

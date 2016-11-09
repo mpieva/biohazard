@@ -1,5 +1,10 @@
 {-# LANGUAGE DeriveGeneric #-}
-module Bio.Genocall.Estimators where
+module Bio.Genocall.Estimators (
+        estimateDamageFromFiles,
+        estimateSingle,
+        DivEst(..),
+        DivTable(..)
+    ) where
 
 import Bio.Adna
 import Bio.Bam
@@ -222,9 +227,9 @@ estimateSingle (DivTable _llk_rr tab) = do
     (fit1, _res1, _stats1) <- minimize quietParameters 0.0001 (llk tab) (U.fromList   [0,0])
     (fit2, _res2, _stats2) <- minimize quietParameters 0.0001 (llk tab) (U.fromList [0,0,0])
 
-    let xform = map (\x -> recip $ 1 + exp (-x)) . V.toList
-        !de1  = DivEst (xform fit1) (map (xform *** xform) $ confidenceIntervals (llk2 tab) fit1)
-        !de2  = DivEst (xform fit2) (map (xform *** xform) $ confidenceIntervals (llk2 tab) fit2)
+    let xform v = map (\x -> recip $ 1 + exp (-x)) $ V.toList v
+        !de1 = DivEst (xform fit1) (map (xform *** xform) $ confidenceIntervals (llk2 tab) (V.convert fit1))
+        !de2 = DivEst (xform fit2) (map (xform *** xform) $ confidenceIntervals (llk2 tab) (V.convert fit2))
 
     return (de1,de2)
 
