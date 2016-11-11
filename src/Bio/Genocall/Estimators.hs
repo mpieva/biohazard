@@ -1,13 +1,21 @@
 {-# LANGUAGE DeriveGeneric #-}
+{-# OPTIONS_GHC -O0 #-}
 module Bio.Genocall.Estimators (
         estimateDamageFromFiles,
+        tabulateSingle,
         estimateSingle,
         DivEst(..),
-        DivTable(..)
+        DivTable(..),
+        good_regions
     ) where
+
+-- XXX  Many optimizations fit only one parameter.  Newton-Iteration
+-- should be more efficient than the generic CG method.
 
 import Bio.Adna
 import Bio.Bam
+import Bio.Bam.Pileup                ( p_snp_pile )
+import Bio.Genocall                  ( Snp_GLs(..), Calls )
 import Bio.Prelude
 import Bio.Util.AD
 import Bio.Util.AD2
@@ -18,6 +26,7 @@ import Data.Vector.Binary            ()
 
 import qualified Data.Vector.Generic as V
 import qualified Data.Vector.Unboxed as U
+import qualified Data.Vector.Unboxed.Mutable as M
 
 -- | Full likelihood function.  We apply the HKY substitution model
 -- (anything simpler doesn't seem to cut it), and we will estimate a
@@ -294,6 +303,54 @@ good_regions =
     , ("19",[( 42650207, 42668254,18047),( 42781659, 42799671,18012),( 31832574, 31850483,17909)])
     , ("20",[( 23007246, 23035150,27904),( 57188413, 57210981,22568),( 61147962, 61169082,21120)])
     , ("21",[( 16420477, 16442980,22503),( 17158618, 17179367,20749),( 39746588, 39766281,19693)])
-    , ("22",[( 23433574, 23463899,30325),( 19954339, 19981883,27544),( 19729058, 19753981,24923)])
-    , ("X", [(152736264,152762436,26172),(147879564,147904235,24671),( 68085990, 68110400,24410)])
-    , ("Y", [( 22551581, 22561871,10290),( 23158377, 23167802, 9425),( 22137261, 22146193, 8932)]) ]
+    , ("22",[( 23433574, 23463899,30325),( 19954339, 19981883,27544),( 19729058, 19753981,24923)]) ]
+    -- ("X", [(152736264,152762436,26172),(147879564,147904235,24671),( 68085990, 68110400,24410)])
+    -- ("Y", [( 22551581, 22561871,10290),( 23158377, 23167802, 9425),( 22137261, 22146193, 8932)]) ]
+
+-- | Parameter estimation for a single sample.  The parameters are
+-- divergence and heterozygosity.  We tabulate the data here and do the
+-- estimation afterwards.  Returns the product of the
+-- parameter-independent parts of the likehoods and the histogram
+-- indexed by D and H (see @genotyping.pdf@ for details).
+tabulateSingle :: (Functor m, MonadIO m) => Iteratee [Calls] m DivTable
+tabulateSingle = do
+    tab <- liftIO $ M.replicate (12 * maxD * maxD) (0 :: Int)
+    DivTable <$> foldStreamM (\acc -> accum tab acc . p_snp_pile) (0 :: Double)
+             <*> liftIO (U.unsafeFreeze tab)
+  where
+    maxD = 64
+
+    -- We need GL values for the invariant, the three homozygous variant
+    -- and the three single-event heterozygous variant cases.  The
+    -- ordering is like in BCF, with the reference first.
+    -- Ref ~ A ==> PL ~ AA, AC, CC, AG, CG, GG, AT, CT, GT, TT
+    {-# INLINE accum #-}
+    accum !tab !acc (Snp_GLs !gls !ref)
+        | U.length gls /= 10           = error "Ten GL values expected for SNP!"      -- should not happen
+        | ref `elem` [nucsC,nucsG]     = accum' 0 tab acc gls
+        | ref `elem` [nucsA,nucsT]     = accum' 6 tab acc gls
+        | otherwise                    = return acc                                   -- unknown reference
+
+    -- The simple 2D table didn't work, it lacked resolution in some
+    -- cases.  We make six separate tables instead so we can store two
+    -- differences with good resolution in every case.
+    {-# INLINE accum' #-}
+    accum' !refix !tab !acc !gls
+        | g_RR >= g_RA && g_RA >= g_AA = store 0 g_RR g_RA g_AA
+        | g_RR >= g_AA && g_AA >= g_RA = store 1 g_RR g_AA g_RA
+        | g_RA >= g_RR && g_RR >= g_AA = store 2 g_RA g_RR g_AA
+        | g_RA >= g_AA && g_AA >= g_RR = store 3 g_RA g_AA g_RR
+        | g_RR >= g_RA                 = store 4 g_AA g_RR g_RA
+        | otherwise                    = store 5 g_AA g_RA g_RR
+
+      where
+        g_RR = unPr $  U.unsafeIndex gls 0
+        g_RA = unPr $ (U.unsafeIndex gls 1 + U.unsafeIndex gls 3 + U.unsafeIndex gls 6) / 3
+        g_AA = unPr $ (U.unsafeIndex gls 2 + U.unsafeIndex gls 5 + U.unsafeIndex gls 9) / 3
+
+        store !t !a !b !c = do let d1 = min (maxD-1) . round $ a - b
+                                   d2 = min (maxD-1) . round $ b - c
+                                   ix = (t + refix) * maxD * maxD + d1 * maxD + d2
+                               liftIO $ M.read tab ix >>= M.write tab ix . succ
+                               return $! acc + a
+

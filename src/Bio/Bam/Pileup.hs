@@ -105,6 +105,9 @@ data DamagedBase a = DB { db_call :: {-# UNPACK #-} !Nucleotide           -- ^ c
                         , db_dmg  ::                !a                    -- ^ damage information
                         , db_ref  :: {-# UNPACK #-} !Nucleotides }        -- ^ reference base from MD field
 
+instance Functor DamagedBase where
+    fmap f db = db { db_dmg = f (db_dmg db) }
+
 instance Show (DamagedBase a) where
     showsPrec _ (DB n q _ r)
         | nucToNucs n == r = shows n .                     (:) '@' . shows q

@@ -50,13 +50,15 @@ simple_indel_call ploidy vars = ( simple_call ploidy $ map mkpls vars, vars' )
 
 -- | A completely universal, completely empirical substituion model.
 -- We make no attempt to distinguish damage from error.
-data SubstModel = SubstModel
-        { left_substs   :: {-# UNPACK #-} !(V.Vector Mat44D)
-        , middle_substs :: {-# UNPACK #-}           !Mat44D
-        , right_substs  :: {-# UNPACK #-} !(V.Vector Mat44D) }
+data SubstModel_ m = SubstModel
+        { left_substs   :: {-# UNPACK #-} !(V.Vector m)
+        , middle_substs :: {-# UNPACK #-}           !m
+        , right_substs  :: {-# UNPACK #-} !(V.Vector m) }
     deriving (Show, Generic)
 
-getSubstModel :: SubstModel -> Int -> Mat44D
+type SubstModel = SubstModel_ Mat44D
+
+getSubstModel :: SubstModel_ a -> Int -> a
 getSubstModel SubstModel{..} i
     | i >= 0    = fromMaybe middle_substs $ left_substs V.!? i
     | otherwise = fromMaybe middle_substs $ right_substs V.!? (-i-1)
@@ -64,11 +66,7 @@ getSubstModel SubstModel{..} i
 
 -- | Mutable version of SubstModel, we'll probably have to accumulate in
 -- this thing.
-data MSubstModel = MSubstModel
-        { mleft_substs   :: {-# UNPACK #-} !(VM.IOVector Mat44D)
-        , mmiddle_substs :: {-# UNPACK #-}             !MMat44D
-        , mright_substs  :: {-# UNPACK #-} !(VM.IOVector Mat44D) }
-    deriving Generic
+type MSubstModel = SubstModel_ MMat44D
 
 -- | Naive SNP call; essentially the GATK model.  We compute the
 -- likelihood for each base from an empirical error/damage model, then

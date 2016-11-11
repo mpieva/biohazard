@@ -1,3 +1,4 @@
+{-# LANGUAGE TypeSynonymInstances, FlexibleInstances #-}
 -- Command line driver for simple genotype calling.  We have three
 -- separate steps:  Pileup from a BAM file (or multiple merged files) to
 -- produce likelihoods (and some auxillary statistics).  These are
@@ -28,6 +29,11 @@
 -- support higher ploidies, so the worst damage is that we output an
 -- overhead of 150% useless likelihood values for the sex chromosomes
 -- and maybe estimate heterozygosity where there is none.
+--
+-- XXX  In here, we rely on read groups beind declared sensibly.  We
+-- will estimate one damage/error model per read group.  I'm not sure
+-- doing it per library would be more sensible, but then we'd have to
+-- rely on yet another set of annotations and/or headers being present.
 
 import Bio.Adna
 import Bio.Bam
@@ -36,7 +42,6 @@ import Bio.Genocall
 import Bio.Genocall.Estimators
 import Bio.Genocall.LkFile
 import Bio.Prelude
-import Bio.Util.Pretty
 import Data.Aeson
 import Data.Binary.Serialise.CBOR.SequenceFiles
 import Data.Text.Encoding                       ( encodeUtf8 )
@@ -49,9 +54,6 @@ import qualified Data.ByteString.Lazy           as BL
 import qualified Data.HashMap.Strict            as H
 import qualified Data.Sequence                  as Z
 import qualified Data.Vector                    as V
-import qualified Data.Vector.Storable           as VS
-import qualified Data.Vector.Unboxed            as U
-import qualified Data.Vector.Unboxed.Mutable    as M
 
 data Conf = Conf {
     conf_output :: FilePath,
@@ -118,7 +120,7 @@ main = do
     unless (null errs) $ mapM_ (hPutStrLn stderr) errs >> exitFailure
 
     (tab,()) <- withFile (conf_output ++ ".#") WriteMode                                        $ \ohdl ->
-                mergeInputs combineCoordinates files >=> run                                    $ \hdr ->
+                mergeInputRgns combineCoordinates conf_chrom files >=> run                      $ \hdr ->
                 takeWhileE (isValidRefseq . b_rname . unpackBam)                               =$
                 mapMaybeStream (decompose_dmg_from conf_dmg)                                   =$
                 progressPos (\(rs, p, _) -> (rs, p)) "GT call at " conf_report (meta_refs hdr) =$
@@ -156,33 +158,7 @@ decompose_dmg_from hm raw =
         | otherwise                               = middle_substs
 
 
-{-mergeLibraries :: (MonadIO m, MonadMask m)
-               => [Lib] -> String -> Enumerator' BamMeta [PosPrimChunks Mat44D] m b
-mergeLibraries  [    ]    _ = error "Need at least one library."
-mergeLibraries  [ l  ] mrgn = enumLibrary l mrgn
-mergeLibraries  (l:ls) mrgn = mergeEnums' (mergeLibraries ls mrgn) (enumLibrary l mrgn) mm
-  where
-    mm _ = mergeSortStreams $ \(rs1, p1, _) (rs2, p2, _) -> if (rs1, p1) < (rs2, p2) then Less else NotLess
-
-data Lib = Lib [String] SubstModel
-type Reporter = String -> IO () -}
-
-{- enumLibrary :: (MonadIO m, MonadMask m)
-            => Lib -> String -> Enumerator' BamMeta [PosPrimChunks Mat44D] m b
-enumLibrary (Lib fs dmg) mrgn output = do
-    -- let (msg, dmg) = case mdp of UnknownDamage -> ("no damage model",                               noDamage)
-                                 -- OldDamage  dp -> ("universal damage parameters " ++ show dp,  univDamage dp)
-                                 -- NewDamage ndp -> ("empirical damage parameters " ++ show ndp, empDamage ndp)
-
-    -- liftIO . report $ "using " ++ msg ++ " for " ++ show fs
-
-    mergeInputRgns combineCoordinates mrgn (reverse fs)
-        $== takeWhileE (isValidRefseq . b_rname . unpackBam)
-        $== mapMaybeStream (decompose (select_from dmg))
-        $ output -}
-
-
-{- mergeInputRgns :: (MonadIO m, MonadMask m)
+mergeInputRgns :: (MonadIO m, MonadMask m)
                => (BamMeta -> Enumeratee [BamRaw] [BamRaw] (Iteratee [BamRaw] m) a)
                -> String -> [FilePath] -> Enumerator' BamMeta [BamRaw] m a
 mergeInputRgns  _   _ [        ] = \k -> return (k mempty)
@@ -196,7 +172,7 @@ mergeInputRgns (?) rs (fp0:fps0) = go fp0 fps0
                             in eneeBamRefseq idx (Refseq $ fromIntegral ri) $ k1 hdr
 
     go fp [       ] = enum1 fp
-    go fp (fp1:fps) = mergeEnums' (go fp1 fps) (enum1 fp) (?) -}
+    go fp (fp1:fps) = mergeEnums' (go fp1 fps) (enum1 fp) (?)
 
 
 -- | Ploidy is hardcoded as two here.  Can be changed if the need
@@ -215,7 +191,7 @@ calls Nothing pile = pile { p_snp_pile = s, p_indel_pile = i }
     -- fq = min 1 . (*) 1.333 . fromQual
     -- fq = fromQual
 
-calls (Just theta) pile = error "Sorry, maq_snp_call is broken right now." -- XXX
+calls (Just _theta) _pile = error "Sorry, maq_snp_call is broken right now." -- XXX
 {- calls (Just theta) pile = pile { p_snp_pile = s, p_indel_pile = i }
   where
     !i = simple_indel_call 2 $ p_indel_pile pile
@@ -263,52 +239,4 @@ output_cbor hdl refs =
       lift . enumPure1Chunk [GenoFileFooter GenoFooter] )            =$
     mapChunksM_ (hPutBinaryFileSequence hdl)
 
-
-maxD :: Int
-maxD = 64
-
--- | Parameter estimation for a single sample.  The parameters are
--- divergence and heterozygosity.  We tabulate the data here and do the
--- estimation afterwards.  Returns the product of the
--- parameter-independent parts of the likehoods and the histogram
--- indexed by D and H (see @genotyping.pdf@ for details).
-tabulateSingle :: (Functor m, MonadIO m) => Iteratee [Calls] m DivTable
-tabulateSingle = do
-    tab <- liftIO $ M.replicate (12 * maxD * maxD) (0 :: Int)
-    DivTable <$> foldStreamM (\acc -> accum tab acc . p_snp_pile) (0 :: Double)
-             <*> liftIO (U.unsafeFreeze tab)
-  where
-    -- We need GL values for the invariant, the three homozygous variant
-    -- and the three single-event heterozygous variant cases.  The
-    -- ordering is like in BCF, with the reference first.
-    -- Ref ~ A ==> PL ~ AA, AC, CC, AG, CG, GG, AT, CT, GT, TT
-    {-# INLINE accum #-}
-    accum !tab !acc (Snp_GLs !gls !ref)
-        | U.length gls /= 10                   = error "Ten GL values expected for SNP!"      -- should not happen
-        | ref `elem` [nucsC,nucsG]             = accum' 0 tab acc gls
-        | ref `elem` [nucsA,nucsT]             = accum' 6 tab acc gls
-        | otherwise                            = return acc                                   -- unknown reference
-
-    -- The simple 2D table didn't work, it lacked resolution in some
-    -- cases.  We make six separate tables instead so we can store two
-    -- differences with good resolution in every case.
-    {-# INLINE accum' #-}
-    accum' refix !tab !acc !gls
-        | g_RR >= g_RA && g_RA >= g_AA = store 0 g_RR g_RA g_AA
-        | g_RR >= g_AA && g_AA >= g_RA = store 1 g_RR g_AA g_RA
-        | g_RA >= g_RR && g_RR >= g_AA = store 2 g_RA g_RR g_AA
-        | g_RA >= g_AA && g_AA >= g_RR = store 3 g_RA g_AA g_RR
-        | g_RR >= g_RA                 = store 4 g_AA g_RR g_RA
-        | otherwise                    = store 5 g_AA g_RA g_RR
-
-      where
-        g_RR = unPr $  U.unsafeIndex gls 0
-        g_RA = unPr $ (U.unsafeIndex gls 1 + U.unsafeIndex gls 3 + U.unsafeIndex gls 6) / 3
-        g_AA = unPr $ (U.unsafeIndex gls 2 + U.unsafeIndex gls 5 + U.unsafeIndex gls 9) / 3
-
-        store t a b c = do let d1 = min (maxD-1) . round $ a - b
-                               d2 = min (maxD-1) . round $ b - c
-                               ix = (t + refix) * maxD * maxD + d1 * maxD + d2
-                           liftIO $ M.read tab ix >>= M.write tab ix . succ
-                           return $! acc + a
 
