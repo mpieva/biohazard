@@ -266,8 +266,11 @@ Executable redeye-flow
                        binary,
                        biohazard,
                        bytestring,
+                       containers,
+                       directory,
                        shake == 0.15.*,
-                       text
+                       text,
+                       vector
 
 -- Executable gt-scan
   -- Main-is:             gt-scan.hs

@@ -42,6 +42,7 @@ import System.Console.GetOpt
 
 import qualified Data.HashMap.Strict as H
 import qualified Data.Vector as V
+import qualified Data.Vector.Unboxed as U ( freeze )
 import qualified Data.Vector.Unboxed.Mutable as U
 
 data Conf = Conf {
@@ -49,7 +50,7 @@ data Conf = Conf {
     conf_params :: Parameters }
 
 defaultConf :: Conf
-defaultConf = Conf 30 (\_ -> return ()) quietParameters
+defaultConf = Conf (\_ -> return ()) quietParameters
 
 options :: [OptDescr (Conf -> IO Conf)]
 options = [
@@ -82,21 +83,43 @@ main = do
     -- likelihoods into the div/het estimation (just as in
     -- 'redeye-pileup'), but also into a caller that will estimate
     -- damage.
-    tab <- emIter model0 conf_report files
-    estimateSingle tab >>= \(u,v) -> pprint u >> pprint v
+    ((u,v), model1) <- emIter (0.01, 0.001) model0 conf_report files
+
+    pprint u
+    pprint v
+    print model1
 
 
-emIter :: IORef (HashMap Bytes (SubstModel, MSubstModel))
-       -> (String -> IO ()) -> [FilePath] -> IO DivTable
-emIter model report infiles =
-        fmap fst                                                                    $
+-- One iteration of EM algorithm.  We go in with a substitution model
+-- and het/div, we come out with new estimates.  We get het/div from
+-- tabulation followed by estimation, as before.  For damage, we have to
+-- compute posterior probabilities using the old model, then update the
+-- damage probabilistically.
+emIter :: (Double,Double) -> IORef (HashMap Bytes (SubstModel, MSubstModel))
+       -> (String -> IO ()) -> [FilePath]
+       -> IO ((DivEst, DivEst), HashMap Bytes SubstModel)
+emIter divest model report infiles =
         concatInputs infiles >=> run                                                $ \hdr ->
         concatMapStreamM (decompose_dmg_from model)                                =$
         progressPos (\(rs, p, _) -> (rs, p)) "GT call at " report (meta_refs hdr)  =$
         pileup                                                                     =$
         mapStream calls                                                            =$
-        zipStreams tabulateSingle skipToEof
+        zipStreams (tabulateSingle          >>= liftIO . estimateSingle)
+                   (updateSubstModel divest >>
+                    liftIO (readIORef model) >>=
+                    liftIO . mapM (freezeSubstModel . snd))
 
+--  XXX  Meh.  I think I need both the Calls and the Piles.
+updateSubstModel :: MonadIO m => (Double,Double) -> Iteratee [Calls] m ()
+updateSubstModel (dv,ht) = mapStreamM_ undefined
+
+freezeSubstModel :: MSubstModel -> IO SubstModel
+freezeSubstModel mm = SubstModel <$> V.mapM freezeMat (left_substs mm)
+                                 <*>        freezeMat (middle_substs mm)
+                                 <*> V.mapM freezeMat (right_substs mm)
+  where
+    freezeMat :: MMat44D -> IO Mat44D
+    freezeMat (MMat44D v) = Mat44D <$> U.freeze v
 
 calls :: Pile ( Mat44D, b ) -> Calls
 calls pile = pile { p_snp_pile = s, p_indel_pile = i }

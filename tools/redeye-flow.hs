@@ -20,18 +20,22 @@
 -- - we want -pileup and -single to run on the SGE!  (-dar and estimate
 --   locally?  shouldn't be a problem)
 
-import Bio.Genocall.Estimators      ( estimateSingle, DivEst(..) )
+import Bio.Bam
+import Bio.Genocall.Estimators      ( estimateSingle, DivEst(..), good_regions )
 import Bio.Prelude
 import Bio.Util.Pretty              ( pshow, pparse )
 import Data.Binary                  ( decodeOrFail )
-
 import Development.Shake
 import Development.Shake.FilePath
+import System.Directory
+import System.IO
 
 import qualified Data.ByteString.Lazy   as L
+import qualified Data.Sequence          as Z
 import qualified Data.Text.IO           as S
 import qualified Data.Text.Lazy         as T
 import qualified Data.Text.Lazy.IO      as T
+import qualified Data.Vector.Generic    as V
 
 data Sample = Sample {
     sample_name      :: Text,
@@ -79,8 +83,20 @@ instance FromJSON Sample where
 main :: IO ()
 main = shakeArgs shakeOptions { shakeFiles = "_shake" } $ do
 
-            mapM_ buildSample samples
+            -- final artefact: one BCF per chromosome, 'aight?
+            let chromosomes = map show [1..22::Int] ++ [ "X", "Y" ]
+            want [ "build/" ++ unpack (sample_name smp) ++ "." ++ chrom ++ ".bcf"
+                 | chrom <- chromosomes, smp <- samples ]
 
+            callz
+            pileups
+            divests
+            dmgests
+            rgn_files
+
+
+divests :: Rules ()
+divests = do
             "build/*.auto.divest" %> \out -> do
                 let stem = dropExtension $ dropExtension out
                 lReadFiles' [ stem ++ "." ++ show c ++ ".divtab" | c <- [1..22::Int] ] >>=
@@ -110,63 +126,97 @@ main = shakeArgs shakeOptions { shakeFiles = "_shake" } $ do
     lReadFiles' xs = need  xs >> liftIO (mapM L.readFile xs)
 
 
-buildSample :: Sample -> Rules ()
-buildSample smp = do
-    -- final artefact: one BCF per chromosome, 'aight?
-    let chromosomes = map show [1..22::Int] ++ [ "X", "Y" ]
-    want [ "build/" ++ unpack (sample_name smp) ++ "." ++ chrom ++ ".bcf" | chrom <- chromosomes ]
+-- one pileup per chrmosome * sample; input is the
+-- bam files and one dmgest per sample
+pileups :: Rules ()
+pileups = [ "build/*.*.av", "build/*.*.divtab" ] &%> \[av,tab] -> do
+                let (sm,'.':c) = splitExtension $ dropExtension $ takeFileName av
+                    dmg        = "build" </> sm <.> "dmgest"
+                    bams       = [ unpack libf | s <- samples, sm == unpack (sample_name s)
+                                               , l <- sample_libraries s, libf <- library_files l ]
+                need $ dmg : bams
 
-    -- want [ "build/" ++ unpack (sample_name smp) ++ "." ++ subset ++ ".divest"
-         -- | subset <- [ "auto", "X", "Y" ] ]
+                command [] "qrsh" $
+                        "-now" : "no" : "-cwd" :
+                        "-l" : "h_vmem=3.4G,s_vmem=3.4G,virtual_free=3.4G,s_stack=2M" :
+                        "redeye-pileup" : "-o" : av : "-c" : c : "-T" : tab : "-D" : dmg : "-v" : bams
 
-    [ "build/" ++ unpack (sample_name smp) ++ ".*.av",
-      "build/" ++ unpack (sample_name smp) ++ ".*.divtab" ] &%> \[av,tab] -> do
-        need [ "build/" ++ unpack (library_name lib) ++ ".dmgest" | lib <- sample_libraries smp ]
-        let '.':c = takeExtension $ dropExtension av
-
-        libinputs <- sequence [ do de <- readFile' $ "build/" ++ unpack (library_name lib) ++ ".dmgest"
-                                   return $ "-D" : flatten de : map unpack (library_files lib)
-                              | lib <- sample_libraries smp ]
-
-        command [] "qrsh" $
-                "-now" : "no" : "-cwd" :
-                "-l" : "h_vmem=3.4G,s_vmem=3.4G,virtual_free=3.4G,s_stack=2M" :
-                "redeye-pileup" : "-o" : av : "-c" : c : "-T" : tab : "-v" : concat libinputs
-
-        -- command [ FileStdout tab ] "redeye-pileup" $
-        --         "-o" : av : "-c" : c : "-T" : "-v" : concat libinputs
-
-    "build/" ++ unpack (sample_name smp) ++ ".*.bcf" %> \bcf -> do
-        let '.':c = takeExtension $ dropExtension bcf
-            dep = if c == "X" || c == "Y" then c else "auto"
-            divest_file = dropExtension (dropExtension bcf) ++ "." ++ dep ++ ".divest"
-
-        need [ dropExtension bcf <.> "av", divest_file ]
-
-        [dv,ht] <- either fail (return . point_est) . pparse =<< liftIO (S.readFile divest_file)
-
-        command [] "qrsh" $
-                "-now" : "no" : "-cwd" :
-                "-l" : "h_vmem=3.4G,s_vmem=3.4G,virtual_free=3.4G,s_stack=2M" :
-                "redeye-single" : "-o" : bcf : (dropExtension bcf <.> "av")
-                    : "-N" : unpack (sample_name smp) : "-s"
-                    : "-d" : show dv : "-D" : show ht
-                    : "-i" : show (0.1*dv) : "-I" : show ht : []
+                -- command [ FileStdout tab ] "redeye-pileup" $
+                --         "-o" : av : "-c" : c : "-T" : "-v" : concat libinputs
 
 
-    mapM_ buildLib $ sample_libraries smp
-  where
-    flatten = map $ \c -> if c == '\n' then ' ' else c
+callz :: Rules ()
+callz = "build/*.*.bcf" %> \bcf -> do
+                let (sm,'.':c)  = splitExtension $ dropExtension $ takeFileName bcf
+                    dep         = if c == "X" || c == "Y" then c else "auto"
+                    divest_file = "build" </> sm <.> dep <.> "divest"
+                    av_file     = "build" </> sm <.> c <.> "av"
 
-buildLib :: Library -> Rules ()
-buildLib lib = do
-    "build/" ++ unpack (library_name lib) ++ ".dmgest" %> \out -> do
-        let lfs = map unpack $ library_files lib
-        need lfs
-        command [ FileStdout out ] "redeye-dar" ("-m" : "35" : lfs )
+                need [ av_file, divest_file ]
+
+                -- this stinks.
+                [dv,ht] <- either fail (return . point_est) . pparse =<< liftIO (S.readFile divest_file)
+
+                command [] "qrsh" $
+                        "-now" : "no" : "-cwd" :
+                        "-l" : "h_vmem=3.4G,s_vmem=3.4G,virtual_free=3.4G,s_stack=2M" :
+                        "redeye-single" : "-o" : bcf : (dropExtension bcf <.> "av")
+                            : "-N" : sm : "-s"
+                            : "-d" : show dv : "-D" : show ht
+                            : "-i" : show (0.1*dv) : "-I" : show ht : []
+
+-- XXX  This isn't going to work for now.
+dmgests :: Rules ()
+dmgests = "build/*.dmgest" %> \out -> do
+                let lb = dropExtension $ takeFileName out
+                    rgn_file = "build" </> lb <.> "good_regions.bam"
+                need [ rgn_file ]
+                command [] "qrsh" $
+                        "-now" : "no" : "-cwd" :
+                        "-l" : "h_vmem=3.4G,s_vmem=3.4G,virtual_free=3.4G,s_stack=2M" :
+                        "redeye-dar" : {-"-T" : out :-} rgn_file : []
+
+rgn_files :: Rules ()
+rgn_files = "build/*.good_regions.bam" %> \out -> do
+                let sm = dropExtension $ dropExtension $ takeFileName out
+                    lfs = [ unpack f | s <- samples, unpack (sample_name s) == sm
+                                     , l <- sample_libraries s
+                                     , f <- library_files l ]
+                need lfs
+
+                liftIO $ subsetbams out lfs good_regions 35
 
 samples :: [Sample]
 samples = [ Sample "HC" (map lib [ "A9368", "A9369", "A9401", "A9402", "A9403", "A9404", "B8747", "R5473" ]) ]
   where
     lib nm = Library nm [ nm <> ".bam" ]
+
+
+-- | Reads regions from many bam files, writes one.
+-- XXX  It might make sense to seiralize not BAM, but the result of
+-- piling up.
+subsetbams :: FilePath -> [FilePath] -> [( Bytes, [(Int,Int)] )] -> Int -> IO ()
+subsetbams ofp (ifp:ifps) rgns0 minlen = do
+    withFile (ofp ++ "~") WriteMode                             $ \hdl ->
+        go ifp ifps >=> run                                         $ \hdr ->
+        filterStream ((>= minlen) . V.length . b_seq . unpackBam)  =$
+        writeBamHandle hdl hdr
+    renameFile (ofp ++ "~") ofp
+  where
+    enum1 :: (MonadIO m, MonadMask m) => FilePath -> Enumerator' BamMeta [BamRaw] m a
+    enum1 fp k = do idx <- liftIO $ readBamIndex fp
+                    enumFileRandom defaultBufSize fp >=> run >=> run $
+                        decodeAnyBam $ \hdr ->
+                            let rgns = [ Region (Refseq $ fromIntegral ri) u v
+                                       | (ch, ivs) <- rgns0
+                                       , let Just ri = Z.findIndexL ((==) ch . sq_name) (meta_refs hdr)
+                                       , (u,v) <- take 1 ivs ] -- XXX
+                            in eneeBamRegions idx rgns (k hdr)
+
+    go :: (MonadIO m, MonadMask m) => FilePath -> [FilePath] -> Enumerator' BamMeta [BamRaw] m b
+    go fp [       ] = enum1 fp
+    go fp (fp1:fps) = mergeEnums' (go fp1 fps) (enum1 fp) combineCoordinates
+
+subsetbams ofp [] rgns0 minlen =
+    error $ "Wait, what? " ++ show (ofp, rgns0, minlen)
 
