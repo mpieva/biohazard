@@ -120,10 +120,10 @@ instance Show (DamagedBase a) where
 -- appropriate.  We also do apply a substitution matrix to each base,
 -- which must be supplied along with the read.
 {-# INLINE decompose #-}
-decompose :: forall dmg .  (Int -> dmg) -> BamRaw -> Maybe (PosPrimChunks dmg)
+decompose :: forall dmg .  (Int -> Bool -> dmg) -> BamRaw -> [PosPrimChunks dmg]
 decompose dmod br =
     if isUnmapped b || isDuplicate b || not (isValidRefseq b_rname)
-    then Nothing else Just (b_rname, b_pos, pchunks)
+    then [] else [(b_rname, b_pos, pchunks)]
   where
     b@BamRec{..} = unpackBam br
     pchunks = firstBase b_pos 0 0 (maybe [] id $ getMd b)
@@ -149,7 +149,7 @@ decompose dmod br =
         !q'  | i >= B.length baq = q                                            -- no BAQ available
              | otherwise = Q (unQ q + (B.index baq i - 64))                     -- else correct for BAQ
         !qe  = min q' b_mapq                                                    -- use MAPQ as upper limit
-        !dmg = dmod $ if i+i > max_seq then max_seq - i else i
+        !dmg = dmod (if i+i > max_seq then max_seq-i else i) (isReversed b)
 
     get_seq' :: Int -> DamagedBase dmg
     get_seq' i = case b_seq `V.unsafeIndex` i of                                -- nucleotide
@@ -163,7 +163,7 @@ decompose dmod br =
         !q'  | i >= B.length baq = q                                            -- no BAQ available
              | otherwise = Q (unQ q + (B.index baq i - 64))                     -- else correct for BAQ
         !qe  = min q' b_mapq                                                    -- use MAPQ as upper limit
-        !dmg = dmod $ if i+i > max_seq then max_seq - i else i
+        !dmg = dmod (if i+i > max_seq then max_seq-i else i) (isReversed b)
 
     -- Look for first base following the read's start or a gap (CIGAR
     -- code N).  Indels are skipped, since these are either bugs in the
@@ -222,20 +222,20 @@ decompose dmod br =
     nextIndel ins del !pos !is !ic !io mds
         | is >= max_seq || ic >= max_cig = EndOfRead
         | otherwise = case b_cigar `V.unsafeIndex` ic of
-            Ins :* cl ->             nextIndel (isq cl) del   pos (cl+is) (ic+1) 0 mds -- (drop cl mms)
-            SMa :* cl ->             nextIndel  ins     del   pos (cl+is) (ic+1) 0 mds -- (drop cl mms)
+            Ins :* cl ->             nextIndel (isq cl) del   pos (cl+is) (ic+1) 0 mds
+            SMa :* cl ->             nextIndel  ins     del   pos (cl+is) (ic+1) 0 mds
             Del :* cl ->             nextIndel ins (del++dsq) (pos+cl) is (ic+1) 0 mds'
                 where (dsq,mds') = split_del cl mds
             Pad :*  _ ->             nextIndel  ins     del   pos     is  (ic+1) 0 mds
             HMa :*  _ ->             nextIndel  ins     del   pos     is  (ic+1) 0 mds
-            Nop :* cl ->             firstBase               (pos+cl) is  (ic+1)   mds -- ends up generating a 'Seek'
+            Nop :* cl ->             firstBase               (pos+cl) is  (ic+1)   mds      -- ends up generating a 'Seek'
             Mat :* cl | io == cl  -> nextIndel  ins     del   pos     is  (ic+1) 0 mds
                       | otherwise -> indel del out $ nextBase (length del) pos is ic io mds -- ends up generating a 'Base'
       where
         indel d o k = rlist o `seq` Indel d o k
         out    = concat $ reverse ins
-        isq cl = {-zipWith ($)-} [ get_seq i gap | i <- [is..is+cl-1] ] {-(take cl mms)-} : ins
-        rlist [] = ()
+        isq cl = [ get_seq i gap | i <- [is..is+cl-1] ] : ins
+        rlist [    ] = ()
         rlist (a:as) = a `seq` rlist as
 
         -- We have to treat (MdNum 0), because samtools actually
@@ -314,7 +314,31 @@ data Pile' a b = Pile { p_refseq     :: {-# UNPACK #-} !Refseq
                       , p_indel_pile :: b }
   deriving Show
 
+-- | Raw pile.  Bases are piled separately on forward and backward
+-- strands.
 type Pile a = Pile' (BasePile a, BasePile a) (IndelPile a)
+
+-- | Simple single population model.  'prob_div' is the fraction of
+-- divergent sites, 'prob_het' is the fraction of heterozygous variants
+-- among those.  (Therefore, heterozygosity would be @prob_div *
+-- prob_het@.)
+data SinglePop = SinglePop { prob_div :: !Double, prob_het :: !Double }
+
+-- | Computes posterior  genotype probabilities from likelihoods under
+-- the 'SinglePop' model.
+{-# INLINE single_pop_posterior #-}
+single_pop_posterior :: ( U.Unbox a, Ord a, Floating a )
+                     => SinglePop -> Nucleotides -> U.Vector (Prob' a) -> U.Vector (Prob' a)
+single_pop_posterior SinglePop{..} ref lks = U.zipWith (\l p -> l * toProb (realToFrac p)) lks priors
+  where
+    refix = U.fromListN 16 [0,0,2,0,5,0,0,0,9,0,0,0,0,0,0,0] U.! fromIntegral (unNs ref)
+
+    priors = U.replicate (U.length lks) (prob_het * prob_div)                        -- hets
+                          U.// [ (refix,          1-prob_div) ]                      -- ref
+                          U.// [ (i, (1-prob_het) * prob_div) | i <- hom_div_posns ] -- homs
+
+    hom_div_posns = takeWhile (< U.length lks) (scanl (+) 2 [3..])
+
 
 -- | The pileup enumeratee takes 'BamRaw's, decomposes them, interleaves
 -- the pieces appropriately, and generates 'Pile's.  The output will
@@ -514,8 +538,8 @@ unionH :: Heap a -> Heap a -> Heap a
 Empty                 `unionH` t2                    = t2
 t1                    `unionH` Empty                 = t1
 t1@(Node k1 x1 l1 r1) `unionH` t2@(Node k2 x2 l2 r2)
-   | k1 <= k2                                       = Node k1 x1 (t2 `unionH` r1) l1
-   | otherwise                                      = Node k2 x2 (t1 `unionH` r2) l2
+   | k1 <= k2                                        = Node k1 x1 (t2 `unionH` r1) l1
+   | otherwise                                       = Node k2 x2 (t1 `unionH` r2) l2
 
 getMinKeyH :: Heap a -> Maybe Int
 getMinKeyH Empty          = Nothing

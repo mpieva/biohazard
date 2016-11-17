@@ -12,7 +12,7 @@ module Bio.Adna (
     NewDamageParameters(..),
     GenDamageParameters(..),
     DamageModel,
-    bang,
+    bang, nudge,
     Alignment(..),
     FragType(..),
     Subst(..),
@@ -73,6 +73,11 @@ infix 8 `bang`
 {-# INLINE bang #-}
 bang :: Mat44D -> Subst -> Double
 bang (Mat44D v) (N x :-> N y) = v U.! (fromIntegral x + 4 * fromIntegral y)
+
+{-# INLINE nudge #-}
+nudge :: MMat44D -> Subst -> Double -> IO ()
+nudge (MMat44D v) (N x :-> N y) a = UM.read v i >>= UM.write v i . (+) a
+  where i = fromIntegral x + 4 * fromIntegral y
 
 scalarMat :: Double -> Mat44D
 scalarMat s = Mat44D $ U.fromListN 16 [ s, 0, 0, 0

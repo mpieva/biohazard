@@ -7,7 +7,6 @@ import Bio.Prelude
 
 import qualified Data.Set               as Set
 import qualified Data.Vector            as V
-import qualified Data.Vector.Mutable    as VM
 import qualified Data.Vector.Unboxed    as U
 
 -- | Simple indel calling.  We don't bother with it too much, so here's
@@ -49,20 +48,19 @@ simple_indel_call ploidy vars = ( simple_call ploidy $ map mkpls vars, vars' )
                                  | IndelVariant (V_Nucs dr) (V_Nuc ir) <- vars' ]
 
 -- | A completely universal, completely empirical substituion model.
--- We make no attempt to distinguish damage from error.
+-- We make no attempt to distinguish damage from error.  The model is
+-- cloned so we don't need to constantly flip matrices depending on
+-- strand.
 data SubstModel_ m = SubstModel
-        { left_substs   :: {-# UNPACK #-} !(V.Vector m)
-        , middle_substs :: {-# UNPACK #-}           !m
-        , right_substs  :: {-# UNPACK #-} !(V.Vector m) }
+        { left_substs_fwd   :: {-# UNPACK #-} !(V.Vector m)
+        , middle_substs_fwd ::                          !m
+        , right_substs_fwd  :: {-# UNPACK #-} !(V.Vector m)
+        , left_substs_rev   :: {-# UNPACK #-} !(V.Vector m)
+        , middle_substs_rev ::                          !m
+        , right_substs_rev  :: {-# UNPACK #-} !(V.Vector m) }
     deriving (Show, Generic)
 
 type SubstModel = SubstModel_ Mat44D
-
-getSubstModel :: SubstModel_ a -> Int -> a
-getSubstModel SubstModel{..} i
-    | i >= 0    = fromMaybe middle_substs $ left_substs V.!? i
-    | otherwise = fromMaybe middle_substs $ right_substs V.!? (-i-1)
-
 
 -- | Mutable version of SubstModel, we'll probably have to accumulate in
 -- this thing.
@@ -73,22 +71,22 @@ type MSubstModel = SubstModel_ MMat44D
 -- hand over to 'simple_call'.  Base quality is ignored, but map quality
 -- is incorporated.
 --
--- XXX  Should we maybe pre-normalize the matrix?
 -- XXX  Quality is no longer used, maybe it can be removed.
 
 simple_snp_call :: Int -> BasePile Mat44D -> Snp_GLs
-simple_snp_call ploidy vars = snp_gls (simple_call ploidy $ map mkpls vars) ref
+simple_snp_call ploidy vars = Snp_GLs (simple_call ploidy $ map mkpls vars) ref
   where
     ref = case vars of (_, DB _ _ _ r) : _ -> r ; _ -> nucsN
     mkpls (qq, DB b _ m _) = U.generate 4 $ \n ->
                                 let x = m `bang` N (fromIntegral n) :-> b
-                                in toProb $ x + fromQual qq * (s-x)
-      where
-        !s = sum [ m `bang` N n :-> b | n <- [0..3] ] / 4
+                                in toProb $ x + fromQual qq * (1-x)
 
 -- | Compute @GL@ values for the simple case.  The simple case is where
 -- we sample 'ploidy' alleles with equal probability and assume that
--- errors occur independently from each other.
+-- errors occur independently from each other.  This is specialized for
+-- a few common cases:  ploidy one, because it's simple; ploidy two, two
+-- variants, because that's a typical indel; ploidy two, four variants,
+-- because that's most SNPs.
 
 simple_call :: Int -> [U.Vector Prob] -> GL
 simple_call     !_ [      ]                    = U.empty
@@ -260,11 +258,11 @@ type Calls = Pile' Snp_GLs (GL, [IndelVariant])
 data Snp_GLs = Snp_GLs !GL !Nucleotides
     deriving Show
 
-snp_gls :: GL -> Nucleotides -> Snp_GLs
+{- snp_gls :: GL -> Nucleotides -> Snp_GLs
 snp_gls pls ref | ref == nucsT = Snp_GLs (pls `U.backpermute` U.fromList [9,6,0,7,1,2,8,3,4,5]) ref
                 | ref == nucsG = Snp_GLs (pls `U.backpermute` U.fromList [5,3,0,4,1,2,8,6,7,9]) ref
                 | ref == nucsC = Snp_GLs (pls `U.backpermute` U.fromList [2,1,0,4,3,5,7,6,8,9]) ref
-                | otherwise    = Snp_GLs pls ref
+                | otherwise    = Snp_GLs pls ref -}
 
 
 data Vec4D = Vec4D {-# UNPACK #-} !Double {-# UNPACK #-} !Double {-# UNPACK #-} !Double {-# UNPACK #-} !Double

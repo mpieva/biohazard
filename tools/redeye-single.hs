@@ -106,8 +106,8 @@ main = do
                     GenoFileHeader h -> return h
                     _                -> error $ show x
 
-        let callz = ( call (prior_div/3) (prior_het conf)
-                    , call (prior_indel conf) (prior_het_indel conf) )
+        let callz = ( call (SinglePop (prior_div/3) (prior_het conf))
+                    , call (SinglePop (prior_indel conf) (prior_het_indel conf)) )
 
         toBcf (header_refs meta) [fromString $ sample_name conf] callz conf_random     ><>
           encodeBgzfWith 9                                                              =$
@@ -127,8 +127,9 @@ iterBinaryFileSequence fp it0 =
             let go it = get >>= maybe (return it) (\x -> enumPure1Chunk [x] it >>= go)
             in go it0
 
-call :: Double -> Double -> U.Vector (Prob' Float) -> Maybe StdGen -> (Int,Maybe StdGen)
-call prior_d prior_h lks gen = case gen of
+-- XXX This is in all likelihood f'ed up.
+call :: SinglePop -> U.Vector (Prob' Float) -> Maybe StdGen -> (Int,Maybe StdGen)
+call priors lks gen = case gen of
     Nothing -> ( U.maxIndex ps, Nothing )
     Just  g -> (            ix, Just g' )
       where
@@ -136,10 +137,7 @@ call prior_d prior_h lks gen = case gen of
         ix     = U.length $ U.takeWhile (<p) $ U.map fromProb $
                  U.postscanl (+) 0 $ U.map (/ U.sum ps) ps
   where
-    ps = U.zipWith (*) lks $ U.replicate (U.length lks) (toProb . realToFrac $ prior_h * (1-prior_d))
-                             U.// [ (0, toProb . realToFrac $ (1-prior_d) * (1-prior_h)) ]
-                             U.// [ (i, toProb . realToFrac $ (1-prior_d) * prior_h)
-                                  | i <- takeWhile (< U.length lks) (scanl (+) 2 [3..]) ]
+    ps = single_pop_posterior priors nucsA lks
 
 
 -- A function from likelihoods to called index.  It's allowed to require

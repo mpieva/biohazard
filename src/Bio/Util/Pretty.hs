@@ -1,11 +1,15 @@
 {-# LANGUAGE TypeOperators, ScopedTypeVariables #-}
 module Bio.Util.Pretty where
 
-import Bio.Prelude hiding ( Prefix, Infix, (<+>), (<$>) )
+import Bio.Prelude                       hiding ( Prefix, Infix, (<+>), (<$>) )
+import Data.Text.Encoding                       ( decodeUtf8With )
+import Data.Text.Encoding.Error                 ( lenientDecode )
+import Data.Text.Lazy                           ( fromStrict )
 import GHC.Generics
-import Text.PrettyPrint.Leijen.Text ( (<+>), (<$>), (</>) )
+import Text.PrettyPrint.Leijen.Text             ( (<+>), (<$>), (</>) )
 
 import qualified Data.Attoparsec.Text           as A
+import qualified Data.Vector                    as V
 import qualified Data.Vector.Unboxed            as U
 import qualified Text.PrettyPrint.Leijen.Text   as P
 
@@ -49,6 +53,7 @@ default_parse i = to `fmap` gparse Pref i
 
 instance Pretty    Int where pretty _ = P.int
 instance Pretty Double where pretty _ = P.double
+instance Pretty  Bytes where pretty _ = P.text . fromStrict . decodeUtf8With lenientDecode
 
 instance Parse    Int where parse _ = A.signed A.decimal
 instance Parse Double where parse _ = A.double
@@ -61,6 +66,9 @@ instance (Parse  a, Parse  b) => Parse  (a,b) where
 
 instance Pretty a => Pretty [a] where pretty _ = prettyList
 instance Parse  a => Parse  [a] where parse  _ = parseList
+
+instance Pretty a => Pretty (V.Vector a) where pretty _ = prettyList . V.toList
+instance Parse a  => Parse  (V.Vector a) where parse  _ = V.fromList `fmap` parseList
 
 instance (Pretty a, U.Unbox a) => Pretty (U.Vector a) where pretty _ = prettyList . U.toList
 instance (Parse a,  U.Unbox a) => Parse  (U.Vector a) where parse  _ = U.fromList `fmap` parseList

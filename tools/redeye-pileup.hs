@@ -122,7 +122,7 @@ main = do
     (tab,()) <- withFile (conf_output ++ ".#") WriteMode                                        $ \ohdl ->
                 mergeInputRgns combineCoordinates conf_chrom files >=> run                      $ \hdr ->
                 takeWhileE (isValidRefseq . b_rname . unpackBam)                               =$
-                mapMaybeStream (decompose_dmg_from conf_dmg)                                   =$
+                concatMapStream (decompose_dmg_from conf_dmg)                                  =$
                 progressPos (\(rs, p, _) -> (rs, p)) "GT call at " conf_report (meta_refs hdr) =$
                 pileup                                                                         =$
                 mapStream (calls conf_theta)                                                   =$
@@ -147,15 +147,18 @@ main = do
 
 
 {-# INLINE decompose_dmg_from #-}
-decompose_dmg_from :: HashMap Bytes SubstModel -> BamRaw -> Maybe (PosPrimChunks Mat44D)
+decompose_dmg_from :: HashMap Bytes SubstModel -> BamRaw -> [PosPrimChunks Mat44D]
 decompose_dmg_from hm raw =
     decompose (model (H.lookup (extAsString "RG" (unpackBam raw)) hm)) raw
   where
-    model              Nothing  _ = scalarMat 1
-    model (Just SubstModel{..}) i
-        | i >= 0 &&   i  <  V.length  left_substs = V.unsafeIndex left_substs    i
-        | i <  0 && (-i) >= V.length right_substs = V.unsafeIndex right_substs (-i-1)
-        | otherwise                               = middle_substs
+    model              Nothing  _ _ = scalarMat 1
+    model (Just SubstModel{..}) i r
+        | i >= 0 &&   i  <  V.length  left_substs_fwd && not r = V.unsafeIndex left_substs_fwd    i
+        | i <  0 && (-i) >= V.length right_substs_fwd && not r = V.unsafeIndex right_substs_fwd (-i-1)
+        | not r                                                = middle_substs_fwd
+        | i >= 0 &&   i  <  V.length  left_substs_rev          = V.unsafeIndex left_substs_rev    i
+        | i <  0 && (-i) >= V.length right_substs_rev          = V.unsafeIndex right_substs_rev (-i-1)
+        | otherwise                                            = middle_substs_rev
 
 
 mergeInputRgns :: (MonadIO m, MonadMask m)

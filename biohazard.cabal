@@ -213,7 +213,8 @@ Executable redeye-dar
                        filepath,
                        unordered-containers,
                        text,
-                       vector
+                       vector,
+                       wl-pprint-text
 
 Executable redeye-pileup
   Main-is:             redeye-pileup.hs
