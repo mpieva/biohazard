@@ -11,6 +11,9 @@ module Bio.Genocall.Estimators (
 
 -- XXX  Many optimizations fit only one parameter.  Newton-Iteration
 -- should be more efficient than the generic CG method.
+--
+-- For Newton-Iteration, the update is 'x := x + dt' where
+-- 'dt = -H(x)^{-1} \Nabla f(x)' or 'H(x) dt = -\Nabla f(x)'
 
 import Bio.Adna
 import Bio.Bam
@@ -327,15 +330,15 @@ tabulateSingle = do
     {-# INLINE accum #-}
     accum !tab !acc (Snp_GLs !gls !ref)
         | U.length gls /= 10           = error "Ten GL values expected for SNP!"      -- should not happen
-        | ref `elem` [nucsC,nucsG]     = accum' 0 tab acc gls
-        | ref `elem` [nucsA,nucsT]     = accum' 6 tab acc gls
+        | ref `elem` [nucsC,nucsG]     = accum' 0 tab acc gls ref
+        | ref `elem` [nucsA,nucsT]     = accum' 6 tab acc gls ref
         | otherwise                    = return acc                                   -- unknown reference
 
     -- The simple 2D table didn't work, it lacked resolution in some
     -- cases.  We make six separate tables instead so we can store two
     -- differences with good resolution in every case.
     {-# INLINE accum' #-}
-    accum' !refix !tab !acc !gls
+    accum' !refix !tab !acc !gls !ref
         | g_RR >= g_RA && g_RA >= g_AA = store 0 g_RR g_RA g_AA
         | g_RR >= g_AA && g_AA >= g_RA = store 1 g_RR g_AA g_RA
         | g_RA >= g_RR && g_RR >= g_AA = store 2 g_RA g_RR g_AA
@@ -344,9 +347,17 @@ tabulateSingle = do
         | otherwise                    = store 5 g_AA g_RA g_RR
 
       where
-        g_RR = unPr $  U.unsafeIndex gls 0
-        g_RA = unPr $ (U.unsafeIndex gls 1 + U.unsafeIndex gls 3 + U.unsafeIndex gls 6) / 3
-        g_AA = unPr $ (U.unsafeIndex gls 2 + U.unsafeIndex gls 5 + U.unsafeIndex gls 9) / 3
+        g_RR | ref == nucsT = unPr $  U.unsafeIndex gls 9
+             | ref == nucsG = unPr $  U.unsafeIndex gls 5
+             | ref == nucsC = unPr $  U.unsafeIndex gls 2
+             | otherwise    = unPr $  U.unsafeIndex gls 0
+
+        g_RA                = unPr $ (U.unsafeIndex gls 1 + U.unsafeIndex gls 3 + U.unsafeIndex gls 6) / 3
+
+        g_AA | ref == nucsT = unPr $ (U.unsafeIndex gls 0 + U.unsafeIndex gls 2 + U.unsafeIndex gls 5) / 3
+             | ref == nucsG = unPr $ (U.unsafeIndex gls 0 + U.unsafeIndex gls 2 + U.unsafeIndex gls 9) / 3
+             | ref == nucsC = unPr $ (U.unsafeIndex gls 0 + U.unsafeIndex gls 5 + U.unsafeIndex gls 9) / 3
+             | otherwise    = unPr $ (U.unsafeIndex gls 2 + U.unsafeIndex gls 5 + U.unsafeIndex gls 9) / 3
 
         store !t !a !b !c = do let d1 = min (maxD-1) . round $ a - b
                                    d2 = min (maxD-1) . round $ b - c

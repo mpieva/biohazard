@@ -169,7 +169,7 @@ mk_snp_gts ploidy = go ploidy alleles
 -- XXX  Unfixable, for the time being.
 
 {- maq_snp_call :: Int -> Double -> BasePile -> Snp_GLs
-maq_snp_call ploidy theta bases = snp_gls (U.fromList $ map l $ mk_snp_gts ploidy) ref
+maq_snp_call ploidy theta bases = Snp_GLs (U.fromList $ map l $ mk_snp_gts ploidy) ref
   where
     -- Bases with effective qualities in order of decreasing(!) quality.
     -- A vector based algorithm may fit here.
@@ -257,13 +257,6 @@ type Calls = Pile' Snp_GLs (GL, [IndelVariant])
 -- if the reference allele is listed first.
 data Snp_GLs = Snp_GLs !GL !Nucleotides
     deriving Show
-
-{- snp_gls :: GL -> Nucleotides -> Snp_GLs
-snp_gls pls ref | ref == nucsT = Snp_GLs (pls `U.backpermute` U.fromList [9,6,0,7,1,2,8,3,4,5]) ref
-                | ref == nucsG = Snp_GLs (pls `U.backpermute` U.fromList [5,3,0,4,1,2,8,6,7,9]) ref
-                | ref == nucsC = Snp_GLs (pls `U.backpermute` U.fromList [2,1,0,4,3,5,7,6,8,9]) ref
-                | otherwise    = Snp_GLs pls ref -}
-
 
 data Vec4D = Vec4D {-# UNPACK #-} !Double {-# UNPACK #-} !Double {-# UNPACK #-} !Double {-# UNPACK #-} !Double
 

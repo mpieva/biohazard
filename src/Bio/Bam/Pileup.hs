@@ -149,7 +149,7 @@ decompose dmod br =
         !q'  | i >= B.length baq = q                                            -- no BAQ available
              | otherwise = Q (unQ q + (B.index baq i - 64))                     -- else correct for BAQ
         !qe  = min q' b_mapq                                                    -- use MAPQ as upper limit
-        !dmg = dmod (if i+i > max_seq then max_seq-i else i) (isReversed b)
+        !dmg = dmod (if i+i > max_seq then i-max_seq else i) (isReversed b)
 
     get_seq' :: Int -> DamagedBase dmg
     get_seq' i = case b_seq `V.unsafeIndex` i of                                -- nucleotide
@@ -163,7 +163,7 @@ decompose dmod br =
         !q'  | i >= B.length baq = q                                            -- no BAQ available
              | otherwise = Q (unQ q + (B.index baq i - 64))                     -- else correct for BAQ
         !qe  = min q' b_mapq                                                    -- use MAPQ as upper limit
-        !dmg = dmod (if i+i > max_seq then max_seq-i else i) (isReversed b)
+        !dmg = dmod (if i+i > max_seq then i-max_seq else i) (isReversed b)
 
     -- Look for first base following the read's start or a gap (CIGAR
     -- code N).  Indels are skipped, since these are either bugs in the
@@ -319,13 +319,14 @@ data Pile' a b = Pile { p_refseq     :: {-# UNPACK #-} !Refseq
 type Pile a = Pile' (BasePile a, BasePile a) (IndelPile a)
 
 -- | Simple single population model.  'prob_div' is the fraction of
--- divergent sites, 'prob_het' is the fraction of heterozygous variants
--- among those.  (Therefore, heterozygosity would be @prob_div *
--- prob_het@.)
+-- homozygous divergent sites, 'prob_het' is the fraction of
+-- heterozygous variant sites among sites that are not homozygous
+-- divergent.
 data SinglePop = SinglePop { prob_div :: !Double, prob_het :: !Double }
 
 -- | Computes posterior  genotype probabilities from likelihoods under
 -- the 'SinglePop' model.
+-- XXX another one that is specialized to diploid genomes!
 {-# INLINE single_pop_posterior #-}
 single_pop_posterior :: ( U.Unbox a, Ord a, Floating a )
                      => SinglePop -> Nucleotides -> U.Vector (Prob' a) -> U.Vector (Prob' a)
@@ -333,9 +334,9 @@ single_pop_posterior SinglePop{..} ref lks = U.zipWith (\l p -> l * toProb (real
   where
     refix = U.fromListN 16 [0,0,2,0,5,0,0,0,9,0,0,0,0,0,0,0] U.! fromIntegral (unNs ref)
 
-    priors = U.replicate (U.length lks) (prob_het * prob_div)                        -- hets
-                          U.// [ (refix,          1-prob_div) ]                      -- ref
-                          U.// [ (i, (1-prob_het) * prob_div) | i <- hom_div_posns ] -- homs
+    priors = U.replicate (U.length lks) ((1/3) * prob_het * (1-prob_div))                       -- hets
+                          U.// [ (refix,     (1-prob_het) * (1-prob_div)) ]                      -- ref
+                          U.// [ (i,                   (1/3) * prob_div ) | i <- hom_div_posns ] -- homs
 
     hom_div_posns = takeWhile (< U.length lks) (scanl (+) 2 [3..])
 

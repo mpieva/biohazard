@@ -106,7 +106,7 @@ main = do
                     GenoFileHeader h -> return h
                     _                -> error $ show x
 
-        let callz = ( call (SinglePop (prior_div/3) (prior_het conf))
+        let callz = ( call (SinglePop prior_div (prior_het conf))
                     , call (SinglePop (prior_indel conf) (prior_het_indel conf)) )
 
         toBcf (header_refs meta) [fromString $ sample_name conf] callz conf_random     ><>
@@ -127,7 +127,7 @@ iterBinaryFileSequence fp it0 =
             let go it = get >>= maybe (return it) (\x -> enumPure1Chunk [x] it >>= go)
             in go it0
 
--- XXX This is in all likelihood f'ed up.
+-- XXX not entirely sure this is kosher.
 call :: SinglePop -> U.Vector (Prob' Float) -> Maybe StdGen -> (Int,Maybe StdGen)
 call priors lks gen = case gen of
     Nothing -> ( U.maxIndex ps, Nothing )
@@ -187,15 +187,15 @@ toBcf refs smps (snp_call, indel_call) gen0 = eneeCheckIfDone (go invalidRefseq 
 
 
 encodeSNP :: GenoCallSite -> Refseq -> Int -> CallFunc gen -> gen -> (Push, gen)
-encodeSNP site = encodeVar (map S.singleton alleles) (snp_likelihoods site) (snp_stats site)
+encodeSNP site = encodeVar (map S.singleton alleles) (snp_likelihoods site `U.backpermute` U.fromList perm) (snp_stats site)
   where
-    -- Permuting the reference allele to the front sucks.  Since
-    -- there are only four possibilities, I'm not going to bother
-    -- with an algorithm and just open-code it.
-    alleles | ref_allele site == nucsT = "TACG"
-            | ref_allele site == nucsG = "GACT"
-            | ref_allele site == nucsC = "CAGT"
-            | otherwise                = "ACGT"
+    -- Permuting the reference allele to the front in alleles and PLs
+    -- sucks.  Since there are only four possibilities, I'm not going to
+    -- bother with an algorithm and just open-code it.
+    (alleles, perm) | ref_allele site == nucsT = ("TACG", [9,6,0,7,1,2,8,3,4,5])
+                    | ref_allele site == nucsG = ("GACT", [5,3,0,4,1,2,8,6,7,9])
+                    | ref_allele site == nucsC = ("CAGT", [2,1,0,4,3,5,7,6,8,9])
+                    | otherwise                = ("ACGT", [0,1,2,3,4,5,6,7,8,9])
 
 encodeIndel :: GenoCallSite -> Refseq -> Int -> CallFunc gen -> gen -> (Push, gen)
 encodeIndel site = encodeVar alleles (indel_likelihoods site) (indel_stats site)

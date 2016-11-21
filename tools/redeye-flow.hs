@@ -186,12 +186,6 @@ rgn_files = "build/*.good_regions.bam" %> \out -> do
 
                 liftIO $ subsetbams out lfs good_regions 35
 
-samples :: [Sample]
-samples = [ Sample "HC" (map lib [ "A9368", "A9369", "A9401", "A9402", "A9403", "A9404", "B8747", "R5473" ]) ]
-  where
-    lib nm = Library nm [ nm <> ".bam" ]
-
-
 -- | Reads regions from many bam files, writes one.
 -- XXX  It might make sense to seiralize not BAM, but the result of
 -- piling up.
@@ -219,4 +213,17 @@ subsetbams ofp (ifp:ifps) rgns0 minlen = do
 
 subsetbams ofp [] rgns0 minlen =
     error $ "Wait, what? " ++ show (ofp, rgns0, minlen)
+
+samples :: [Sample]
+samples =
+    [ {- let lib nm = Library nm [ nm <> ".bam" ]
+      in  Sample "HC" (map lib [ "A9368", "A9369", "A9401", "A9402", "A9403", "A9404", "B8747", "R5473" ])
+  ,-} let lane i = Library (fromString $ show (i::Int))
+                           [ fromString $ "/mnt/ngs_data/140411_SN7001204_0257_AC2MW7ACXX_PEdi_SP/Ibis/BWA/proc1/s_"
+                                       ++ shows i "_sequence_ancient_hg19_evan.bam" ]
+      in Sample "Vanity" (map lane [3..8])
+
+    , Sample "SS6004467" [ Library "SS6004467"
+        [ "/mnt/454/HGDP/genomes_Bteam/hg19_evan.2-align/SS6004467-dedup.rg_hg19_evan.2.bam" ] ] ]
+
 

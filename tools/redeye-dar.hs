@@ -71,7 +71,6 @@ main = do
     unless (null errors) $ mapM_ (hPutStrLn stderr) errors >> exitFailure
     Conf{..} <- foldl (>>=) (return defaultConf) opts
 
-    model0 <- newIORef H.empty
     -- Meh.  New concept.  We'll operate repeatedly on a small set of
     -- regions.  For the time being, that region will have to be put
     -- into a suitable file, so here we expect precisely one file.  Read
@@ -84,11 +83,14 @@ main = do
     -- likelihoods into the div/het estimation (just as in
     -- 'redeye-pileup'), but also into a caller that will estimate
     -- damage.
-    ((u,v), model1) <- emIter (SinglePop 0.002 0.66) model0 conf_report files
+    let iter sp0 mod0 = do ((u,v), model1) <- emIter sp0 mod0 conf_report files
+                           pprint u
+                           pprint v
+                           -- pprint $ H.toList model1
+                           iter (case point_est u of [d,h] -> SinglePop d h) model1
 
-    pprint u
-    pprint v
-    pprint $ H.toList model1
+    iter (SinglePop 0.001 0.002) H.empty
+
 
 instance Pretty a => Pretty (SubstModel_ a) where pretty = default_pretty
 
@@ -103,12 +105,12 @@ instance Pretty Mat44D where
 -- tabulation followed by estimation, as before.  For damage, we have to
 -- compute posterior probabilities using the old model, then update the
 -- damage probabilistically.
-emIter :: SinglePop -> IORef (HashMap Bytes (SubstModel, MSubstModel))
-       -> (String -> IO ()) -> [FilePath]
-       -> IO ((DivEst, DivEst), HashMap Bytes SubstModel)
-emIter divest model report infiles =
+emIter :: SinglePop -> HashMap Bytes SubstModel -> (String -> IO ())
+       -> [FilePath] -> IO ((DivEst, DivEst), HashMap Bytes SubstModel)
+emIter divest mod0 report infiles =
+        liftIO (mapM fresh_subst_model mod0 >>= newIORef)                         >>= \smodel ->
         concatInputs infiles >=> run                                                $ \hdr ->
-        concatMapStreamM (decompose_dmg_from model)                                =$
+        concatMapStreamM (decompose_dmg_from smodel)                               =$
         progressPos (\(rs, p, _) -> (rs, p)) "GT call at " report (meta_refs hdr)  =$
         pileup                                                                     =$
         mapStream  ( id &&& calls )                                                =$
@@ -116,7 +118,7 @@ emIter divest model report infiles =
                      tabulateSingle                                     >>=
                      liftIO . estimateSingle )
                    ( mapStreamM_ (uncurry (updateSubstModel divest))    >>
-                     liftIO (readIORef model)                           >>=
+                     liftIO (readIORef smodel)                          >>=
                      liftIO . mapM (freezeSubstModel . snd) )
 
 -- Probabilistically count substitutions.  We infer from posterior
@@ -126,6 +128,7 @@ updateSubstModel :: SinglePop -> Pile ( Mat44D, MMat44D ) -> Calls -> IO ()
 updateSubstModel divest pile cs
     -- only diploid is supported... for now
     | U.length postp == 10 = mapM_ count_base bases
+    | otherwise            = error "updateSubstModel: expected exactly 10 likelihoods"
   where
     Snp_GLs lks ref = p_snp_pile cs
     postp = single_pop_posterior divest ref lks
@@ -161,14 +164,14 @@ updateSubstModel divest pile cs
 
 freezeSubstModel :: MSubstModel -> IO SubstModel
 freezeSubstModel mm = do
-    new_left   <- V.zipWithM freezeMats (left_substs_fwd   mm) (V.reverse $ right_substs_rev mm)
-    new_middle <-            freezeMats (middle_substs_fwd mm)            (middle_substs_rev mm)
-    new_right  <- V.zipWithM freezeMats (right_substs_fwd  mm) (V.reverse $ left_substs_rev  mm)
+    new_left   <- V.zipWithM freezeMats (left_substs_fwd   mm) (right_substs_rev  mm)
+    new_middle <-            freezeMats (middle_substs_fwd mm) (middle_substs_rev mm)
+    new_right  <- V.zipWithM freezeMats (right_substs_fwd  mm) (left_substs_rev   mm)
 
     return $ SubstModel new_left new_middle new_right
-                        ( V.map compl_mat $ V.reverse new_left   )
-                              ( compl_mat             new_middle )
-                        ( V.map compl_mat $ V.reverse new_right  )
+                        ( V.map compl_mat new_left   )
+                              ( compl_mat new_middle )
+                        ( V.map compl_mat new_right  )
   where
     -- We take two matrices (forward and reverse strand model), flip the
     -- reverse one around, normalize for the total ocunt and freeze the
@@ -176,19 +179,21 @@ freezeSubstModel mm = do
     -- correspond, so the rev-strand vector has to be reversed.
     freezeMats :: MMat44D -> MMat44D -> IO Mat44D
     freezeMats (MMat44D vv) (MMat44D ww) = do
-        v <- Mat44D <$> U.freeze vv
-        w <- Mat44D <$> U.freeze ww
+        v <-             Mat44D <$> U.freeze vv
+        w <- compl_mat . Mat44D <$> U.freeze ww
         return . Mat44D $ U.fromListN 16
-                [ ((v `bang` x :-> y) {- + (w `bang` compl x :-> compl y) -} ) / s
+                [ ((v `bang` x :-> y) + (w `bang` x :-> y)) / s
                 | x <- range (nucA, nucT)
-                , let s = sum [ (v `bang` x :-> y) -- + (w `bang` compl x :-> compl y)
+                , let s = sum [ (v `bang` x :-> y) + (w `bang` x :-> y)
                               | y <- range (nucA, nucT) ]
                 , y <- range (nucA, nucT) ]
 
+    -- Huh, I thought this should be transposed.  But *that* doesn't work.
     compl_mat :: Mat44D -> Mat44D
     compl_mat v = Mat44D $ U.fromListN 16
                     [ v `bang` compl x :-> compl y
-                    | x :-> y <- range (nucA :-> nucA, nucT :-> nucT) ]
+                    | y <- range (nucA, nucT)
+                    , x <- range (nucA, nucT) ]
 
 calls :: Pile ( Mat44D, b ) -> Calls
 calls pile = pile { p_snp_pile = s, p_indel_pile = i }
@@ -204,7 +209,7 @@ decompose_dmg_from ref raw = do
     let rg = extAsString "RG" (unpackBam raw)
     model <- case H.lookup rg hm of
                 Just mm -> return mm
-                Nothing -> do mm <- (,) model0 <$> fresh_subst_model model0
+                Nothing -> do mm <- fresh_subst_model model0
                               writeIORef ref $! H.insert rg mm hm
                               return mm
     return $ decompose (from_mmodel model) raw
@@ -212,17 +217,17 @@ decompose_dmg_from ref raw = do
   where
     from_mmodel (m,mm) i r
         | i >= 0 &&   i  <  V.length  (left_substs_fwd m) && not r
-                = ( V.unsafeIndex (left_substs_fwd   m)  i, V.unsafeIndex (left_substs_fwd  mm)  i )
+                = ( V.unsafeIndex (left_substs_fwd   m)   i,    V.unsafeIndex (left_substs_fwd  mm)   i )
 
-        | i <  0 && (-i) >= V.length (right_substs_fwd m) && not r
+        | i <  0 && (-i) <= V.length (right_substs_fwd m) && not r
                 = ( V.unsafeIndex (right_substs_fwd  m) (-i-1), V.unsafeIndex (right_substs_fwd mm) (-i-1) )
 
         | not r = ( middle_substs_fwd m, middle_substs_fwd mm )
 
         | i >= 0 &&   i  <  V.length  (left_substs_rev m)
-                = ( V.unsafeIndex (left_substs_rev   m)  i, V.unsafeIndex (left_substs_rev  mm)  i )
+                = ( V.unsafeIndex (left_substs_rev   m)   i,    V.unsafeIndex (left_substs_rev  mm)   i )
 
-        | i <  0 && (-i) >= V.length (right_substs_rev m)
+        | i <  0 && (-i) <= V.length (right_substs_rev m)
                 = ( V.unsafeIndex (right_substs_rev  m) (-i-1), V.unsafeIndex (right_substs_rev mm) (-i-1) )
 
         | True  = ( middle_substs_rev m, middle_substs_rev mm )
@@ -240,11 +245,15 @@ decompose_dmg_from ref raw = do
                         , middle_substs_rev =                initmat
                         , right_substs_rev  = V.replicate 12 initmat }
 
-    nullmat = MMat44D <$> UM.replicate 16 (0::Double)
-    fresh_subst_model m = SubstModel <$> V.mapM (const nullmat) (left_substs_fwd   m)
-                                     <*>               nullmat
-                                     <*> V.mapM (const nullmat) (right_substs_fwd  m)
-                                     <*> V.mapM (const nullmat) (left_substs_rev   m)
-                                     <*>               nullmat
-                                     <*> V.mapM (const nullmat) (right_substs_rev  m)
+fresh_subst_model :: SubstModel -> IO (SubstModel, MSubstModel)
+fresh_subst_model m = (,) m <$> m'
+  where
+    m' = SubstModel <$> V.mapM (const nullmat) (left_substs_fwd   m)
+                    <*>               nullmat
+                    <*> V.mapM (const nullmat) (right_substs_fwd  m)
+                    <*> V.mapM (const nullmat) (left_substs_rev   m)
+                    <*>               nullmat
+                    <*> V.mapM (const nullmat) (right_substs_rev  m)
+
+    !nullmat = MMat44D <$> UM.replicate 16 (0::Double)
 
