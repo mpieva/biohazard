@@ -184,12 +184,16 @@ rgn_files = "build/*.good_regions.bam" %> \out -> do
                                      , f <- library_files l ]
                 need lfs
 
-                liftIO $ subsetbams out lfs good_regions 35
+                liftIO $ subsetbams out lfs (takeLen 2000000 good_regions) 35
+  where
+    takeLen !n (x@(_,_,l):xs) | n > 0 = x : takeLen (n-l) xs
+    takeLen  _             _          = []
+
 
 -- | Reads regions from many bam files, writes one.
--- XXX  It might make sense to seiralize not BAM, but the result of
+-- XXX  It might make sense to serialize not BAM, but the result of
 -- piling up.
-subsetbams :: FilePath -> [FilePath] -> [( Bytes, [(Int,Int)] )] -> Int -> IO ()
+subsetbams :: FilePath -> [FilePath] -> [( Bytes, Int, Int )] -> Int -> IO ()
 subsetbams ofp (ifp:ifps) rgns0 minlen = do
     withFile (ofp ++ "~") WriteMode                             $ \hdl ->
         go ifp ifps >=> run                                         $ \hdr ->
@@ -201,10 +205,9 @@ subsetbams ofp (ifp:ifps) rgns0 minlen = do
     enum1 fp k = do idx <- liftIO $ readBamIndex fp
                     enumFileRandom defaultBufSize fp >=> run >=> run $
                         decodeAnyBam $ \hdr ->
-                            let rgns = [ Region (Refseq $ fromIntegral ri) u v
-                                       | (ch, ivs) <- rgns0
-                                       , let Just ri = Z.findIndexL ((==) ch . sq_name) (meta_refs hdr)
-                                       , (u,v) <- take 1 ivs ] -- XXX
+                            let rgns = sort [ Region (Refseq $ fromIntegral ri) p (p+l)
+                                            | (ch, p, l) <- rgns0
+                                            , let Just ri = Z.findIndexL ((==) ch . sq_name) (meta_refs hdr) ]
                             in eneeBamRegions idx rgns (k hdr)
 
     go :: (MonadIO m, MonadMask m) => FilePath -> [FilePath] -> Enumerator' BamMeta [BamRaw] m b

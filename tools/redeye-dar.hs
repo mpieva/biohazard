@@ -34,7 +34,7 @@ import Bio.Adna
 import Bio.Bam
 import Bio.Bam.Pileup
 import Bio.Genocall
-import Bio.Genocall.Estimators
+import Bio.Genocall.Estimators          ( DivEst(..), tabulateSingle, estimateSingle )
 import Bio.Prelude
 import Bio.Util.AD
 import Bio.Util.Pretty
@@ -125,13 +125,9 @@ emIter divest mod0 report infiles =
 -- genotype probabilities what the base must have been, then count
 -- substitutions from that to the actual base.
 updateSubstModel :: SinglePop -> Pile ( Mat44D, MMat44D ) -> Calls -> IO ()
-updateSubstModel divest pile cs
-    -- only diploid is supported... for now
-    | U.length postp == 10 = mapM_ count_base bases
-    | otherwise            = error "updateSubstModel: expected exactly 10 likelihoods"
+updateSubstModel divest pile cs = mapM_ count_base bases
   where
-    Snp_GLs lks ref = p_snp_pile cs
-    postp = single_pop_posterior divest ref lks
+    postp = single_pop_posterior divest (snp_refbase (p_snp_pile cs)) (snp_gls (p_snp_pile cs))
 
     -- Prior probilities of the haploid base before damage
     -- @P(H) = \sum_{G} P(H|G) P(G)@
@@ -198,8 +194,8 @@ freezeSubstModel mm = do
 calls :: Pile ( Mat44D, b ) -> Calls
 calls pile = pile { p_snp_pile = s, p_indel_pile = i }
   where
-    !s = simple_snp_call   2 $ map (second (fmap fst)) $ uncurry (++) $ p_snp_pile pile
-    !i = simple_indel_call 2 $ map (second (second (map (fmap fst)))) $ p_indel_pile pile
+    !s = simple_snp_call   $ map (second (fmap fst)) $ uncurry (++) $ p_snp_pile pile
+    !i = simple_indel_call $ map (second (second (map (fmap fst)))) $ p_indel_pile pile
 
 
 {-# INLINE decompose_dmg_from #-}

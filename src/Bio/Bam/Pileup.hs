@@ -66,7 +66,6 @@ import qualified Data.Vector.Unboxed    as U
 -- * A whole lot of testing.
 -- * ML fitting and evaluation of parameters for different possible
 --   error and damage models.
--- * Maybe specialize to ploidy one and two.
 
 -- | The primitive pieces for genotype calling:  A position, a base
 -- represented as four likelihoods, an inserted sequence, and the
@@ -326,7 +325,6 @@ data SinglePop = SinglePop { prob_div :: !Double, prob_het :: !Double }
 
 -- | Computes posterior  genotype probabilities from likelihoods under
 -- the 'SinglePop' model.
--- XXX another one that is specialized to diploid genomes!
 {-# INLINE single_pop_posterior #-}
 single_pop_posterior :: ( U.Unbox a, Ord a, Floating a )
                      => SinglePop -> Nucleotides -> U.Vector (Prob' a) -> U.Vector (Prob' a)

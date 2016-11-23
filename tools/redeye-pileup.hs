@@ -188,8 +188,8 @@ mergeInputRgns (?) rs (fp0:fps0) = go fp0 fps0
 calls :: Maybe Double -> Pile Mat44D -> Calls
 calls Nothing pile = pile { p_snp_pile = s, p_indel_pile = i }
   where
-    !s = simple_snp_call   2 $ uncurry (++) $ p_snp_pile pile
-    !i = simple_indel_call 2 $ p_indel_pile pile
+    !s = simple_snp_call   $ uncurry (++) $ p_snp_pile pile
+    !i = simple_indel_call $ p_indel_pile pile
     -- XXX this should be a cmdline option, if we ever look at qualities again
     -- fq = min 1 . (*) 1.333 . fromQual
     -- fq = fromQual
@@ -197,18 +197,18 @@ calls Nothing pile = pile { p_snp_pile = s, p_indel_pile = i }
 calls (Just _theta) _pile = error "Sorry, maq_snp_call is broken right now." -- XXX
 {- calls (Just theta) pile = pile { p_snp_pile = s, p_indel_pile = i }
   where
-    !i = simple_indel_call 2 $ p_indel_pile pile
+    !i = simple_indel_call $ p_indel_pile pile
 
     -- This lumps the two strands together
-    -- !s = maq_snp_call 2 theta $ uncurry (++) $ p_snp_pile pile -- XXX
+    -- !s = maq_snp_call theta $ uncurry (++) $ p_snp_pile pile -- XXX
 
     -- This treats them separately
     !s | r == r'    = Snp_GLs (U.zipWith (*) x y) r     -- same ref base (normal case): multiply
        | r == nucsN = Snp_GLs y r'                      -- forward ref is N, use backward call
        | otherwise  = Snp_GLs x r                       -- else use forward call (even if this is incorrect,
       where                                             -- there is nothing else we can do here)
-        Snp_GLs x r  = maq_snp_call 2 theta $ fst $ p_snp_pile pile
-        Snp_GLs y r' = maq_snp_call 2 theta $ snd $ p_snp_pile pile -}
+        Snp_GLs x r  = maq_snp_call theta $ fst $ p_snp_pile pile
+        Snp_GLs y r' = maq_snp_call theta $ snd $ p_snp_pile pile -}
 
 
 -- | Serialize the results from genotype calling in a sensible way.  We
@@ -221,10 +221,10 @@ compileBlocks = unfoldConvStream conv_one (Refseq 0, 0)
     conv_one (!rs,!po) = do
         cc <- headStream
 
-        let Snp_GLs snp_pls ref_allele = p_snp_pile cc
+        let ref_allele        = snp_refbase $ p_snp_pile cc
             snp_stats         = p_snp_stat cc
             indel_stats       = p_indel_stat cc
-            snp_likelihoods   = compact_likelihoods snp_pls
+            snp_likelihoods   = compact_likelihoods $ snp_gls $ p_snp_pile cc
             indel_likelihoods = compact_likelihoods $ fst $ p_indel_pile cc
             indel_variants    = snd $ p_indel_pile cc
 
