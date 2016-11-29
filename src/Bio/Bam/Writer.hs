@@ -2,6 +2,7 @@ module Bio.Bam.Writer (
     IsBamRec(..),
     encodeBamWith,
 
+    packBam,
     writeBamFile,
     writeBamHandle,
     pipeBamOutput,
@@ -14,6 +15,7 @@ import Bio.Iteratee
 import Bio.Iteratee.Builder
 import Bio.Prelude
 
+import Data.ByteString.Internal     ( ByteString(..) )
 import Data.ByteString.Builder      ( hPutBuilder )
 import Foreign.Marshal.Alloc        ( alloca )
 import Foreign.Storable             ( pokeByteOff, peek )
@@ -220,4 +222,9 @@ pushBamRec BamRec{..} = mconcat
         fromFloat :: Float -> Word32
         fromFloat float = unsafeDupablePerformIO $ alloca $ \buf ->
                           pokeByteOff buf 0 float >> peek buf
+
+packBam :: BamRec -> IO BamRaw
+packBam br = do bb' <- case pushBamRec br of Push p -> newBuffer 1000 >>= p
+                return $ bamRaw 0 (PS (buffer bb') 4 (len bb' - 4))
+
 

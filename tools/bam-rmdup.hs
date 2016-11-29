@@ -1,16 +1,15 @@
 import Bio.Bam
 import Bio.Bam.Rmdup
+import Bio.Iteratee.Builder
 import Bio.Prelude
-import Bio.Util.Numeric ( showNum, showOOM, estimateComplexity )
-import Paths_biohazard ( version )
+import Bio.Util.Numeric                         ( showNum, showOOM, estimateComplexity )
+import Paths_biohazard                          ( version )
 import System.Console.GetOpt
 
 import qualified Data.ByteString.Char8          as S
 import qualified Data.HashMap.Strict            as M
 import qualified Data.IntMap                    as I
 import qualified Data.Sequence                  as Z
-import qualified Data.Vector                    as VV
-import qualified Data.Vector.Algorithms.Intro   as VV
 import qualified Data.Vector.Generic            as V
 
 data Conf = Conf {
@@ -187,30 +186,38 @@ main = do
                 debug "mapping of read groups to libraries:\n"
                 mapM_ debug [ unpack k ++ " --> " ++ unpack v ++ "\n" | (k,v) <- M.toList tbl ]
 
-       let filters = progressBam "Rmdup at " debug refs' ><>
-                     mapChunks (mapMaybe (transform . unpackBam)) ><>
-                     mapChunksM (mapMM clean_multimap) ><>
-                     filterStream (\br -> (keep_unaligned || is_aligned br) &&
-                                          (keep_improper || is_proper br) &&
-                                          eff_len br >= min_len)
+       let cleanup = cleanup2 . transform . unpackBam
 
-       let (co, ou) = case output of Nothing -> (cheap_collapse', skipToEof)
-                                     Just  o -> (collapse, joinI $ wrapSortWith circtable $
-                                                           o (get_label tbl) (add_pg hdr { meta_refs = refs' }))
+           cleanup2  Nothing  = return []
+           cleanup2 (Just  b) = cleanup3 <$> clean_multimap b
 
-       ou' <- takeWhileE is_halfway_aligned ><> filters ><>
-              normalizeSortWith circtable ><>
-              filterStream (\b -> b_mapq b >= min_qual) ><>
-              rmdup (get_label tbl) strand_preserved (co keep_all) $
-              count_all (get_label tbl) `zipStreams` ou
+           cleanup3 (Just  b)
+                | keep_unaligned || is_aligned b
+                , keep_improper || is_proper b
+                , eff_len b >= min_len              = [b]
+           cleanup3 _                               = [ ]
 
-       let do_copy = do liftIO $ debug "\27[Krmdup done; copying junk\n" ; joinI (filters ou')
-           do_bail = do liftIO $ debug "\27[Krmdup done\n" ; lift (run ou')
+       (ct,ou) <- progressBam "Rmdup at" refs' 0x8000 debug                                          =$
+                  takeWhileE is_halfway_aligned                                                      =$
+                  concatMapStreamM cleanup                                                           =$
+                  normalizeSortWith circtable                                                        =$
+                  filterStream (\b -> b_mapq b >= min_qual)                                          =$
+                  case output of
+                       Nothing -> rmdup (get_label tbl) strand_preserved (cheap_collapse' keep_all)  =$
+                                  count_all (get_label tbl) `zipStreams` (skipToEof <$ skipToEof)
 
-       case which of
-            Unaln              -> do_copy
-            _ | keep_unaligned -> do_copy
-            _                  -> do_bail
+                       Just  o -> rmdup (get_label tbl) strand_preserved (collapse keep_all)         =$
+                                  zipStreams (count_all (get_label tbl))
+                                             (wrapSortWith circtable                                 $
+                                              o (get_label tbl) (add_pg hdr { meta_refs = refs' }))
+
+       let do_copy = progressBam "Copying junk at" refs' 0x8000 debug ><>
+                     concatMapStreamM cleanup
+
+       r <- case which of Unaln              -> lift (run $ do_copy =$ ou)
+                          _ | keep_unaligned -> lift (run $ do_copy =$ ou)
+                          _                  -> lift (run ou)
+       return (ct,r)
 
     putResult . unlines $
         "\27[K#RG\tin\tout\tin@MQ20\tsingle@MQ20\tunseen\ttotal\t%unique\t%exhausted"
@@ -332,13 +339,6 @@ writeLibBamFiles fp lbl hdr = tryHead >>= go M.empty
     subst ( c :    rest) l =  c  : subst rest l
 
 
-mapMM :: Monad m => (a -> m (Maybe b)) -> [a] -> m [b]
-mapMM f = go []
-  where
-    go acc [    ] = return $ reverse acc
-    go acc (a:as) = do b <- f a ; go (maybe acc (:acc) b) as
-
-
 check_flags :: Monad m => BamRec -> m (Maybe BamRec)
 check_flags b | extAsInt 1 "HI" b /= 1 = fail "cannot deal with HI /= 1"
               | extAsInt 1 "IH" b /= 1 = fail "cannot deal with IH /= 1"
@@ -351,36 +351,69 @@ clean_multi_flags b = return $ if extAsInt 1 "HI" b /= 1 then Nothing else Just 
     b' = b { b_exts = deleteE "HI" $ deleteE "IH" $ deleteE "NH" $ b_exts b }
 
 
+normalizeSortWith :: MonadIO m => IntMap (Seqid, Int) -> Enumeratee [BamRec] [BamRec] m a
+normalizeSortWith m = mapSortAtGroups m $ \(nm,l) r -> [ normalizeTo nm l r ]
+
+wrapSortWith :: MonadIO m => IntMap (Seqid, Int) -> Enumeratee [BamRec] [BamRec] m a
+wrapSortWith m = mapSortAtGroups m $ \(_,l) -> wrapTo l
+
 -- Given a map from reference sequences to arguments, extract those
 -- groups as list, apply a function to the argument and the list, pass
 -- the result on.  Absent groups are passed on as they are.  Note that
 -- ordering within groups is messed up (it doesn't matter here).
-mapAtGroups :: Monad m => IntMap a -> (a -> [BamRec] -> [BamRec]) -> Enumeratee [BamRec] [BamRec] m b
-mapAtGroups m f = eneeCheckIfDonePass no_group
+--
+-- We accumulate the 'Left' and 'Right' 'BamRec's directly into two BBs.
+-- This should result in two sorted BAM streams.  When done, we stream
+-- the buffers back (somehow...) and merge them.
+mapSortAtGroups :: MonadIO m => IntMap a -> (a -> BamRec -> [Either BamRec BamRec]) -> Enumeratee [BamRec] [BamRec] m b
+mapSortAtGroups m f = eneeCheckIfDonePass no_group
   where
     no_group k (Just e) = idone (liftI k) $ EOF (Just e)
     no_group k Nothing  = tryHead >>= maybe (idone (liftI k) $ EOF Nothing) (\a -> no_group_1 a k Nothing)
 
     no_group_1 _ k (Just e) = idone (liftI k) $ EOF (Just e)
-    no_group_1 a k Nothing  = case I.lookup (b_rname_int a) m of
+    no_group_1 a k Nothing  =
+        case I.lookup (b_rname_int a) m of
             Nothing  -> eneeCheckIfDonePass no_group . k $ Chunk [a]
-            Just arg -> cont_group (b_rname a) arg [a] k Nothing
+            Just arg -> do bbs <- pushTo (f arg a) (collect, collect)
+                           cont_group (b_rname a) arg bbs k Nothing
 
-    cont_group _rn _arg _acc k (Just e) = idone (liftI k) $ EOF (Just e)
-    cont_group  rn  arg  acc k Nothing  = tryHead >>= maybe flush_eof check1
+    cont_group _rn _arg _bbs k (Just  e) = idone (liftI k) $ EOF (Just e)
+    cont_group  rn  arg  bbs k  Nothing  = tryHead >>= maybe flush_eof check1
       where
-        flush_eof  = idone (k $ Chunk $ f arg acc) (EOF Nothing)
-        flush_go a = eneeCheckIfDonePass (no_group_1 a) . k . Chunk $ f arg acc
-        check1 a | b_rname a == rn = cont_group rn arg (a:acc) k Nothing
+        flush_eof  = streamOut bbs (liftI k)
+        flush_go a = streamOut bbs (liftI k) >>= eneeCheckIfDonePass (no_group_1 a)
+        check1 a | b_rname a == rn = do bbs' <- pushTo (f arg a) bbs
+                                        cont_group rn arg bbs' k Nothing
                  | otherwise       = flush_go a
 
     b_rname_int = fromIntegral . unRefseq . b_rname
 
-normalizeSortWith :: Monad m => IntMap (Seqid, Int) -> Enumeratee [BamRec] [BamRec] m a
-normalizeSortWith m = mapAtGroups m $ \(nm,l) -> sortPos . map (normalizeTo nm l)
 
-wrapSortWith :: Monad m => IntMap (Seqid, Int) -> Enumeratee [BamRec] [BamRec] m a
-wrapSortWith m = mapAtGroups m $ \(_,l) -> sortPos . concatMap (wrapTo l)
+collect :: MonadIO m => Iteratee [BamRec] m [Bytes]
+collect = mapChunks (foldMap pushBam) ><> encodeBgzfWith 1 =$ liftI (chunksToList [])
+  where
+    chunksToList acc (Chunk x) = y `seq` liftI (chunksToList (y:acc)) where y = S.copy x
+    chunksToList acc (EOF  mx) = idone (reverse acc) (EOF mx)
 
-sortPos :: [BamRec] -> [BamRec]
-sortPos l = VV.toList $ runST (VV.unsafeThaw (VV.fromList l) >>= \vm -> VV.sortBy (comparing b_pos) vm >> VV.unsafeFreeze vm)
+
+pushTo :: Monad m => [Either BamRec BamRec] -> (Iteratee [BamRec] m a, Iteratee [BamRec] m a)
+                  ->                         m (Iteratee [BamRec] m a, Iteratee [BamRec] m a)
+pushTo es (bb1,bb2) = (,) <$> enumPure1Chunk ls bb1 <*> enumPure1Chunk rs bb2
+  where (ls,rs) = partitionEithers es
+
+
+streamOut :: (MonadIO m, Nullable x)
+          => (Iteratee s (Iteratee x m) [Bytes], Iteratee s1 (Iteratee x m) [Bytes])
+          -> Enumeratee x [BamRec] m a
+streamOut (bb1,bb2) it = do
+    bs1 <- run bb1
+    bs2 <- run bb2
+    lift $ mergeEnums (streamBB bs1) (streamBB bs2) (mergeSortStreams (?)) it
+  where
+    (?) :: BamRec -> BamRec -> Ordering' BamRec
+    u ? v = if (b_rname &&& b_pos) u < (b_rname &&& b_pos) v then Less else NotLess
+
+    streamBB :: MonadIO m => [Bytes] -> Enumerator [BamRec] m b1
+    streamBB bb = enumList bb $= decompressBgzfBlocks $= convStream (map unpackBam <$> getBamRaw)
+

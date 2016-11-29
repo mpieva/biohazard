@@ -88,7 +88,7 @@ gather num say mumble hdr = case hdr_sorting $ meta_hdr hdr of
                 go subsam2vector
 
     go k = filterStream ((\b -> not (isPaired b) || isFirstMate b) . unpackBam) =$
-           progressNum "reading " mumble =$
+           progressNum "reading " 0x100000 mumble =$
            mapStream (fromTags "XI" "YI" &&& fromTags "XJ" "YJ") =$ k num
 
 
@@ -462,7 +462,7 @@ main = do
                                                     t' = BS.filter (\c -> c /= 'C' && c /= 'I' && c /= 'W') t
                                                 _                          -> b { b_exts = ex
                                                                                 , b_flag = b_flag b .&. complement flagFailsQC }) =$
-                               progressNum "writing " info =$
+                               progressNum "writing " 0x100000 info =$
                                maybe (mergeTrimBam default_fwd_adapters default_rev_adapters)
                                      (uncurry mergeTrimBam) cf_merge =$
                                out (add_pg hdr')

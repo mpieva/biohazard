@@ -29,6 +29,7 @@ module Bio.Iteratee (
     concatMapStreamM,
     mapMaybeStream,
     parMapChunksIO,
+    progressGen,
     progressNum,
     progressPos,
 
@@ -474,30 +475,34 @@ protectTerm itr = do
   where
     err = error "cowardly refusing to write binary data to terminal"
 
--- | A simple progress indicator that prints the number of records.
-progressNum :: (MonadIO m, Nullable s, ListLike s a)
-            => String -> (String -> IO ()) -> Enumeratee s s m b
-progressNum msg put = eneeCheckIfDonePass (icont . go 0)
+-- | A general progress indicator that prints some message after a set
+-- number of records have passed through.
+progressGen :: (MonadIO m, NullPoint s, ListLike s a)
+            => (Int -> a -> String) -> Int -> (String -> IO ()) -> Enumeratee s s m b
+progressGen msg sz put = eneeCheckIfDonePass (icont . go 0)
   where
     go !_ k (EOF   mx) = idone (liftI k) (EOF mx)
-    go !n k (Chunk as) = do let !n' = n + LL.length as
-                            when (n `div` 65536 /= n' `div` 65536) . liftIO .
-                                    put $ "\27[K" ++ msg ++ showNum n ++ "\r"
-                            eneeCheckIfDonePass (icont . go n') . k $ Chunk as
+    go !n k (Chunk as)
+        | LL.null as = liftI $ go n k
+        | otherwise  = let !n' = n + LL.length as
+                       in when (n' `div` sz /= n `div` sz) (liftIO . put $
+                                "\27[K" ++ msg n' (LL.head as) ++ "\r")
+                          `ioBind_` eneeCheckIfDonePass (icont . go n') (k $ Chunk as)
 
--- | A simple progress indicator that prints a position.
+-- | A simple progress indicator that prints the number of records.
+progressNum :: (MonadIO m, NullPoint s, ListLike s a)
+            => String -> Int -> (String -> IO ()) -> Enumeratee s s m b
+progressNum msg = progressGen (\n _ -> msg ++ " " ++ showNum n)
+
+-- | A simple progress indicator that prints a position every set number
+-- of passed records.
 progressPos :: (MonadIO m, ListLike s a, NullPoint s)
-            => (a -> (Refseq, Int)) -> String -> (String -> IO ()) -> Refs -> Enumeratee s s m b
-progressPos f msg put refs = eneeCheckIfDonePass (icont . go invalidRefseq 0)
-  where
-    go !_   !_   k   (EOF   mx) = idone (liftI k) (EOF mx)
-    go !rs0 !po0 k c@(Chunk as)
-        | LL.null as = liftI $ go rs0 po0 k
-        | otherwise  = when (rs1 /= rs0 || po1 `shiftR` 19 /= po0 `shiftR` 19)
-                            (let nm = S.unpack (sq_name (getRef refs rs1)) ++ ":"
-                             in put $ "\27[K" ++ msg ++ nm ++ showNum po1 ++ "\r")
-                       `ioBind_` eneeCheckIfDonePass (icont . go rs1 po1) (k c)
-          where (!rs1, !po1) = f (LL.head as)
+            => (a -> (Refseq, Int)) -> String -> Refs
+            -> Int -> (String -> IO ()) -> Enumeratee s s m b
+progressPos f msg refs =
+    progressGen $ \_ a -> let (!rs1, !po1) = f a
+                              !nm = unpack . sq_name $ getRef refs rs1
+                          in msg ++ " " ++ nm ++ ":" ++ showNum po1
 
 -- A very simple queue data type.
 -- Invariants: q = QQ l f b --> l == length f + length b

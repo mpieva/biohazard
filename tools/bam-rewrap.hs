@@ -70,8 +70,10 @@ parseArgs refs | Z.null refs = error $ "no target sequences found (empty input?)
 -- | This runs both stages of the rewrapping: First normalize alignments
 -- (POS must be in the canonical interval) and fix XA, MPOS, MAPQ where
 -- appropriate, then duplicate the read and softmask the noncanonical
--- parts.  Rmdup fits in between the two, hence the split
+-- parts.  Rmdup fits in between the two, hence the split.  We ignore
+-- sorting in here.
 rewrap :: M.Map Refseq (Int,Bytes) -> BamRec -> [BamRec]
-rewrap m b = maybe [b] (\(l,nm) -> wrapTo l $ normalizeTo nm l b)
+rewrap m b = maybe [b] (\(l,nm) -> map (either id id) . wrapTo l .
+                                   either id id . normalizeTo nm l $ b)
              $ M.lookup (b_rname b) m
 

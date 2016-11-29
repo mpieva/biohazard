@@ -21,13 +21,11 @@ import Bio.Iteratee hiding ( NullPoint )
 import Bio.Iteratee.Bgzf
 import Bio.Prelude
 import Data.NullPoint ( NullPoint(..) )
-import Data.Primitive.Addr
-import Data.Primitive.ByteArray
+import Foreign.ForeignPtr
 import Foreign.Marshal.Alloc
 import Foreign.Marshal.Utils
 import Foreign.Ptr
 import Foreign.Storable
-import GHC.Exts
 
 import qualified Data.ByteString            as B
 import qualified Data.ByteString.Unsafe     as B
@@ -39,7 +37,8 @@ import qualified Data.ByteString.Lazy       as B ( foldrChunks )
 -- very practical), we don't get fragmentation either.  We also avoid
 -- copies for the most part, since no intermediate 'ByteString's, either
 -- lazy or strict have to be allocated.
-data BB = BB { buffer :: {-# UNPACK #-} !(MutableByteArray RealWorld)
+data BB = BB { buffer :: {-# UNPACK #-} !(ForeignPtr Word8)
+             , size   :: {-# UNPACK #-} !Int
              , len    :: {-# UNPACK #-} !Int
              , mark   :: {-# UNPACK #-} !Int
              , mark2  :: {-# UNPACK #-} !Int }
@@ -59,30 +58,35 @@ instance NullPoint Push where
     empty = Push return
 
 
--- | Creates a buffer with initial capacity of ~128k.
-newBuffer :: IO BB
-newBuffer = newPinnedByteArray 128000 >>= \ar -> return $ BB ar 0 0 0
+-- | Creates a buffer with a given initial capacity.
+newBuffer :: Int -> IO BB
+newBuffer sz = mallocForeignPtrBytes sz >>= \ar -> return $ BB ar sz 0 0 0
 
 -- | Ensures a given free space in the buffer by doubling its capacity
 -- if necessary.
 {-# INLINE ensureBuffer #-}
 ensureBuffer :: Int -> Push
-ensureBuffer n = Push $ \b -> do
-    let sz = sizeofMutableByteArray (buffer b)
-    if len b + n < sz
-       then return b
-       else expandBuffer b
+ensureBuffer n = Push $ \b ->
+    if len b + n < size b
+    then return b
+    else expandBuffer b
 
 expandBuffer :: BB -> IO BB
-expandBuffer b = do let sz = sizeofMutableByteArray (buffer b)
-                    arr1 <- newPinnedByteArray (sz+sz)
-                    copyMutableByteArray arr1 0 (buffer b) 0 (len b)
-                    return $ b { buffer = arr1 }
+expandBuffer b = do arr1 <- mallocForeignPtrBytes (size b + size b)
+                    withForeignPtr arr1 $ \d ->
+                        withForeignPtr (buffer b) $ \s ->
+                             copyBytes d s (len b)
+                    return $ BB { buffer = arr1
+                                , size   = size b + size b
+                                , len    = len b
+                                , mark   = mark b
+                                , mark2  = mark2 b }
 
 {-# INLINE unsafePushByte #-}
 unsafePushByte :: Word8 -> Push
 unsafePushByte w = Push $ \b -> do
-    writeByteArray (buffer b) (len b) w
+    withForeignPtr (buffer b) $ \p ->
+        pokeByteOff p (len b) w
     return $ b { len = len b + 1 }
 
 {-# INLINE pushByte #-}
@@ -112,10 +116,10 @@ pushWord16 w = ensureBuffer 2 <> unsafePushWord16 w
 {-# INLINE unsafePushByteString #-}
 unsafePushByteString :: B.ByteString -> Push
 unsafePushByteString bs = Push $ \b ->
-    B.unsafeUseAsCStringLen bs $ \(p,ln) -> do
-    case mutableByteArrayContents (buffer b) of
-        Addr adr -> copyBytes (Ptr adr `plusPtr` len b) p ln
-    return $ b { len = len b + ln }
+    B.unsafeUseAsCStringLen bs $ \(p,ln) ->
+        withForeignPtr (buffer b)  $ \adr ->
+            b { len = len b + ln } <$
+                copyBytes (adr `plusPtr` len b) p ln
 
 {-# INLINE pushByteString #-}
 pushByteString :: B.ByteString -> Push
@@ -150,12 +154,12 @@ setMark = ensureBuffer 4 <> unsafeSetMark
 -- preceded by a corresponding 'setMark'.
 {-# INLINE endRecord #-}
 endRecord :: Push
-endRecord = Push $ \b -> do
+endRecord = Push $ \b -> withForeignPtr (buffer b) $ \p -> do
     let !l = len b - mark b - 4
-    writeByteArray (buffer b) (mark b + 0) (fromIntegral $ shiftR l  0 :: Word8)
-    writeByteArray (buffer b) (mark b + 1) (fromIntegral $ shiftR l  8 :: Word8)
-    writeByteArray (buffer b) (mark b + 2) (fromIntegral $ shiftR l 16 :: Word8)
-    writeByteArray (buffer b) (mark b + 3) (fromIntegral $ shiftR l 24 :: Word8)
+    pokeByteOff p (mark b + 0) (fromIntegral $ shiftR l  0 :: Word8)
+    pokeByteOff p (mark b + 1) (fromIntegral $ shiftR l  8 :: Word8)
+    pokeByteOff p (mark b + 2) (fromIntegral $ shiftR l 16 :: Word8)
+    pokeByteOff p (mark b + 3) (fromIntegral $ shiftR l 24 :: Word8)
     return b
 
 -- | Ends the first part of a record.  The length is filled in *before*
@@ -165,12 +169,12 @@ endRecord = Push $ \b -> do
 -- of 'setMark'.
 {-# INLINE endRecordPart1 #-}
 endRecordPart1 :: Push
-endRecordPart1 = Push $ \b -> do
+endRecordPart1 = Push $ \b -> withForeignPtr (buffer b) $ \p -> do
     let !l = len b - mark b - 4
-    writeByteArray (buffer b) (mark b - 4) (fromIntegral $ shiftR l  0 :: Word8)
-    writeByteArray (buffer b) (mark b - 3) (fromIntegral $ shiftR l  8 :: Word8)
-    writeByteArray (buffer b) (mark b - 2) (fromIntegral $ shiftR l 16 :: Word8)
-    writeByteArray (buffer b) (mark b - 1) (fromIntegral $ shiftR l 24 :: Word8)
+    pokeByteOff p (mark b - 4) (fromIntegral $ shiftR l  0 :: Word8)
+    pokeByteOff p (mark b - 3) (fromIntegral $ shiftR l  8 :: Word8)
+    pokeByteOff p (mark b - 2) (fromIntegral $ shiftR l 16 :: Word8)
+    pokeByteOff p (mark b - 1) (fromIntegral $ shiftR l 24 :: Word8)
     return $ b { mark2 = len b }
 
 -- | Ends the second part of a record.  The length is filled in at the
@@ -180,37 +184,37 @@ endRecordPart1 = Push $ \b -> do
 -- 'setMark' and one of 'endRecordPart1'.
 {-# INLINE endRecordPart2 #-}
 endRecordPart2 :: Push
-endRecordPart2 = Push $ \b -> do
+endRecordPart2 = Push $ \b -> withForeignPtr (buffer b) $ \p -> do
     let !l = len b - mark2 b
-    writeByteArray (buffer b) (mark b + 0) (fromIntegral $ shiftR l  0 :: Word8)
-    writeByteArray (buffer b) (mark b + 1) (fromIntegral $ shiftR l  8 :: Word8)
-    writeByteArray (buffer b) (mark b + 2) (fromIntegral $ shiftR l 16 :: Word8)
-    writeByteArray (buffer b) (mark b + 3) (fromIntegral $ shiftR l 24 :: Word8)
+    pokeByteOff p (mark b + 0) (fromIntegral $ shiftR l  0 :: Word8)
+    pokeByteOff p (mark b + 1) (fromIntegral $ shiftR l  8 :: Word8)
+    pokeByteOff p (mark b + 2) (fromIntegral $ shiftR l 16 :: Word8)
+    pokeByteOff p (mark b + 3) (fromIntegral $ shiftR l 24 :: Word8)
     return b
 
 
 {-# INLINE encodeBgzfWith #-}
 encodeBgzfWith :: MonadIO m => Int -> Enumeratee Push B.ByteString m b
-encodeBgzfWith lv o = newBuffer `ioBind` \bb -> eneeCheckIfDone (liftI . step bb) o
+encodeBgzfWith lv o = newBuffer 128000 `ioBind` \bb -> eneeCheckIfDone (liftI . step bb) o
   where
     step bb k (EOF  mx) = finalFlush bb k mx
     step bb k (Chunk (Push p)) = p bb `ioBind` \bb' -> tryFlush bb' 0 k
 
     tryFlush bb off k
         | len bb - off < maxBlockSize
-            = copyMutableByteArray (buffer bb) 0 (buffer bb) off (len bb - off)
+            = withForeignPtr (buffer bb)
+                    (\p -> moveBytes p (p `plusPtr` off) (len bb - off))
               `ioBind_` liftI (step (bb { len = len bb - off
                                         , mark = mark bb - off `max` 0 }) k)
-
         | otherwise
-            = (case mutableByteArrayContents (buffer bb) of
-                            Addr adr -> compressChunk lv (Ptr adr `plusPtr` off) (fromIntegral maxBlockSize))
+            = withForeignPtr (buffer bb)
+                    (\adr -> compressChunk lv (adr `plusPtr` off) (fromIntegral maxBlockSize))
               `ioBind` eneeCheckIfDone (tryFlush bb (off+maxBlockSize)) . k . Chunk
 
     finalFlush bb k mx
         | len bb < maxBlockSize
-            = (case mutableByteArrayContents (buffer bb) of
-                            Addr adr -> compressChunk lv (Ptr adr) (fromIntegral $ len bb))
+            = withForeignPtr (buffer bb)
+                    (\adr -> compressChunk lv (castPtr adr) (fromIntegral $ len bb))
               `ioBind` eneeCheckIfDone (finalFlush2 mx) . k . Chunk
 
         | otherwise

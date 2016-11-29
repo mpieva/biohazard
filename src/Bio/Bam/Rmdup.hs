@@ -499,12 +499,15 @@ a `oplus` b = a + b
 
 -- | Normalize a read's alignment to fall into the canonical region
 -- of [0..l].  Takes the name of the reference sequence and its length.
-normalizeTo :: Seqid -> Int -> BamRec -> BamRec
-normalizeTo nm l b = b { b_pos  = b_pos b `mod` l
-                       , b_mpos = b_mpos b `mod` l
-                       , b_mapq = if dups_are_fine then Q 37 else b_mapq b
-                       , b_exts = if dups_are_fine then deleteE "XA" (b_exts b) else b_exts b }
+-- Returns @Left x@ if the coordinate decreased so the result is out of
+-- order now, @Right x@ if the coordinate is unchanged.
+normalizeTo :: Seqid -> Int -> BamRec -> Either BamRec BamRec
+normalizeTo nm l b = lr $ b { b_pos  = b_pos b `mod` l
+                            , b_mpos = b_mpos b `mod` l
+                            , b_mapq = if dups_are_fine then Q 37 else b_mapq b
+                            , b_exts = if dups_are_fine then deleteE "XA" (b_exts b) else b_exts b }
   where
+    lr = if b_pos b >= l then Left else Right
     dups_are_fine  = all_match_XA (extAsString "XA" b)
     all_match_XA s = case T.split ';' s of [xa1, xa2] | T.null xa2 -> one_match_XA xa1
                                            [xa1]                   -> one_match_XA xa1
@@ -517,15 +520,17 @@ normalizeTo nm l b = b { b_pos  = b_pos b `mod` l
 
 -- | Wraps a read to be fully contained in the canonical interval
 -- [0..l].  If the read overhangs, it is duplicated and both copies are
--- suitably masked.
-wrapTo :: Int -> BamRec -> [BamRec]
-wrapTo l b = if overhangs then do_wrap else [b]
+-- suitably masked.  A piece with changed coordinate that is now out of
+-- order is returned as @Left x@, if the order is fine, it is returned
+-- as @Right x@.
+wrapTo :: Int -> BamRec -> [Either BamRec BamRec]
+wrapTo l b = if overhangs then do_wrap else [Right b]
   where
     overhangs = not (isUnmapped b) && b_pos b < l && l < b_pos b + alignedLength (b_cigar b)
 
     do_wrap = case split_ecig (l - b_pos b) $ toECig (b_cigar b) (maybe [] id $ getMd b) of
-                  (left,right) -> [ b { b_cigar = toCigar  left }            `setMD` left
-                                  , b { b_cigar = toCigar right, b_pos = 0 } `setMD` right ]
+                  (left,right) -> [ Right $ b { b_cigar = toCigar  left }            `setMD` left
+                                  , Left  $ b { b_cigar = toCigar right, b_pos = 0 } `setMD` right ]
 
 -- | Split an 'ECig' into two at some position.  The position is counted
 -- in terms of the reference (therefore, deletions count, insertions

@@ -387,6 +387,6 @@ setQualFlag c br = br { b_exts = updateE "ZQ" (Text s') $ b_exts br }
     s' = if c `S.elem` s then s else c `S.cons` s
 
 -- | A simple progress indicator that prints sequence id and position.
-progressBam :: MonadIO m => String -> (String -> IO ()) -> Refs -> Enumeratee [BamRaw] [BamRaw] m a
+progressBam :: MonadIO m => String -> Refs -> Int -> (String -> IO ()) -> Enumeratee [BamRaw] [BamRaw] m a
 progressBam = progressPos (\br -> case unpackBam br of b -> (b_rname b, b_pos b))
 

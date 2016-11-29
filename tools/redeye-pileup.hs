@@ -110,7 +110,7 @@ main = do
 
     (tab,()) <- withFile (conf_output ++ ".#") WriteMode                                        $ \ohdl ->
                 mergeLibraries conf_report (reverse conf_libs) conf_chrom >=> run               $ \hdr ->
-                progressPos (\(rs, p, _) -> (rs, p)) "GT call at " conf_report (meta_refs hdr) =$
+                progressPos (\(a,b,_)->(a,b)) "GT call at" (meta_refs hdr) 0x4000 conf_report  =$
                 pileup                                                                         =$
                 mapStream (calls conf_theta)                                                   =$
                 zipStreams tabulateSingle (output_cbor ohdl $ meta_refs hdr)
