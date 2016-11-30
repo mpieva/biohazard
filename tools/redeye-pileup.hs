@@ -123,7 +123,7 @@ main = do
                 mergeInputRgns combineCoordinates conf_chrom files >=> run                      $ \hdr ->
                 takeWhileE (isValidRefseq . b_rname . unpackBam)                               =$
                 concatMapStream (decompose_dmg_from conf_dmg)                                  =$
-                progressPos (\(rs, p, _) -> (rs, p)) "GT call at " conf_report (meta_refs hdr) =$
+                progressPos (\(a,b,_)->(a,b)) "GT call at" (meta_refs hdr) 0x4000 conf_report  =$
                 pileup                                                                         =$
                 mapStream (calls conf_theta)                                                   =$
                 zipStreams tabulateSingle (output_cbor ohdl $ meta_refs hdr)

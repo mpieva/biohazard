@@ -378,9 +378,9 @@ Executable bam-rmdup
                        biohazard,
                        bytestring,
                        containers,
+                       -- primitive,
                        unordered-containers,
-                       vector,
-                       vector-algorithms
+                       vector
 
 Executable bam-trim
   Main-is:             bam-trim.hs
