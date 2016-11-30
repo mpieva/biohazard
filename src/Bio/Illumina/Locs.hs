@@ -1,3 +1,4 @@
+{-# LANGUAGE ForeignFunctionInterface #-}
 -- | Parsing Illumina location files.  It appears we have to support
 -- pos.txt, locs and clocs files; don't know if they come in compressed
 -- versions, too.  Either way, we have one file per tile, and it lists X
@@ -15,38 +16,42 @@ import Data.Vector.Fusion.Bundle.Monadic    ( fromStream )
 import Data.Vector.Fusion.Bundle.Size       ( Size(..) )
 import Data.Vector.Fusion.Stream.Monadic    ( Stream(..), Step(..) )
 import Data.Vector.Generic                  ( unstream )
-import Foreign.C.Types                      ( CChar )
-import Foreign.Marshal.Utils
-import Foreign.Ptr
+import Foreign.C.Types                      ( CChar, CDouble(..) )
+import Foreign.Marshal.Alloc                ( alloca )
+import Foreign.Marshal.Utils                ( copyBytes )
+import Foreign.Ptr                          ( plusPtr, Ptr )
+import Foreign.Storable                     ( peek )
 
+import qualified Data.ByteString                 as B
 import qualified Data.ByteString.Unsafe          as B
 import qualified Data.ByteString.Lazy            as L
 import qualified Data.ByteString.Lazy.Char8      as C
-import qualified Data.ByteString.Lex.Lazy.Double as C
 import qualified Data.Vector.Storable            as S
 import qualified Data.Vector.Storable.Mutable    as SM
 import qualified Data.Vector.Unboxed             as U
 
 newtype Locs = Locs (U.Vector (Word32,Word32))
 
-
 -- Pos files are text, the first two words on each line are x and y
 -- coordinate (signed decimal floating point numbers).  They are rounded
 -- to integers and clamped to a minimum of zero.
 readPosTxt :: FilePath -> IO Locs
-readPosTxt fp = Locs . U.unfoldr step . decompressGzip <$> L.readFile fp
+readPosTxt fp = Locs . U.fromList . map parse . C.lines . decompressGzip <$> L.readFile fp
   where
-    round' :: Double -> Word32
+    round' :: CDouble -> Word32
     round' = round . max 0
 
-    step inp
-        = case C.readDouble (C.dropWhile isSpace inp) of
-            Just (x,in1) -> case C.readDouble (C.dropWhile isSpace in1) of
-                Just (y,in2) ->
-                    Just ( (round' x, round' y)
-                         , C.drop 1 (C.dropWhile (/= '\n') in2) )
-                _ -> Nothing
-            _ -> Nothing
+    parse l = let s = B.concat $ C.toChunks l ++ ["\0"]
+              in unsafePerformIO $ B.unsafeUseAsCString s $ \p0  ->
+                 alloca                                   $ \ppe ->
+                 strtod p0 ppe                          >>= \x   ->
+                 peek ppe                               >>= \p1  ->
+                 strtod p1 ppe                          >>= \y   ->
+                 return (round' x, round' y)
+
+foreign import ccall unsafe "static stdlib.h strtod" strtod
+    :: Ptr CChar -> Ptr (Ptr CChar) -> IO CDouble
+
 
 -- | Locs files have three header words (4 bytes, little endian), the
 -- third is the number of clusters.  They are followed by two floats
