@@ -399,7 +399,7 @@ collect = mapChunks (foldMap pushBam) ><> encodeBgzfWith 1 =$ liftI (chunksToLis
 
 pushTo :: Monad m => [Either BamRec BamRec] -> (Iteratee [BamRec] m a, Iteratee [BamRec] m a)
                   ->                         m (Iteratee [BamRec] m a, Iteratee [BamRec] m a)
-pushTo es (bb1,bb2) = (,) <$> enumPure1Chunk ls bb1 <*> enumPure1Chunk rs bb2
+pushTo es (bb1,bb2) = liftM2 (,) (enumPure1Chunk ls bb1) (enumPure1Chunk rs bb2)
   where (ls,rs) = partitionEithers es
 
 
@@ -415,5 +415,5 @@ streamOut (bb1,bb2) it = do
     u ? v = if (b_rname &&& b_pos) u < (b_rname &&& b_pos) v then Less else NotLess
 
     streamBB :: MonadIO m => [Bytes] -> Enumerator [BamRec] m b1
-    streamBB bb = enumList bb $= decompressBgzfBlocks $= convStream (map unpackBam <$> getBamRaw)
+    streamBB bb = enumList bb $= decompressBgzfBlocks $= convStream (map unpackBam `liftM` getBamRaw)
 
