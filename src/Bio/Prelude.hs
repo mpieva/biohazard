@@ -106,10 +106,9 @@ isRight = either (const True) (const False)
 #endif
 
 fdPut :: Fd -> Bytes -> IO ()
-fdPut fd s =
-    B.unsafeUseAsCStringLen s $ \(p,l) ->
-    throwErrnoIf_ (/= fromIntegral l) "fdPut" $
-    fdWriteBuf fd (castPtr p) (fromIntegral l)
+fdPut fd s = B.unsafeUseAsCStringLen s $ \(p,l) ->
+             throwErrnoIf_ (/= fromIntegral l) "fdPut" $
+             fdWriteBuf fd (castPtr p) (fromIntegral l)
 
 fdPutLazy :: Fd -> LazyBytes -> IO ()
 fdPutLazy fd = mapM_ (fdPut fd) . BL.toChunks

@@ -127,43 +127,37 @@ mapped_only p = case p of
 pipe_to :: FilePath -> [String] -> ([Config -> IO Config], t1, t2) -> ([Config -> IO Config], t1, t2)
 pipe_to cmd args (opts, errs, fs) = (mkout : opts, errs, fs)
   where
+    mk1out key test (as, flush, qs, vs, ps, rfds)
+        | all (/= key) as = return (as, flush, qs, vs, ps, rfds)
+        | otherwise = do
+            (pout, pin) <- createPipe
+            queue <- newTQueueIO
+            vnum <- newTVarIO (0::Int)
+            pid <- async $ flush_fastq queue vnum pin
+            link pid
+
+            return ( map (\a -> if a == key then "/dev/fd/" ++ show pout else a) as
+                   , \br -> when (test br) (modifyTVar' vnum succ >> writeTQueue queue (Just br)) >> flush br
+                   , queue : qs
+                   , vnum : vs
+                   , pid : ps
+                   , pout : rfds )
+
     mkout cfg = do
-        (clowns_out, clowns_in) <- createPipe
-        (jokers_out, jokers_in) <- createPipe
-
-        let subst "CLOWNS" = "/dev/fd/" ++ show clowns_out
-            subst "JOKERS" = "/dev/fd/" ++ show jokers_out
-            subst        x = x
-
-        pid_cmd <- spawnProcess cmd $ map subst args
-
-        clowns_queue <- newTQueueIO
-        jokers_queue <- newTQueueIO
-        num_clowns <- newTVarIO (0::Int)
-        num_jokers <- newTVarIO (0::Int)
-
-        pidl <- async $ flush_fastq clowns_queue num_clowns clowns_in
-        pidr <- async $ flush_fastq jokers_queue num_jokers jokers_in
-
-        let test_cap = do nl <- readTVar num_clowns
-                          nr <- readTVar num_jokers
-                          when (min nl nr > 64) retry
-
-            flush_bam br | isFirstMate  br = do test_cap
-                                                modifyTVar' num_clowns succ
-                                                writeTQueue clowns_queue (Just br)
-                         | isSecondMate br = do test_cap
-                                                modifyTVar' num_jokers succ
-                                                writeTQueue jokers_queue (Just br)
-                         | otherwise       = do return ()
+        (args', flush_bam, queues, vars, pids, rfds) <- mk1out "CLOWNS" isFirstMate =<<
+                                                        mk1out "JOKERS" isSecondMate =<<
+                                                        mk1out "MIDDLE" (not . isPaired)
+                                                          (args, const (return ()), [], [], [], [])
+        pid_cmd <- spawnProcess cmd args'
+        mapM_ closeFd rfds
 
         return $ cfg { output = \_ -> do
-                    mapStreamM_ (atomically . flush_bam)
-                    liftIO $ do atomically $ do writeTQueue clowns_queue Nothing
-                                                writeTQueue jokers_queue Nothing
-                                wait pidl
-                                wait pidr
-                                waitForProcess pid_cmd }
+            mapStreamM_ (\br -> atomically $ do ns <- mapM readTVar vars
+                                                when (minimum ns > 64) retry
+                                                flush_bam br)
+            liftIO $ do atomically $ mapM_ (flip writeTQueue Nothing) queues
+                        mapM_ wait pids
+                        waitForProcess pid_cmd }
 
     flush_fastq qq nn fd = do
             mbr <- atomically $ readTQueue qq <* modifyTVar' nn pred
