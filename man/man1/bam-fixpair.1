@@ -16,7 +16,7 @@ bam-fixpair \- bring read pairs together an repair them
 .I option
 .B |
 .I file
-.B ... ] --exec [program] CLOWNS JOKERS
+.B ... ] --exec [program] CLOWNS MIDDLE JOKERS
 
 .SH DESCRIPTION
 .B bam-fixpair
@@ -44,17 +44,17 @@ command line for
 .B bam-fixpair
 and is followed by the command line of a program to execute.  The
 command line shall contain the literal words
-.IR CLOWNS and JOKERS
-exactly once each.  These will be replaced with file names that refer to
-pipes such that reading from
+.IR CLOWNS ", " MIDDLE " and " JOKERS
+up to once each.  If present, these will be replaced with file names
+that refer to pipes such that reading from
 .I CLOWNS
-yields the first mates and 
+yields the first mates,
 .I JOKERS
-yields the second mates of each read pair in the same order.  To avoid
-leaking memory, the executed program should read from both file
-descriptors in an interleaved fashion.  Single reads, whether from the
-input or generated from widows, are silently dropped.  
-When done,
+yields the second mates of each read pair in the same order and
+.I MIDDLE
+yields the unpaired reads.  To avoid leaking memory, the executed
+program should read from all these file descriptors in an interleaved
+fashion.  When done,
 .B bam-fixpair
 exists with the exit code of the external program. 
 
