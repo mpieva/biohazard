@@ -25,7 +25,7 @@ import Bio.Prelude
 import Bio.Util.AD
 import Bio.Util.AD2
 import Bio.Util.Numeric              ( log1pexp )
-import Bio.Util.Pretty
+import Data.Aeson
 import Data.Binary
 import Data.Vector.Binary            ()
 
@@ -212,8 +212,6 @@ estimateDamageFromFiles lmin params fs = do
 data DivTable = DivTable !Double !(U.Vector Int) deriving (Show, Generic)
 
 instance Binary DivTable
-instance Pretty DivTable where pretty = default_pretty
-instance Parse  DivTable where parse  = default_parse
 
 instance Monoid DivTable where
     mempty = DivTable 0 U.empty
@@ -231,8 +229,7 @@ data DivEst = DivEst {
     conf_region :: [( [Double], [Double] )]
   } deriving (Show, Generic)
 
-instance Pretty DivEst where pretty = default_pretty
-instance Parse  DivEst where parse  = default_parse
+instance ToJSON DivEst
 
 -- XXX we should estimate an indel rate, to be appended as the fourth
 -- result (but that needs different tables)
@@ -286,11 +283,11 @@ llk' tab base delta eta = block (base+0) g_RR g_RA g_AA
 -- estimation afterwards.  Returns the product of the
 -- parameter-independent parts of the likehoods and the histogram
 -- indexed by D and H (see @genotyping.pdf@ for details).
-tabulateSingle :: (Functor m, MonadIO m) => Iteratee [Calls] m DivTable
+tabulateSingle :: MonadIO m => Iteratee [Calls] m DivTable
 tabulateSingle = do
     tab <- liftIO $ M.replicate (12 * maxD * maxD) (0 :: Int)
-    DivTable <$> foldStreamM (\acc -> accum tab acc . p_snp_pile) (0 :: Double)
-             <*> liftIO (U.unsafeFreeze tab)
+    DivTable `liftM` foldStreamM (\acc -> accum tab acc . p_snp_pile) (0 :: Double)
+                `ap` liftIO (U.unsafeFreeze tab)
   where
     maxD = 64
 

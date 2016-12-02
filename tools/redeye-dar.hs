@@ -1,3 +1,4 @@
+{-# LANGUAGE FlexibleContexts #-}
 -- Estimates aDNA damage.  Crude first version.
 --
 -- - Read or subsample a BAM file, make compact representation of the reads.
@@ -34,16 +35,18 @@ import Bio.Adna
 import Bio.Bam
 import Bio.Bam.Pileup
 import Bio.Genocall
-import Bio.Genocall.Estimators          ( DivEst(..), tabulateSingle, estimateSingle )
+import Bio.Genocall.Estimators          ( DivEst(..), tabulateSingle, estimateSingle, good_regions )
 import Bio.Prelude
 import Bio.Util.AD
-import Bio.Util.Pretty
+import Data.Aeson.Encode.Pretty
 import System.Console.GetOpt
 
+import qualified Data.ByteString.Lazy.Char8     as L
 import qualified Data.HashMap.Strict            as H
+import qualified Data.Sequence                  as Z
 import qualified Data.Vector                    as V
 import qualified Data.Vector.Unboxed            as U
-import qualified Data.Vector.Unboxed.Mutable    as UM
+import qualified Data.Vector.Unboxed.Mutable    as M
 import qualified Text.PrettyPrint.Leijen.Text   as P
 
 data Conf = Conf {
@@ -84,21 +87,12 @@ main = do
     -- 'redeye-pileup'), but also into a caller that will estimate
     -- damage.
     let iter sp0 mod0 = do ((u,v), model1) <- emIter sp0 mod0 conf_report files
-                           pprint u
-                           pprint v
+                           L.putStrLn $ encodePretty (u,v)
                            -- pprint $ H.toList model1
                            iter (case point_est u of [d,h] -> SinglePop d h) model1
 
     iter (SinglePop 0.001 0.002) H.empty
 
-
-instance Pretty a => Pretty (SubstModel_ a) where pretty = default_pretty
-
-instance Pretty Mat44D where
-    pretty _ (Mat44D v) =
-        P.encloseSep (P.char '[') (P.char ']') P.empty
-            [ P.encloseSep (P.char '[') (P.char ']') (P.char ',') (map P.double vs)
-            | i <- [0,4,8,12], let vs = U.toList (U.slice i 4 v) ]
 
 -- One iteration of EM algorithm.  We go in with a substitution model
 -- and het/div, we come out with new estimates.  We get het/div from
@@ -111,8 +105,9 @@ emIter divest mod0 report infiles =
         liftIO (mapM fresh_subst_model mod0 >>= newIORef)                         >>= \smodel ->
         concatInputs infiles >=> run                                                $ \hdr ->
         concatMapStreamM (decompose_dmg_from smodel)                               =$
-        progressPos (\(rs, p, _) -> (rs, p)) "GT call at " report (meta_refs hdr)  =$
+        progressPos (\(rs,p,_)->(rs,p)) "GT call at" (meta_refs hdr) 0x8000 report =$
         pileup                                                                     =$
+        filterPilesWith (the_regions hdr)                                          =$
         mapStream  ( id &&& calls )                                                =$
         zipStreams ( mapStream snd                                      =$
                      tabulateSingle                                     >>=
@@ -120,6 +115,23 @@ emIter divest mod0 report infiles =
                    ( mapStreamM_ (uncurry (updateSubstModel divest))    >>
                      liftIO (readIORef smodel)                          >>=
                      liftIO . mapM (freezeSubstModel . snd) )
+  where
+    the_regions hdr = sort [ Region (Refseq $ fromIntegral ri) p (p+l)
+                           | (ch, p, l) <- good_regions
+                           , let Just ri = Z.findIndexL ((==) ch . sq_name) (meta_refs hdr) ]
+
+
+filterPilesWith :: Monad m => [Region] -> Enumeratee [Pile a] [Pile a] m b
+filterPilesWith = unfoldConvStream go
+  where
+    go [    ] = ([],[]) <$ skipToEof
+    go (r:rs) = do mp <- peekStream
+                   case mp of
+                        Just p | (p_refseq p, p_pos p) <  (refseq r, start r) -> headStream >> go (r:rs)
+                               | (p_refseq p, p_pos p) >= (refseq r, end   r) -> go rs
+                               | otherwise                                    -> (\x -> (r:rs, [x])) <$> headStream
+                        Nothing                                               -> return ([],[])
+
 
 -- Probabilistically count substitutions.  We infer from posterior
 -- genotype probabilities what the base must have been, then count
@@ -129,8 +141,8 @@ updateSubstModel divest pile cs = mapM_ count_base bases
   where
     postp = single_pop_posterior divest (snp_refbase (p_snp_pile cs)) (snp_gls (p_snp_pile cs))
 
-    -- Prior probilities of the haploid base before damage
-    -- @P(H) = \sum_{G} P(H|G) P(G)@
+    -- Posterior probalities of the haploid base before damage
+    -- @P(H) = \sum_{G} P(H|G) P(G|D)@
     pH_A = fromProb $ postp U.! 0 + 0.5 * ( postp U.! 1 + postp U.! 3 + postp U.! 6 )
     pH_C = fromProb $ postp U.! 2 + 0.5 * ( postp U.! 1 + postp U.! 4 + postp U.! 7 )
     pH_G = fromProb $ postp U.! 5 + 0.5 * ( postp U.! 3 + postp U.! 4 + postp U.! 8 )
@@ -139,8 +151,9 @@ updateSubstModel divest pile cs = mapM_ count_base bases
     -- XXX This ignores map quality.  I don't think it matters.
     bases = map snd $ uncurry (++) $ p_snp_pile pile
 
-    -- P(H:->X) = P(H|X) = P(X|H)P(H)/P(X)
-    --          = P(X|H)P(H) / (\sum_H' P(X|H') P(H'))
+    -- P(H:->X) = P(H|X)
+    --          = P(X|H) P(H) / P(X)
+    --          = P(X|H) P(H) / \sum_H' P(X|H') P(H')
     --
     -- We get P(X|H) from the old substitution model.
     -- Fortunately, it's actually available.
@@ -244,12 +257,12 @@ decompose_dmg_from ref raw = do
 fresh_subst_model :: SubstModel -> IO (SubstModel, MSubstModel)
 fresh_subst_model m = (,) m <$> m'
   where
-    m' = SubstModel <$> V.mapM (const nullmat) (left_substs_fwd   m)
-                    <*>               nullmat
-                    <*> V.mapM (const nullmat) (right_substs_fwd  m)
-                    <*> V.mapM (const nullmat) (left_substs_rev   m)
-                    <*>               nullmat
-                    <*> V.mapM (const nullmat) (right_substs_rev  m)
+    m' = SubstModel <$> V.mapM nullmat (left_substs_fwd   m)
+                    <*>        nullmat (middle_substs_fwd m)
+                    <*> V.mapM nullmat (right_substs_fwd  m)
+                    <*> V.mapM nullmat (left_substs_rev   m)
+                    <*>        nullmat (middle_substs_rev m)
+                    <*> V.mapM nullmat (right_substs_rev  m)
 
-    !nullmat = MMat44D <$> UM.replicate 16 (0::Double)
+    nullmat = const $ MMat44D <$> M.replicate 16 (0::Double)
 

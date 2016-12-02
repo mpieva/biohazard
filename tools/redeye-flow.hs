@@ -3,10 +3,9 @@
 --
 -- TODO
 --
--- - redeye-dar for every library
---   * store result
--- - redeye-pileup for every sample and every chromosome (parallel on SGE)
---   * collect(!) results
+-- - redeye-dar for every sample, store result
+-- - redeye-pileup for every sample and every chromosome (parallel on
+--   SGE), collect(!) results
 -- - estimate divergence parameters
 -- - run redeye-single for each sample
 
@@ -23,7 +22,8 @@
 import Bio.Bam
 import Bio.Genocall.Estimators      ( estimateSingle, DivEst(..), good_regions )
 import Bio.Prelude
-import Bio.Util.Pretty              ( pshow, pparse )
+import Data.Aeson
+import Data.Aeson.Encode.Pretty
 import Data.Binary                  ( decodeOrFail )
 import Development.Shake
 import Development.Shake.FilePath
@@ -102,21 +102,24 @@ divests = do
                 lReadFiles' [ stem ++ "." ++ show c ++ ".divtab" | c <- [1..22::Int] ] >>=
                     either fail_decode (\tabs -> liftIO $ do
                             (de1,de2) <- estimateSingle $ mconcat [ t | (_,_,t) <- tabs ]
-                            T.writeFile out $ T.unlines [ pshow de1, pshow de2 ])
+                            L.writeFile out $ encodePretty ( de1, de2 ))
+                            -- T.writeFile out $ T.unlines [ pshow de1, pshow de2 ])
                         . mapM decodeOrFail
 
             "build/*.X.divest" %> \out -> do
                 lReadFile' (out -<.> "divtab") >>=
                     either fail_decode (\(_,_,tab) -> liftIO $ do
                             (de1,de2) <- estimateSingle tab
-                            T.writeFile out $ T.unlines [ pshow de1, pshow de2 ])
+                            L.writeFile out $ encodePretty ( de1, de2 ))
+                            -- T.writeFile out $ T.unlines [ pshow de1, pshow de2 ])
                         . decodeOrFail
 
             "build/*.Y.divest" %> \out -> do
                 lReadFile' (out -<.> "divtab") >>=
                     either fail_decode (\(_,_,tab) -> liftIO $ do
                             (de1,de2) <- estimateSingle tab
-                            T.writeFile out $ T.unlines [ pshow de1, pshow de2 ])
+                            L.writeFile out $ encodePretty ( de1, de2 ))
+                            -- T.writeFile out $ T.unlines [ pshow de1, pshow de2 ])
                         . decodeOrFail
   where
     fail_decode (rest,off,msg) = error $
@@ -155,7 +158,7 @@ callz = "build/*.*.bcf" %> \bcf -> do
                 need [ av_file, divest_file ]
 
                 -- this stinks.
-                [dv,ht] <- either fail (return . point_est) . pparse =<< liftIO (S.readFile divest_file)
+                [dv,ht] <- either fail (return . point_est) . eitherDecode =<< liftIO (L.readFile divest_file)
 
                 command [] "qrsh" $
                         "-now" : "no" : "-cwd" :
@@ -219,9 +222,9 @@ subsetbams ofp [] rgns0 minlen =
 
 samples :: [Sample]
 samples =
-    [ {- let lib nm = Library nm [ nm <> ".bam" ]
+    [ let lib nm = Library nm [ nm <> ".bam" ]
       in  Sample "HC" (map lib [ "A9368", "A9369", "A9401", "A9402", "A9403", "A9404", "B8747", "R5473" ])
-  ,-} let lane i = Library (fromString $ show (i::Int))
+    , let lane i = Library (fromString $ show (i::Int))
                            [ fromString $ "/mnt/ngs_data/140411_SN7001204_0257_AC2MW7ACXX_PEdi_SP/Ibis/BWA/proc1/s_"
                                        ++ shows i "_sequence_ancient_hg19_evan.bam" ]
       in Sample "Vanity" (map lane [3..8])

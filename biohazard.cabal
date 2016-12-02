@@ -81,13 +81,13 @@ Library
                        Bio.Util.AD2,
                        Bio.Util.Jacobi,
                        Bio.Util.Numeric,
-                       Bio.Util.Pretty,
                        Bio.Util.Zlib,
                        Data.Binary.Serialise.CBOR.SequenceFiles,
                        Data.MiniFloat,
                        Paths_biohazard
 
   Build-depends:       aeson                    >= 0.7 && < 1.1,
+                       aeson-pretty             == 0.8.*,
                        async                    >= 2.0 && < 2.2,
                        attoparsec               >= 0.10 && < 0.14,
                        base                     >= 4.6 && < 4.10,
@@ -204,11 +204,13 @@ Executable redeye-dar
   Default-Language:    Haskell2010
   Default-Extensions:  NoImplicitPrelude, OverloadedStrings,
                        BangPatterns, RecordWildCards
-  Build-depends:       async,
+  Build-depends:       aeson-pretty,
+                       async,
                        base,
                        binary,
                        biohazard,
                        bytestring,
+                       containers,
                        filepath,
                        unordered-containers,
                        text,
@@ -262,7 +264,9 @@ Executable redeye-flow
   Default-Extensions:  NoImplicitPrelude, OverloadedStrings,
                        BangPatterns, DeriveGeneric
   Hs-Source-Dirs:      tools
-  Build-depends:       base,
+  Build-depends:       aeson,
+                       aeson-pretty,
+                       base,
                        binary,
                        biohazard,
                        bytestring,

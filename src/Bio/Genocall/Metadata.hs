@@ -5,7 +5,6 @@ module Bio.Genocall.Metadata where
 import Bio.Adna                             ( DamageParameters(..), NewDamageParameters(..) )
 import Bio.Prelude                   hiding ( writeFile, readFile )
 import Bio.Genocall.Estimators
-import Bio.Util.Pretty
 import Data.Aeson
 import Data.Binary
 import Data.Binary.Get                      ( runGetOrFail )

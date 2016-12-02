@@ -30,7 +30,6 @@ module Bio.Adna (
 import Bio.Bam
 import Bio.Prelude
 import Bio.TwoBit
-import Bio.Util.Pretty
 
 import qualified Data.Vector                    as V
 import qualified Data.Vector.Generic            as G
@@ -126,9 +125,6 @@ data DamageParameters float = DP { ssd_sigma  :: !float         -- deamination r
                                  , dsd_lambda :: !float }       -- param for geom. distribution, DS model
   deriving (Read, Show, Generic)
 
-instance Pretty f => Pretty (DamageParameters f) where pretty = default_pretty
-instance Parse f  => Parse  (DamageParameters f) where parse  = default_parse
-
 data NewDamageParameters vec float = NDP { dp_gc_frac :: !float
                                          , dp_mu      :: !float
                                          , dp_nu      :: !float
@@ -140,18 +136,11 @@ data NewDamageParameters vec float = NDP { dp_gc_frac :: !float
                                          , dp_beta3   :: !(vec float) }
   deriving (Read, Show, Generic)
 
-instance (Pretty (v f), Pretty f) => Pretty (NewDamageParameters v f) where pretty = default_pretty
-instance (Parse  (v f), Parse  f) => Parse  (NewDamageParameters v f) where parse  = default_parse
-
 data GenDamageParameters vec float
     = UnknownDamage
     | OldDamage (DamageParameters float)
     | NewDamage (NewDamageParameters vec float)
   deriving (Show, Generic, Read)
-
-instance (Pretty (v f), Pretty f) => Pretty (GenDamageParameters v f) where pretty = default_pretty
-instance (Parse  (v f), Parse  f) => Parse  (GenDamageParameters v f) where parse  = default_parse
-
 
 
 
