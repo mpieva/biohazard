@@ -332,11 +332,36 @@ single_pop_posterior SinglePop{..} ref lks = U.zipWith (\l p -> l * toProb (real
   where
     refix = U.fromListN 16 [0,0,2,0,5,0,0,0,9,0,0,0,0,0,0,0] U.! fromIntegral (unNs ref)
 
-    priors = U.replicate (U.length lks) ((1/3) * prob_het * (1-prob_div))                       -- hets
-                          U.// [ (refix,     (1-prob_het) * (1-prob_div)) ]                      -- ref
-                          U.// [ (i,                   (1/3) * prob_div ) | i <- hom_div_posns ] -- homs
+    priors = U.replicate (U.length lks)
+                         ((1/3) * prob_het  * (1-prob_div))                                 -- hets
+                U.// [ (refix, (1-prob_het) * (1-prob_div)) ]                               -- ref
+                U.// [ (i,               (1/3) * prob_div ) | i <- [0,2,5,9], i /= refix ]  -- homs
 
-    hom_div_posns = takeWhile (< U.length lks) (scanl (+) 2 [3..])
+
+-- The same kind of prior used in BSNP.  Note that this has GC content
+-- (base composition), ti/tv bias, and heterozigosity, but does not
+-- consider the reference base.
+data BsnpPrior = BsnpPrior { bsnp_gc_cont :: !Double
+                           , bsnp_ti_tv   :: !Double
+                           , bsnp_het     :: !Double }
+
+bsnp_posterior :: ( U.Unbox a, Ord a, Floating a )
+               => BsnpPrior -> Nucleotides -> U.Vector (Prob' a) -> U.Vector (Prob' a)
+bsnp_posterior BsnpPrior{..} _ref lks =  U.zipWith (\l p -> l * toProb (realToFrac p)) lks priors
+  where
+                         --   aa,  ac,   cc,  ag,   cg,   gg,  at,   ct,   gt,   tt
+    priors = U.fromListN 10 [ hoW, tvSW, hoS, tiSW, tvSS, hoS, tvWW, tiSW, tvSW, hoW ]
+
+    hoW = (1 - bsnp_het) * (1 - bsnp_gc_cont) / 2
+    hoS = (1 - bsnp_het) *      bsnp_gc_cont  / 2
+
+    tiSW = bsnp_ti_tv * bsnp_het * bsnp_gc_cont * (1 - bsnp_gc_cont) / norm
+
+    tvSS = bsnp_het *      bsnp_gc_cont  *      bsnp_gc_cont  / norm
+    tvSW = bsnp_het *      bsnp_gc_cont  * (1 - bsnp_gc_cont) / norm
+    tvWW = bsnp_het * (1 - bsnp_gc_cont) * (1 - bsnp_gc_cont) / norm
+
+    norm = 4 / ( 1 + 2 * bsnp_gc_cont * bsnp_ti_tv * (1 - bsnp_gc_cont) )
 
 
 -- | The pileup enumeratee takes 'BamRaw's, decomposes them, interleaves

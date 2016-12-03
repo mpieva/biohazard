@@ -88,9 +88,11 @@ main = do
     let iter sp0 mod0 = do ((u,v), model1) <- emIter sp0 mod0 conf_report files
                            L.putStrLn $ encodePretty (u,v)
                            -- pprint $ H.toList model1
-                           iter (case point_est u of [d,h] -> SinglePop d h) model1
+                           -- XXX  broken!
+                           -- iter (case point_est u of [d,h] -> SinglePop d h) model1
 
-    iter (SinglePop 0.001 0.002) H.empty
+    -- iter (SinglePop 0.001 0.002) H.empty
+    iter (BsnpPrior 0.42 4 0.0001) H.empty
 
 
 -- One iteration of EM algorithm.  We go in with a substitution model
@@ -98,7 +100,7 @@ main = do
 -- tabulation followed by estimation, as before.  For damage, we have to
 -- compute posterior probabilities using the old model, then update the
 -- damage probabilistically.
-emIter :: SinglePop -> HashMap Bytes SubstModel -> (String -> IO ())
+emIter :: BsnpPrior {-SinglePop-} -> HashMap Bytes SubstModel -> (String -> IO ())
        -> [FilePath] -> IO ((DivEst, DivEst), HashMap Bytes SubstModel)
 emIter divest mod0 report infiles =
         liftIO (mapM fresh_subst_model mod0 >>= newIORef)                         >>= \smodel ->
@@ -135,10 +137,12 @@ filterPilesWith = unfoldConvStream go
 -- Probabilistically count substitutions.  We infer from posterior
 -- genotype probabilities what the base must have been, then count
 -- substitutions from that to the actual base.
-updateSubstModel :: SinglePop -> Pile ( Mat44D, MMat44D ) -> Calls -> IO ()
+-- updateSubstModel :: SinglePop -> Pile ( Mat44D, MMat44D ) -> Calls -> IO ()
+updateSubstModel :: BsnpPrior -> Pile ( Mat44D, MMat44D ) -> Calls -> IO ()
 updateSubstModel divest pile cs = mapM_ count_base bases
   where
-    postp = single_pop_posterior divest (snp_refbase (p_snp_pile cs)) (snp_gls (p_snp_pile cs))
+    -- postp = single_pop_posterior divest (snp_refbase (p_snp_pile cs)) (snp_gls (p_snp_pile cs))
+    postp = bsnp_posterior       divest (snp_refbase (p_snp_pile cs)) (snp_gls (p_snp_pile cs))
 
     -- Posterior probalities of the haploid base before damage
     -- @P(H) = \sum_{G} P(H|G) P(G|D)@
