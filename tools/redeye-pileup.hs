@@ -1,4 +1,4 @@
-{-# LANGUAGE TypeSynonymInstances, FlexibleInstances #-}
+{-# LANGUAGE TypeSynonymInstances, FlexibleInstances, CPP #-}
 -- Command line driver for simple genotype calling.  We have three
 -- separate steps:  Pileup from a BAM file (or multiple merged files) to
 -- produce likelihoods (and some auxillary statistics).  These are
@@ -63,9 +63,15 @@ data Conf = Conf {
     conf_report :: String -> IO (),
     conf_table  :: Maybe FilePath }
 
+#if !MIN_VERSION_aeson(1,0,0)
+instance FromJSON a => FromJSON (HashMap Bytes a) where
+    parseJSON = withObject "hashmap" $ \o ->
+                H.fromList <$> mapM (\(k,v) -> (,) (encodeUtf8 k) <$> parseJSON v) (H.toList o)
+#else
 instance FromJSONKey BS.ByteString where
     fromJSONKey = FromJSONKeyText encodeUtf8
     fromJSONKeyList = undefined -- XXX whatever
+#endif
 
 instance FromJSON Mat44D
 instance FromJSON SubstModel
