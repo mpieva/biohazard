@@ -47,7 +47,6 @@ import qualified Data.Sequence                  as Z
 import qualified Data.Vector                    as V
 import qualified Data.Vector.Unboxed            as U
 import qualified Data.Vector.Unboxed.Mutable    as M
-import qualified Text.PrettyPrint.Leijen.Text   as P
 
 data Conf = Conf {
     conf_report :: String -> IO (),

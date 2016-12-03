@@ -229,7 +229,8 @@ data DivEst = DivEst {
     conf_region :: [( [Double], [Double] )]
   } deriving (Show, Generic)
 
-instance ToJSON DivEst
+instance ToJSON   DivEst
+instance FromJSON DivEst
 
 -- XXX we should estimate an indel rate, to be appended as the fourth
 -- result (but that needs different tables)

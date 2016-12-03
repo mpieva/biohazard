@@ -32,9 +32,6 @@ import System.IO
 
 import qualified Data.ByteString.Lazy   as L
 import qualified Data.Sequence          as Z
-import qualified Data.Text.IO           as S
-import qualified Data.Text.Lazy         as T
-import qualified Data.Text.Lazy.IO      as T
 import qualified Data.Vector.Generic    as V
 
 data Sample = Sample {
@@ -48,37 +45,6 @@ data Library = Library {
   } deriving Show
 
 
-{-
-instance FromJSON Library where
-    parseJSON (String name) = return $ Library name [name <> ".bam"] UnknownDamage
-    parseJSON (Object o) = Library <$> o .: "name"
-                                   <*> (maybe id (:) <$> o .:? "file"
-                                                     <*> o .:? "files" .!= [])
-                                   <*> (OldDamage <$> o .: "damage" <|>
-                                        NewDamage <$> o .: "damage" <|>
-                                        pure UnknownDamage)
-    parseJSON _ = fail "String or Object expected for library"
-
-instance ToJSON Sample where
-    toJSON (Sample ls avfs bcfs dts ds) = object $ hashToJson "divergences" ds   $
-                                                   listToJson "libraries"   ls   $
-                                                   hashToJson "avro-files"  avfs $
-                                                   hashToJson "bcf-files"   bcfs $
-                                                   hashToJson "div-tables"  dts  []
-      where
-        hashToJson k vs = if M.null vs then id else (:) (k .= vs)
-        listToJson k vs = if   null vs then id else (:) (k .= vs)
-
-instance FromJSON Sample where
-    parseJSON (String s) = pure $ Sample [Library s [s <> ".bam"] UnknownDamage] M.empty M.empty M.empty M.empty
-    parseJSON (Array ls) = (\ll -> Sample ll M.empty M.empty M.empty M.empty) <$> parseJSON (Array ls)
-    parseJSON (Object o) = Sample <$> o .: "libraries"
-                                  <*> (M.singleton "" <$> o .: "avro-file" <|> o .:? "avro-files" .!= M.empty)
-                                  <*> (M.singleton "" <$> o .: "bcf-file"  <|> o .:? "bcf-files"  .!= M.empty)
-                                  <*> o .:? "div-tables" .!= M.empty
-                                  <*> (M.singleton "" <$> o .: "divergence" <|> o.:? "divergences" .!= M.empty)
-    parseJSON _ = fail $ "String, Array or Object expected for Sample"
--}
 
 main :: IO ()
 main = shakeArgs shakeOptions { shakeFiles = "_shake" } $ do
@@ -102,24 +68,21 @@ divests = do
                 lReadFiles' [ stem ++ "." ++ show c ++ ".divtab" | c <- [1..22::Int] ] >>=
                     either fail_decode (\tabs -> liftIO $ do
                             (de1,de2) <- estimateSingle $ mconcat [ t | (_,_,t) <- tabs ]
-                            L.writeFile out $ encodePretty ( de1, de2 ))
-                            -- T.writeFile out $ T.unlines [ pshow de1, pshow de2 ])
+                            L.writeFile out $ encodePretty [ de1, de2 ])
                         . mapM decodeOrFail
 
             "build/*.X.divest" %> \out -> do
                 lReadFile' (out -<.> "divtab") >>=
                     either fail_decode (\(_,_,tab) -> liftIO $ do
                             (de1,de2) <- estimateSingle tab
-                            L.writeFile out $ encodePretty ( de1, de2 ))
-                            -- T.writeFile out $ T.unlines [ pshow de1, pshow de2 ])
+                            L.writeFile out $ encodePretty [ de1, de2 ])
                         . decodeOrFail
 
             "build/*.Y.divest" %> \out -> do
                 lReadFile' (out -<.> "divtab") >>=
                     either fail_decode (\(_,_,tab) -> liftIO $ do
                             (de1,de2) <- estimateSingle tab
-                            L.writeFile out $ encodePretty ( de1, de2 ))
-                            -- T.writeFile out $ T.unlines [ pshow de1, pshow de2 ])
+                            L.writeFile out $ encodePretty [ de1, de2 ])
                         . decodeOrFail
   where
     fail_decode (rest,off,msg) = error $
@@ -158,7 +121,8 @@ callz = "build/*.*.bcf" %> \bcf -> do
                 need [ av_file, divest_file ]
 
                 -- this stinks.
-                [dv,ht] <- either fail (return . point_est) . eitherDecode =<< liftIO (L.readFile divest_file)
+                [dv,ht] <- either fail (return . point_est . head) . eitherDecode
+                               =<< liftIO (L.readFile divest_file)
 
                 command [] "qrsh" $
                         "-now" : "no" : "-cwd" :
@@ -187,7 +151,7 @@ rgn_files = "build/*.good_regions.bam" %> \out -> do
                                      , f <- library_files l ]
                 need lfs
 
-                liftIO $ subsetbams out lfs (takeLen 2000000 good_regions) 35
+                liftIO $ subsetbams out lfs (takeLen 1000000 good_regions) 35
   where
     takeLen !n (x@(_,_,l):xs) | n > 0 = x : takeLen (n-l) xs
     takeLen  _             _          = []
@@ -224,11 +188,9 @@ samples :: [Sample]
 samples =
     [ let lib nm = Library nm [ nm <> ".bam" ]
       in  Sample "HC" (map lib [ "A9368", "A9369", "A9401", "A9402", "A9403", "A9404", "B8747", "R5473" ])
-    , let lane i = Library (fromString $ show (i::Int))
-                           [ fromString $ "/mnt/ngs_data/140411_SN7001204_0257_AC2MW7ACXX_PEdi_SP/Ibis/BWA/proc1/s_"
-                                       ++ shows i "_sequence_ancient_hg19_evan.bam" ]
+    , let lane i = Library (fromString $ show (i::Int)) [ fromString (printf path i) ]
+          path   = "/mnt/ngs_data/140411_SN7001204_0257_AC2MW7ACXX_PEdi_SP/Ibis/BWA/proc1/s_%d_sequence_ancient_hg19_evan.bam"
       in Sample "Vanity" (map lane [3..8])
-
     , Sample "SS6004467" [ Library "SS6004467"
         [ "/mnt/454/HGDP/genomes_Bteam/hg19_evan.2-align/SS6004467-dedup.rg_hg19_evan.2.bam" ] ] ]
 
