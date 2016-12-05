@@ -131,6 +131,7 @@ pipe_to cmd args (opts, errs, fs) = (mkout : opts, errs, fs)
         | all (/= key) as = return (as, flush, qs, vs, ps, rfds)
         | otherwise = do
             (pout, pin) <- createPipe
+            setFdOption pin CloseOnExec True
             queue <- newTQueueIO
             vnum <- newTVarIO (0::Int)
             pid <- async $ flush_fastq queue vnum pin
