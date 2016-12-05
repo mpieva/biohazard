@@ -349,17 +349,21 @@ bsnp_posterior :: ( U.Unbox a, Ord a, Floating a )
                => BsnpPrior -> Nucleotides -> U.Vector (Prob' a) -> U.Vector (Prob' a)
 bsnp_posterior BsnpPrior{..} _ref lks =  U.zipWith (\l p -> l * toProb (realToFrac p)) lks priors
   where
-                         --   aa,  ac,   cc,  ag,   cg,   gg,  at,   ct,   gt,   tt
-    priors = U.fromListN 10 [ hoW, tvSW, hoS, tiSW, tvSS, hoS, tvWW, tiSW, tvSW, hoW ]
+    priors = U.fromListN 10 [ aa, ac, cc, ag, cg, gg, at, ct, gt, tt ]
 
-    hoW = (1 - bsnp_het) * (1 - bsnp_gc_cont) / 2
-    hoS = (1 - bsnp_het) *      bsnp_gc_cont  / 2
+    aa = (1 - bsnp_het) * (1 - bsnp_gc_cont) / 2
+    cc = (1 - bsnp_het) *      bsnp_gc_cont  / 2
+    gg = cc
+    tt = aa
 
-    tiSW = bsnp_ti_tv * bsnp_het * bsnp_gc_cont * (1 - bsnp_gc_cont) / norm
+    ag = bsnp_ti_tv * bsnp_het * bsnp_gc_cont * (1 - bsnp_gc_cont) / norm
+    ct = ag
 
-    tvSS = bsnp_het *      bsnp_gc_cont  *      bsnp_gc_cont  / norm
-    tvSW = bsnp_het *      bsnp_gc_cont  * (1 - bsnp_gc_cont) / norm
-    tvWW = bsnp_het * (1 - bsnp_gc_cont) * (1 - bsnp_gc_cont) / norm
+    cg = bsnp_het *      bsnp_gc_cont  *      bsnp_gc_cont  / norm
+    at = bsnp_het * (1 - bsnp_gc_cont) * (1 - bsnp_gc_cont) / norm
+
+    ac = bsnp_het *      bsnp_gc_cont  * (1 - bsnp_gc_cont) / norm
+    gt = ac
 
     norm = 4 / ( 1 + 2 * bsnp_gc_cont * bsnp_ti_tv * (1 - bsnp_gc_cont) )
 

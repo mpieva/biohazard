@@ -103,7 +103,6 @@ noDamage _ _ _ = one
 -- probabilities.
 --
 -- For single stranded library prep, only one kind of damage occurs (C
--- to T), it occurs at low frequency ('ssd_delta') everywhere, at high
 -- frequency ('ssd_sigma') in single stranded parts, and the overhang
 -- length is distributed exponentially with parameter 'ssd_lambda' at
 -- the 5' end and 'ssd_kappa' at the 3' end.  (Without UDG treatment,
@@ -597,6 +596,17 @@ aln_from_md qry0 cig0 md0 = U.fromList $ step qry0 cig0 md0
 -- int bwa_cal_maxdiff(int l, double err, double thres)
 --   {
 --      double elambda = exp(-l * err);
+--      double sum, y = 1.0;
+--      int k, x = 1;
+--      for (k = 1, sum = elambda; k < 1000; ++k) {
+--          y *= l * err;
+--          x *= k;
+--          sum += elambda * y / x;
+--          if (1.0 - sum < thres) return k;
+--      }
+--      return 2;
+--   }
+-- @
 --      double sum, y = 1.0;
 --      int k, x = 1;
 --      for (k = 1, sum = elambda; k < 1000; ++k) {
