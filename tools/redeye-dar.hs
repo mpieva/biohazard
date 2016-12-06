@@ -45,6 +45,7 @@ import qualified Data.ByteString.Lazy.Char8     as L
 import qualified Data.HashMap.Strict            as H
 import qualified Data.Sequence                  as Z
 import qualified Data.Vector                    as V
+import qualified Data.Vector.Storable           as S
 import qualified Data.Vector.Unboxed            as U
 import qualified Data.Vector.Unboxed.Mutable    as M
 
@@ -85,14 +86,14 @@ main = do
     -- likelihoods into the div/het estimation (just as in
     -- 'redeye-pileup'), but also into a caller that will estimate
     -- damage.
-    let iter sp0 mod0 = do ((u,v), model1) <- emIter sp0 mod0 conf_report files
-                           L.putStrLn $ encodePretty (u,v)
+    let iter sp0 mod0 = do (est, model1) <- emIter sp0 mod0 conf_report files
+                           L.putStrLn $ encodePretty est
                            -- pprint $ H.toList model1
                            -- XXX  broken!
-                           -- iter (case point_est u of [d,h] -> SinglePop d h) model1
+                           iter est model1
 
     -- iter (SinglePop 0.001 0.002) H.empty
-    iter (BsnpPrior 0.42 4 0.0001) H.empty
+    iter (BsnpParams 0.3 2 0.001) H.empty
 
 
 -- One iteration of EM algorithm.  We go in with a substitution model
@@ -100,8 +101,8 @@ main = do
 -- tabulation followed by estimation, as before.  For damage, we have to
 -- compute posterior probabilities using the old model, then update the
 -- damage probabilistically.
-emIter :: BsnpPrior {-SinglePop-} -> HashMap Bytes SubstModel -> (String -> IO ())
-       -> [FilePath] -> IO ((DivEst, DivEst), HashMap Bytes SubstModel)
+emIter :: BsnpParams Double {-SinglePop-} -> HashMap Bytes SubstModel -> (String -> IO ())
+       -> [FilePath] -> IO (BsnpParams Double {-(DivEst, DivEst)-}, HashMap Bytes SubstModel)
 emIter divest mod0 report infiles =
         liftIO (mapM fresh_subst_model mod0 >>= newIORef)                         >>= \smodel ->
         concatInputs infiles >=> run                                                $ \hdr ->
@@ -109,17 +110,38 @@ emIter divest mod0 report infiles =
         progressPos (\(rs,p,_)->(rs,p)) "GT call at" (meta_refs hdr) 0x8000 report =$
         pileup                                                                     =$
         filterPilesWith (the_regions hdr)                                          =$
-        mapStream  ( id &&& calls )                                                =$
+        mapStream (id &&& calls (U.fromListN 10 (bsnp_params_to_lks divest)))      =$
+        zipStreams ( tabulateBsnp >>= liftIO . estimateBsnp divest )
+                   ( mapStreamM_ (uncurry updateSubstModel)              >>
+                     liftIO (readIORef smodel)                          >>=
+                     liftIO . mapM (freezeSubstModel . snd) )
+        {- mapStream  ( id &&& calls )                                                =$
         zipStreams ( mapStream snd                                      =$
                      tabulateSingle                                     >>=
                      liftIO . estimateSingle )
                    ( mapStreamM_ (uncurry (updateSubstModel divest))    >>
                      liftIO (readIORef smodel)                          >>=
-                     liftIO . mapM (freezeSubstModel . snd) )
+                     liftIO . mapM (freezeSubstModel . snd) ) -}
   where
     the_regions hdr = sort [ Region (Refseq $ fromIntegral ri) p (p+l)
                            | (ch, p, l) <- good_regions
                            , let Just ri = Z.findIndexL ((==) ch . sq_name) (meta_refs hdr) ]
+
+tabulateBsnp :: Monad m => Iteratee [(a,U.Vector Prob)] m (U.Vector Double)
+tabulateBsnp = foldStream (\as (_,bs) -> U.zipWith (\a b -> a + fromProb b) as bs) (U.replicate 10 0)
+
+estimateBsnp :: BsnpParams Double -> U.Vector Double -> IO (BsnpParams Double)
+estimateBsnp (BsnpParams u v w) counts = do
+    (newparms, _, _) <- minimize quietParameters (1.0e-30) lk (U.fromList [isig u, v,isig w])
+    case S.toList newparms of [u',v',w'] -> return $ BsnpParams (sig u') v' (sig w')
+  where
+    lk :: [AD] -> AD
+    lk [x,y,z] = sum $ zipWith (\c p -> let d = fromDouble c - p in d * d)
+                               (U.toList counts')
+                               (bsnp_params_to_lks (BsnpParams (sig x) y (sig z)))
+    sig x = recip $ 1 + exp (-x)
+    isig y = - log (recip y - 1)
+    counts' = U.map (/ U.sum counts) counts
 
 
 filterPilesWith :: Monad m => [Region] -> Enumeratee [Pile a] [Pile a] m b
@@ -138,12 +160,9 @@ filterPilesWith = unfoldConvStream go
 -- genotype probabilities what the base must have been, then count
 -- substitutions from that to the actual base.
 -- updateSubstModel :: SinglePop -> Pile ( Mat44D, MMat44D ) -> Calls -> IO ()
-updateSubstModel :: BsnpPrior -> Pile ( Mat44D, MMat44D ) -> Calls -> IO ()
-updateSubstModel divest pile cs = mapM_ count_base bases
+updateSubstModel :: Pile ( Mat44D, MMat44D ) -> U.Vector Prob -> IO ()
+updateSubstModel pile postp = mapM_ count_base bases
   where
-    -- postp = single_pop_posterior divest (snp_refbase (p_snp_pile cs)) (snp_gls (p_snp_pile cs))
-    postp = bsnp_posterior       divest (snp_refbase (p_snp_pile cs)) (snp_gls (p_snp_pile cs))
-
     -- Posterior probalities of the haploid base before damage
     -- @P(H) = \sum_{G} P(H|G) P(G|D)@
     pH_A = fromProb $ postp U.! 0 + 0.5 * ( postp U.! 1 + postp U.! 3 + postp U.! 6 )
@@ -207,11 +226,11 @@ freezeSubstModel mm = do
                     | y <- range (nucA, nucT)
                     , x <- range (nucA, nucT) ]
 
-calls :: Pile ( Mat44D, b ) -> Calls
-calls pile = pile { p_snp_pile = s, p_indel_pile = i }
+calls :: U.Vector Double -> Pile ( Mat44D, b ) -> U.Vector Prob
+calls priors pile = U.map (/ U.sum v) v
   where
-    !s = simple_snp_call   $ map (second (fmap fst)) $ uncurry (++) $ p_snp_pile pile
-    !i = simple_indel_call $ map (second (second (map (fmap fst)))) $ p_indel_pile pile
+    s = simple_snp_call $ map (second (fmap fst)) $ uncurry (++) $ p_snp_pile pile
+    v = U.zipWith (\l p -> l * toProb p) (snp_gls s) priors
 
 
 {-# INLINE decompose_dmg_from #-}

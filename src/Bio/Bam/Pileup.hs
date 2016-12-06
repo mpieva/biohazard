@@ -5,6 +5,7 @@ import Bio.Bam.Header
 import Bio.Bam.Rec
 import Bio.Iteratee
 import Bio.Prelude
+import Data.Aeson
 
 import qualified Data.ByteString        as B
 import qualified Data.Vector.Generic    as V
@@ -341,16 +342,17 @@ single_pop_posterior SinglePop{..} ref lks = U.zipWith (\l p -> l * toProb (real
 -- The same kind of prior used in BSNP.  Note that this has GC content
 -- (base composition), ti/tv bias, and heterozigosity, but does not
 -- consider the reference base.
-data BsnpPrior = BsnpPrior { bsnp_gc_cont :: !Double
-                           , bsnp_ti_tv   :: !Double
-                           , bsnp_het     :: !Double }
+data BsnpParams a = BsnpParams { bsnp_gc_cont :: !a
+                               , bsnp_ti_tv   :: !a
+                               , bsnp_het     :: !a }
+    deriving (Show, Generic)
 
-bsnp_posterior :: ( U.Unbox a, Ord a, Floating a )
-               => BsnpPrior -> Nucleotides -> U.Vector (Prob' a) -> U.Vector (Prob' a)
-bsnp_posterior BsnpPrior{..} _ref lks =  U.zipWith (\l p -> l * toProb (realToFrac p)) lks priors
+instance ToJSON a => ToJSON (BsnpParams a)
+
+bsnp_params_to_lks :: Fractional a => BsnpParams a -> [a]
+bsnp_params_to_lks BsnpParams{..} =
+    [ aa, ac, cc, ag, cg, gg, at, ct, gt, tt ]
   where
-    priors = U.fromListN 10 [ aa, ac, cc, ag, cg, gg, at, ct, gt, tt ]
-
     aa = (1 - bsnp_het) * (1 - bsnp_gc_cont) / 2
     cc = (1 - bsnp_het) *      bsnp_gc_cont  / 2
     gg = cc
