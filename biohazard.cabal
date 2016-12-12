@@ -21,7 +21,6 @@ Extra-Source-Files:  man/man7/biohazard.7
                      man/man1/bam-meld.1
                      man/man1/bam-rewrap.1
                      man/man1/bam-rmdup.1
-                     man/man1/bcl2bam.1
                      man/man1/fastq2bam.1
                      man/man1/jivebunny.1
                      man/man1/mt-anno.1
@@ -68,8 +67,6 @@ Library
                        Bio.Genocall,
                        Bio.Genocall.Estimators,
                        Bio.Genocall.LkFile,
-                       Bio.Illumina.BCL,
-                       Bio.Illumina.Locs,
                        Bio.Iteratee,
                        Bio.Iteratee.Bgzf,
                        Bio.Iteratee.Builder,
@@ -150,24 +147,6 @@ Library
   Install-Includes:    src/cbits/myers_align.h
   C-sources:           src/cbits/myers_align.c
   CC-options:          -fPIC
-
-Executable bcl2bam
-  Main-is:             bcl2bam.hs
-  Hs-Source-Dirs:      tools
-  -- Ghc-options:         -Wall -threaded -rtsopts -with-rtsopts=-N
-  Ghc-options:         -Wall -auto-all
-  Default-Language:    Haskell2010
-  Default-Extensions:  NoImplicitPrelude, OverloadedStrings,
-                       BangPatterns, RecordWildCards
-  Build-depends:       async,
-                       base,
-                       biohazard,
-                       bytestring,
-                       containers,
-                       directory,
-                       filepath,
-                       vector,
-                       xml
 
   -- Modules not exported by this package.
   -- Other-modules:       
