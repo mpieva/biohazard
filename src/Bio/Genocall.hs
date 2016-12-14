@@ -66,6 +66,22 @@ type SubstModel = SubstModel_ Mat44D
 -- this thing.
 type MSubstModel = SubstModel_ MMat44D
 
+-- Freezes a mutable substitution model into an immutable one.  Both
+-- strands are combined, the result is normalized, and duplicated to
+-- have a model for each strand again.
+freezeSubstModel :: MSubstModel -> IO SubstModel
+freezeSubstModel mm = do
+    new_left   <- V.zipWithM freezeMats (left_substs_fwd   mm) (right_substs_rev  mm)
+    new_middle <-            freezeMats (middle_substs_fwd mm) (middle_substs_rev mm)
+    new_right  <- V.zipWithM freezeMats (right_substs_fwd  mm) (left_substs_rev   mm)
+
+    return $ SubstModel new_left new_middle new_right
+                        ( V.map complMat new_left   )
+                              ( complMat new_middle )
+                        ( V.map complMat new_right  )
+
+
+
 -- | Naive SNP call; essentially the GATK model.  We compute the
 -- likelihood for each base from an empirical error/damage model, then
 -- hand over to 'simple_call'.  Base quality is ignored, but map quality

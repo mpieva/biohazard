@@ -24,6 +24,9 @@ module Bio.Adna (
     Mat44D(..),
     MMat44D(..),
     scalarMat,
+    complMat,
+    freezeMats,
+
     bwa_cal_maxdiff
   ) where
 
@@ -83,6 +86,26 @@ scalarMat s = Mat44D $ U.fromListN 16 [ s, 0, 0, 0
                                       , 0, s, 0, 0
                                       , 0, 0, s, 0
                                       , 0, 0, 0, s ]
+
+complMat :: Mat44D -> Mat44D
+complMat v = Mat44D $ U.fromListN 16 [ v `bang` compl x :-> compl y
+                                     | y <- range (nucA, nucT)
+                                     , x <- range (nucA, nucT) ]
+
+-- | Adds the two matrices of a mutable substitution model (one for each
+-- strand) appropriately, normalizes the result (to make probabilities
+-- from pseudo-counts), and freezes that into one immutable matrix.
+freezeMats :: MMat44D -> MMat44D -> IO Mat44D
+freezeMats (MMat44D vv) (MMat44D ww) = do
+    v <-            Mat44D <$> U.freeze vv
+    w <- complMat . Mat44D <$> U.freeze ww
+    return . Mat44D $ U.fromListN 16
+            [ ((v `bang` x :-> y) + (w `bang` x :-> y)) / s
+            | y <- range (nucA, nucT)
+            , x <- range (nucA, nucT)
+            , let s = sum [ (v `bang` x :-> z) + (w `bang` x :-> y)
+                          | z <- range (nucA, nucT) ] ]
+
 
 -- | 'DamageModel' for undamaged DNA.  The likelihoods follow directly
 -- from the quality score.  This needs elaboration to see what to do

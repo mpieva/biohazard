@@ -329,7 +329,7 @@ data SinglePop = SinglePop { prob_div :: !Double, prob_het :: !Double }
 {-# INLINE single_pop_posterior #-}
 single_pop_posterior :: ( U.Unbox a, Ord a, Floating a )
                      => SinglePop -> Nucleotides -> U.Vector (Prob' a) -> U.Vector (Prob' a)
-single_pop_posterior SinglePop{..} ref lks = U.zipWith (\l p -> l * toProb (realToFrac p)) lks priors
+single_pop_posterior SinglePop{..} ref lks = U.map (/ U.sum v) v
   where
     refix = U.fromListN 16 [0,0,2,0,5,0,0,0,9,0,0,0,0,0,0,0] U.! fromIntegral (unNs ref)
 
@@ -337,6 +337,8 @@ single_pop_posterior SinglePop{..} ref lks = U.zipWith (\l p -> l * toProb (real
                          ((1/3) * prob_het  * (1-prob_div))                                 -- hets
                 U.// [ (refix, (1-prob_het) * (1-prob_div)) ]                               -- ref
                 U.// [ (i,               (1/3) * prob_div ) | i <- [0,2,5,9], i /= refix ]  -- homs
+
+    v = U.zipWith (\l p -> l * toProb (realToFrac p)) lks priors
 
 
 -- The same kind of prior used in BSNP.  Note that this has GC content

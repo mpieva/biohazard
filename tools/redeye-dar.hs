@@ -90,10 +90,10 @@ main = do
                            L.putStrLn $ encodePretty est
                            -- pprint $ H.toList model1
                            -- XXX  broken!
-                           iter est model1
+                           iter (case est of (DivEst { point_est = [a,b] },_) -> SinglePop a b) model1
 
-    -- iter (SinglePop 0.001 0.002) H.empty
-    iter (BsnpParams 0.3 2 0.001) H.empty
+    iter (SinglePop 0.001 0.002) H.empty
+    -- iter (BsnpParams 0.3 2 0.001) H.empty
 
 
 -- One iteration of EM algorithm.  We go in with a substitution model
@@ -101,8 +101,8 @@ main = do
 -- tabulation followed by estimation, as before.  For damage, we have to
 -- compute posterior probabilities using the old model, then update the
 -- damage probabilistically.
-emIter :: BsnpParams Double {-SinglePop-} -> HashMap Bytes SubstModel -> (String -> IO ())
-       -> [FilePath] -> IO (BsnpParams Double {-(DivEst, DivEst)-}, HashMap Bytes SubstModel)
+emIter :: {- BsnpParams Double -} SinglePop -> HashMap Bytes SubstModel -> (String -> IO ())
+       -> [FilePath] -> IO ({-BsnpParams Double-} (DivEst, DivEst), HashMap Bytes SubstModel)
 emIter divest mod0 report infiles =
         liftIO (mapM fresh_subst_model mod0 >>= newIORef)                         >>= \smodel ->
         concatInputs infiles >=> run                                                $ \hdr ->
@@ -110,18 +110,26 @@ emIter divest mod0 report infiles =
         progressPos (\(rs,p,_)->(rs,p)) "GT call at" (meta_refs hdr) 0x8000 report =$
         pileup                                                                     =$
         filterPilesWith (the_regions hdr)                                          =$
-        mapStream (id &&& calls (U.fromListN 10 (bsnp_params_to_lks divest)))      =$
+
+        {- mapStream (id &&& calls (U.fromListN 10 (bsnp_params_to_lks divest)))      =$
         zipStreams ( tabulateBsnp >>= liftIO . estimateBsnp divest )
                    ( mapStreamM_ (uncurry updateSubstModel)              >>
                      liftIO (readIORef smodel)                          >>=
-                     liftIO . mapM (freezeSubstModel . snd) )
-        {- mapStream  ( id &&& calls )                                                =$
-        zipStreams ( mapStream snd                                      =$
-                     tabulateSingle                                     >>=
-                     liftIO . estimateSingle )
-                   ( mapStreamM_ (uncurry (updateSubstModel divest))    >>
-                     liftIO (readIORef smodel)                          >>=
                      liftIO . mapM (freezeSubstModel . snd) ) -}
+
+        mapStream  ( id &&& calls )                                                =$
+
+        let div_estimation :: MonadIO m => Iteratee [(a, Calls)] m (DivEst,DivEst)
+            div_estimation = mapStream snd                                      =$
+                             tabulateSingle                                    >>=
+                             liftIO . estimateSingle
+
+            dmg_estimation :: MonadIO m => Iteratee [(Pile (Mat44D,MMat44D), Calls)] m (HashMap Bytes SubstModel)
+            dmg_estimation = mapStreamM_ (\(p,c) -> liftIO $ updateSubstModel p (posterior divest $ p_snp_pile c))             >>
+                             liftIO (readIORef smodel)                         >>=
+                             liftIO . mapM (freezeSubstModel . snd)
+
+        in zipStreams div_estimation dmg_estimation
   where
     the_regions hdr = sort [ Region (Refseq $ fromIntegral ri) p (p+l)
                            | (ch, p, l) <- good_regions
@@ -193,44 +201,25 @@ updateSubstModel pile postp = mapM_ count_base bases
 
 
 
-freezeSubstModel :: MSubstModel -> IO SubstModel
-freezeSubstModel mm = do
-    new_left   <- V.zipWithM freezeMats (left_substs_fwd   mm) (right_substs_rev  mm)
-    new_middle <-            freezeMats (middle_substs_fwd mm) (middle_substs_rev mm)
-    new_right  <- V.zipWithM freezeMats (right_substs_fwd  mm) (left_substs_rev   mm)
-
-    return $ SubstModel new_left new_middle new_right
-                        ( V.map compl_mat new_left   )
-                              ( compl_mat new_middle )
-                        ( V.map compl_mat new_right  )
-  where
-    -- We take two matrices (forward and reverse strand model), flip the
-    -- reverse one around, normalize for the total ocunt and freeze the
-    -- result into a substitution matrix.  The two matrices must
-    -- correspond, so the rev-strand vector has to be reversed.
-    freezeMats :: MMat44D -> MMat44D -> IO Mat44D
-    freezeMats (MMat44D vv) (MMat44D ww) = do
-        v <-             Mat44D <$> U.freeze vv
-        w <- compl_mat . Mat44D <$> U.freeze ww
-        return . Mat44D $ U.fromListN 16
-                [ ((v `bang` x :-> y) + (w `bang` x :-> y)) / s
-                | x <- range (nucA, nucT)
-                , let s = sum [ (v `bang` x :-> y) + (w `bang` x :-> y)
-                              | y <- range (nucA, nucT) ]
-                , y <- range (nucA, nucT) ]
-
-    -- Huh, I thought this should be transposed.  But *that* doesn't work.
-    compl_mat :: Mat44D -> Mat44D
-    compl_mat v = Mat44D $ U.fromListN 16
-                    [ v `bang` compl x :-> compl y
-                    | y <- range (nucA, nucT)
-                    , x <- range (nucA, nucT) ]
-
-calls :: U.Vector Double -> Pile ( Mat44D, b ) -> U.Vector Prob
+{- calls :: U.Vector Double -> Pile ( Mat44D, b ) -> U.Vector Prob
 calls priors pile = U.map (/ U.sum v) v
   where
     s = simple_snp_call $ map (second (fmap fst)) $ uncurry (++) $ p_snp_pile pile
-    v = U.zipWith (\l p -> l * toProb p) (snp_gls s) priors
+    v = U.zipWith (\l p -> l * toProb p) (snp_gls s) priors -}
+
+calls :: Pile (Mat44D,a) -> Calls
+calls pile = pile { p_snp_pile = s, p_indel_pile = i }
+  where
+    !s = simple_snp_call   $ map (second (fmap fst)) $ uncurry (++) $ p_snp_pile pile
+    !i = simple_indel_call $ map (second (second (map (fmap fst)))) $ p_indel_pile pile
+    --
+    -- XXX this should be a cmdline option, if we ever look at qualities again
+    -- fq = min 1 . (*) 1.333 . fromQual
+    -- fq = fromQual
+
+
+posterior :: SinglePop -> Snp_GLs -> U.Vector Prob
+posterior model s = single_pop_posterior model (snp_refbase s) (snp_gls s)
 
 
 {-# INLINE decompose_dmg_from #-}
