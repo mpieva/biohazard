@@ -28,6 +28,9 @@ module Bio.Prelude (
     second,
 #endif
 
+    decodeBytes,
+    encodeBytes,
+
     Hashable(..),
     Unpack(..),
     hPutStr,
@@ -62,6 +65,7 @@ import Data.HashMap.Strict ( HashMap )
 import Data.HashSet        ( HashSet )
 import Data.IntMap         ( IntMap )
 import Data.IntSet         ( IntSet )
+import Data.Text.Encoding  ( encodeUtf8, decodeUtf8With )
 import Foreign.C.Error     ( throwErrnoIf_ )
 import Foreign.Ptr         ( castPtr )
 import System.IO           ( hPutStr, hPutStrLn, stderr, stdout, stdin )
@@ -116,3 +120,14 @@ fdPutLazy fd = mapM_ (fdPut fd) . BL.toChunks
 withFd :: FilePath -> OpenMode -> Maybe FileMode -> OpenFileFlags
        -> (Fd -> IO a) -> IO a
 withFd fp om fm ff k = bracket (openFd fp om fm ff) closeFd k
+
+-- | Converts 'Bytes' into 'Text'.  This uses UTF8, but if there is an
+-- error, it pretends it was Latin1.  Evil as this is, it tends to Just
+-- Work on files where nobody ever wasted a thought on encodings.
+decodeBytes :: Bytes -> Text
+decodeBytes = decodeUtf8With (const $ fmap w2c)
+
+-- | Converts 'Text' into 'Bytes'.  This uses UTF8.
+encodeBytes :: Text -> Bytes
+encodeBytes = encodeUtf8
+

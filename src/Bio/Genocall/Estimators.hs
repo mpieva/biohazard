@@ -1,10 +1,10 @@
 {-# LANGUAGE DeriveGeneric #-}
 {-# OPTIONS_GHC -O0 #-}
 module Bio.Genocall.Estimators (
-        -- estimateDamageFromFiles,
         tabulateSingle,
         estimateSingle,
         DivEst(..),
+        ExtModel(..),
         DivTable(..),
         good_regions
     ) where
@@ -20,7 +20,7 @@ module Bio.Genocall.Estimators (
 -- import Bio.Adna
 import Bio.Bam
 import Bio.Bam.Pileup                ( p_snp_pile )
-import Bio.Genocall                  ( Snp_GLs(..), Calls )
+import Bio.Genocall                --  ( Snp_GLs(..), Calls, SubstModel )
 import Bio.Prelude
 import Bio.Util.AD
 import Bio.Util.AD2
@@ -185,30 +185,6 @@ est_deamination parameters l_over gc_frac (mu0,nu0) DmgStats{..} = do
                                counts (smat gc_frac mu nu alpha beta)
     lk_fun _ _ = error "Inconceivable!" -}
 
-{- estimateDamage :: Parameters -> DmgStats a -> IO (NewDamageParameters U.Vector Double)
-estimateDamage conf_params dmg = do
-    let dp_gc_frac = est_gc_frac dmg
-    (dp_mu,dp_nu) <- est_mut_rate conf_params dp_gc_frac dmg
-
-    (ab_left, dp_alpha, dp_beta, ab_right) <- est_deamination conf_params 8 dp_gc_frac (dp_mu,dp_nu) dmg
-    let dp_alpha5 = U.ifilter (const .  odd) ab_left
-        dp_beta5  = U.ifilter (const . even) ab_left
-        dp_alpha3 = U.ifilter (const .  odd) ab_right
-        dp_beta3  = U.ifilter (const . even) ab_right
-    return NDP{..} -}
-
-{- estimateDamageFromFiles :: Int -> Parameters -> [String] -> IO (NewDamageParameters U.Vector Double)
-estimateDamageFromFiles lmin params fs = do
-    foldM (\acc f -> decodeAnyBamFile f >=> run >=> return . mappend acc $ \hdr ->
-                     filterStream (\b ->
-                            not (isUnmapped (unpackBam b)) &&
-                            V.length (b_seq (unpackBam b)) >= lmin)     =$
-                     takeStream 100000                                  =$
-                     addFragType hdr                                    =$
-                     damagePatternsIterMD 50 skipToEof)
-          mempty fs
-    >>= estimateDamage params -}
-
 data DivTable = DivTable !Double !(U.Vector Int) deriving (Show, Generic)
 
 instance Binary DivTable
@@ -231,6 +207,14 @@ data DivEst = DivEst {
 
 instance ToJSON   DivEst
 instance FromJSON DivEst
+
+data ExtModel = ExtModel { population :: DivEst
+                         , pop_separate :: Maybe DivEst
+                         , damage :: SubstModels }
+  deriving (Show, Generic)
+
+instance ToJSON ExtModel
+instance FromJSON ExtModel
 
 -- XXX we should estimate an indel rate, to be appended as the fourth
 -- result (but that needs different tables)

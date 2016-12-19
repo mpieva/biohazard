@@ -66,7 +66,6 @@ Library
                        Bio.Bam.Writer,
                        Bio.Genocall,
                        Bio.Genocall.Estimators,
-                       Bio.Genocall.LkFile,
                        Bio.Iteratee,
                        Bio.Iteratee.Bgzf,
                        Bio.Iteratee.Builder,
@@ -79,8 +78,6 @@ Library
                        Bio.Util.Jacobi,
                        Bio.Util.Numeric,
                        Bio.Util.Zlib,
-                       Data.Binary.Serialise.CBOR.SequenceFiles,
-                       Data.MiniFloat,
                        Paths_biohazard
 
   Build-depends:       aeson                    >= 0.7 && < 1.1,
@@ -90,7 +87,6 @@ Library
                        base                     >= 4.6 && < 4.10,
                        base-prelude             == 1.0.*,
                        binary                   >= 0.7 && < 0.9,
-                       binary-serialise-cbor    >= 0.1.1.0 && < 0.3,
                        bytestring               >= 0.10.2 && < 0.11,
                        bytestring-mmap          >= 0.2 && < 1.0,
                        containers               >= 0.4.1 && < 0.6,
@@ -194,25 +190,6 @@ Executable redeye-dar
                        text,
                        vector
 
-Executable redeye-pileup
-  Main-is:             redeye-pileup.hs
-  Ghc-options:         -Wall -fprof-auto -rtsopts
-  -- Ghc-options:         -Wall -threaded -rtsopts -with-rtsopts=-N
-  Default-Language:    Haskell2010
-  Default-Extensions:  NoImplicitPrelude, OverloadedStrings,
-                       BangPatterns, RecordWildCards, FlexibleContexts
-  Hs-Source-Dirs:      tools
-  Build-depends:       aeson,
-                       base,
-                       binary,
-                       biohazard,
-                       bytestring,
-                       containers,
-                       filepath,
-                       text,
-                       unordered-containers,
-                       vector
-
 Executable redeye-single
   Main-is:             redeye-single.hs
   Ghc-options:         -Wall -rtsopts -fprof-auto
@@ -222,7 +199,7 @@ Executable redeye-single
   Hs-Source-Dirs:      tools
   Build-depends:       aeson,
                        base,
-                       binary-serialise-cbor,
+                       binary,
                        biohazard,
                        bytestring,
                        containers,

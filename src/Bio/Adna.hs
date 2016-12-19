@@ -33,6 +33,7 @@ module Bio.Adna (
 import Bio.Bam
 import Bio.Prelude
 import Bio.TwoBit
+import Data.Aeson hiding ( pairs )
 
 import qualified Data.Vector                    as V
 import qualified Data.Vector.Generic            as G
@@ -58,6 +59,15 @@ import qualified Data.Vector.Unboxed.Mutable    as UM
 newtype Mat44D = Mat44D (U.Vector Double) deriving (Show, Generic)
 newtype MMat44D = MMat44D (UM.IOVector Double)
 
+instance ToJSON Mat44D where
+    toJSON (Mat44D v) = Array $ V.fromListN 4
+                      [ toJSON $ U.slice i 4 v
+                      | i <- [0, 4, 8, 12] ]
+
+instance FromJSON Mat44D where
+    parseJSON = withArray "matrix" $
+                fmap Mat44D . fmap U.concat . mapM parseJSON . V.toList
+
 -- | A 'DamageModel' is a function that gives substitution matrices for
 -- each position in a read.  The 'DamageModel' can depend on whether the
 -- alignment is reversed, the length of the read and the position.  (In
@@ -74,7 +84,9 @@ infix 8 `bang`
 -- mnemonic reading.
 {-# INLINE bang #-}
 bang :: Mat44D -> Subst -> Double
-bang (Mat44D v) (N x :-> N y) = v U.! (fromIntegral x + 4 * fromIntegral y)
+bang (Mat44D v) (N x :-> N y)
+    | U.length v == 16 = v U.! (fromIntegral x + 4 * fromIntegral y)
+    | otherwise = error $ "Huh? " ++ show (U.length v)
 
 {-# INLINE nudge #-}
 nudge :: MMat44D -> Subst -> Double -> IO ()

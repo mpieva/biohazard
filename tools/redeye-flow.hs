@@ -4,25 +4,20 @@
 -- TODO
 --
 -- - redeye-dar for every sample, store result
--- - redeye-pileup for every sample and every chromosome (parallel on
---   SGE), collect(!) results
--- - estimate divergence parameters
--- - run redeye-single for each sample
+-- - redeye-single for every sample and every chromosome
+-- - estimate divergence for each sample
 
 -- Skr1pting it is easy enough.  Can Shake do it?  I presume the
 -- collection of results is somewhat less than straight forward.  Maybe
 -- skr1pt first.
 
-
 -- Notes:
 -- - Small amounts of output land in files.  Annoying, but easy.
--- - we want -pileup and -single to run on the SGE!  (-dar and estimate
---   locally?  shouldn't be a problem)
+-- - We run -dar and -single on the SGE.  Other parts run locally.
 
 import Bio.Bam
-import Bio.Genocall.Estimators      ( estimateSingle, DivEst(..), good_regions )
+import Bio.Genocall.Estimators      ( estimateSingle, good_regions )
 import Bio.Prelude
-import Data.Aeson
 import Data.Aeson.Encode.Pretty
 import Data.Binary                  ( decodeOrFail )
 import Development.Shake
@@ -49,13 +44,16 @@ data Library = Library {
 main :: IO ()
 main = shakeArgs shakeOptions { shakeFiles = "_shake" } $ do
 
-            -- final artefact: one BCF per chromosome, 'aight?
+            -- final artefacts: one BCF per chromosome,
             let chromosomes = map show [1..22::Int] ++ [ "X", "Y" ]
             want [ "build/" ++ unpack (sample_name smp) ++ "." ++ chrom ++ ".bcf"
                  | chrom <- chromosomes, smp <- samples ]
 
+            -- and div/het estimates
+            want [ "build/" ++ unpack (sample_name smp) ++ "." ++ part ++ ".divest"
+                 | part <- ["auto","X","Y"], smp <- samples ]
+
             callz
-            pileups
             divests
             dmgests
             rgn_files
@@ -94,9 +92,9 @@ divests = do
 
 -- one pileup per chrmosome * sample; input is the
 -- bam files and one dmgest per sample
-pileups :: Rules ()
-pileups = [ "build/*.*.av", "build/*.*.divtab" ] &%> \[av,tab] -> do
-                let (sm,'.':c) = splitExtension $ dropExtension $ takeFileName av
+callz :: Rules ()
+callz = [ "build/*.*.bcf", "build/*.*.divtab" ] &%> \[bcf,tab] -> do
+                let (sm,'.':c) = splitExtension $ dropExtension $ takeFileName bcf
                     dmg        = "build" </> sm <.> "dmgest"
                     bams       = [ unpack libf | s <- samples, sm == unpack (sample_name s)
                                                , l <- sample_libraries s, libf <- library_files l ]
@@ -105,34 +103,13 @@ pileups = [ "build/*.*.av", "build/*.*.divtab" ] &%> \[av,tab] -> do
                 command [] "qrsh" $
                         "-now" : "no" : "-cwd" :
                         "-l" : "h_vmem=3.4G,s_vmem=3.4G,virtual_free=3.4G,s_stack=2M" :
-                        "redeye-pileup" : "-o" : av : "-c" : c : "-T" : tab : "-D" : dmg : "-v" : bams
+                        "redeye-single" : "-o" : bcf : "-c" : c : "-T" : tab : "-D" : dmg
+                                        : "-N" : sm : "-v" : bams
 
                 -- command [ FileStdout tab ] "redeye-pileup" $
                 --         "-o" : av : "-c" : c : "-T" : "-v" : concat libinputs
 
 
-callz :: Rules ()
-callz = "build/*.*.bcf" %> \bcf -> do
-                let (sm,'.':c)  = splitExtension $ dropExtension $ takeFileName bcf
-                    dep         = if c == "X" || c == "Y" then c else "auto"
-                    divest_file = "build" </> sm <.> dep <.> "divest"
-                    av_file     = "build" </> sm <.> c <.> "av"
-
-                need [ av_file, divest_file ]
-
-                -- this stinks.
-                [dv,ht] <- either fail (return . point_est . head) . eitherDecode
-                               =<< liftIO (L.readFile divest_file)
-
-                command [] "qrsh" $
-                        "-now" : "no" : "-cwd" :
-                        "-l" : "h_vmem=3.4G,s_vmem=3.4G,virtual_free=3.4G,s_stack=2M" :
-                        "redeye-single" : "-o" : bcf : (dropExtension bcf <.> "av")
-                            : "-N" : sm : "-s"
-                            : "-d" : show dv : "-D" : show ht
-                            : "-i" : show (0.1*dv) : "-I" : show ht : []
-
--- XXX  This isn't going to work for now.
 dmgests :: Rules ()
 dmgests = "build/*.dmgest" %> \out -> do
                 let lb = dropExtension $ takeFileName out
@@ -141,7 +118,7 @@ dmgests = "build/*.dmgest" %> \out -> do
                 command [] "qrsh" $
                         "-now" : "no" : "-cwd" :
                         "-l" : "h_vmem=3.4G,s_vmem=3.4G,virtual_free=3.4G,s_stack=2M" :
-                        "redeye-dar" : {-"-T" : out :-} rgn_file : []
+                        "redeye-dar" : "-o" : out : rgn_file : []
 
 rgn_files :: Rules ()
 rgn_files = "build/*.good_regions.bam" %> \out -> do
@@ -192,6 +169,37 @@ samples =
           path   = "/mnt/ngs_data/140411_SN7001204_0257_AC2MW7ACXX_PEdi_SP/Ibis/BWA/proc1/s_%d_sequence_ancient_hg19_evan.bam"
       in Sample "Vanity" (map lane [3..8])
     , Sample "SS6004467" [ Library "SS6004467"
-        [ "/mnt/454/HGDP/genomes_Bteam/hg19_evan.2-align/SS6004467-dedup.rg_hg19_evan.2.bam" ] ] ]
+        [ "/mnt/454/HGDP/genomes_Bteam/hg19_evan.2-align/SS6004467-dedup.rg_hg19_evan.2.bam" ] ]
 
+    , Sample "Goyet"
+        [ Library "A9122" [ "/mnt/expressions/mateja/Goyet/FinalBAMs/Per_library/AnalyzeBAM_L35MQ0_per_library/A9122_final_sorted.uniq.L35MQ0.bam" ]
+        , Library "A9229" [ "/mnt/expressions/mateja/Goyet/FinalBAMs/Per_library/AnalyzeBAM_L35MQ0_per_library/A9229_final_sorted.uniq.L35MQ0.bam" ]
+        , Library "A9349" [ "/mnt/expressions/mateja/Goyet/FinalBAMs/Per_library/AnalyzeBAM_L35MQ0_per_library/A9349_final_sorted.uniq.L35MQ0.bam" ] ]
 
+    , Sample "Vindija_G1"
+        [ Library "A9121" [ "/mnt/expressions/mateja/Vindija_G1/FinalBAMs/Per_library/AnalyzeBAM_L35MQ0_per_library/A9121_final_sorted.uniq.L35MQ0.bam" ]
+        , Library "A9228" [ "/mnt/expressions/mateja/Vindija_G1/FinalBAMs/Per_library/AnalyzeBAM_L35MQ0_per_library/A9228_final_sorted.uniq.L35MQ0.bam" ] ]
+        -- , Library "A9248" [ "/mnt/expressions/mateja/Vindija_G1/FinalBAMs/Per_library/AnalyzeBAM_L35MQ0_per_library/A9248_final_sorted.uniq.L35MQ0.bam" ] ]
+
+    , Sample "Les_Cottes"
+        [ Library "A9230" [ "/mnt/expressions/mateja/Les_Cottes/FinalBAMs/Per_library/AnalyzeBAM_L35MQ0_per_library/A9230_final_sorted.uniq.L35MQ0.bam" ]
+        , Library "A9290" [ "/mnt/expressions/mateja/Les_Cottes/FinalBAMs/Per_library/AnalyzeBAM_L35MQ0_per_library/A9290_final_sorted.uniq.L35MQ0.bam" ]
+        , Library "A9291" [ "/mnt/expressions/mateja/Les_Cottes/FinalBAMs/Per_library/AnalyzeBAM_L35MQ0_per_library/A9291_final_sorted.uniq.L35MQ0.bam" ]
+        , Library "A9309" [ "/mnt/expressions/mateja/Les_Cottes/FinalBAMs/Per_library/AnalyzeBAM_L35MQ0_per_library/A9309_final_sorted.uniq.L35MQ0.bam" ]
+        , Library "A9350" [ "/mnt/expressions/mateja/Les_Cottes/FinalBAMs/Per_library/AnalyzeBAM_L35MQ0_per_library/A9350_final_sorted.uniq.L35MQ0.bam" ]
+        , Library "A9393" [ "/mnt/expressions/mateja/Les_Cottes/FinalBAMs/Per_library/AnalyzeBAM_L35MQ0_per_library/A9393_final_sorted.uniq.L35MQ0.bam" ]
+        , Library "A9394" [ "/mnt/expressions/mateja/Les_Cottes/FinalBAMs/Per_library/AnalyzeBAM_L35MQ0_per_library/A9394_final_sorted.uniq.L35MQ0.bam" ]
+        , Library "A9395" [ "/mnt/expressions/mateja/Les_Cottes/FinalBAMs/Per_library/AnalyzeBAM_L35MQ0_per_library/A9395_final_sorted.uniq.L35MQ0.bam" ]
+        , Library "A9420" [ "/mnt/expressions/mateja/Les_Cottes/FinalBAMs/Per_library/AnalyzeBAM_L35MQ0_per_library/A9420_final_sorted.uniq.L35MQ0.bam" ] ]
+
+    , Sample "Mezmaiskaya2"
+        [ Library "A9180" [ "/mnt/expressions/mateja/Mezmaiskaya2/FinalBAMs/Per_library/AnalyzeBAM_L35MQ0_per_library/A9180_final_sorted.uniq.L35MQ0.bam" ]
+        , Library "A9288" [ "/mnt/expressions/mateja/Mezmaiskaya2/FinalBAMs/Per_library/AnalyzeBAM_L35MQ0_per_library/A9288_final_sorted.uniq.L35MQ0.bam" ]
+        , Library "A9289" [ "/mnt/expressions/mateja/Mezmaiskaya2/FinalBAMs/Per_library/AnalyzeBAM_L35MQ0_per_library/A9289_final_sorted.uniq.L35MQ0.bam" ] ]
+
+    , Sample "Spy"
+        [ Library "A9416" [ "/mnt/expressions/mateja/Spy/FinalBAMs/Per_library/AnalyzeBAM_L35MQ0_per_library/A9416_final_sorted.uniq.L35MQ0.bam" ]
+        , Library "A9417" [ "/mnt/expressions/mateja/Spy/FinalBAMs/Per_library/AnalyzeBAM_L35MQ0_per_library/A9417_final_sorted.uniq.L35MQ0.bam" ]
+        , Library "A9418" [ "/mnt/expressions/mateja/Spy/FinalBAMs/Per_library/AnalyzeBAM_L35MQ0_per_library/A9418_final_sorted.uniq.L35MQ0.bam" ]
+        , Library "A9419" [ "/mnt/expressions/mateja/Spy/FinalBAMs/Per_library/AnalyzeBAM_L35MQ0_per_library/A9419_final_sorted.uniq.L35MQ0.bam" ]
+        , Library "R5556" [ "/mnt/expressions/mateja/Spy/FinalBAMs/Per_library/AnalyzeBAM_L35MQ0_per_library/R5556_final_sorted.uniq.L35MQ0.bam" ] ] ]

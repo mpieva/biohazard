@@ -5,7 +5,6 @@ import Bio.Bam.Header
 import Bio.Bam.Rec
 import Bio.Iteratee
 import Bio.Prelude
-import Data.Aeson
 
 import qualified Data.ByteString        as B
 import qualified Data.Vector.Generic    as V
@@ -328,49 +327,16 @@ data SinglePop = SinglePop { prob_div :: !Double, prob_het :: !Double }
 -- the 'SinglePop' model.
 {-# INLINE single_pop_posterior #-}
 single_pop_posterior :: ( U.Unbox a, Ord a, Floating a )
-                     => SinglePop -> Nucleotides -> U.Vector (Prob' a) -> U.Vector (Prob' a)
-single_pop_posterior SinglePop{..} ref lks = U.map (/ U.sum v) v
+                     => SinglePop -> Int -> U.Vector (Prob' a) -> U.Vector (Prob' a)
+single_pop_posterior SinglePop{..} refix lks = U.map (/ U.sum v) v
   where
-    refix = U.fromListN 16 [0,0,2,0,5,0,0,0,9,0,0,0,0,0,0,0] U.! fromIntegral (unNs ref)
-
     priors = U.replicate (U.length lks)
                          ((1/3) * prob_het  * (1-prob_div))                                 -- hets
                 U.// [ (refix, (1-prob_het) * (1-prob_div)) ]                               -- ref
-                U.// [ (i,               (1/3) * prob_div ) | i <- [0,2,5,9], i /= refix ]  -- homs
+                U.// [ (i,               (1/3) * prob_div ) | i <- hixes, i /= refix ]      -- homs
 
     v = U.zipWith (\l p -> l * toProb (realToFrac p)) lks priors
-
-
--- The same kind of prior used in BSNP.  Note that this has GC content
--- (base composition), ti/tv bias, and heterozigosity, but does not
--- consider the reference base.
-data BsnpParams a = BsnpParams { bsnp_gc_cont :: !a
-                               , bsnp_ti_tv   :: !a
-                               , bsnp_het     :: !a }
-    deriving (Show, Generic)
-
-instance ToJSON a => ToJSON (BsnpParams a)
-
-bsnp_params_to_lks :: Fractional a => BsnpParams a -> [a]
-bsnp_params_to_lks BsnpParams{..} =
-    [ aa, ac, cc, ag, cg, gg, at, ct, gt, tt ]
-  where
-    aa = (1 - bsnp_het) * (1 - bsnp_gc_cont) / 2
-    cc = (1 - bsnp_het) *      bsnp_gc_cont  / 2
-    gg = cc
-    tt = aa
-
-    ag = bsnp_ti_tv * bsnp_het * bsnp_gc_cont * (1 - bsnp_gc_cont) / norm
-    ct = ag
-
-    cg = bsnp_het *      bsnp_gc_cont  *      bsnp_gc_cont  / norm
-    at = bsnp_het * (1 - bsnp_gc_cont) * (1 - bsnp_gc_cont) / norm
-
-    ac = bsnp_het *      bsnp_gc_cont  * (1 - bsnp_gc_cont) / norm
-    gt = ac
-
-    norm = 4 / ( 1 + 2 * bsnp_gc_cont * bsnp_ti_tv * (1 - bsnp_gc_cont) )
-
+    hixes = takeWhile (< U.length lks) $ scanl' (+) 0 [2..]
 
 -- | The pileup enumeratee takes 'BamRaw's, decomposes them, interleaves
 -- the pieces appropriately, and generates 'Pile's.  The output will

@@ -4,7 +4,9 @@ module Bio.Genocall where
 import Bio.Adna
 import Bio.Bam.Pileup
 import Bio.Prelude
+import Data.Aeson
 
+import qualified Data.HashMap.Strict    as H
 import qualified Data.Set               as Set
 import qualified Data.Vector            as V
 import qualified Data.Vector.Unboxed    as U
@@ -60,6 +62,9 @@ data SubstModel_ m = SubstModel
         , right_substs_rev  :: {-# UNPACK #-} !(V.Vector m) }
     deriving (Show, Generic)
 
+instance ToJSON   m => ToJSON   (SubstModel_ m)
+instance FromJSON m => FromJSON (SubstModel_ m)
+
 type SubstModel = SubstModel_ Mat44D
 
 -- | Mutable version of SubstModel, we'll probably have to accumulate in
@@ -79,6 +84,19 @@ freezeSubstModel mm = do
                         ( V.map complMat new_left   )
                               ( complMat new_middle )
                         ( V.map complMat new_right  )
+
+newtype SubstModels = SubstModels (HashMap Bytes SubstModel)
+  deriving (Show, Generic)
+
+instance ToJSON SubstModels where
+    toJSON (SubstModels m) = Object $ H.fromList
+        [ ( decodeBytes k, toJSON v ) | (k,v) <- H.toList m ]
+
+instance FromJSON SubstModels where
+    parseJSON = withObject "map of substitution models" $ \o ->
+                SubstModels . H.fromList <$> sequence
+                    [ (,) (encodeBytes k) <$> parseJSON v | (k,v) <- H.toList o ]
+
 
 
 
@@ -150,11 +168,12 @@ mk_snp_gts = [ Vec4D (0.5*(a+w)) (0.5*(b+x)) (0.5*(c+y)) (0.5*(d+z))
              , let Vec4D a b c d = last as
              , Vec4D w x y z <- as ]
 
+{-
 -- | SNP call according to maq/samtools/bsnp model.  The matrix k counts
 -- how many errors we made, approximately.
 -- XXX  Unfixable, for the time being.
 
-{- maq_snp_call :: Int -> Double -> BasePile -> Snp_GLs
+maq_snp_call :: Int -> Double -> BasePile -> Snp_GLs
 maq_snp_call theta bases = Snp_GLs (U.fromList $ map l $ mk_snp_gts ) ref
   where
     -- Bases with effective qualities in order of decreasing(!) quality.

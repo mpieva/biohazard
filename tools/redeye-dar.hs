@@ -1,41 +1,25 @@
 {-# LANGUAGE FlexibleContexts #-}
--- Estimates aDNA damage.  Crude first version.
+-- Co-estimates aDNA damage with parameters for a simple genotype prior.
 --
--- - Read or subsample a BAM file, make compact representation of the reads.
--- - Compute likelihood of each read under simple model of
---   damage, error/divergence, contamination.
+-- We want to estimate on only a subset of the genome.  For the time
+-- being, this is by definition a subset of the large blocks of the
+-- mappability track for the human genome (so this doesn't work for
+-- other genomes).  To make this less crude, we need a differently
+-- prepared input, but right now, input is one BAM file with read group
+-- annotations.
 --
--- For the fitting, we simplify radically: ignore sequencing error,
--- assume damage and simple, symmetric substitutions which subsume error
--- and divergence.
---
--- Trying to compute symbolically is too much, the high power terms get
--- out of hand quickly, and we get mixed powers of \lambda and \kappa.
--- The fastest version so far uses the cheap implementation of automatic
--- differentiation in AD.hs together with the Hager-Zhang method from
--- package nonlinear-optimization.  BFGS from hmatrix-gsl takes longer
--- to converge.  Didn't try an actual Newton iteration (yet?), AD from
--- package ad appears slower.
---
--- If I include parameters, whose true value is zero, the transformation
--- to the log-odds-ratio doesn't work, because then the maximum doesn't
--- exist anymore.  For many parameters, zero makes sense, but one
--- doesn't.  A different transformation ('sigmoid2'/'isigmoid2'
--- below) allows for an actual zero (but not an actual one), while
--- avoiding ugly boundary conditions.  That appears to work well.
---
--- The current hack assumes all molecules have an overhang at both ends,
--- then each base gets deaminated with a position dependent probability
--- following a geometric distribution.  If we try to model a fraction of
--- undeaminated molecules (a contaminant) in addition, this fails.  To
--- rescue the idea, I guess we must really decide if the molecule has an
--- overhang at all (probability 1/2) at each end, then deaminate it.
+-- We run the EM algorithm, repeatedly estimating one damage/error model
+-- per read group and the global genotype parameters.  Convergence is
+-- achieved when the changes in the damage models are sufficiently
+-- small.  The damage/error model is one substitution matrix for each
+-- position within a read near the ends, and one for what remains in the
+-- middle.
 
 import Bio.Adna
 import Bio.Bam
 import Bio.Bam.Pileup
 import Bio.Genocall
-import Bio.Genocall.Estimators          ( DivEst(..), tabulateSingle, estimateSingle, good_regions )
+import Bio.Genocall.Estimators          -- ( DivEst(..), tabulateSingle, estimateSingle, good_regions )
 import Bio.Prelude
 import Bio.Util.AD
 import Data.Aeson.Encode.Pretty
@@ -45,23 +29,26 @@ import qualified Data.ByteString.Lazy.Char8     as L
 import qualified Data.HashMap.Strict            as H
 import qualified Data.Sequence                  as Z
 import qualified Data.Vector                    as V
-import qualified Data.Vector.Storable           as S
 import qualified Data.Vector.Unboxed            as U
 import qualified Data.Vector.Unboxed.Mutable    as M
 
 data Conf = Conf {
-    conf_report :: String -> IO (),
+    conf_output :: LazyBytes -> IO (),
+    conf_report :: LazyBytes -> IO (),
     conf_params :: Parameters }
 
 defaultConf :: Conf
-defaultConf = Conf (\_ -> return ()) quietParameters
+defaultConf = Conf (L.hPutStrLn stdout) (\_ -> return ()) quietParameters
 
 options :: [OptDescr (Conf -> IO Conf)]
 options = [
+    Option "o"  ["output"]     (ReqArg set_output "FILE") "Write output to FILE",
     Option "v"  ["verbose"]      (NoArg      set_verbose) "Print progress reports",
     Option "h?" ["help","usage"] (NoArg       disp_usage) "Print this message and exit" ]
+    -- Missing here:  number of matrices?
   where
-    set_verbose  c = return $ c { conf_report = hPutStrLn stderr, conf_params = debugParameters }
+    set_verbose  c = return $ c { conf_report = L.hPutStrLn stderr, conf_params = debugParameters }
+    set_output f c = return $ c { conf_output = L.writeFile f }
 
     disp_usage  _ = do pn <- getProgName
                        let blah = "Usage: " ++ pn ++ " [OPTION...] [LIBRARY-NAME...]"
@@ -74,82 +61,82 @@ main = do
     unless (null errors) $ mapM_ (hPutStrLn stderr) errors >> exitFailure
     Conf{..} <- foldl (>>=) (return defaultConf) opts
 
-    -- Meh.  New concept.  We'll operate repeatedly on a small set of
-    -- regions.  For the time being, that region will have to be put
-    -- into a suitable file, so here we expect precisely one file.  Read
-    -- group annotations have to be present, we will apply one damage
-    -- model per read group.  Have to decide when we're done.
-
     -- For each iteration:  read the input, decompose, pileup.  The
     -- "prior" damage model is the usual 'SubstModel', the "posterior"
     -- damage model needs to be a mutable 'MSubstModel'.  We feed
     -- likelihoods into the div/het estimation (just as in
     -- 'redeye-pileup'), but also into a caller that will estimate
     -- damage.
-    let iter sp0 mod0 = do (est, model1) <- emIter sp0 mod0 conf_report files
-                           L.putStrLn $ encodePretty est
-                           -- pprint $ H.toList model1
-                           -- XXX  broken!
-                           iter (case est of (DivEst { point_est = [a,b] },_) -> SinglePop a b) model1
+    let iter sp0 mod0 = do ext_mod <- emIter sp0 mod0 files
+                           conf_report $ encodePretty $ pop_separate ext_mod
+                           if diffSubstMod mod0 (damage ext_mod) > 0.001
+                               then iter (case point_est $ population ext_mod of
+                                                [a,b] -> SinglePop a b) (damage ext_mod)
+                               else return ext_mod
 
-    iter (SinglePop 0.001 0.002) H.empty
-    -- iter (BsnpParams 0.3 2 0.001) H.empty
+    final_model <- iter (SinglePop 0.001 0.002) (SubstModels H.empty)
+    conf_output $ encodePretty (final_model :: ExtModel)
 
+diffSubstMod :: SubstModels -> SubstModels -> Double
+diffSubstMod (SubstModels m1) (SubstModels m2) =
+    H.foldl' max 0 $
+    H.map (either abs1 id) $
+    H.unionWith diff1 (H.map Left m1) (H.map Left m2)
+  where
+    diff1 :: Either SubstModel a -> Either SubstModel a -> Either b Double
+    diff1 (Left sm1) (Left sm2) = Right $ maximum $
+            [ V.maximum $ V.zipWith diff2 (left_substs_fwd   sm1) (left_substs_fwd   sm2)
+            ,                       diff2 (middle_substs_fwd sm1) (middle_substs_fwd sm2)
+            , V.maximum $ V.zipWith diff2 (right_substs_fwd  sm1) (right_substs_fwd  sm2) ]
+
+    diff2 :: Mat44D -> Mat44D -> Double
+    diff2 (Mat44D u) (Mat44D v) = U.maximum $ U.map abs $ U.zipWith (-) u v
+
+    abs1 :: SubstModel -> Double
+    abs1 sm1 = V.maximum (V.map abs2 (left_substs_fwd   sm1)) `max`
+                                abs2 (middle_substs_fwd sm1)  `max`
+               V.maximum (V.map abs2 (right_substs_fwd  sm1))
+
+    abs2 :: Mat44D -> Double
+    abs2 (Mat44D v) = U.maximum v
 
 -- One iteration of EM algorithm.  We go in with a substitution model
--- and het/div, we come out with new estimates.  We get het/div from
--- tabulation followed by estimation, as before.  For damage, we have to
+-- and het/div, we come out with new estimates for same.  We get het/div from
+-- tabulation followed by numerical optimization.  For damage, we have to
 -- compute posterior probabilities using the old model, then update the
--- damage probabilistically.
-emIter :: {- BsnpParams Double -} SinglePop -> HashMap Bytes SubstModel -> (String -> IO ())
-       -> [FilePath] -> IO ({-BsnpParams Double-} (DivEst, DivEst), HashMap Bytes SubstModel)
-emIter divest mod0 report infiles =
+-- damage matrices with pseudo counts.  (This amounts to a maximum
+-- likelihood estimate for a weighted multinomial distribution.)
+emIter :: SinglePop -> SubstModels -> [FilePath] -> IO ExtModel
+emIter divest (SubstModels mod0) infiles =
         liftIO (mapM fresh_subst_model mod0 >>= newIORef)                         >>= \smodel ->
         concatInputs infiles >=> run                                                $ \hdr ->
         concatMapStreamM (decompose_dmg_from smodel)                               =$
-        progressPos (\(rs,p,_)->(rs,p)) "GT call at" (meta_refs hdr) 0x8000 report =$
         pileup                                                                     =$
         filterPilesWith (the_regions hdr)                                          =$
-
-        {- mapStream (id &&& calls (U.fromListN 10 (bsnp_params_to_lks divest)))      =$
-        zipStreams ( tabulateBsnp >>= liftIO . estimateBsnp divest )
-                   ( mapStreamM_ (uncurry updateSubstModel)              >>
-                     liftIO (readIORef smodel)                          >>=
-                     liftIO . mapM (freezeSubstModel . snd) ) -}
-
         mapStream  ( id &&& calls )                                                =$
 
         let div_estimation :: MonadIO m => Iteratee [(a, Calls)] m (DivEst,DivEst)
-            div_estimation = mapStream snd                                      =$
-                             tabulateSingle                                    >>=
+            div_estimation = mapStream snd                                         =$
+                             tabulateSingle                                       >>=
                              liftIO . estimateSingle
 
             dmg_estimation :: MonadIO m => Iteratee [(Pile (Mat44D,MMat44D), Calls)] m (HashMap Bytes SubstModel)
-            dmg_estimation = mapStreamM_ (\(p,c) -> liftIO $ updateSubstModel p (posterior divest $ p_snp_pile c))             >>
-                             liftIO (readIORef smodel)                         >>=
+            dmg_estimation = mapStreamM_ (\(p,c) ->
+                                    liftIO . updateSubstModel p $
+                                    single_pop_posterior divest
+                                        (refix $ snp_refbase $ p_snp_pile c)
+                                        (snp_gls $ p_snp_pile c))                  >>
+                             liftIO (readIORef smodel)                            >>=
                              liftIO . mapM (freezeSubstModel . snd)
 
-        in zipStreams div_estimation dmg_estimation
+        in (\((d1,d2),m) -> ExtModel d1 (Just d2) (SubstModels m))
+           <$> zipStreams div_estimation dmg_estimation
   where
     the_regions hdr = sort [ Region (Refseq $ fromIntegral ri) p (p+l)
                            | (ch, p, l) <- good_regions
                            , let Just ri = Z.findIndexL ((==) ch . sq_name) (meta_refs hdr) ]
 
-tabulateBsnp :: Monad m => Iteratee [(a,U.Vector Prob)] m (U.Vector Double)
-tabulateBsnp = foldStream (\as (_,bs) -> U.zipWith (\a b -> a + fromProb b) as bs) (U.replicate 10 0)
-
-estimateBsnp :: BsnpParams Double -> U.Vector Double -> IO (BsnpParams Double)
-estimateBsnp (BsnpParams u v w) counts = do
-    (newparms, _, _) <- minimize quietParameters (1.0e-30) lk (U.fromList [isig u, v,isig w])
-    case S.toList newparms of [u',v',w'] -> return $ BsnpParams (sig u') v' (sig w')
-  where
-    lk :: [AD] -> AD
-    lk [x,y,z] = sum $ zipWith (\c p -> let d = fromDouble c - p in d * d)
-                               (U.toList counts')
-                               (bsnp_params_to_lks (BsnpParams (sig x) y (sig z)))
-    sig x = recip $ 1 + exp (-x)
-    isig y = - log (recip y - 1)
-    counts' = U.map (/ U.sum counts) counts
+    refix ref = U.fromListN 16 [0,0,2,0,5,0,0,0,9,0,0,0,0,0,0,0] U.! fromIntegral (unNs ref)
 
 
 filterPilesWith :: Monad m => [Region] -> Enumeratee [Pile a] [Pile a] m b
@@ -167,7 +154,6 @@ filterPilesWith = unfoldConvStream go
 -- Probabilistically count substitutions.  We infer from posterior
 -- genotype probabilities what the base must have been, then count
 -- substitutions from that to the actual base.
--- updateSubstModel :: SinglePop -> Pile ( Mat44D, MMat44D ) -> Calls -> IO ()
 updateSubstModel :: Pile ( Mat44D, MMat44D ) -> U.Vector Prob -> IO ()
 updateSubstModel pile postp = mapM_ count_base bases
   where
@@ -201,12 +187,6 @@ updateSubstModel pile postp = mapM_ count_base bases
 
 
 
-{- calls :: U.Vector Double -> Pile ( Mat44D, b ) -> U.Vector Prob
-calls priors pile = U.map (/ U.sum v) v
-  where
-    s = simple_snp_call $ map (second (fmap fst)) $ uncurry (++) $ p_snp_pile pile
-    v = U.zipWith (\l p -> l * toProb p) (snp_gls s) priors -}
-
 calls :: Pile (Mat44D,a) -> Calls
 calls pile = pile { p_snp_pile = s, p_indel_pile = i }
   where
@@ -216,10 +196,6 @@ calls pile = pile { p_snp_pile = s, p_indel_pile = i }
     -- XXX this should be a cmdline option, if we ever look at qualities again
     -- fq = min 1 . (*) 1.333 . fromQual
     -- fq = fromQual
-
-
-posterior :: SinglePop -> Snp_GLs -> U.Vector Prob
-posterior model s = single_pop_posterior model (snp_refbase s) (snp_gls s)
 
 
 {-# INLINE decompose_dmg_from #-}
