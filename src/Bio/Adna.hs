@@ -106,17 +106,24 @@ complMat v = Mat44D $ U.fromListN 16 [ v `bang` compl x :-> compl y
 
 -- | Adds the two matrices of a mutable substitution model (one for each
 -- strand) appropriately, normalizes the result (to make probabilities
--- from pseudo-counts), and freezes that into one immutable matrix.
+-- from pseudo-counts), and freezes that into one immutable matrix.  We
+-- add a single count everywhere to avoid getting NaNs from bizarre
+-- data.
 freezeMats :: MMat44D -> MMat44D -> IO Mat44D
 freezeMats (MMat44D vv) (MMat44D ww) = do
     v <-            Mat44D <$> U.freeze vv
     w <- complMat . Mat44D <$> U.freeze ww
+
+    let sums = U.generate 4 $ \x0 ->
+                    let x = N $ fromIntegral x0
+                    in sum [ v `bang` x :-> z + w `bang` x :-> z
+                           | z <- range (nucA, nucT) ] + 4
+
     return . Mat44D $ U.fromListN 16
-            [ ((v `bang` x :-> y) + (w `bang` x :-> y)) / s
+            [ (v `bang` x :-> y + w `bang` x :-> y + 1) / s
             | y <- range (nucA, nucT)
             , x <- range (nucA, nucT)
-            , let s = sum [ (v `bang` x :-> z) + (w `bang` x :-> y)
-                          | z <- range (nucA, nucT) ] ]
+            , let s = sums U.! fromIntegral (unN x) ]
 
 
 -- | 'DamageModel' for undamaged DNA.  The likelihoods follow directly
@@ -226,28 +233,8 @@ empDamage NDP{..} =
     !rev5 = V.zipWith genSubstMat' (G.convert dp_beta5) (G.convert dp_alpha5)
     !rev3 = V.zipWith genSubstMat' (G.convert dp_beta3) (G.convert dp_alpha3)
 
-    -- | r         = get (flip genSubstMat')
-    -- | otherwise = get       genSubstMat'
-  -- where
-    -- get k i | i+i  <  l = k (fromMaybe dp_alpha (dp_alpha5 G.!? i))
-                            -- (fromMaybe dp_beta  (dp_beta5  G.!? i))
-            -- | otherwise = k (fromMaybe dp_alpha (dp_alpha3 G.!? (l-i-1)))
-                            -- (fromMaybe dp_beta  (dp_beta3  G.!? (l-i-1)))
-
     genSubstMat' a b = genSubstMat (recip $ 1 + exp (-a)) (recip $ 1 + exp (-b))
 
-
-{-empDamage :: NewDamageParameters U.Vector Double -> DamageModel
-empDamage NDP{..} r l
-    | r         = get (flip genSubstMat')
-    | otherwise = get       genSubstMat'
-  where
-    get k i | i+i  <  l = k (fromMaybe dp_alpha (dp_alpha5 G.!? i))
-                            (fromMaybe dp_beta  (dp_beta5  G.!? i))
-            | otherwise = k (fromMaybe dp_alpha (dp_alpha3 G.!? (l-i-1)))
-                            (fromMaybe dp_beta  (dp_beta3  G.!? (l-i-1)))
-
-    genSubstMat' a b = genSubstMat (recip $ 1 + exp (-a)) (recip $ 1 + exp (-b)) -}
 
 -- | Collected \"traditional\" statistics:
 --

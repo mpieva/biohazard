@@ -228,27 +228,8 @@ Executable redeye-flow
                        directory,
                        shake == 0.15.*,
                        text,
+                       unordered-containers,
                        vector
-
--- Executable gt-scan
-  -- Main-is:             gt-scan.hs
-  -- Ghc-options:         -Wall -rtsopts
-  -- Extensions:          NoImplicitPrelude, OverloadedStrings,
-  --                      BangPatterns, TypeFamilies
-  -- Hs-Source-Dirs:      tools
-  -- Build-depends:       aeson,
-                       -- base,
-                       -- biohazard,
-                       -- bytestring,
-                       -- containers,
-                       -- iteratee,
-                       -- nonlinear-optimization,
-                       -- primitive,
-                       -- unordered-containers,
-                       -- text,
-                       -- vector
-
--- ------
 
 Executable afroengineer
   Main-is:             afroengineer.hs

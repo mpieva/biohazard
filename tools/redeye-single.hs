@@ -22,8 +22,7 @@
 -- Calling is always diploid, for maximum flexibility.  We don't really
 -- support higher ploidies, so the worst damage is that we output an
 -- overhead of 150% useless likelihood values for the sex chromosomes
--- and maybe estimate heterozygosity where there is none.  (XXX  We
--- could produce haploid calls for the sex chromosomes, though.)
+-- and maybe estimate heterozygosity where there is none.
 --
 -- (This can be extended easily into a caller for a homogenous
 -- population where individuals are assumed to be randomly related (i.e.
@@ -55,20 +54,14 @@ import qualified Data.Vector.Unboxed            as U
 
 type Reporter = String -> IO ()
 
--- XXX  conf_ploidy is completely ignored.  Should it be?
 data Conf = Conf {
     conf_output     :: FilePath,
     conf_dmg        :: ExtModel,
     conf_chrom      :: String,
-    conf_theta      :: Maybe Double,
     conf_report     :: Reporter,
     conf_table      :: Maybe FilePath,
     conf_random     :: Maybe StdGen,
-    conf_ploidy     :: String -> Int,
     sample_name     :: Conf -> String }
-
-    -- prior_indel     :: Conf -> Double,
-    -- prior_het_indel :: Conf -> Double }
 
 
 -- | We map read groups to damage models.  The set of damage models is
@@ -77,36 +70,23 @@ defaultConf :: Conf
 defaultConf = Conf { conf_output = error "no output file"
                    , conf_dmg    = ExtModel (DivEst [0.001,0.0005] []) Nothing (SubstModels mempty)
                    , conf_chrom  = ""
-                   , conf_theta  = Nothing
                    , conf_report = \_ -> return ()
                    , conf_table  = Nothing
                    , conf_random = Nothing
-                   , conf_ploidy = const 2
                    , sample_name = takeWhile (/='.') . takeFileName . conf_output }
 
 
 options :: [OptDescr (Conf -> IO Conf)]
 options = [
-    Option "o"  ["output"] (ReqArg set_output "FILE") "Set output filename to FILE",
-    Option "c"  chrom      (ReqArg set_chrom  "NAME") "Restrict to chromosome NAME",
-    Option "D"  ["damage"] (ReqArg set_dmg    "FILE") "Read damage model from FILE",
-    -- Option "t"  dep_param  (ReqArg set_theta  "FRAC") "Set dependency coefficient to FRAC (\"N\" to turn off)",
-    Option "T"  ["table"]  (ReqArg want_table "FILE") "Print table for divergence estimation to FILE",
-
-    Option "1"  ["haploid-chromosomes"]  (ReqArg set_hap "PREF") "Targets starting with PREF are haploid",
-    Option "2"  ["diploid-chromosomes"]  (ReqArg set_dip "PREF") "Targets starting with PREF are diploid",
-    Option "s"  ["sample-genotypes"]     (OptArg set_rnd "SEED") "Sample genotypes from posterior",
-    Option "N"  ["name"]                (ReqArg set_name "NAME") "Set sample name to NAME",
-    -- Option "d"  ["divergence"]           (ReqArg set_div "PROB") "Set probability of a hom. SNP to PROB",
-    -- Option "D"  ["heterozygosity"]       (ReqArg set_het "PROB") "Set probability of a het. SNP to PROB",
-    -- Option "i"  ["indel"]              (ReqArg set_indel "PROB") "Set probability of a hom. InDel to PROB",
-    -- Option "I"  ["het-indel"]         (ReqArg set_hindel "PROB") "Set probability of a het. InDel to PROB",
-    Option "v"  ["verbose"]             (NoArg       be_verbose) "Print more diagnostics",
-    Option "h?" ["help","usage"]        (NoArg       disp_usage) "Display this message" ]
+    Option "o"  ["output"]              (ReqArg set_output "FILE") "Set output filename to FILE",
+    Option "c"  ["chromosome","region"] (ReqArg set_chrom  "NAME") "Restrict to chromosome NAME",
+    Option "D"  ["damage"]              (ReqArg set_dmg    "FILE") "Read damage model from FILE",
+    Option "T"  ["table"]               (ReqArg want_table "FILE") "Print table for divergence estimation to FILE",
+    Option "s"  ["sample-genotypes"]    (OptArg set_rnd    "SEED") "Sample genotypes from posterior",
+    Option "N"  ["name"]                (ReqArg set_name   "NAME") "Set sample name to NAME",
+    Option "v"  ["verbose"]             (NoArg         be_verbose) "Print more diagnostics",
+    Option "h?" ["help","usage"]        (NoArg         disp_usage) "Display this message" ]
   where
-    -- dep_param = ["theta","dependency-coefficient"]
-    chrom     = ["chromosome","region"]
-
     disp_usage    _ = do pn <- getProgName
                          let blah = "Usage: " ++ pn ++ " [[OPTION...] [BAM-FILE...] ...]"
                          putStrLn $ usageInfo blah options
@@ -114,9 +94,6 @@ options = [
 
     be_verbose       c = return $ c { conf_report = hPutStrLn stderr }
     want_table    fp c = return $ c { conf_table  = Just fp }
-
-    -- set_theta    "N" c = return $ c { conf_theta = Nothing }
-    -- set_theta      a c = (\t  ->  c { conf_theta = Just  t }) <$> readIO a
 
     set_dmg        a c = BL.readFile a >>= \s -> case eitherDecode' s of
                             Left err -> error err
@@ -126,17 +103,8 @@ options = [
     set_output    fn c = return $ c { conf_output = fn }
     set_name      nm c = return $ c { sample_name = const nm }
 
-    set_hap        a c = return $ c { conf_ploidy = \ch -> if a `isPrefixOf` ch then 1 else conf_ploidy c ch }
-    set_dip        a c = return $ c { conf_ploidy = \ch -> if a `isPrefixOf` ch then 2 else conf_ploidy c ch }
-
-
     set_rnd  Nothing c = newStdGen >>= \g -> return $ c { conf_random = Just g }
     set_rnd (Just a) c = readIO  a >>= \s -> return $ c { conf_random = Just (mkStdGen s) }
-
-    -- set_div        a c = readIO a >>= \x -> return $ c { prior_div       =       x }
-    -- set_het        a c = readIO a >>= \x -> return $ c { prior_het       = const x }
-    -- set_indel      a c = readIO a >>= \x -> return $ c { prior_indel     = const x }
-    -- set_hindel     a c = readIO a >>= \x -> return $ c { prior_het_indel = const x }
 
 
 main :: IO ()
@@ -145,17 +113,20 @@ main = do
     conf@Conf{..} <- foldl (>>=) (return defaultConf) opts
     unless (null errs) $ mapM_ (hPutStrLn stderr) errs >> exitFailure
 
+    let symtab = H.fromList $ zip [ k | (k,_) <- case damage conf_dmg of SubstModels ms -> H.toList ms ] (map DmgToken [0..])
+        smodel = V.fromList       [ v | (_,v) <- case damage conf_dmg of SubstModels ms -> H.toList ms ]
+
     let prior_div:prior_het:_ = point_est $ population conf_dmg
         callz = ( call $ SinglePop prior_div prior_het
                 , call $ SinglePop (0.1 * prior_div) (0.1 * prior_het) )
 
-    (tab,()) <- withOutputFd conf_output                                                        $ \ofd ->
-                mergeInputRgns combineCoordinates conf_chrom files >=> run                      $ \hdr ->
-                takeWhileE (isValidRefseq . b_rname . unpackBam)                               =$
-                concatMapStream (decompose_dmg_from (damage conf_dmg))                         =$
-                progressPos (\(a,b,_)->(a,b)) "GT call at" (meta_refs hdr) 0x4000 conf_report  =$
-                pileup                                                                         =$
-                mapStream simple_calls                                                         =$
+    (tab,()) <- withOutputFd conf_output                                                         $ \ofd ->
+                mergeInputRgns combineCoordinates conf_chrom files >=> run                       $ \hdr ->
+                takeWhileE (isValidRefseq . b_rname . unpackBam)                                =$
+                concatMapStream (decompose_dmg_from symtab)                                     =$
+                progressPos (\(a,b,_,_)->(a,b)) "GT call at" (meta_refs hdr) 0x4000 conf_report =$
+                pileup                                                                          =$
+                mapStream (simple_calls smodel)                                                 =$
                 zipStreams tabulateSingle
                            (toBcf (meta_refs hdr) [fromString $ sample_name conf] callz conf_random     =$
                             mapChunksM_ (liftIO . fdPut ofd))
@@ -184,66 +155,24 @@ withOutputFd  f  k = do
     rename (f++".#") f
     return r
 
-simple_calls :: Pile Mat44D -> Calls
-simple_calls pile = pile { p_snp_pile = s, p_indel_pile = i }
+simple_calls :: V.Vector SubstModel -> Pile -> Calls
+simple_calls dmods pile = pile { p_snp_pile = s, p_indel_pile = i }
   where
-    !s = simple_snp_call   $ uncurry (++) $ p_snp_pile pile
-    !i = simple_indel_call $ p_indel_pile pile
+    !s = simple_snp_call   get_dmg $ p_snp_pile pile
+    !i = simple_indel_call get_dmg $ p_indel_pile pile
+
+    get_dmg :: DmgToken -> Int -> Bool -> Mat44D
+    get_dmg (DmgToken dt) = case dmods V.!? dt of
+        Nothing -> error "shouldn't happen"
+        Just sm -> lookupSubstModel sm
 
 {-# INLINE decompose_dmg_from #-}
-decompose_dmg_from :: SubstModels -> BamRaw -> [ PosPrimChunks Mat44D ]
-decompose_dmg_from (SubstModels hm) raw =
+decompose_dmg_from :: HashMap Bytes DmgToken -> BamRaw -> [PosPrimChunks]
+decompose_dmg_from hm raw =
     let rg = extAsString "RG" (unpackBam raw)
-        model = case H.lookup rg hm of
-                Just mm -> mm
-                Nothing -> -- model0
-                           error $ "no model for " ++ unpack rg
-
-    in decompose (from_model model) raw
-
-  where
-    from_model m i r
-        | i >= 0 &&   i  <  V.length  (left_substs_fwd m) && not r
-                = V.unsafeIndex (left_substs_fwd   m)   i
-
-        | i <  0 && (-i) <= V.length (right_substs_fwd m) && not r
-                = V.unsafeIndex (right_substs_fwd  m) (-i-1)
-
-        | not r = middle_substs_fwd m
-
-        | i >= 0 &&   i  <  V.length  (left_substs_rev m)
-                = V.unsafeIndex (left_substs_rev   m)   i
-
-        | i <  0 && (-i) <= V.length (right_substs_rev m)
-                = V.unsafeIndex (right_substs_rev  m) (-i-1)
-
-        | True  = middle_substs_rev m
-
-
-    {- initmat = Mat44D $ U.fromListN 16 [ 0.91, 0.03, 0.03, 0.03
-                                      , 0.03, 0.91, 0.03, 0.03
-                                      , 0.03, 0.03, 0.91, 0.03
-                                      , 0.03, 0.03, 0.03, 0.91 ]
-
-    model0 = SubstModel { left_substs_fwd   = V.replicate 12 initmat
-                        , middle_substs_fwd =                initmat
-                        , right_substs_fwd  = V.replicate 12 initmat
-                        , left_substs_rev   = V.replicate 12 initmat
-                        , middle_substs_rev =                initmat
-                        , right_substs_rev  = V.replicate 12 initmat } -}
-
-{- decompose_dmg_from :: SubstModels -> BamRaw -> [PosPrimChunks Mat44D]
-decompose_dmg_from (SubstModels hm) raw =
-    decompose (model (H.lookup (extAsString "RG" (unpackBam raw)) hm)) raw
-  where
-    model              Nothing  _ _ = scalarMat 1
-    model (Just SubstModel{..}) i r
-        | i >= 0 &&   i  <  V.length  left_substs_fwd && not r = (V.!) left_substs_fwd    i
-        | i <  0 && (-i) >= V.length right_substs_fwd && not r = (V.!) right_substs_fwd (-i-1)
-        | not r                                                = middle_substs_fwd
-        | i >= 0 &&   i  <  V.length  left_substs_rev          = (V.!) left_substs_rev    i
-        | i <  0 && (-i) >= V.length right_substs_rev          = (V.!) right_substs_rev (-i-1)
-        | otherwise                                            = middle_substs_rev -}
+    in case H.lookup rg hm of
+            Just tk -> decompose tk raw
+            Nothing -> error $ "no substitution model for " ++ unpack rg
 
 
 mergeInputRgns :: (MonadIO m, MonadMask m)
@@ -265,36 +194,6 @@ mergeInputRgns (?) rs (fp0:fps0) = go fp0 fps0
 
 -- | Ploidy is hardcoded as two here.  Can be changed if the need
 -- arises.
---
--- XXX  For the time being, forward and reverse piles get concatenated.
--- For the naive call, this doesn't matter.  For the MAQ call, it feels
--- more correct to treat them separately and multiply (add?) the results.
-
-{- calls :: Maybe Double -> Pile Mat44D -> Calls
-calls Nothing pile = pile { p_snp_pile = s, p_indel_pile = i }
-  where
-    !s = simple_snp_call   $ uncurry (++) $ p_snp_pile pile
-    !i = simple_indel_call $ p_indel_pile pile
-    -- XXX this should be a cmdline option, if we ever look at qualities again
-    -- fq = min 1 . (*) 1.333 . fromQual
-    -- fq = fromQual
-
-calls (Just _theta) _pile = error "Sorry, maq_snp_call is broken right now." -- XXX
-calls (Just theta) pile = pile { p_snp_pile = s, p_indel_pile = i }
-  where
-    !i = simple_indel_call $ p_indel_pile pile
-
-    -- This lumps the two strands together
-    -- !s = maq_snp_call theta $ uncurry (++) $ p_snp_pile pile -- XXX
-
-    -- This treats them separately
-    !s | r == r'    = Snp_GLs (U.zipWith (*) x y) r     -- same ref base (normal case): multiply
-       | r == nucsN = Snp_GLs y r'                      -- forward ref is N, use backward call
-       | otherwise  = Snp_GLs x r                       -- else use forward call (even if this is incorrect,
-      where                                             -- there is nothing else we can do here)
-        Snp_GLs x r  = maq_snp_call theta $ fst $ p_snp_pile pile
-        Snp_GLs y r' = maq_snp_call theta $ snd $ p_snp_pile pile -}
-
 
 call :: SinglePop -> U.Vector Prob -> Maybe StdGen -> (Int,Maybe StdGen)
 call priors lks gen = case gen of
@@ -327,7 +226,6 @@ vcf_header refs smps = foldr (\a b -> pushByteString a <> pushByte 10 <> b) memp
     [ S.intercalate "\t" $ "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT" : smps ]
 
 
--- XXX Ploidy is being ignored.
 toBcf :: MonadIO m => Refs -> [S.ByteString] -> CallFuncs gen -> gen -> Enumeratee [Calls] Bytes m r
 toBcf refs smps (snp_call, indel_call) gen0 = eneeCheckIfDone go ><> encodeBgzfWith 6
   where
@@ -426,8 +324,6 @@ encodeVar alleles lks CallStats{..} ref pos do_call gen =
                    | otherwise       = pushByte 0xF7 <> pushByte 0x03 <> pushWord32 (fromIntegral $ S.length s) <> pushByteString s
 
     pl_vals = U.foldr ((<>) . pushWord16 . round . max 0 . min 0x7fff . (*) (-10/log 10) . unPr . (/ lks U.! maxidx)) mempty lks
-
-    -- lks = U.map (Pr . negate . mini2float) likelihoods :: U.Vector (Prob' Float)
     maxidx = U.maxIndex lks
 
     gq = -10 * unPr (U.sum (U.ifilter (\i _ -> i /= maxidx) lks) / U.sum lks) / log 10

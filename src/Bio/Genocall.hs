@@ -27,27 +27,28 @@ import qualified Data.Vector.Unboxed    as U
 -- much less likely than mapping errors.  Since this is hardly our
 -- priority, the approximations are hereby declared good enough.
 
-simple_indel_call :: IndelPile Mat44D -> (GL, [IndelVariant])
-simple_indel_call   [ ] = ( U.empty, [] )
-simple_indel_call   [_] = ( U.empty, [] )
-simple_indel_call vars = ( simple_call $ map mkpls vars, vars' )
+{-# INLINE simple_indel_call #-}
+simple_indel_call :: (DmgToken -> Int -> Bool -> Mat44D) -> (IndelPile,IndelPile) -> (GL, [IndelVariant])
+simple_indel_call get_dmg (varsF,varsR)
+    | length (varsF++varsR) <= 1 = ( U.empty, [] )
+    | otherwise                  = ( simple_call $ map (mkpls False) varsF ++ map (mkpls True) varsR, vars' )
   where
     vars' = IndelVariant (V_Nucs U.empty) (V_Nuc U.empty) :
             (Set.toList . Set.fromList)
                 [ IndelVariant (V_Nucs $ U.fromList d)
                                (V_Nuc  $ U.fromList $ map db_call i)
-                | (_q,(d,i)) <- vars
+                | (_q,(d,i)) <- varsF ++ varsR
                 , not (null d) || not (null i) ]
 
-    match = zipWith $ \(DB b q d _) n -> let p  = d `bang` n :-> b
-                                             p' = fromQual q
-                                         in toProb $ p + p' - p * p'
+    match str = zipWith $ \(DB b q dt di _) n -> let p  = get_dmg dt di str `bang` n :-> b
+                                                     p' = fromQual q
+                                                 in toProb $ p + p' - p * p'
 
-    mkpls :: (Qual, ([Nucleotides], [DamagedBase Mat44D])) -> U.Vector Prob
-    mkpls (q,(d,i)) = U.fromList [ qualToProb q +
-                                   if length d /= U.length dr || length i /= U.length ir
-                                   then 0 else product (match i $ U.toList ir)
-                                 | IndelVariant (V_Nucs dr) (V_Nuc ir) <- vars' ]
+    mkpls :: Bool -> (Qual, ([Nucleotides], [DamagedBase])) -> U.Vector Prob
+    mkpls str (q,(d,i)) = U.fromList [ qualToProb q +
+                                       if length d /= U.length dr || length i /= U.length ir
+                                       then 0 else product (match str i $ U.toList ir)
+                                     | IndelVariant (V_Nucs dr) (V_Nuc ir) <- vars' ]
 
 -- | A completely universal, completely empirical substituion model.
 -- We make no attempt to distinguish damage from error.  The model is
@@ -70,6 +71,16 @@ type SubstModel = SubstModel_ Mat44D
 -- | Mutable version of SubstModel, we'll probably have to accumulate in
 -- this thing.
 type MSubstModel = SubstModel_ MMat44D
+
+lookupSubstModel :: SubstModel_ a -> Int -> Bool -> a
+lookupSubstModel m i False
+    | i >= 0 &&   i  <  V.length  (left_substs_fwd m) = V.unsafeIndex (left_substs_fwd   m)   i
+    | i <  0 && (-i) <= V.length (right_substs_fwd m) = V.unsafeIndex (right_substs_fwd  m) (-i-1)
+    | otherwise                                       = middle_substs_fwd m
+lookupSubstModel m i True
+    | i >= 0 &&   i  <  V.length  (left_substs_rev m) = V.unsafeIndex (left_substs_rev   m)   i
+    | i <  0 && (-i) <= V.length (right_substs_rev m) = V.unsafeIndex (right_substs_rev  m) (-i-1)
+    | otherwise                                       = middle_substs_rev m
 
 -- Freezes a mutable substitution model into an immutable one.  Both
 -- strands are combined, the result is normalized, and duplicated to
@@ -104,16 +115,15 @@ instance FromJSON SubstModels where
 -- likelihood for each base from an empirical error/damage model, then
 -- hand over to 'simple_call'.  Base quality is ignored, but map quality
 -- is incorporated.
---
--- XXX  Quality is no longer used, maybe it can be removed.
 
-simple_snp_call :: BasePile Mat44D -> Snp_GLs
-simple_snp_call vars = mk_snp_gls (simple_call $ map mkpls vars) ref
+{-# INLINE simple_snp_call #-}
+simple_snp_call :: (DmgToken -> Int -> Bool -> Mat44D) -> (BasePile,BasePile) -> Snp_GLs
+simple_snp_call get_dmg (varsF,varsR) = mk_snp_gls (simple_call $ map (mkpls False) varsF ++ map (mkpls True) varsR) ref
   where
-    ref = case vars of (_, DB _ _ _ r) : _ -> r ; _ -> nucsN
-    mkpls (qq, DB b _ m _) = U.generate 4 $ \n ->
-                                let x = m `bang` N (fromIntegral n) :-> b
-                                in toProb $ x + fromQual qq * (1-x)
+    ref = case varsF ++ varsR of (_, DB _ _ _ _ r) : _ -> r ; _ -> nucsN
+    mkpls str (qq, DB b _ dt di _) = U.generate 4 $ \n ->
+                                        let x = get_dmg dt di str `bang` N (fromIntegral n) :-> b
+                                        in toProb $ x + fromQual qq * (1-x)
 
 -- | Compute @GL@ values for the simple case.  The simple case is where
 -- we sample two alleles with equal probability and assume that errors
@@ -121,6 +131,7 @@ simple_snp_call vars = mk_snp_gls (simple_call $ map mkpls vars) ref
 -- common cases:  two variants, because that's a typical indel; four
 -- variants, because that's every SNP.
 
+{-# INLINE simple_call #-}
 simple_call :: [U.Vector Prob] -> GL
 simple_call [      ]                    = U.empty
 simple_call (gl:gls) = case U.length gl of
@@ -168,54 +179,6 @@ mk_snp_gts = [ Vec4D (0.5*(a+w)) (0.5*(b+x)) (0.5*(c+y)) (0.5*(d+z))
              , let Vec4D a b c d = last as
              , Vec4D w x y z <- as ]
 
-{-
--- | SNP call according to maq/samtools/bsnp model.  The matrix k counts
--- how many errors we made, approximately.
--- XXX  Unfixable, for the time being.
-
-maq_snp_call :: Int -> Double -> BasePile -> Snp_GLs
-maq_snp_call theta bases = Snp_GLs (U.fromList $ map l $ mk_snp_gts ) ref
-  where
-    -- Bases with effective qualities in order of decreasing(!) quality.
-    -- A vector based algorithm may fit here.
-    bases' = sortBy (flip $ comparing db_qual)
-             [ db { db_qual = mq `min` db_qual db } | (mq,db) <- bases ]
-
-    ref = case bases of (_, DB _ _ _ r) : _ -> r ; _ -> nucsN
-
-    nullMat = Mat44D $ U.generate 16 (const 0)
-    -- L(G)
-    l gt = l' gt (toProb 1) nullMat bases'
-
-    l' !_  !acc !_ [     ] = acc
-    l' !gt !acc !k (!x:xs) =
-        let
-            -- P(X|Q,H), a vector of four (x is fixed, h is not)
-            -- this is the simple form where we set all w to 1/4
-            p_x__q_h_ :: Vec4D
-            p_x__q_h_ = vecNucs $ \h -> 0.25 * fromQualRaised (theta ** (k `bang` h :-> db_call x)) (db_qual x)
-
-            -- eh, this is cumbersome... what was I thinking?!
-            p_x__q_h  :: Vec4D
-            p_x__q_h  = vecZipNucs (\p h -> if db_call x == h then 1 + p - vecSum p_x__q_h_ else p) p_x__q_h_
-
-            -- P(H|X), again a vector of four
-            p_x__q    = dot p_x__q_h dg
-            p_h__x    = vecZip (\p p_h -> p / p_x__q * p_h) p_x__q_h dg
-            dg        = db_dmg x `multmv` gt
-
-            kk = vecZip (+) (getRow (fromIntegral . unN $ db_call x) k) p_h__x
-            k' = setRow (fromIntegral . unN $ db_call x) kk k
-
-            acc' = acc * toProb p_x__q
-            meh = vecNucs $ \h -> k `bang` h :-> db_call x
-        in {- trace (unlines ["gt " ++ show gt
-                          ,"p(x|q,h) " ++ show p_x__q_h
-                          ,"dg " ++ show dg ++ ", call = " ++ show (db_call x)
-                          ,"p(h|x) " ++ show p_h__x
-                          ,"k  " ++ show k
-                          ,"k' " ++ show k'
-                          ,"meh " ++ show meh]) $ -} l' gt acc' k' xs -}
 
 getRow :: Int -> Mat44D -> Vec4D
 getRow i (Mat44D v) = Vec4D (v U.! (4*i)) (v U.! (4*i+1)) (v U.! (4*i+2)) (v U.! (4*i+3))
@@ -223,10 +186,6 @@ getRow i (Mat44D v) = Vec4D (v U.! (4*i)) (v U.! (4*i+1)) (v U.! (4*i+2)) (v U.!
 setRow :: Int -> Vec4D -> Mat44D -> Mat44D
 setRow i (Vec4D a b c d) (Mat44D v) = Mat44D $ v U.// [ (4*i,a), (4*i+1,b), (4*i+2,c), (4*i+3,d) ]
 
-
---  Error model with dependency parameter.  Since both strands are
--- supposed to still be independent, we feed in only one pile, and
--- later combine both calls.  XXX What's that doing HERE?!
 
 type Calls = Pile' Snp_GLs (GL, [IndelVariant])
 
