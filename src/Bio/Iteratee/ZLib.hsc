@@ -550,13 +550,8 @@ flush size run' (Flushing zstr _flush _out) iter = do
             out <- liftIO $ pullOutBuffer zstr _out
             idone (iter (Chunk out)) (Chunk BS.empty)
         Right True -> do
-            -- TODO: avail_in is unused, can it be completely removed?
-            -- or should it be used?
-            (_avail_in, avail_out) <- liftIO $ withZStream zstr $ \zptr -> do
-                avail_in <- liftIO $ #{peek z_stream, avail_in} zptr
-                avail_out <- liftIO $ #{peek z_stream, avail_out} zptr
-                return (avail_in, avail_out) :: IO (CInt, CInt)
-            case avail_out of
+            avail_out <- liftIO $ withZStream zstr #{peek z_stream, avail_out}
+            case avail_out :: CInt of
                 0 -> do
                     out <- liftIO $ pullOutBuffer zstr _out
                     out' <- liftIO $ putOutBuffer size zstr
@@ -584,12 +579,8 @@ finish size run' fin@(Finishing zstr _in) iter = do
             out <- liftIO $ pullOutBuffer zstr _out
             idone (iter (Chunk out)) (Chunk remaining)
         Right True -> do
-            -- TODO: avail_in is unused, is this an error or can it be removed?
-            (_avail_in, avail_out) <- liftIO $ withZStream zstr $ \zptr -> do
-                avail_in <- liftIO $ #{peek z_stream, avail_in} zptr
-                avail_out <- liftIO $ #{peek z_stream, avail_out} zptr
-                return (avail_in, avail_out) :: IO (CInt, CInt)
-            case avail_out of
+            avail_out <- liftIO $ withZStream zstr #{peek z_stream, avail_out}
+            case avail_out :: CInt of
                 0 -> do
                     out <- liftIO $ pullOutBuffer zstr _out
                     eneeCheckIfDone (finish size run' fin) $ iter (Chunk out)

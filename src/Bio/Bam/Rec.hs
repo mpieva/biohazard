@@ -12,9 +12,6 @@
 --   Optionally, a block index for slicing of large files, even unsorted
 --   ones.  Maybe an index by name and an index for group-sorted files.
 --   Sensible indices should be generated whenever a file is written.
--- - Same for statistics.  Something like "flagstats" could always be
---   written.  Actually, having @writeBamHandle@ return enhanced
---   flagstats as a result might be even better.
 
 module Bio.Bam.Rec (
     BamRaw,

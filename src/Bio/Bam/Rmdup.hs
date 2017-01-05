@@ -1,7 +1,8 @@
 module Bio.Bam.Rmdup(
             rmdup, Collapse, cons_collapse, cheap_collapse,
             cons_collapse_keep, cheap_collapse_keep,
-            check_sort, normalizeTo, wrapTo
+            check_sort, normalizeTo, wrapTo,
+            ECig(..), toECig, setMD, toCigar
     ) where
 
 import Bio.Bam.Header

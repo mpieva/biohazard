@@ -5,16 +5,18 @@ module Bio.Bam.Trim where
 
 import Bio.Bam.Header
 import Bio.Bam.Rec
+import Bio.Bam.Rmdup        ( ECig(..), setMD, toECig )
 import Bio.Iteratee
 import Bio.Prelude
 
+import qualified Data.ByteString                        as B
 import qualified Data.Vector.Fusion.Bundle.Size         as S
 import qualified Data.Vector.Fusion.Bundle.Monadic      as S
 import qualified Data.Vector.Fusion.Stream.Monadic      as SS
 import qualified Data.Vector.Fusion.Util                as SS
-import qualified Data.Vector.Hybrid.Internal    as Hybrid
-import qualified Data.Vector.Generic            as V
-import qualified Data.Vector.Unboxed            as U
+import qualified Data.Vector.Hybrid.Internal            as Hybrid
+import qualified Data.Vector.Generic                    as V
+import qualified Data.Vector.Unboxed                    as U
 
 -- | Trims from the 3' end of a sequence.
 -- @trim_3\' p b@ trims the 3' end of the sequence in @b@ at the
@@ -26,9 +28,6 @@ import qualified Data.Vector.Unboxed            as U
 -- care of that here).  Further note that trimming may break dependent
 -- information, notably the "mate" information of the mate and many
 -- optional fields.
---
--- TODO: The MD field is currently removed.  It should be repaired
--- instead.  Many other fields should be trimmed if present.
 
 trim_3' :: ([Nucleotides] -> [Qual] -> Bool) -> BamRec -> BamRec
 trim_3' p b | b_flag b `testBit` 4 = trim_rev
@@ -49,18 +48,71 @@ trim_3 l b | b_flag b `testBit` 4 = trim_rev
            | otherwise            = trim_fwd
   where
     trim_fwd = let (_, cigar') = trim_back_cigar (b_cigar b) l
-               in b { b_seq   = V.take (V.length (b_seq  b) - l) (b_seq  b)
-                    , b_qual  = V.take (V.length (b_qual b) - l) (b_qual b)
+                   c = modMd (takeECig (V.length (b_seq  b) - l)) b
+               in c { b_seq   = V.take (V.length (b_seq  c) - l) (b_seq  c)
+                    , b_qual  = V.take (V.length (b_qual c) - l) (b_qual c)
                     , b_cigar = cigar'
-                    , b_exts  = deleteE "MD" (b_exts b) }
+                    , b_exts  = map (\(k,e) -> case e of
+                                        Text t | k `elem` trim_set
+                                          -> (k, Text (B.take (B.length t - l) t))
+                                        _ -> (k,e)
+                                    ) (b_exts c) }
 
     trim_rev = let (off, cigar') = trim_fwd_cigar (b_cigar b) l
-               in b { b_seq   = V.drop l (b_seq  b)
-                    , b_qual  = V.drop l (b_qual b)
+                   c = modMd (dropECig l) b
+               in c { b_seq   = V.drop l (b_seq  c)
+                    , b_qual  = V.drop l (b_qual c)
+                    , b_pos   = b_pos c + off
                     , b_cigar = cigar'
-                    , b_exts  = deleteE "MD" (b_exts b)
-                    , b_pos   = b_pos b + off
-                    }
+                    , b_exts  = map (\(k,e) -> case e of
+                                        Text t | k `elem` trim_set
+                                          -> (k, Text (B.drop l t))
+                                        _ -> (k,e)
+                                    ) (b_exts c) }
+
+    trim_set = ["BQ","CQ","CS","E2","OQ","U2"]
+
+    modMd :: (ECig -> ECig) -> BamRec -> BamRec
+    modMd f br = maybe br (setMD br . f . toECig (b_cigar br)) (getMd br)
+
+    endOf :: ECig -> ECig
+    endOf  WithMD     = WithMD
+    endOf  WithoutMD  = WithoutMD
+    endOf (Mat' _ es) = endOf es
+    endOf (Ins' _ es) = endOf es
+    endOf (SMa' _ es) = endOf es
+    endOf (Rep' _ es) = endOf es
+    endOf (Del' _ es) = endOf es
+    endOf (Nop' _ es) = endOf es
+    endOf (HMa' _ es) = endOf es
+    endOf (Pad' _ es) = endOf es
+
+    takeECig :: Int -> ECig -> ECig
+    takeECig 0  es          = endOf es
+    takeECig _  WithMD      = WithMD
+    takeECig _  WithoutMD   = WithoutMD
+    takeECig n (Mat' m  es) = Mat' n  $ if n > m then takeECig (n-m) es else WithMD
+    takeECig n (Ins' m  es) = Ins' n  $ if n > m then takeECig (n-m) es else WithMD
+    takeECig n (SMa' m  es) = SMa' n  $ if n > m then takeECig (n-m) es else WithMD
+    takeECig n (Rep' ns es) = Rep' ns $ takeECig (n-1) es
+    takeECig n (Del' ns es) = Del' ns $ takeECig n es
+    takeECig n (Nop' m  es) = Nop' m  $ takeECig n es
+    takeECig n (HMa' m  es) = HMa' m  $ takeECig n es
+    takeECig n (Pad' m  es) = Pad' m  $ takeECig n es
+
+    dropECig :: Int -> ECig -> ECig
+    dropECig 0  es         = es
+    dropECig _  WithMD     = WithMD
+    dropECig _  WithoutMD  = WithoutMD
+    dropECig n (Mat' m es) = if n > m then dropECig (n-m) es else Mat' n WithMD
+    dropECig n (Ins' m es) = if n > m then dropECig (n-m) es else Ins' n WithMD
+    dropECig n (SMa' m es) = if n > m then dropECig (n-m) es else SMa' n WithMD
+    dropECig n (Rep' _ es) = dropECig (n-1) es
+    dropECig n (Del' _ es) = dropECig n es
+    dropECig n (Nop' _ es) = dropECig n es
+    dropECig n (HMa' _ es) = dropECig n es
+    dropECig n (Pad' _ es) = dropECig n es
+
 
 trim_back_cigar, trim_fwd_cigar :: V.Vector v Cigar => v Cigar -> Int -> ( Int, v Cigar )
 trim_back_cigar c l = (o, V.fromList $ reverse c') where (o,c') = sanitize_cigar . trim_cigar l $ reverse $ V.toList c
