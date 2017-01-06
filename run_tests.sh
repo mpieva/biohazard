@@ -2,21 +2,27 @@ set -e
 
 cabal sandbox init
 
-echo "Testing with GHC 7.8"
-cabal configure -w ghc-7.8.4 --disable-library-profiling --disable-profiling -O0
+echo -e "\e[91mTesting with GHC 7.8\e[0m"
+cabal install -w ghc-7.8.4 --only-dep --enable-tests --force-reinstalls
+cabal configure -w ghc-7.8.4 --enable-library-profiling --disable-executable-profiling -O0
 cabal build
 cabal test
-echo "Done with GHC 7.8"
+cabal clean
+echo -e "\e[32mDone with GHC 7.8\e[0m"
 
-echo "Testing with GHC 7.10"
-cabal configure -w ghc-7.10.1 --disable-library-profiling --disable-profiling -O0
+echo -e "\e[91mTesting with GHC 7.10\e[0m"
+cabal install -w ghc-7.10.1 --only-dep --enable-tests --force-reinstalls
+cabal configure -w ghc-7.10.1 --disable-library-profiling --disable-executable-profiling -O0
 cabal build
 cabal test
-echo "Done with GHC 7.10"
+cabal clean
+echo -e "\e[32mDone with GHC 7.10\e[0m"
 
-echo "Testing with GHC 8.0"
-cabal configure -w ghc-8.0.1 --disable-library-profiling --disable-profiling -O0
+echo -e "\e[91mTesting with GHC 8.0\e[0m"
+cabal install -w ghc-8.0.1 --only-dep --enable-tests --force-reinstalls
+cabal configure -w ghc-8.0.1 --disable-library-profiling --disable-executable-profiling -O0
 cabal build
 cabal test
 cabal haddock
-echo "Done with GHC 8.0"
+cabal clean
+echo -e "\e[32mDone with GHC 8.0\e[0m"

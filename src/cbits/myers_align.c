@@ -4,8 +4,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-inline int match( char a, char b ) { return (char_to_bitmap(a) & char_to_bitmap(b)) != 0 ; }
-
 // [*blech*, this looks and feels like FORTRAN.]
 unsigned myers_diff(
         const char *seq_a, int len_a, enum myers_align_mode mode, 

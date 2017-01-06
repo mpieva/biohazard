@@ -1,5 +1,5 @@
 Name:                biohazard
-Version:             0.6.8
+Version:             0.6.9
 Synopsis:            bioinformatics support library
 Description:         This is a collection of modules I separated from
                      various bioinformatics tools.  The hope is to make
@@ -14,7 +14,7 @@ License-File:        LICENSE
 
 Author:              Udo Stenzel
 Maintainer:          udo.stenzel@eva.mpg.de
-Copyright:           (C) 2010-2016 Udo Stenzel
+Copyright:           (C) 2010-2017 Udo Stenzel
 
 Extra-Source-Files:  man/man7/biohazard.7
                      man/man1/bam-fixpair.1
@@ -39,7 +39,7 @@ source-repository head
 source-repository this
   type:     git
   location: https://bitbucket.org/ustenzel/biohazard.git
-  tag:      0.6.8
+  tag:      0.6.9
 
 Flag debug
   Description: enable additional sanity checks

@@ -328,7 +328,7 @@ single_pop_posterior SinglePop{..} refix lks = U.map (/ U.sum v) v
                 U.// [ (i,               (1/3) * prob_div ) | i <- hixes, i /= refix ]      -- homs
 
     v = U.zipWith (\l p -> l * toProb (realToFrac p)) lks priors
-    hixes = takeWhile (< U.length lks) $ scanl' (+) 0 [2..]
+    hixes = takeWhile (< U.length lks) $ scanl (+) 0 [2..]
 
 -- | The pileup enumeratee takes 'BamRaw's, decomposes them, interleaves
 -- the pieces appropriately, and generates 'Pile's.  The output will

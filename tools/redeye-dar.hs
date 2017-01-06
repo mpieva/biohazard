@@ -149,12 +149,12 @@ emIter msize divest mod0 infiles =
 filterPilesWith :: Monad m => [Region] -> Enumeratee [Pile] [Pile] m b
 filterPilesWith = unfoldConvStream go
   where
-    go [    ] = ([],[]) <$ skipToEof
+    go [    ] = skipToEof >> return ([],[])
     go (r:rs) = do mp <- peekStream
                    case mp of
                         Just p | (p_refseq p, p_pos p) <  (refseq r, start r) -> headStream >> go (r:rs)
                                | (p_refseq p, p_pos p) >= (refseq r, end   r) -> go rs
-                               | otherwise                                    -> (\x -> (r:rs, [x])) <$> headStream
+                               | otherwise                                    -> (\x -> (r:rs, [x])) `liftM` headStream
                         Nothing                                               -> return ([],[])
 
 

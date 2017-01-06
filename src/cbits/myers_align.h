@@ -39,7 +39,7 @@ unsigned myers_diff(
 
 //! \brief converts an IUPAC-IUB ambiguity code to a bitmap Each base is
 //! represented by a bit, makes checking for matches easier.
-inline int char_to_bitmap( char x ) 
+static inline int char_to_bitmap( char x ) 
 {
     switch( x & ~32 )
     {
@@ -66,10 +66,11 @@ inline int char_to_bitmap( char x )
     }
 }
 
-inline int compatible( char x, char y ) { return (char_to_bitmap(x) & char_to_bitmap(y)) != 0 ; }
+static inline int compatible( char x, char y ) { return (char_to_bitmap(x) & char_to_bitmap(y)) != 0 ; }
+static inline int match( char a, char b ) { return (char_to_bitmap(a) & char_to_bitmap(b)) != 0 ; }
 
-inline int min( int a, int b ) { return a < b ? a : b ; }
-inline int max( int a, int b ) { return a < b ? b : a ; }
-inline int max3( int a, int b, int c ) { return a < b ? max( b, c ) : max( a, c ) ; }
+static inline int min( int a, int b ) { return a < b ? a : b ; }
+static inline int max( int a, int b ) { return a < b ? b : a ; }
+static inline int max3( int a, int b, int c ) { return a < b ? max( b, c ) : max( a, c ) ; }
 
 #endif
