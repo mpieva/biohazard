@@ -120,7 +120,7 @@ callz samples flags = [ "build/*.*.bcf", "build/*.*.divtab" ] &%> \[bcf,tab] -> 
                     then
                         unsafeExtraThread $
                             command [] "qrsh" $
-                                "-now" : "no" : "-cwd" :
+                                "-now" : "no" : "-cwd" : "-N" : (sm ++ "-" ++ c) :
                                 "-l" : "h_vmem=3.4G,s_vmem=3.4G,virtual_free=3.4G,s_stack=2M" :
                                 "redeye-single" : "-o" : bcf : "-c" : c : "-T" : tab : "-D" : dmg
                                                 : "-N" : sm : "-v" : bams
@@ -132,15 +132,15 @@ callz samples flags = [ "build/*.*.bcf", "build/*.*.divtab" ] &%> \[bcf,tab] -> 
 
 dmgests :: [Flags] -> Rules ()
 dmgests flags = "build/*.dmgest" %> \out -> do
-                let lb = dropExtension $ takeFileName out
-                    rgn_file = "build" </> lb <.> "good_regions.bam"
+                let sm = dropExtension $ takeFileName out
+                    rgn_file = "build" </> sm <.> "good_regions.bam"
                 need [ rgn_file ]
 
                 if GridEngine `elem` flags
                     then
                         unsafeExtraThread $
                             command [] "qrsh" $
-                                "-now" : "no" : "-cwd" :
+                                "-now" : "no" : "-cwd" : "-N" : (sm ++ "-dar") :
                                 "-l" : "h_vmem=3.4G,s_vmem=3.4G,virtual_free=3.4G,s_stack=2M" :
                                 "redeye-dar" : "-o" : out : rgn_file : []
                     else
