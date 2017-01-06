@@ -58,8 +58,10 @@ import Bio.Iteratee
 import Bio.Prelude
 
 import Control.Monad.Primitive      ( unsafePrimToPrim, unsafeInlineIO )
+import Foreign.C.Types              ( CInt(..), CSize(..) )
 import Foreign.ForeignPtr
 import Foreign.Marshal.Alloc        ( alloca )
+import Foreign.Ptr                  ( Ptr, plusPtr )
 import Foreign.Storable             ( peek, poke, peekByteOff, pokeByteOff, Storable(..) )
 
 import qualified Data.ByteString                    as B
@@ -188,10 +190,19 @@ instance VM.MVector MVector_Nucs_half Nucleotides where
     basicOverlaps (MVector_Nucs_half _ _ fp1) (MVector_Nucs_half _ _ fp2) = fp1 == fp2
     {-# INLINE basicUnsafeNew #-}
     basicUnsafeNew l = unsafePrimToPrim $ MVector_Nucs_half 0 l <$> mallocForeignPtrBytes ((l+1) `shiftR` 1)
+
     {-# INLINE basicInitialize #-}
-    basicInitialize (MVector_Nucs_half _ _ _) = return ()
-            -- This should actually be done properly, initializing
-            -- everything to zero, but efficiently.    XXX
+    basicInitialize v@(MVector_Nucs_half o l fp)
+
+        | even    o = do unsafePrimToPrim $ withForeignPtr fp $ \p ->
+                            memset (plusPtr p (o `shiftR` 1)) 0 (fromIntegral $ l `shiftR` 1)
+                         when (odd l) $ VM.basicUnsafeWrite v (l-1) (Ns 0)
+
+        | otherwise = do when (odd o) $ VM.basicUnsafeWrite v 0 (Ns 0)
+                         unsafePrimToPrim $ withForeignPtr fp $ \p ->
+                            memset (plusPtr p ((o+1) `shiftR` 1)) 0 (fromIntegral $ (l-1) `shiftR` 1)
+                         when (even l) $ VM.basicUnsafeWrite v (l-1) (Ns 0)
+
 
     {-# INLINE basicUnsafeRead #-}
     basicUnsafeRead (MVector_Nucs_half o _ fp) i
@@ -206,6 +217,9 @@ instance VM.MVector MVector_Nucs_half Nucleotides where
             let y' | even (o+i) = x `shiftL` 4 .|. y .&. 0x0F
                    | otherwise  = x            .|. y .&. 0xF0
             pokeByteOff p ((o+i) `shiftR` 1) y'
+
+foreign import ccall unsafe "string.h memset" memset
+    :: Ptr Word8 -> CInt -> CSize -> IO ()
 
 instance Show (Vector_Nucs_half Nucleotides) where
     show = show . V.toList

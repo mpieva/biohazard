@@ -24,7 +24,6 @@ Extra-Source-Files:  man/man7/biohazard.7
                      man/man1/fastq2bam.1
                      man/man1/jivebunny.1
                      man/man1/mt-anno.1
-                     doc/genotyping.tex
 
 Data-Files:          index_db.json
 Data-Dir:            data
@@ -90,7 +89,6 @@ Library
                        bytestring               >= 0.10.2 && < 0.11,
                        bytestring-mmap          >= 0.2 && < 1.0,
                        containers               >= 0.4.1 && < 0.6,
-                       deepseq                  >= 1.3 && < 1.5,
                        directory                >= 1.2 && < 2.0,
                        exceptions               >= 0.6 && < 0.9,
                        filepath                 >= 1.3 && < 2.0,

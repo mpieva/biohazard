@@ -59,13 +59,13 @@ instance FromJSON ExtModel
 -- XXX  the optimizations fit only two or three parameters.
 -- Newton-Iteration should be more efficient than the generic CG method.
 --
--- For Newton-Iteration, the update is 'x := x + dt' where
--- 'dt = -H(x)^{-1} \Nabla f(x)' or 'H(x) dt = -\Nabla f(x)'
+-- For Newton-Iteration, the update is \(x := x + dt\) where
+-- \(dt = -\Nabla^2 f(x)^{-1} \Nabla f(x)\) or \(\Nabla^2 f(x) dt = -\Nabla f(x)\)
 
 estimateSingle :: DivTable -> IO (DivEst, DivEst)
 estimateSingle (DivTable _llk_rr tab) = do
-    (fit1, _res1, _stats1) <- minimize quietParameters 0.0001 (llk tab) (U.fromList   [0,0])
-    (fit2, _res2, _stats2) <- minimize quietParameters 0.0001 (llk tab) (U.fromList [0,0,0])
+    (fit1, _res1, _stats1) <- minimize quietParameters 0.0000001 (llk tab) (U.fromList   [0,0])
+    (fit2, _res2, _stats2) <- minimize quietParameters 0.0000001 (llk tab) (U.fromList [0,0,0])
 
     let xform v = map (\x -> recip $ 1 + exp (-x)) $ V.toList v
         !de1 = DivEst (xform fit1) (map (xform *** xform) $ confidenceIntervals (llk2 tab) (V.convert fit1))

@@ -164,9 +164,8 @@ filterPilesWith = unfoldConvStream go
 
 updateSubstModel :: Int -> V.Vector SubstModel -> IORef (V.Vector MSubstModel) -> Pile -> U.Vector Prob -> IO ()
 updateSubstModel msize mods0 vmods1 pile postp = case p_snp_pile pile of
-    -- XXX This ignores map quality.  I don't think it matters.
-    (basesF, basesR) -> do mapM_ (count_base False . snd) basesF
-                           mapM_ (count_base  True . snd) basesR
+    (basesF, basesR) -> do mapM_ (count_base False) basesF
+                           mapM_ (count_base  True) basesR
   where
     -- Posterior probalities of the haploid base before damage
     -- @P(H) = \sum_{G} P(H|G) P(G|D)@
@@ -175,16 +174,13 @@ updateSubstModel msize mods0 vmods1 pile postp = case p_snp_pile pile of
     pH_G = fromProb $ postp U.! 5 + 0.5 * ( postp U.! 3 + postp U.! 4 + postp U.! 8 )
     pH_T = fromProb $ postp U.! 9 + 0.5 * ( postp U.! 6 + postp U.! 7 + postp U.! 8 )
 
-    -- bases = map snd $ uncurry (++) $ p_snp_pile pile
-
     -- P(H:->X) = P(H|X)
     --          = P(X|H) P(H) / P(X)
     --          = P(X|H) P(H) / \sum_H' P(X|H') P(H')
     --
     -- We get P(X|H) from the old substitution model.
-    -- Fortunately, it's actually available.
 
-    count_base str b = do
+    count_base str (q,b) = do
         let old_mat = case mods0 V.!? fromDmgToken (db_dmg_tk b) of
                         Nothing -> initmat
                         Just sm -> lookupSubstModel sm (db_dmg_pos b) str
@@ -197,16 +193,20 @@ updateSubstModel msize mods0 vmods1 pile postp = case p_snp_pile pile of
                             Just  m -> return m
                       return $ lookupSubstModel sm (db_dmg_pos b) str
 
-        let pHX = pHX_A + pHX_C + pHX_G + pHX_T
+        -- Use map quality to de-emphasize badly mapped reads.  If
+        -- everything is badly mapped, the estimation still works; if
+        -- some data is well mapped, that naturally dominates the
+        -- estimate.
+        let pHX = (1 - fromQual q) / (pHX_A + pHX_C + pHX_G + pHX_T)
             pHX_A = (old_mat `bang` nucA :-> db_call b) * pH_A
             pHX_C = (old_mat `bang` nucC :-> db_call b) * pH_C
             pHX_G = (old_mat `bang` nucG :-> db_call b) * pH_G
             pHX_T = (old_mat `bang` nucT :-> db_call b) * pH_T
 
-        nudge new_mat (nucA :-> db_call b) (pHX_A/pHX)
-        nudge new_mat (nucC :-> db_call b) (pHX_C/pHX)
-        nudge new_mat (nucG :-> db_call b) (pHX_G/pHX)
-        nudge new_mat (nucT :-> db_call b) (pHX_T/pHX)
+        nudge new_mat (nucA :-> db_call b) (pHX_A * pHX)
+        nudge new_mat (nucC :-> db_call b) (pHX_C * pHX)
+        nudge new_mat (nucG :-> db_call b) (pHX_G * pHX)
+        nudge new_mat (nucT :-> db_call b) (pHX_T * pHX)
 
 
     new_mmodel = SubstModel <$> V.replicateM msize nullmat
