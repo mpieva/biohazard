@@ -717,6 +717,7 @@ enumInflateAny it = do magic <- iLookAhead $ liftM2 (,) tryHead tryHead
                        case magic of
                            (Just 0x1f, Just 0x8b) ->
                                enumInflate GZip defaultDecompressParams it
+                               >>= enumInflateAny
                            _ -> mapChunks id it
 
 enumSyncFlush :: Monad m => Enumerator ByteString m a

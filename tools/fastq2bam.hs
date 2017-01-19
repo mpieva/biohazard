@@ -101,12 +101,18 @@ mergeDuals :: [UpToTwo BamRec] -> [BamRec]
 mergeDuals ((r1,Just  r2):ds)
     = case merge_overlap r1 default_fwd_adapters r2 default_rev_adapters of
         Nothing                   ->      r1  : r2  : mergeDuals ds
-        Just (r1',r2',rm,_q1,_q2) -> rm : r1' : r2' : mergeDuals ds
+        Just (r1',r2',rm,_q1,_q2)
+            | lm < l1 || lm < l2  -> rm :             mergeDuals ds
+            | otherwise           -> rm : r1' : r2' : mergeDuals ds
+          where
+            lm = V.length (b_seq rm)
+            l1 = V.length (b_seq r1)
+            l2 = V.length (b_seq r2)
 
 mergeDuals ((r1,Nothing):ds)
     = case trim_adapter r1 default_fwd_adapters of
-        Nothing                ->       r1  : mergeDuals ds
-        Just (r1',r1t,_q1,_q2) -> r1t : r1' : mergeDuals ds
+        Nothing              -> r1  : mergeDuals ds
+        Just (_,r1t,_q1,_q2) -> r1t : mergeDuals ds
 
 mergeDuals [] = []
 
