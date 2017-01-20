@@ -69,6 +69,15 @@ combined with reads from the source previously given with
 .I --read-one
 was encountered).
 
+.IP "-m, -merge-overlap[=QUAL]"
+Attempt to merge or trim reads.  The optional quality is the cutoff at
+which a merge/trim result is considered guaranteed correct and the
+original read or read pair is discarded.
+
+.IP "-q, --merge-qual QUAL"
+Sets the quality below which merging is considered pointless.  A
+merge/trim result with a lower quality is immediately discarded.
+
 .IP "-v, --verbose"
 Causes
 .I fastq2bam 
@@ -77,8 +86,8 @@ to print a progress report to stderr.
 .SH INPUT FILES
 
 Input files can be FastQ or FastA, even a mix of the two,
-optionally compressed using 
-.IR gzip "(1)."
+optionally compressed using either
+.IR gzip "(1) or " bgzip "(1)."
 If the input is FastA, the output will not have quality scores
 associated with the sequences, but nothing else changes.  Many
 annotations in the header are recognized:
@@ -172,6 +181,26 @@ argument is combined with one
 argument, the pairing flags are forced.  While the normal parsing logic
 still applies, a mix of paired and unpaired reads will not work as
 desired and will probably lead to errors.
+
+.SH MERGING
+
+Merging of read pairs and trimming of single reads are considered
+effectively the same.  Only few adapters occur in the wild, and we try
+to trim any of these.  Merging computes two qualities and stores them in
+the bam record:  "YM" (that's Merge quality) is the odds that the merge
+is wrong, "YN" (that's aNother merge quality) is the odds that any
+possible merge is wrong, both are encoded on the Phred scale.
+
+If YM is too low (less than 20, configurable with --merge-qual), nothing
+is merged and the original read pair is retained.  If YM is very high
+(higher that 200, configurable with --merge-overlap), the original pair
+is discarded.  (At this quality, the program isn't expected to make a
+single mistake in a lifetime of sequecing.)  Otherwise, the read is
+merged and the original pair is retained.
+
+Modifications are logged in the "FF" field (that's Freaking Flags):  The
+value is 1 for a trimmed read, 3 for a merged read, and 4 for the
+original of a read that is also present in a merged or trimmed version.
 
 .SH AUTHOR
 Udo Stenzel <udo_stenzel@eva.mpg.de>
