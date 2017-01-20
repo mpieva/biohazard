@@ -12,13 +12,15 @@ import qualified Data.Vector.Generic   as V
 data Opts = Opts { output  :: BamMeta -> Iteratee [BamRec] IO ()
                  , inputs  :: [Input]
                  , verbose :: Bool
-                 , merge   :: Bool }
+                 , merge   :: Maybe Int
+                 , lowqual :: Int }
 
 defaultOpts :: Opts
 defaultOpts = Opts { output  = protectTerm . pipeBamOutput
                    , inputs  = []
                    , verbose = False
-                   , merge   = False }
+                   , merge   = Nothing
+                   , lowqual = 20 }
 
 data Input = Input { _read1  :: FilePath         -- ^ file with first read (or other stuff)
                    ,  read2  :: Maybe FilePath   -- ^ optional file with second read
@@ -40,14 +42,18 @@ getopts = getOpt (ReturnInOrder add_read1) options
         , Option "I" ["index-one"]        (ReqArg add_idx1 "FILE") "Parse FILE for first index"
         , Option "J" ["index-two"]        (ReqArg add_idx2 "FILE") "Parse FILE for second index"
         , Option "l" ["length-index-one"] (ReqArg set_lidx1 "NUM") "Read 1 ends on NUM index bases"
-        , Option "m" ["merge-overlap"]           (NoArg set_merge) "Attempt to merge or trim reads"
+        , Option "m" ["merge-overlap"]   (OptArg set_merge "QUAL") "Attempt to merge or trim reads"
+        , Option "q" ["merge-qual"]       (ReqArg set_qual "QUAL") "Minimum quality for merge is QUAL"
         , Option "v" ["verbose"]               (NoArg set_verbose) "Print progress information"
         , Option "h?" ["help","usage"]               (NoArg usage) "Print this helpful message" ]
 
     set_output "-" c = return $ c { output  = pipeBamOutput }
     set_output  fn c = return $ c { output  = writeBamFile fn }
     set_verbose    c = return $ c { verbose = True }
-    set_merge      c = return $ c { merge   = True }
+
+    set_merge Nothing  c =                    return $ c { merge   = Just 200 }
+    set_merge (Just a) c = readIO a >>= \m -> return $ c { merge   = Just  m  }
+    set_qual        a  c = readIO a >>= \q -> return $ c { lowqual =       q  }
 
     add_read1 fn c = return $ c { inputs = plainInput fn : inputs c }
     add_read2 fn c = return $ c { inputs = at_head (\i -> i { read2  = Just fn }) (inputs c) }
@@ -77,7 +83,7 @@ main = do (opts, [], errors) <- getopts `fmap` getArgs
 
           foldr ((>=>) . enum_input) run (reverse eff_inputs) $
                 joinI $ progress (verbose conf) $
-                joinI $ mapChunks (if merge conf then mergeDuals else concatDuals) $
+                joinI $ mapChunks (maybe concatDuals (mergeDuals $ lowqual conf) $ merge conf) $
                 output conf (pgm mempty)
 
 
@@ -97,24 +103,31 @@ concatDuals ((a,Just  b):ds) = a : b : concatDuals ds
 concatDuals ((a,Nothing):ds) = a : concatDuals ds
 concatDuals [              ] = []
 
-mergeDuals :: [UpToTwo BamRec] -> [BamRec]
-mergeDuals ((r1,Just  r2):ds)
-    = case merge_overlap r1 default_fwd_adapters r2 default_rev_adapters of
-        Nothing                   ->      r1  : r2  : mergeDuals ds
-        Just (r1',r2',rm,_q1,_q2)
-            | lm < l1 || lm < l2  -> rm :             mergeDuals ds
-            | otherwise           -> rm : r1' : r2' : mergeDuals ds
-          where
-            lm = V.length (b_seq rm)
-            l1 = V.length (b_seq r1)
-            l2 = V.length (b_seq r2)
+mergeDuals :: Int -> Int -> [UpToTwo BamRec] -> [BamRec]
+mergeDuals lowq highq = go
+  where
+    go ((r1,Just  r2):ds)
+        = case merge_overlap r1 default_fwd_adapters r2 default_rev_adapters of
+            Nothing                   ->      r1  : r2  : go ds
+            Just (r1',r2',rm,q1,_q2)
+                | q1 < lowq           ->      r1  : r2  : go ds
+                | q1 >= highq         -> rm :             go ds
+                | lm < l1 || lm < l2  -> rm :             go ds
+                | otherwise           -> rm : r1' : r2' : go ds
+              where
+                lm = V.length (b_seq rm)
+                l1 = V.length (b_seq r1) - 20
+                l2 = V.length (b_seq r2) - 20
 
-mergeDuals ((r1,Nothing):ds)
-    = case trim_adapter r1 default_fwd_adapters of
-        Nothing              -> r1  : mergeDuals ds
-        Just (_,r1t,_q1,_q2) -> r1t : mergeDuals ds
+    go ((r1,Nothing):ds)
+        = case trim_adapter r1 default_fwd_adapters of
+            Nothing              -> r1  :      go ds
+            Just (r',r1t,q1,_q2)
+                | q1 < lowq      -> r1  :      go ds
+                | q1 >= highq    -> r1t :      go ds
+                | otherwise      -> r1t : r' : go ds
 
-mergeDuals [] = []
+    go [] = []
 
 -- Enumerates a file.  Sequence and quality end up in b_seq and b_qual.
 fromFastq :: (MonadIO m, MonadMask m) => FilePath -> Enumerator [BamRec] m a
