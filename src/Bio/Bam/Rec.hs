@@ -176,8 +176,8 @@ instance V.Vector Vector_Nucs_half Nucleotides where
 
     {-# INLINE basicUnsafeIndexM #-}
     basicUnsafeIndexM (Vector_Nucs_half o _ fp) i
-        | even (o+i) = return . Ns $ (b `shiftR` 4) .&. 0xF
-        | otherwise  = return . Ns $  b             .&. 0xF
+        | even (o+i) = return . Ns $! (b `shiftR` 4) .&. 0xF
+        | otherwise  = return . Ns $!  b             .&. 0xF
       where !b = unsafeInlineIO $ withForeignPtr fp $ \p -> peekByteOff p ((o+i) `shiftR` 1)
 
 instance VM.MVector MVector_Nucs_half Nucleotides where

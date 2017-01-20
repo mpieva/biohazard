@@ -186,7 +186,9 @@ desired and will probably lead to errors.
 
 Merging of read pairs and trimming of single reads are considered
 effectively the same.  Only few adapters occur in the wild, and we try
-to trim any of these.  Merging computes two qualities and stores them in
+to trim any combination of these:
+.IR "Genomic-R1" ", " "Genomic-R2" ", " "CL72" ", " "Multiplex-R2" ", " "Graft-P7" "."
+Merging computes two qualities and stores them in
 the bam record:  "YM" (that's Merge quality) is the odds that the merge
 is wrong, "YN" (that's aNother merge quality) is the odds that any
 possible merge is wrong, both are encoded on the Phred scale.
