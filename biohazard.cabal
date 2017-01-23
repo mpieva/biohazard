@@ -140,7 +140,7 @@ Library
   Install-Includes:    src/cbits/myers_align.h
   C-sources:           src/cbits/myers_align.c,
                        src/cbits/trim.c
-  CC-options:          -fPIC -ggdb -O0
+  CC-options:          -fPIC
 
   -- Modules not exported by this package.
   -- Other-modules:       

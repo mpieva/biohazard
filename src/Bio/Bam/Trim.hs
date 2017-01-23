@@ -279,9 +279,9 @@ trim_adapter r1 ads1
 
 default_fwd_adapters :: [ W.Vector Nucleotides ]
 default_fwd_adapters = map (W.fromList. map toNucleotides)
-         [ {- Genomic R2   -}  "AGATCGGAAGAGCGGTTCAGCAGGAATGCCGAGACCG"
-         , {- Multiplex R2 -}  "AGATCGGAAGAGCACACGTCTGAACTCCAGTCAC"
-         , {- Graft P7     -}  "AGATCGGAAGAGCTCGTATGCCGTCTTCTGCTTG" ]
+         [ {- Genomic R2   -}  "AGATCGGAAGAGCGGTTCAG"
+         , {- Multiplex R2 -}  "AGATCGGAAGAGCACACGTC"
+         , {- Graft P7     -}  "AGATCGGAAGAGCTCGTATG" ]
 
 -- | Like 'default_rev_adapters', these are the few adapters needed for
 -- the reverse read (defined in the direction they would be sequenced in
@@ -289,8 +289,8 @@ default_fwd_adapters = map (W.fromList. map toNucleotides)
 
 default_rev_adapters :: [ W.Vector Nucleotides ]
 default_rev_adapters = map (W.fromList. map toNucleotides)
-         [ {- Genomic_R1   -}  "AGATCGGAAGAGCGTCGTGTAGGGAAAGAGTGT"
-         , {- CL72         -}  "GGAAGAGCGTCGTGTAGGGAAAGAGTGT" ]
+         [ {- Genomic_R1   -}  "AGATCGGAAGAGCGTCGTGT"
+         , {- CL72         -}  "GGAAGAGCGTCGTGTAGGGA" ]
 
 -- We need to compute the likelihood of a read pair given an assumed
 -- insert length.  The likelihood of the first read is the likelihood of
@@ -346,6 +346,8 @@ foreign import ccall unsafe "prim_match_ad"
                   -> Ptr Nucleotides -> IO CInt
 
 
+-- | Computes overlap score for two reads (with qualities) assuming an
+-- insert length.
 {-# INLINE match_reads #-}
 match_reads :: Int -> W.Vector Nucleotides -> W.Vector Qual -> W.Vector Nucleotides -> W.Vector Qual -> Int
 match_reads !l !rd1 !qs1 !rd2 !qs2
@@ -365,9 +367,9 @@ match_reads !l !rd1 !qs1 !rd2 !qs2
     -- vec1, forward
     !minidx1 = (l - V.length rd2) `max` 0
     -- vec2, backward
-    !maxidx2 = V.length rd2 - ((l - V.length rd1) `max` 0)
+    !maxidx2 = l `min` V.length rd2
     -- effective length
-    !efflength = (V.length rd1 - minidx1) `min` maxidx2 `min` l
+    !efflength = ((V.length rd1 + V.length rd2 - l) `min` l) `max` 0
 
 
 foreign import ccall unsafe "prim_match_reads"
@@ -387,8 +389,6 @@ twoMins a0 imax f = go a0 0 maxBound 0 0
                 x | x < m1    -> go  x  i m1 i1 (i+1)
                   | x < m2    -> go m1 i1  x  i (i+1)
                   | otherwise -> go m1 i1 m2 i2 (i+1)
-
-
 
 
 mergeTrimBam :: Monad m => [W.Vector Nucleotides] -> [W.Vector Nucleotides] -> Enumeratee [BamRec] [BamRec] m a
