@@ -2,6 +2,7 @@
 module Bio.Prelude (
     module Bio.Base,
     module BasePrelude,
+    module System.IO,
     module System.Posix.Files,
     module System.Posix.IO,
     module System.Posix.Types,
@@ -33,14 +34,9 @@ module Bio.Prelude (
 
     Hashable(..),
     Unpack(..),
-    hPutStr,
-    hPutStrLn,
     fdPut,
     fdPutLazy,
-    withFd,
-    stderr,
-    stdout,
-    stdin
+    withFd
                    ) where
 
 import BasePrelude
@@ -68,7 +64,7 @@ import Data.IntSet         ( IntSet )
 import Data.Text.Encoding  ( encodeUtf8, decodeUtf8With )
 import Foreign.C.Error     ( throwErrnoIf_ )
 import Foreign.Ptr         ( castPtr )
-import System.IO           ( hPutStr, hPutStrLn, stderr, stdout, stdin )
+import System.IO           ( hPrint, hPutStr, hPutStrLn, stderr, stdout, stdin )
 import System.Posix.Files
 import System.Posix.IO
 import System.Posix.Types

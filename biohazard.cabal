@@ -138,8 +138,9 @@ Library
 
   Hs-source-dirs:      src
   Install-Includes:    src/cbits/myers_align.h
-  C-sources:           src/cbits/myers_align.c
-  CC-options:          -fPIC
+  C-sources:           src/cbits/myers_align.c,
+                       src/cbits/trim.c
+  CC-options:          -fPIC -ggdb -O0
 
   -- Modules not exported by this package.
   -- Other-modules:       

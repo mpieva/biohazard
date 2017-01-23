@@ -9,9 +9,12 @@ import Bio.Bam.Rmdup        ( ECig(..), setMD, toECig )
 import Bio.Iteratee
 import Bio.Prelude
 
+import Foreign.C.Types      ( CInt(..) )
+import Foreign.Ptr          ( Ptr )
+
 import qualified Data.ByteString                        as B
 import qualified Data.Vector.Generic                    as V
-import qualified Data.Vector.Unboxed                    as U
+import qualified Data.Vector.Storable                   as W
 
 -- | Trims from the 3' end of a sequence.
 -- @trim_3\' p b@ trims the 3' end of the sequence in @b@ at the
@@ -161,14 +164,12 @@ trim_low_quality q = const $ all (< q)
 -- would further limit the returned quality!  (In practice, map quality
 -- later imposes a limit anyway, so no worries...)
 
-merge_overlap :: BamRec -> [ U.Vector Nucleotides ]
-              -> BamRec -> [ U.Vector Nucleotides ]
+merge_overlap :: BamRec -> [ W.Vector Nucleotides ]
+              -> BamRec -> [ W.Vector Nucleotides ]
               -> Maybe ( BamRec, BamRec, BamRec, Int, Int )
-merge_overlap r1 ads1 r2 ads2 =
-    case possible_merges of
-        [                             ] -> Nothing
-        (score,  len) : [             ] -> result len score  plain_score
-        (score1, len) : (score2, _) : _ -> result len score1 score2
+merge_overlap r1 ads1 r2 ads2
+    | V.null (b_seq r1) && V.null (b_seq r2) = Nothing
+    | otherwise                              = result mlen score1 score2
   where
     -- the "merge" score if there is no overlap
     plain_score = 6 * fromIntegral (len_r1 + len_r2)
@@ -181,9 +182,8 @@ merge_overlap r1 ads1 r2 ads2 =
     b_qual_r1 = V.convert $ b_qual r1
     b_qual_r2 = V.convert $ b_qual r2
 
-    possible_merges = sortBy (\a b -> fst a `compare` fst b)
-                                   [ ( merge_score ads1 ads2 b_seq_r1 b_qual_r1 b_seq_r2 b_qual_r2 l, l )
-                                   | l <- [0 .. len_r1 + len_r2 - 1] ]
+    (score1, mlen, score2) = twoMins plain_score (len_r1 + len_r2) $
+                             merge_score ads1 ads2 b_seq_r1 b_qual_r1 b_seq_r2 b_qual_r2
 
     flag_vestigial    br = br { b_exts = updateE "FF" (Int $ extAsInt 0 "FF" br .|. eflagVestigial) $ b_exts br }
     store_quals s1 s2 br = br { b_exts = updateE "YM" (Int $ s2          - s1) $
@@ -239,12 +239,10 @@ merge_overlap r1 ads1 r2 ads2 =
 -- merge with an empty second read.  Results in up to two reads (the
 -- original, possibly flagged, and the trimmed one, definitely flagged,
 -- and two qualities).
-trim_adapter :: BamRec -> [ U.Vector Nucleotides ] -> Maybe ( BamRec, BamRec, Int, Int )
-trim_adapter r1 ads1 =
-    case possible_trims of
-        [                             ] -> Nothing
-        (score,  len) : [             ] -> result len score  plain_score
-        (score1, len) : (score2, _) : _ -> result len score1 score2
+trim_adapter :: BamRec -> [ W.Vector Nucleotides ] -> Maybe ( BamRec, BamRec, Int, Int )
+trim_adapter r1 ads1
+    | V.null (b_seq r1) = Nothing
+    | otherwise         = result mlen score1 score2
   where
     -- the "merge" score if there is no trimming
     plain_score = 6 * fromIntegral (V.length (b_seq r1))
@@ -252,9 +250,8 @@ trim_adapter r1 ads1 =
     b_seq_r1 = V.convert $ b_seq r1
     b_qual_r1 = V.convert $ b_qual r1
 
-    possible_trims = sortBy (\a b -> fst a `compare` fst b)
-                                  [ ( merge_score ads1 [V.empty] b_seq_r1 b_qual_r1 V.empty V.empty l, l )
-                                  | l <- [0 .. V.length (b_seq r1) - 1] ]
+    (score1, mlen, score2) = twoMins plain_score (V.length (b_seq r1)) $
+                             merge_score ads1 [V.empty] b_seq_r1 b_qual_r1 V.empty V.empty
 
     flag_vestigial    br = br { b_exts = updateE "FF" (Int $ extAsInt 0 "FF" br .|. eflagVestigial) $ b_exts br }
     store_quals s1 s2 br = br { b_exts = updateE "YM" (Int $ s2          - s1) $
@@ -280,8 +277,8 @@ trim_adapter r1 ads1 =
 -- (defined here in the direction they would be sequenced in):  Genomic
 -- R2, Multiplex R2, Fraft P7.
 
-default_fwd_adapters :: [ U.Vector Nucleotides ]
-default_fwd_adapters = map (U.fromList. map toNucleotides)
+default_fwd_adapters :: [ W.Vector Nucleotides ]
+default_fwd_adapters = map (W.fromList. map toNucleotides)
          [ {- Genomic R2   -}  "AGATCGGAAGAGCGGTTCAGCAGGAATGCCGAGACCG"
          , {- Multiplex R2 -}  "AGATCGGAAGAGCACACGTCTGAACTCCAGTCAC"
          , {- Graft P7     -}  "AGATCGGAAGAGCTCGTATGCCGTCTTCTGCTTG" ]
@@ -290,8 +287,8 @@ default_fwd_adapters = map (U.fromList. map toNucleotides)
 -- the reverse read (defined in the direction they would be sequenced in
 -- as part of the second read):  Genomic R1, CL 72.
 
-default_rev_adapters :: [ U.Vector Nucleotides ]
-default_rev_adapters = map (U.fromList. map toNucleotides)
+default_rev_adapters :: [ W.Vector Nucleotides ]
+default_rev_adapters = map (W.fromList. map toNucleotides)
          [ {- Genomic_R1   -}  "AGATCGGAAGAGCGTCGTGTAGGGAAAGAGTGT"
          , {- CL72         -}  "GGAAGAGCGTCGTGTAGGGAAAGAGTGT" ]
 
@@ -305,42 +302,65 @@ default_rev_adapters = map (U.fromList. map toNucleotides)
 -- matter enough.)
 
 merge_score
-    :: [ U.Vector Nucleotides ]                 -- 3' adapters as they appear in the first read
-    -> [ U.Vector Nucleotides ]                 -- 5' adapters as they appear in the second read
-    -> U.Vector Nucleotides -> U.Vector Qual    -- first read, qual
-    -> U.Vector Nucleotides -> U.Vector Qual    -- second read, qual
+    :: [ W.Vector Nucleotides ]                 -- 3' adapters as they appear in the first read
+    -> [ W.Vector Nucleotides ]                 -- 5' adapters as they appear in the second read
+    -> W.Vector Nucleotides -> W.Vector Qual    -- first read, qual
+    -> W.Vector Nucleotides -> W.Vector Qual    -- second read, qual
     -> Int                                      -- assumed insert length
     -> Int                                      -- score (roughly sum of qualities at mismatches)
 merge_score fwd_adapters rev_adapters !read1 !qual1 !read2 !qual2 !l
-    =   6 * fromIntegral (l `min` U.length read1)                                           -- read1, part before adapter
-      + 6 * fromIntegral (max 0 (l - U.length read1))                                       -- read2, part before overlap
+    =   6 * fromIntegral (l `min` V.length read1)                                           -- read1, part before adapter
+      + 6 * fromIntegral (max 0 (l - V.length read1))                                       -- read2, part before overlap
 
       + foldl' (\acc fwd_ad -> min acc
                     (match_adapter l read1 qual1 fwd_ad +                                   -- read1, match with forward adapter
-                     6 * fromIntegral (max 0 (U.length read1 - U.length fwd_ad - l)))       -- read1, part after (known) adapter
+                     6 * fromIntegral (max 0 (V.length read1 - V.length fwd_ad - l)))       -- read1, part after (known) adapter
                ) maxBound fwd_adapters
 
       + foldl' (\acc rev_ad -> min acc
                     (match_adapter l read2 qual2 rev_ad +                                   -- read2, match with reverse adapter
-                     6 * fromIntegral (max 0 (U.length read2 - U.length rev_ad - l)))       -- read2, part after (known) adapter
+                     6 * fromIntegral (max 0 (V.length read2 - V.length rev_ad - l)))       -- read2, part after (known) adapter
                ) maxBound rev_adapters
 
       + match_reads l read1 qual1 read2 qual2
 
-match_adapter :: Int -> U.Vector Nucleotides -> U.Vector Qual -> U.Vector Nucleotides -> Int
-match_adapter !off !rd !qs !ad = go 0 $ (U.length rd - off `min` U.length qs - off `min` U.length ad) - 1
+{-# INLINE match_adapter #-}
+match_adapter :: Int -> W.Vector Nucleotides -> W.Vector Qual -> W.Vector Nucleotides -> Int
+match_adapter !off !rd !qs !ad
+    | V.length rd /= V.length qs = error "read/qual length mismatch"
+    | efflength <= 0             = 0
+    | otherwise
+        = fromIntegral . unsafePerformIO $
+          W.unsafeWith rd $ \p_rd ->
+          W.unsafeWith qs $ \p_qs ->
+          W.unsafeWith ad $ \p_ad ->
+          prim_match_ad (fromIntegral off)
+                        (fromIntegral efflength)
+                        p_rd p_qs p_ad
   where
-    go :: Int -> Int -> Int
-    go !acc !i
-        | i < 0     = acc
-        | otherwise = go (acc + if U.unsafeIndex rd (i+off) == U.unsafeIndex ad i
-                                then 0 else 25 `min` fromIntegral (unQ (U.unsafeIndex qs (i+off)))) (i-1)
+    !efflength =  (V.length rd - off) `min` V.length ad
 
--- match_reads :: Int -> Vector_Nucs_half Nucleotides -> Storable.Vector Qual -> Vector_Nucs_half Nucleotides -> Storable.Vector Qual -> Int
-match_reads :: Int -> U.Vector Nucleotides -> U.Vector Qual -> U.Vector Nucleotides -> U.Vector Qual -> Int
-match_reads l !rd1 !qs1 !rd2 !qs2
-    | V.length rd1 == V.length qs1 && V.length rd2 == V.length qs2
-        = go 0 minidx1 maxidx2 efflength
+foreign import ccall unsafe "prim_match_ad"
+    prim_match_ad :: CInt -> CInt
+                  -> Ptr Nucleotides -> Ptr Qual
+                  -> Ptr Nucleotides -> IO CInt
+
+
+{-# INLINE match_reads #-}
+match_reads :: Int -> W.Vector Nucleotides -> W.Vector Qual -> W.Vector Nucleotides -> W.Vector Qual -> Int
+match_reads !l !rd1 !qs1 !rd2 !qs2
+    | V.length rd1 /= V.length qs1 || V.length rd2 /= V.length qs2 = error "read/qual length mismatch"
+    | efflength <= 0                                               = 0
+    | otherwise
+        = fromIntegral . unsafePerformIO $
+          W.unsafeWith rd1 $ \p_rd1 ->
+          W.unsafeWith qs1 $ \p_qs1 ->
+          W.unsafeWith rd2 $ \p_rd2 ->
+          W.unsafeWith qs2 $ \p_qs2 ->
+          prim_match_reads (fromIntegral minidx1)
+                           (fromIntegral maxidx2)
+                           (fromIntegral efflength)
+                           p_rd1 p_qs1 p_rd2 p_qs2
   where
     -- vec1, forward
     !minidx1 = (l - V.length rd2) `max` 0
@@ -349,20 +369,29 @@ match_reads l !rd1 !qs1 !rd2 !qs2
     -- effective length
     !efflength = (V.length rd1 - minidx1) `min` maxidx2 `min` l
 
-    go :: Int -> Int -> Int -> Int -> Int
-    go !acc !i1 !i2 !r
-        | r == 0    = acc
-        | otherwise = let Ns n1   = V.unsafeIndex rd1 i1
-                          Ns n2   = V.unsafeIndex rd2 (i2-1)
-                          Q q1 = V.unsafeIndex qs1 i1
-                          Q q2 = V.unsafeIndex qs2 (i2-1)
-                          acc' = acc + if n1 == U.unsafeIndex ar (fromIntegral n2) then 0 else fromIntegral $ min q1 q2
-                      in go acc' (i1+1) (i2-1) (r-1)
 
-    ar :: U.Vector Word8
-    !ar = U.fromListN 16 [ 0, 8, 4, 12, 2, 10, 6, 14, 1, 9, 5, 13, 3, 11, 7, 15 ]
+foreign import ccall unsafe "prim_match_reads"
+    prim_match_reads :: CInt -> CInt -> CInt
+                     -> Ptr Nucleotides -> Ptr Qual
+                     -> Ptr Nucleotides -> Ptr Qual -> IO CInt
 
-mergeTrimBam :: Monad m => [U.Vector Nucleotides] -> [U.Vector Nucleotides] -> Enumeratee [BamRec] [BamRec] m a
+
+{-# INLINE twoMins #-}
+twoMins :: (Bounded a, Ord a) => a -> Int -> (Int -> a) -> (a,Int,a)
+twoMins a0 imax f = go a0 0 maxBound 0 0
+  where
+    go !m1 !i1 !m2 !i2 !i
+        | i == imax = (m1,i1,m2)
+        | otherwise =
+            case f i of
+                x | x < m1    -> go  x  i m1 i1 (i+1)
+                  | x < m2    -> go m1 i1  x  i (i+1)
+                  | otherwise -> go m1 i1 m2 i2 (i+1)
+
+
+
+
+mergeTrimBam :: Monad m => [W.Vector Nucleotides] -> [W.Vector Nucleotides] -> Enumeratee [BamRec] [BamRec] m a
 mergeTrimBam fwd_ads rev_ads = convStream go
   where
     go = do r1 <- headStream
