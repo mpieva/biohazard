@@ -1,5 +1,5 @@
 Name:                biohazard
-Version:             0.6.9
+Version:             0.6.10
 Synopsis:            bioinformatics support library
 Description:         This is a collection of modules I separated from
                      various bioinformatics tools.  The hope is to make
@@ -17,16 +17,8 @@ Maintainer:          udo.stenzel@eva.mpg.de
 Copyright:           (C) 2010-2017 Udo Stenzel
 
 Extra-Source-Files:  man/man7/biohazard.7
-                     man/man1/bam-fixpair.1
-                     man/man1/bam-meld.1
-                     man/man1/bam-rewrap.1
-                     man/man1/bam-rmdup.1
-                     man/man1/fastq2bam.1
                      man/man1/jivebunny.1
                      man/man1/mt-anno.1
-
-Data-Files:          index_db.json
-Data-Dir:            data
 
 Cabal-version:       >= 1.10
 Build-type:          Custom
@@ -35,11 +27,6 @@ Tested-With:         GHC == 7.8.4, GHC == 7.10.1, GHC == 8.0.1
 source-repository head
   type:     git
   location: https://bitbucket.org/ustenzel/biohazard.git
-
-source-repository this
-  type:     git
-  location: https://bitbucket.org/ustenzel/biohazard.git
-  tag:      0.6.9
 
 Flag debug
   Description: enable additional sanity checks
@@ -148,12 +135,23 @@ Library
   -- Extra tools (e.g. alex, hsc2hs, ...) needed to build the source.
   -- Build-tools:         
 
--- Test-Suite test-biohazard
-  -- Ghc-options:         -Wall -threaded -rtsopts -with-rtsopts=-N
-  -- Type:                exitcode-stdio-1.0
-  -- Main-is:             test-biohazard.hs
 
-Executable test-pileup
+Test-suite fastq2bam
+  Type:                exitcode-stdio-1.0
+  Main-is:             fastq2bam.hs
+  Ghc-options:         -Wall -rtsopts
+  -- Ghc-options:         -Wall -threaded -rtsopts -with-rtsopts=-N
+  Default-Language:    Haskell2010
+  Default-Extensions:  NoImplicitPrelude, OverloadedStrings, BangPatterns
+  Hs-Source-Dirs:      tests
+  Build-depends:       base,
+                       biohazard,
+                       bytestring,
+                       containers,
+                       vector
+
+Test-suite test-pileup
+  Type:                exitcode-stdio-1.0
   Main-is:             test-pileup.hs
   Hs-Source-Dirs:      tests
   Ghc-options:         -Wall -fprof-auto
@@ -168,6 +166,7 @@ Executable test-pileup
                        random,
                        text,
                        vector
+
 
 Executable redeye-dar
   Main-is:             redeye-dar.hs
@@ -244,102 +243,6 @@ Executable afroengineer
                        containers,
                        directory,
                        unordered-containers,
-                       vector
-
-Executable bam-fixpair
-  Main-is:             bam-fixpair.hs
-  Ghc-options:         -Wall -rtsopts
-  -- Ghc-options:         -Wall -threaded -rtsopts -with-rtsopts=-N
-  Default-Language:    Haskell2010
-  Default-Extensions:  NoImplicitPrelude, OverloadedStrings,
-                       BangPatterns, RecordWildCards, FlexibleContexts
-  Hs-Source-Dirs:      tools
-  Build-depends:       async,
-                       base,
-                       binary,
-                       biohazard,
-                       bytestring,
-                       process,
-                       stm,
-                       transformers,
-                       unix,
-                       vector
-
-Executable bam-meld
-  Main-is:             bam-meld.hs
-  Ghc-options:         -Wall -rtsopts
-  -- Ghc-options:         -Wall -threaded -rtsopts -with-rtsopts=-N
-  Default-Language:    Haskell2010
-  Default-Extensions:  NoImplicitPrelude, OverloadedStrings,
-                       BangPatterns, FlexibleContexts
-  Hs-Source-Dirs:      tools
-  Build-depends:       base,
-                       biohazard,
-                       bytestring,
-                       containers
-
-Executable bam-resample
-  Main-is:             bam-resample.hs
-  Ghc-options:         -Wall -rtsopts
-  -- Ghc-options:         -Wall -threaded -rtsopts -with-rtsopts=-N
-  Default-Language:    Haskell2010
-  Default-Extensions:  NoImplicitPrelude, OverloadedStrings, BangPatterns
-  Hs-Source-Dirs:      tools
-  Build-depends:       base,
-                       biohazard,
-                       bytestring,
-                       random
-
-Executable bam-rewrap
-  Main-is:             bam-rewrap.hs
-  Ghc-options:         -Wall -rtsopts
-  -- Ghc-options:         -Wall -threaded -rtsopts -with-rtsopts=-N
-  Default-Language:    Haskell2010
-  Default-Extensions:  NoImplicitPrelude, OverloadedStrings, BangPatterns
-  Hs-Source-Dirs:      tools
-  Build-depends:       base,
-                       biohazard,
-                       bytestring,
-                       containers
-
-Executable bam-rmdup
-  Main-is:             bam-rmdup.hs
-  Ghc-options:         -Wall -rtsopts
-  -- Ghc-options:         -Wall -threaded -rtsopts -with-rtsopts=-N
-  Default-Language:    Haskell2010
-  Default-Extensions:  NoImplicitPrelude, OverloadedStrings,
-                       BangPatterns, RecordWildCards, FlexibleContexts
-  Hs-Source-Dirs:      tools
-  Build-depends:       base,
-                       biohazard,
-                       bytestring,
-                       containers,
-                       -- primitive,
-                       unordered-containers,
-                       vector
-
-Executable bam-trim
-  Main-is:             bam-trim.hs
-  Ghc-options:         -Wall -rtsopts
-  -- Ghc-options:         -Wall -threaded -rtsopts -with-rtsopts=-N
-  Default-Language:    Haskell2010
-  Default-Extensions:  NoImplicitPrelude, OverloadedStrings, BangPatterns
-  Hs-Source-Dirs:      tools
-  Build-depends:       base,
-                       biohazard,
-                       bytestring
-
-Executable fastq2bam
-  Main-is:             fastq2bam.hs
-  Ghc-options:         -Wall -rtsopts
-  -- Ghc-options:         -Wall -threaded -rtsopts -with-rtsopts=-N
-  Default-Language:    Haskell2010
-  Default-Extensions:  NoImplicitPrelude, OverloadedStrings, BangPatterns
-  Hs-Source-Dirs:      tools
-  Build-depends:       base,
-                       biohazard,
-                       bytestring,
-                       containers,
                        vector
 
 Executable jivebunny
