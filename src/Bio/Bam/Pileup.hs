@@ -284,7 +284,7 @@ data IndelVariant = IndelVariant { deleted_bases  :: !V_Nucs, inserted_bases :: 
 
 -- | Map quality and a list of encountered bases, with damage
 -- information and reference base if known.
-type BasePile  = [( Qual,                  DamagedBase   )]
+type BasePile  =                          [DamagedBase]
 
 -- | Map quality and a list of encountered indel variants.  The deletion
 -- has the reference sequence, if known, an insertion has the inserted
@@ -521,19 +521,19 @@ p'scan_active = do
         case pchunks of
             _ | nwt > 0     -> b' `seq` go k  (b':ac)   wt     bpile     ipile  bs
             Seek p' pb'     -> go k      ac (ins p' pb' wt) (z bpile)    ipile  bs
-            Indel nd ni pb' -> go k (pb':ac)            wt  (z bpile) (y ipile) bs where y = put mq (nd,ni)
+            Indel nd ni pb' -> go k (pb':ac)            wt  (z bpile) (y ipile) bs where y = put (,) mq (nd,ni)
             EndOfRead       -> go k      ac             wt  (z bpile)    ipile  bs
         where
             b' = Base (nwt-1) qs mq pchunks
-            z  = put mq qs
+            z  = put (\q x -> x { db_qual = min q (db_qual x) }) mq qs
 
     ins q v w = Node q v Empty Empty `unionH` w
 
-    put (Q !q) !x (!st,!vs) = ( st { read_depth       = read_depth st + 1
-                                   , reads_mapq0      = reads_mapq0 st + (if q == 0 then 1 else 0)
-                                   , sum_mapq         = sum_mapq st + fromIntegral q
-                                   , sum_mapq_squared = sum_mapq_squared st + fromIntegral q * fromIntegral q }
-                              , (Q q, x) : vs )
+    put f (Q !q) !x (!st,!vs) = ( st { read_depth       = read_depth st + 1
+                                     , reads_mapq0      = reads_mapq0 st + (if q == 0 then 1 else 0)
+                                     , sum_mapq         = sum_mapq st + fromIntegral q
+                                     , sum_mapq_squared = sum_mapq_squared st + fromIntegral q * fromIntegral q }
+                                , f (Q q) x : vs )
 
 
 -- | We need a simple priority queue.  Here's a skew heap (specialized
