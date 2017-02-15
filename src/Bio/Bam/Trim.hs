@@ -224,15 +224,15 @@ merge_overlap r1 ads1 r2 ads2
 
     merge_seqs v1 v2 v3 v4 = V.zipWith4 zz v1 v2 v3 v4
       where
-        zz !n1 (Q !q1) !n2 (Q !q2) = if     n1 == n2 then n1
-                                     else if q1 > q2 then n1
-                                     else                 n2
+        zz !n1 (Q !q1) !n2 (Q !q2) | n1 == compls n2 =        n1
+                                   | q1 > q2         =        n1
+                                   | otherwise       = compls n2
 
     merge_quals qmax v1 v2 v3 v4 = V.zipWith4 zz v1 v2 v3 v4
       where
-        zz !n1 (Q !q1) !n2 (Q !q2) = Q $ if     n1 == n2 then min qmax (q1 + q2)
-                                         else if q1 > q2 then           q1 - q2
-                                         else                           q2 - q1
+        zz !n1 (Q !q1) !n2 (Q !q2) | n1 == compls n2 = Q $ min qmax (q1 + q2)
+                                   | q1 > q2         = Q $           q1 - q2
+                                   | otherwise       = Q $           q2 - q1
 
 -- | Trimming for a single read:  we need one adapter only (the one coming
 -- /after/ the read), here provided as a list of options, and then we
