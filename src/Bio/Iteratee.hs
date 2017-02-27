@@ -2,55 +2,26 @@
 -- with "Prelude" plus a handful of utilities.
 
 module Bio.Iteratee (
-    groupStreamBy,
-    groupStreamOn,
     iGetString,
     iterGet,
     iterLoop,
     iLookAhead,
-    headStream,
-    peekStream,
-    takeStream,
-    dropStream,
-    mapChunks,
-    mapChunksM,
-    mapStream,
-    rigidMapStream,
-    mapStreamM,
-    mapStreamM_,
-    filterStream,
-    filterStreamM,
-    foldStream,
-    foldStreamM,
-    zipStreams,
-    zipStreams3,
+
     protectTerm,
-    concatMapStream,
-    concatMapStreamM,
-    mapMaybeStream,
     parMapChunksIO,
     progressGen,
     progressNum,
     progressPos,
 
-    I.takeWhileE,
-    I.tryHead,
-    I.isFinished,
-    I.heads,
-    I.breakE,
-
     ($==),
-    mBind, mBind_, ioBind, ioBind_,
     ListLike,
     MonadIO, MonadMask,
     lift, liftIO,
-    (>=>), (<=<),
     stdin, stdout, stderr,
 
     enumAuxFile,
     enumInputs,
     enumDefaultInputs,
-    defaultBufSize,
 
     Ordering'(..),
     mergeSortStreams,
@@ -73,120 +44,37 @@ module Bio.Iteratee (
 
     Fd,
     withFileFd,
-    module Data.Iteratee.Binary,
-    module Data.Iteratee.Char,
-    module Data.Iteratee.IO,
-    module Data.Iteratee.Iteratee
+
+    module Bio.Iteratee.Binary,
+    module Bio.Iteratee.Char,
+    module Bio.Iteratee.IO,
+    module Bio.Iteratee.Iteratee,
+    module Bio.Iteratee.ListLike
         ) where
 
 import Bio.Bam.Header
-import Bio.Util.Numeric                     ( showNum )
+import Bio.Iteratee.Base
+import Bio.Iteratee.Binary
+import Bio.Iteratee.Char
+import Bio.Iteratee.IO
+import Bio.Iteratee.Iteratee
+import Bio.Iteratee.ListLike
 import Bio.Prelude
+import Bio.Util.Numeric                     ( showNum )
 import Control.Concurrent.Async             ( Async, async, wait, cancel )
 import Control.Monad.Catch                  ( MonadMask(..) )
 import Control.Monad.IO.Class
 import Control.Monad.Trans.Class
 import Data.Binary.Get
-import Data.Iteratee.Binary
-import Data.Iteratee.Char
-import Data.Iteratee.IO              hiding ( defaultBufSize )
-import Data.Iteratee.Iteratee        hiding ( identity, empty, mapChunks, mapChunksM, (>>>) )
 import Data.ListLike                        ( ListLike )
 import System.IO                            ( hIsTerminalDevice )
 
 import qualified Control.Monad.Catch            as CMC
 import qualified Data.Attoparsec.ByteString     as A
 import qualified Data.ByteString.Char8          as S
-import qualified Data.Iteratee                  as I
 import qualified Data.ListLike                  as LL
-import qualified Data.NullPoint                 as N
 import qualified Data.Vector.Generic            as VG
 import qualified Data.Vector.Generic.Mutable    as VM
-
--- | Grouping on 'Iteratee's.  @groupStreamOn proj inner outer@ executes
--- @inner (proj e)@, where @e@ is the first input element, to obtain an
--- 'Iteratee' @i@, then passes elements @e@ to @i@ as long as @proj e@
--- produces the same result.  If @proj e@ changes or the input ends, the
--- pair of @proj e@ and the result of @run i@ is passed to @outer@.  At
--- end of input, the resulting @outer@ is returned.
-groupStreamOn :: (Monad m, LL.ListLike l e, Eq t1, Nullable l)
-              => (e -> t1)
-              -> (t1 -> m (Iteratee l m t2))
-              -> Enumeratee l [(t1, t2)] m a
-groupStreamOn proj inner = eneeCheckIfDonePass (icont . step)
-  where
-    step outer   (EOF   mx) = idone (liftI outer) $ EOF mx
-    step outer c@(Chunk as)
-        | LL.null as = liftI $ step outer
-        | otherwise  = let x = proj (LL.head as)
-                       in lift (inner x) >>= \i -> step' x i outer c
-
-    -- We want to feed a 'Chunk' to the inner 'Iteratee', which might be
-    -- finished.  In that case, we would want to abort, but we cannot,
-    -- since the outer iteration is still going on.  So instead we
-    -- discard data we would have fed to the inner 'Iteratee'.  (Use of
-    -- 'enumPure1Chunk' is not appropriate, it would accumulate the
-    -- data, just to have it discarded by the 'run' that eventually
-    -- happens.
-
-    step' c it outer (Chunk as)
-        | LL.null as = liftI $ step' c it outer
-        | (l,r) <- LL.span ((==) c . proj) as, not (LL.null l) =
-            let od a    _str = idoneM a $ EOF Nothing
-                oc k Nothing = return $ k (Chunk l)
-                oc k       m = icontM k m
-            in lift (runIter it od oc) >>= \it' -> step' c it' outer (Chunk r)
-
-    step' c it outer str =
-        lift (run it) >>= \b -> eneeCheckIfDone (`step` str) . outer $ Chunk [(c,b)]
-
-
--- | Grouping on 'Iteratee's.  @groupStreamBy cmp inner outer@ executes
--- @inner@ to obtain an 'Iteratee' @i@, then passes elements @e@ to @i@
--- as long as @cmp e0 e@, where @e0@ is some preceeding element, is
--- true.  Else, the result of @run i@ is passed to @outer@ and
--- 'groupStreamBy' restarts.  At end of input, the resulting @outer@ is
--- returned.
-groupStreamBy :: (Monad m, LL.ListLike l t, Nullable l)
-              => (t -> t -> Bool)
-              -> m (Iteratee l m t2)
-              -> Enumeratee l [t2] m a
-groupStreamBy cmp inner = eneeCheckIfDonePass (icont . step)
-  where
-    step outer    (EOF   mx) = idone (liftI outer) $ EOF mx
-    step outer  c@(Chunk as)
-        | LL.null as = liftI $ step outer
-        | otherwise  = lift inner >>= \i -> step' (LL.head as) i outer c
-
-    step' c it outer (Chunk as)
-        | LL.null as = liftI $ step' c it outer
-        | (l,r) <- LL.span (cmp c) as, not (LL.null l) =
-            let od a    _str = idoneM a $ EOF Nothing
-                oc k Nothing = return $ k (Chunk l)
-                oc k       m = icontM k m
-            in lift (runIter it od oc) >>= \it' -> step' (LL.head l) it' outer (Chunk r)
-
-    step' _ it outer str =
-        lift (run it) >>= \b -> eneeCheckIfDone (`step` str) . outer $ Chunk [b]
-
-
--- | Take a prefix of a stream, the equivalent of 'Data.List.take'.
-{-# INLINE takeStream #-}
-takeStream :: (Monad m, Nullable s, ListLike s el) => Int -> Enumeratee s s m a
-takeStream = I.take
-
--- | Take first element of a stream or fail.
-{-# INLINE headStream #-}
-headStream :: ListLike s el => Iteratee s m el
-headStream = I.head
-
-{-# INLINE peekStream #-}
-peekStream :: ListLike s el => Iteratee s m (Maybe el)
-peekStream = I.peek
-
-{-# INLINE dropStream #-}
-dropStream :: (Nullable s, ListLike s el) => Int -> Iteratee s m ()
-dropStream = I.drop
 
 -- | Run an Iteratee, collect the input.  When it finishes, return the
 -- result along with *all* input.  Effectively allows lookahead.  Be
@@ -215,7 +103,7 @@ iGetString n = liftI $ step [] 0
 -- | Repeatedly apply an 'Iteratee' to a value until end of stream.
 -- Returns the final value.
 iterLoop :: (Nullable s, Monad m) => (a -> Iteratee s m a) -> a -> Iteratee s m a
-iterLoop it a = do e <- I.isFinished
+iterLoop it a = do e <- isFinished
                    if e then return a
                         else it a >>= iterLoop it
 
@@ -234,37 +122,6 @@ iterGet = go . runGetIncremental
             Done rest _ a | S.null rest -> idone a (EOF mx)
                           | otherwise   -> idone a (Chunk rest)
 
-{-# INLINE mBind #-}
--- | Lifts a monadic action and combines it with a continuation.
--- @mBind m f@ is the same as @lift m >>= f@, but does not require a
--- 'Nullable' constraint on the stream type.
-infixl 1 `mBind`
-mBind :: Monad m => m a -> (a -> Iteratee s m b) -> Iteratee s m b
-mBind m f = Iteratee $ \onDone onCont -> m >>= \a -> runIter (f a) onDone onCont
-
-{-# INLINE mBind_ #-}
--- | Lifts a monadic action, ignored the result and combines it with a
--- continuation.  @mBind_ m f@ is the same as @lift m >>= f@, but does
--- not require a 'Nullable' constraint on the stream type.
-infixl 1 `mBind_`
-mBind_ :: Monad m => m a -> Iteratee s m b -> Iteratee s m b
-mBind_ m b = Iteratee $ \onDone onCont -> m >> runIter b onDone onCont
-
-{-# INLINE ioBind #-}
--- | Lifts an IO action and combines it with a continuation.
--- @ioBind m f@ is the same as @liftIO m >>= f@, but does not require a
--- 'Nullable' constraint on the stream type.
-infixl 1 `ioBind`
-ioBind :: MonadIO m => IO a -> (a -> Iteratee s m b) -> Iteratee s m b
-ioBind m f = Iteratee $ \onDone onCont -> liftIO m >>= \a -> runIter (f a) onDone onCont
-
-{-# INLINE ioBind_ #-}
--- | Lifts an IO action, ignores its result, and combines it with a
--- continuation.  @ioBind_ m f@ is the same as @liftIO m >> f@, but does
--- not require a 'Nullable' constraint on the stream type.
-infixl 1 `ioBind_`
-ioBind_ :: MonadIO m => IO a -> Iteratee s m b -> Iteratee s m b
-ioBind_ m b = Iteratee $ \onDone onCont -> liftIO m >> runIter b onDone onCont
 
 infixl 1 $==
 {-# INLINE ($==) #-}
@@ -290,114 +147,6 @@ mergeEnums' :: (Nullable s2, Nullable s1, Monad m)
             -> Enumerator' hi s1 m a
 mergeEnums' e1 e2 etee i = e1 $ \hi -> e2 (\ho -> joinI . etee ho $ ilift lift (i hi)) >>= run
 
--- | Apply a function to the elements of a stream, concatenate the
--- results into a stream.  No giant intermediate list is produced.
-{-# INLINE concatMapStream #-}
-concatMapStream :: (Monad m, ListLike s a, NullPoint s) => (a -> t) -> Enumeratee s t m r
-concatMapStream f = eneeCheckIfDone (liftI . go)
-  where
-    go k (EOF   mx)              = idone (liftI k) (EOF mx)
-    go k (Chunk xs) | LL.null xs = liftI (go k)
-                    | otherwise  = eneeCheckIfDone (flip go (Chunk (LL.tail xs))) . k . Chunk . f $ LL.head xs
-
--- | Apply a monadic function to the elements of a stream, concatenate
--- the results into a stream.  No giant intermediate list is produced.
-{-# INLINE concatMapStreamM #-}
-concatMapStreamM :: (Monad m, ListLike s a, NullPoint s) => (a -> m t) -> Enumeratee s t m r
-concatMapStreamM f = eneeCheckIfDone (liftI . go)
-  where
-    go k (EOF   mx)              = idone (liftI k) (EOF mx)
-    go k (Chunk xs) | LL.null xs = liftI (go k)
-                    | otherwise  = f (LL.head xs) `mBind`
-                                   eneeCheckIfDone (flip go (Chunk (LL.tail xs))) . k . Chunk
-
-{-# INLINE mapMaybeStream #-}
-mapMaybeStream :: (ListLike s a, NullPoint s, ListLike t b) => (a -> Maybe b) -> Enumeratee s t m r
-mapMaybeStream f = mapChunks mm
-  where
-    mm l = if LL.null l then LL.empty else
-           case f (LL.head l) of Nothing -> mm (LL.tail l)
-                                 Just b  -> LL.cons b $ mm (LL.tail l)
-
--- | Apply a filter predicate to an 'Iteratee'.
-{-# INLINE filterStream #-}
-filterStream :: (ListLike s a, NullPoint s) => (a -> Bool) -> Enumeratee s s m r
-filterStream = mapChunks . LL.filter
-
--- | Apply a monadic filter predicate to an 'Iteratee'.
-{-# INLINE filterStreamM #-}
-filterStreamM :: (Monad m, ListLike s a, Nullable s) => (a -> m Bool) -> Enumeratee s s m r
-filterStreamM k = mapChunksM (go id)
-  where
-    go acc s | LL.null s = return $! acc LL.empty
-             | otherwise = do p <- k (LL.head s)
-                              let acc' = if p then LL.cons (LL.head s) . acc else acc
-                              go acc' (LL.tail s)
-
-{-# INLINE mapChunks #-}
-mapChunks :: NullPoint s => (s -> s') -> Enumeratee s s' m a
-mapChunks f = eneeCheckIfDonePass (icont . step)
- where
-  step k (Chunk xs) = eneeCheckIfDonePass (icont . step) . k . Chunk $ f xs
-  step k str        = idone (liftI k) str
-
-{-# INLINE mapChunksM #-}
-mapChunksM :: (Monad m, NullPoint s) => (s -> m s') -> Enumeratee s s' m a
-mapChunksM f = eneeCheckIfDonePass (icont . step)
- where
-  step k (Chunk xs) = f xs `mBind` eneeCheckIfDonePass (icont . step) . k . Chunk
-  step k str        = idone (liftI k) str
-
--- | Map a function over an 'Iteratee'.
--- This one is reimplemented and differs from the the one in
--- "Data.Iteratee.ListLike" in so far that it doesn't pass on an 'EOF'
--- received in the input, which is the expected behavior.
-{-# INLINE mapStream #-}
-mapStream :: (ListLike (s el) el, ListLike (s el') el', NullPoint (s el))
-          => (el -> el') -> Enumeratee (s el) (s el') m a
-mapStream = mapChunks . LL.map
-
--- | Map a function over an 'Iteratee' rigidly.
--- This one is reimplemented and differs from the the one in
--- "Data.Iteratee.ListLike" in so far that it doesn't pass on an 'EOF'
--- received in the input, which is the expected behavior.
-{-# INLINE rigidMapStream #-}
-rigidMapStream :: (ListLike s el, NullPoint s) => (el -> el) -> Enumeratee s s m a
-rigidMapStream = mapChunks . LL.rigidMap
-
--- | Map a monadic function over an 'Iteratee'.
-{-# INLINE mapStreamM #-}
-mapStreamM :: (Monad m, ListLike (s el) el, ListLike (s el') el', NullPoint (s el))
-           => (el -> m el') -> Enumeratee (s el) (s el') m a
-mapStreamM = mapChunksM . LL.mapM
-
--- | Map a monadic function over an 'Iteratee', discarding the results.
-{-# INLINE mapStreamM_ #-}
-mapStreamM_ :: (Monad m, Nullable s, ListLike s el) => (el -> m b) -> Iteratee s m ()
-mapStreamM_ = mapChunksM_ . LL.mapM_
-
--- | Fold a monadic function over an 'Iteratee'.
-{-# INLINE foldStreamM #-}
-foldStreamM :: (Monad m, Nullable s, ListLike s a) => (b -> a -> m b) -> b -> Iteratee s m b
-foldStreamM k = foldChunksM go
-  where
-    go b s | LL.null s = return b
-           | otherwise = k b (LL.head s) >>= \b' -> go b' (LL.tail s)
-
--- | Fold a function over an 'Iteratee'.
-foldStream :: (Monad m, Nullable s, ListLike s a) => (b -> a -> b) -> b -> Iteratee s m b
-foldStream f = foldChunksM (\b s -> return $! LL.foldl' f b s)
-
--- | Apply two 'Iteratee's to the same stream.
-zipStreams :: (Nullable s, ListLike s el, Monad m)
-           => Iteratee s m a -> Iteratee s m b -> Iteratee s m (a, b)
-zipStreams = I.zip
-
--- | Apply three 'Iteratee's to the same stream.
-zipStreams3 :: (Nullable s, ListLike s el, Monad m)
-            => Iteratee s m a -> Iteratee s m b -> Iteratee s m c -> Iteratee s m (a, b, c)
-zipStreams3 = I.zip3
-
 type Enumerator' h eo m b = (h -> Iteratee eo m b) -> m (Iteratee eo m b)
 type Enumeratee' h ei eo m b = (h -> Iteratee eo m b) -> Iteratee ei m (Iteratee eo m b)
 
@@ -414,14 +163,6 @@ enumInputs xs = go xs
         go ( f :fs) = enumFile defaultBufSize f >=> go fs
         go [      ] = return
 
--- | Default buffer size in elements.  This is 1024 in "Data.Iteratee",
--- which is obviously too small.  Since we want to merge many files, a
--- read should take more time than a seek.  This sets the sensible
--- buffer size to more than about one MB.
-defaultBufSize :: Int
-defaultBufSize = 2*1024*1024
-
-
 data Ordering' a = Less | Equal a | NotLess
 
 mergeSortStreams :: (Monad m, ListLike s a, Nullable s) => (a -> a -> Ordering' a) -> Enumeratee s s (Iteratee s m) b
@@ -429,12 +170,12 @@ mergeSortStreams comp = eneeCheckIfDone step
   where
     step out = peekStream >>= \mx -> lift peekStream >>= \my -> case (mx, my) of
         (Just x, Just y) -> case x `comp` y of
-            Less    -> do I.drop 1 ;                   eneeCheckIfDone step . out . Chunk $ LL.singleton x
-            NotLess -> do            lift (I.drop 1) ; eneeCheckIfDone step . out . Chunk $ LL.singleton y
-            Equal z -> do I.drop 1 ; lift (I.drop 1) ; eneeCheckIfDone step . out . Chunk $ LL.singleton z
+            Less    -> do dropStream 1 ;                       eneeCheckIfDone step . out . Chunk $ LL.singleton x
+            NotLess -> do                lift (dropStream 1) ; eneeCheckIfDone step . out . Chunk $ LL.singleton y
+            Equal z -> do dropStream 1 ; lift (dropStream 1) ; eneeCheckIfDone step . out . Chunk $ LL.singleton z
 
-        (Just  x, Nothing) -> do       I.drop 1  ; eneeCheckIfDone step . out . Chunk $ LL.singleton x
-        (Nothing, Just  y) -> do lift (I.drop 1) ; eneeCheckIfDone step . out . Chunk $ LL.singleton y
+        (Just  x, Nothing) -> do       dropStream 1  ; eneeCheckIfDone step . out . Chunk $ LL.singleton x
+        (Nothing, Just  y) -> do lift (dropStream 1) ; eneeCheckIfDone step . out . Chunk $ LL.singleton y
         (Nothing, Nothing) -> idone (liftI out) $ EOF Nothing
 
 
@@ -454,7 +195,7 @@ parMapChunksIO np f = eneeCheckIfDonePass (go emptyQ)
         _                               -> liftI $ go' qq k
 
     -- we have room for input
-    go' !qq k (EOF  mx) = do a <- liftIO (async (f N.empty))
+    go' !qq k (EOF  mx) = do a <- liftIO (async (f emptyP))
                              goE mx (pushQ a qq) k Nothing
     go' !qq k (Chunk c) = do a <- liftIO (async (f c))
                              go (pushQ a qq) k Nothing
@@ -564,7 +305,7 @@ stream2vectorN n = do
     go mv i
         | i == n    = return n
         | otherwise =
-            I.tryHead >>= \x -> case x of
+            tryHead >>= \x -> case x of
                 Nothing -> return i
                 Just  a -> liftIO (VM.write mv i a) >> go mv (i+1)
 
@@ -572,7 +313,7 @@ stream2vectorN n = do
 stream2vector :: (MonadIO m, ListLike s a, Nullable s, VG.Vector v a) => Iteratee s m (v a)
 stream2vector = liftIO (VM.new 1024) >>= go 0
   where
-    go !i !mv = I.tryHead >>= \x -> case x of
+    go !i !mv = tryHead >>= \x -> case x of
                   Nothing -> liftIO $ VG.unsafeFreeze $ VM.take i mv
                   Just  a -> do mv' <- if VM.length mv == i then liftIO (VM.grow mv (VM.length mv)) else return mv
                                 when (i `rem` 0x10000 == 0) $ liftIO performGC

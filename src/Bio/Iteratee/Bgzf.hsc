@@ -14,15 +14,14 @@ module Bio.Iteratee.Bgzf (
 import Bio.Iteratee
 import Bio.Prelude
 import Control.Concurrent.Async             ( async, wait )
-import Foreign.Marshal.Alloc                ( mallocBytes, free, allocaBytes )
-import Foreign.Storable                     ( peekByteOff, pokeByteOff )
 import Foreign.C.String                     ( withCAString )
 import Foreign.C.Types                      ( CInt(..), CChar(..), CUInt(..), CULong(..) )
+import Foreign.Marshal.Alloc                ( mallocBytes, free, allocaBytes )
 import Foreign.Ptr                          ( nullPtr, castPtr, Ptr, plusPtr, minusPtr )
+import Foreign.Storable                     ( peekByteOff, pokeByteOff )
 
 import qualified Data.ByteString            as S
 import qualified Data.ByteString.Unsafe     as S
-import qualified Data.Iteratee.ListLike     as I
 
 #include <zlib.h>
 
@@ -32,8 +31,8 @@ import qualified Data.Iteratee.ListLike     as I
 data Block = Block { block_offset   :: {-# UNPACK #-} !FileOffset
                    , block_contents :: {-# UNPACK #-} !Bytes }
 
-instance NullPoint Block where empty = mempty
-instance Nullable Block where nullC (Block _ s) = S.null s
+instance NullPoint Block where emptyP = Block 0 S.empty
+instance Nullable  Block where nullC  = S.null . block_contents
 
 instance Monoid Block where
     mempty = Block 0 S.empty
@@ -123,24 +122,24 @@ get_bgzf_block off = do !(csize,xlen) <- get_bgzf_header
 -- | Decodes a BGZF block header and returns the block size if
 -- successful.
 get_bgzf_header :: Monad m => Iteratee Bytes m (Word16, Word16)
-get_bgzf_header = do n <- I.heads "\31\139"
-                     _cm <- I.head
-                     flg <- I.head
+get_bgzf_header = do n <- heads "\31\139"
+                     _cm <- headStream
+                     flg <- headStream
                      if flg `testBit` 2 then do
-                         I.drop 6
+                         dropStream 6
                          xlen <- endianRead2 LSB
-                         it <- I.take (fromIntegral xlen) get_bsize >>= lift . tryRun
+                         it <- takeStream (fromIntegral xlen) get_bsize >>= lift . tryRun
                          case it of Left e -> throwErr e
                                     Right s | n == 2 -> return (s,xlen)
                                     _ -> throwErr $ iterStrExc "No BGZF"
                       else throwErr $ iterStrExc "No BGZF"
   where
-    get_bsize = do i1 <- I.head
-                   i2 <- I.head
+    get_bsize = do i1 <- headStream
+                   i2 <- headStream
                    len <- endianRead2 LSB
                    if i1 == 66 && i2 == 67 && len == 2
                       then endianRead2 LSB
-                      else I.drop (fromIntegral len) >> get_bsize
+                      else dropStream (fromIntegral len) >> get_bsize
 
 -- | Tests whether a stream is in BGZF format.  Does not consume any
 -- input.
@@ -152,9 +151,9 @@ isBgzf = liftM isRight $ checkErr $ iLookAhead $ get_bgzf_header
 isGzip :: Monad m => Iteratee Bytes m Bool
 isGzip = liftM (either (const False) id) $ checkErr $ iLookAhead $ test
   where
-    test = do n <- I.heads "\31\139"
-              I.drop 24
-              b <- I.isFinished
+    test = do n <- heads "\31\139"
+              dropStream 24
+              b <- isFinished
               return $ not b && n == 2
 
 -- ------------------------------------------------------------------------- Output
@@ -376,7 +375,7 @@ data BgzfChunk = SpecialChunk  !Bytes BgzfChunk
                | LeftoverChunk !Bytes BgzfChunk
                | NoChunk
 
-instance NullPoint BgzfChunk where empty = NoChunk
+instance NullPoint BgzfChunk where emptyP = NoChunk
 instance Nullable BgzfChunk where
     nullC NoChunk = True
     nullC (SpecialChunk  s c) = S.null s && nullC c

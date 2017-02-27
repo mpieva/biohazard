@@ -12,7 +12,6 @@ import Bio.Prelude hiding ( left, right )
 
 import qualified Data.ByteString        as B
 import qualified Data.ByteString.Char8  as T
-import qualified Data.Iteratee          as I
 import qualified Data.Map               as M
 import qualified Data.Vector.Generic    as V
 import qualified Data.Vector.Storable   as VS
@@ -118,16 +117,16 @@ rmdup label strand_preserved collapse_cfg =
 
     nice_sort x = sortBy (comparing (V.length . b_seq)) x
 
-    mapGroups f o = I.tryHead >>= maybe (return o) (\a -> eneeCheckIfDone (mg1 f a []) o)
-    mg1 f a acc k = I.tryHead >>= \mb -> case mb of
+    mapGroups f o = tryHead >>= maybe (return o) (\a -> eneeCheckIfDone (mg1 f a []) o)
+    mg1 f a acc k = tryHead >>= \mb -> case mb of
                         Nothing -> return . k . Chunk . f $ a:acc
                         Just b | same_pos a b -> mg1 f a (b:acc) k
                                | otherwise -> eneeCheckIfDone (mg1 f b []) . k . Chunk . f $ a:acc
 
 check_sort :: Monad m => String -> Enumeratee [BamRec] [BamRec] m a
-check_sort msg out = I.tryHead >>= maybe (return out) (\a -> eneeCheckIfDone (step a) out)
+check_sort msg out = tryHead >>= maybe (return out) (\a -> eneeCheckIfDone (step a) out)
   where
-    step a k = I.tryHead >>= maybe (return . k $ Chunk [a]) (step' a k)
+    step a k = tryHead >>= maybe (return . k $ Chunk [a]) (step' a k)
     step' a k b | (b_rname a, b_pos a) > (b_rname b, b_pos b) = fail $ "rmdup: " ++ msg
                 | otherwise = eneeCheckIfDone (step b) . k $ Chunk [a]
 

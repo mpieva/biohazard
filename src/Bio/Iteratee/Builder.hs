@@ -17,10 +17,9 @@
 
 module Bio.Iteratee.Builder where
 
-import Bio.Iteratee hiding ( NullPoint )
+import Bio.Iteratee
 import Bio.Iteratee.Bgzf
 import Bio.Prelude
-import Data.NullPoint ( NullPoint(..) )
 import Foreign.ForeignPtr
 import Foreign.Marshal.Alloc
 import Foreign.Marshal.Utils
@@ -55,7 +54,7 @@ instance Monoid Push where
     Push a `mappend` Push b = Push (a >=> b)
 
 instance NullPoint Push where
-    empty = Push return
+    emptyP = Push return
 
 
 -- | Creates a buffer with a given initial capacity.

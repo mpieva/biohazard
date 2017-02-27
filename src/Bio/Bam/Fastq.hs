@@ -9,7 +9,6 @@ import Data.Attoparsec.ByteString.Char8
 import qualified Data.Attoparsec.ByteString.Char8   as P
 import qualified Data.ByteString                    as B
 import qualified Data.ByteString.Char8              as S
-import qualified Data.Iteratee.ListLike             as I
 import qualified Data.Vector.Generic                as V
 
 -- ^ Parser for @FastA/FastQ@, 'Iteratee' style, based on
@@ -100,9 +99,9 @@ parseFastq' descr it = do skipJunk ; convStream (parserToIteratee $ (:[]) <$> pR
              | otherwise = Just (i-1)
 
 skipJunk :: Monad m => Iteratee Bytes m ()
-skipJunk = I.peek >>= check
+skipJunk = peekStream >>= check
   where
-    check (Just c) | bad c = I.dropWhile (c2w '\n' /=) >> I.drop 1 >> skipJunk
+    check (Just c) | bad c = dropWhileStream (c2w '\n' /=) >> dropStream 1 >> skipJunk
     check _                = return ()
     bad c = c /= c2w '>' && c /= c2w '@'
 

@@ -255,7 +255,7 @@ combineNames _ = mergeSortStreams (?)
 decodeBam :: Monad m => (BamMeta -> Iteratee [BamRaw] m a) -> Iteratee Block m (Iteratee [BamRaw] m a)
 decodeBam inner = do meta <- liftBlock get_bam_header
                      refs <- liftBlock get_ref_array
-                     convStream getBamRaw $ inner $! merge meta refs
+                     convStream getBamRaw $ inner $! mmerge meta refs
   where
     get_bam_header  = do magic <- heads "BAM\SOH"
                          when (magic /= 4) $ do s <- iGetString 10
@@ -275,11 +275,11 @@ decodeBam inner = do meta <- liftBlock get_bam_header
     -- sequences, so leftovers from the header are discarded.  Merging
     -- is by name.  So we merge information from the header into the
     -- list, then replace the header information.
-    merge meta refs =
+    mmerge meta refs =
         let tbl = M.fromList [ (sq_name sq, sq) | sq <- F.toList (meta_refs meta) ]
-        in meta { meta_refs = fmap (\s -> maybe s (merge' s) (M.lookup (sq_name s) tbl)) refs }
+        in meta { meta_refs = fmap (\s -> maybe s (mmerge' s) (M.lookup (sq_name s) tbl)) refs }
 
-    merge' l r | sq_length l == sq_length r = l { sq_other_shit = sq_other_shit l ++ sq_other_shit r }
+    mmerge' l r | sq_length l == sq_length r = l { sq_other_shit = sq_other_shit l ++ sq_other_shit r }
                | otherwise                  = l -- contradiction in header, but we'll just ignore it
 
 
