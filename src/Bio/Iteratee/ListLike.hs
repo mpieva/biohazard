@@ -68,7 +68,6 @@ where
 import Bio.Iteratee.Iteratee
 import Bio.Prelude
 import Control.Monad.Trans.Class
-import Data.List (partition)
 
 import qualified Data.ByteString          as B
 import qualified Data.ListLike            as LL
@@ -203,7 +202,9 @@ roll t d | t > d  = liftI step
     step stream            = idone LL.empty stream
     step' v1 (Chunk vec)   = step . Chunk $ v1 `mappend` vec
     step' v1 stream        = idone (LL.singleton v1) stream
-roll t d = LL.singleton <$> joinI (takeStream t stream2stream) <* dropStream (d-t)
+roll t d = do r <- joinI (takeStream t stream2stream)
+              dropStream (d-t)
+              return $ LL.singleton r
   -- d is >= t, so this version works
 {-# INLINE roll #-}
 
@@ -585,7 +586,7 @@ merge ::
    ,Monad m)
   => (el1 -> el2 -> b)
   -> Enumeratee s2 b (Iteratee s1 m) a
-merge f = convStream $ f <$> lift headStream <*> headStream
+merge f = convStream $ liftM2 f (lift headStream) headStream
 {-# INLINE merge #-}
 
 -- | A version of merge which operates on chunks instead of elements.
@@ -607,8 +608,8 @@ mergeByChunks ::
   -> Enumeratee c2 c3 (Iteratee c1 m) a
 mergeByChunks f f1 f2 = unfoldConvStream iter (0 :: Int)
  where
-  iter 1 = (1,) . f1 <$> lift getChunk
-  iter 2 = (2,) . f2 <$> getChunk
+  iter 1 = (\x -> (1,f1 x)) `liftM` lift getChunk
+  iter 2 = (\x -> (2,f2 x)) `liftM` getChunk
   iter _ = do
     ml1 <- lift chunkLength
     ml2 <- chunkLength
@@ -879,7 +880,7 @@ enumPureNChunk str n iter
 --
 -- to create more efficient converters.
 greedy ::
- (Monad m, LL.ListLike s el', Monoid a) =>
+ (Monad m, LL.ListLike s el', Monoid a, Nullable s) =>
   Iteratee s m a
   -> Iteratee s m a
 greedy iter' = liftI (step [] iter')
@@ -896,9 +897,9 @@ greedy iter' = liftI (step [] iter')
               || LL.length resS == LL.length str -> return $
                          idone (mconcat $ reverse (a:acc)) (Chunk resS)
         Left (a, stream) -> return $ step (a:acc) iter stream
-        Right i -> return $ fmap (mconcat . reverse . (:acc)) i
+        Right i -> return $ liftM (mconcat . reverse . (:acc)) i
   step acc iter stream = joinIM $
-    enumChunk stream (fmap (mconcat . reverse . (:acc)) iter)
+    enumChunk stream (liftM (mconcat . reverse . (:acc)) iter)
 {-# INLINE greedy #-}
 
 -- ------------------------------------------------------------------------

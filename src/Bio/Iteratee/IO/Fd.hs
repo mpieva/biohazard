@@ -25,7 +25,6 @@ import Bio.Iteratee.IO.Base
 import Bio.Iteratee.Iteratee
 import Bio.Iteratee.ReadableChunk
 import Bio.Prelude
-import Control.Concurrent (yield)
 import Control.Monad.Catch as CIO
 import Control.Monad.IO.Class
 import Foreign.Marshal.Alloc
