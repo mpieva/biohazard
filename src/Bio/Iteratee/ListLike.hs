@@ -40,7 +40,7 @@ module Bio.Iteratee.ListLike (
   ,filterStreamM
   ,groupStreamBy
   ,groupStreamOn
-  ,merge
+  ,mergeStreams
   ,mergeByChunks
   -- ** Folds
   ,foldStream
@@ -555,7 +555,7 @@ groupStreamBy cmp inner = eneeCheckIfDonePass (icont . step)
         lift (run it) >>= \b -> eneeCheckIfDone (`step` str) . outer $ Chunk [b]
 
 
--- | @merge@ offers another way to nest iteratees: as a monad stack.
+-- | @mergeStreams@ offers another way to nest iteratees: as a monad stack.
 -- This allows for the possibility of interleaving data from multiple
 -- streams.
 --
@@ -573,12 +573,12 @@ groupStreamBy cmp inner = eneeCheckIfDonePass (icont . step)
 -- > ileaveLines :: (Functor m, Monad m)
 -- >   => Enumeratee [ByteString] [ByteString] (Iteratee [ByteString] m)
 -- >        [ByteString]
--- > ileaveLines = merge (\l1 l2 ->
+-- > ileaveLines = mergeStreams (\l1 l2 ->
 -- >    [B.pack "f1:\n\t" ,l1 ,B.pack "f2:\n\t" ,l2 ]
 -- >
 -- >
 --
-merge ::
+mergeStreams ::
   (LL.ListLike s1 el1
    ,LL.ListLike s2 el2
    ,Nullable s1
@@ -586,18 +586,19 @@ merge ::
    ,Monad m)
   => (el1 -> el2 -> b)
   -> Enumeratee s2 b (Iteratee s1 m) a
-merge f = convStream $ liftM2 f (lift headStream) headStream
-{-# INLINE merge #-}
+mergeStreams f = convStream $ liftM2 f (lift headStream) headStream
+{-# INLINE mergeStreams #-}
 
--- | A version of merge which operates on chunks instead of elements.
+-- | A version of mergeStreams which operates on chunks instead of
+-- elements.
 --
--- mergeByChunks offers more control than 'merge'.  'merge' terminates
--- when the first stream terminates, however mergeByChunks will continue
--- until both streams are exhausted.
+-- mergeByChunks offers more control than 'mergeStreams'.
+-- 'mergeStreams' terminates when the first stream terminates, however
+-- mergeByChunks will continue until both streams are exhausted.
 --
--- 'mergeByChunks' guarantees that both chunks passed to the merge function
--- will have the same number of elements, although that number may vary
--- between calls.
+-- 'mergeByChunks' guarantees that both chunks passed to the merge
+-- function will have the same number of elements, although that number
+-- may vary between calls.
 mergeByChunks ::
   (Nullable c2, Nullable c1
   ,LL.ListLike c1 el1, LL.ListLike c2 el2
