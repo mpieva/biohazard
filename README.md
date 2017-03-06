@@ -17,7 +17,7 @@ To install, follow these steps:
 http://haskell.org/cabal), and
  * run `cabal update` (takes a while to download the current package list),
 * run `cabal install
-  https://bitbucket.org/ustenzel/biohazard/get/0.6.10.tar.gz`
+  https://bitbucket.org/ustenzel/biohazard/get/0.6.13.tar.gz`
   (takes even longer).
 
 Sometimes, repeated installations and re-installations can result in a

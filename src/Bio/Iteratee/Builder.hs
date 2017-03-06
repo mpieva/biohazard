@@ -226,7 +226,8 @@ fillBuffer bb0 tk = withForeignPtr (buffer bb0) (\p -> go_slowish p bb0 tk)
 
         TkLowLevel minsize proc tk'
             | size bb - use < minsize -> return (bb { used = use },tk1)
-            | otherwise               -> flip (,) tk' <$> proc bb
+            | otherwise               -> do bb' <- proc bb { used = use }
+                                            go_slowish p bb' tk'
 
 
 loop_bcl_special :: Ptr Word8 -> BclArgs -> IO Int
