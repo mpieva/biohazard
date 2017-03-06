@@ -70,7 +70,7 @@ where
 
 import Bio.Iteratee.IO.Base
 import Bio.Iteratee.Base
-import Bio.Prelude
+import Bio.Prelude hiding (loop)
 import Control.Monad.IO.Class
 import Control.Monad.Trans.Class
 

@@ -15,8 +15,9 @@ import Bio.Iteratee
 import Bio.Iteratee.Builder
 import Bio.Prelude
 
+import Data.ByteString.Builder      ( hPutBuilder, Builder, toLazyByteString )
 import Data.ByteString.Internal     ( ByteString(..) )
-import Data.ByteString.Builder      ( hPutBuilder )
+import Data.ByteString.Lazy         ( foldrChunks )
 import Foreign.Marshal.Alloc        ( alloca )
 import Foreign.Storable             ( pokeByteOff, peek )
 import System.IO                    ( openBinaryFile, IOMode(..) )
@@ -74,7 +75,7 @@ encodeSamEntry refs b = conjoin '\t' [
     sarr v = conjoin ',' . map shows $ U.toList v
 
 class IsBamRec a where
-    pushBam :: a -> Push
+    pushBam :: a -> BgzfTokens -> BgzfTokens
 
 instance IsBamRec BamRaw where
     {-# INLINE pushBam #-}
@@ -91,29 +92,31 @@ instance (IsBamRec a, IsBamRec b) => IsBamRec (Either a b) where
 -- | Encodes BAM records straight into a dynamic buffer, the BGZF's it.
 -- Should be fairly direct and perform well.
 {-# INLINE encodeBamWith #-}
-encodeBamWith :: (MonadIO m, IsBamRec r) => Int -> BamMeta -> Enumeratee [r] B.ByteString m a
-encodeBamWith lv meta = joinI . eneeBam . encodeBgzfWith lv
+encodeBamWith :: (MonadIO m, IsBamRec r) => Int -> BamMeta -> Enumeratee [r] S.ByteString m ()
+encodeBamWith lv meta = eneeBam ><> encodeBgzf lv
   where
-    eneeBam  = eneeCheckIfDone (\k -> mapChunks (foldMap pushBam) . k $ Chunk pushHeader)
+    eneeBam  = eneeCheckIfDone (\k -> mapChunks (foldMap (Endo . pushBam)) . k $ Chunk pushHeader)
 
-    pushHeader = pushByteString "BAM\1"
-              <> setMark                        -- the length byte
-              <> pushBuilder (showBamMeta meta)
-              <> endRecord                      -- fills the length in
-              <> pushWord32 (fromIntegral . Z.length $ meta_refs meta)
-              <> foldMap pushRef (meta_refs meta)
+    pushHeader :: Endo BgzfTokens
+    pushHeader = Endo $ TkString "BAM\1"
+                      . TkSetMark                        -- the length byte
+                      . pushBuilder (showBamMeta meta)
+                      . TkEndRecord                      -- fills the length in
+                      . TkWord32 (fromIntegral . Z.length $ meta_refs meta)
+                      . appEndo (foldMap (Endo . pushRef) (meta_refs meta))
 
-    pushRef bs = ensureBuffer     (fromIntegral $ B.length (sq_name bs) + 9)
-              <> unsafePushWord32 (fromIntegral $ B.length (sq_name bs) + 1)
-              <> unsafePushByteString (sq_name bs)
-              <> unsafePushByte 0
-              <> unsafePushWord32 (fromIntegral $ sq_length bs)
+    pushRef :: BamSQ -> BgzfTokens -> BgzfTokens
+    pushRef bs = TkWord32 (fromIntegral $ B.length (sq_name bs) + 1)
+               . TkString (sq_name bs)
+               . TkWord8 0
+               . TkWord32 (fromIntegral $ sq_length bs)
+
+    pushBuilder :: Builder -> BgzfTokens -> BgzfTokens
+    pushBuilder b tk = foldrChunks TkString tk (toLazyByteString b)
 
 {-# INLINE pushBamRaw #-}
-pushBamRaw :: BamRaw -> Push
-pushBamRaw br = ensureBuffer (B.length (raw_data br) + 4)
-             <> unsafePushWord32 (fromIntegral $ B.length (raw_data br))
-             <> unsafePushByteString (raw_data br)
+pushBamRaw :: BamRaw -> BgzfTokens -> BgzfTokens
+pushBamRaw = TkLnString . raw_data
 
 -- | writes BAM encoded stuff to a file
 -- XXX This should(!) write indexes on the side---a simple block index
@@ -146,75 +149,67 @@ writeBamHandle hdl meta = encodeBamWith 6 meta =$ mapChunksM_ (liftIO . S.hPut h
   #-}
 
 {-# INLINE[1] pushBamRec #-}
-pushBamRec :: BamRec -> Push
-pushBamRec BamRec{..} = mconcat
-    [ ensureBuffer minlength
-    , unsafeSetMark
-    , unsafePushWord32 $ unRefseq b_rname
-    , unsafePushWord32 $ fromIntegral b_pos
-    , unsafePushByte   $ fromIntegral $ B.length b_qname + 1
-    , unsafePushByte   $ unQ b_mapq
-    , unsafePushWord16 $ fromIntegral bin
-    , unsafePushWord16 $ fromIntegral $ VS.length b_cigar
-    , unsafePushWord16 $ fromIntegral b_flag
-    , unsafePushWord32 $ fromIntegral $ V.length b_seq
-    , unsafePushWord32 $ unRefseq b_mrnm
-    , unsafePushWord32 $ fromIntegral b_mpos
-    , unsafePushWord32 $ fromIntegral b_isize
-    , unsafePushByteString b_qname
-    , unsafePushByte 0
-    , VS.foldr ((<>) . unsafePushByte) mempty (VS.unsafeCast b_cigar :: VS.Vector Word8)
-    , pushSeq b_seq
-    , VS.foldr ((<>) . unsafePushByte . unQ) mempty b_qual
-    , foldMap pushExt b_exts
-    , endRecord ]
+pushBamRec :: BamRec -> BgzfTokens -> BgzfTokens
+pushBamRec BamRec{..} =
+      TkSetMark
+    . TkWord32 (unRefseq b_rname)
+    . TkWord32 (fromIntegral b_pos)
+    . TkWord8  (fromIntegral $ B.length b_qname + 1)
+    . TkWord8  (unQ b_mapq)
+    . TkWord16 (fromIntegral bin)
+    . TkWord16 (fromIntegral $ VS.length b_cigar)
+    . TkWord16 (fromIntegral b_flag)
+    . TkWord32 (fromIntegral $ V.length b_seq)
+    . TkWord32 (unRefseq b_mrnm)
+    . TkWord32 (fromIntegral b_mpos)
+    . TkWord32 (fromIntegral b_isize)
+    . TkString b_qname
+    . TkWord8 0
+    . VS.foldr ((.) . TkWord8) id (VS.unsafeCast b_cigar :: VS.Vector Word8)
+    . pushSeq b_seq
+    . VS.foldr ((.) . TkWord8 . unQ) id b_qual
+    . foldr ((.) . pushExt) id b_exts
+    . TkEndRecord
   where
     bin = distinctBin b_pos (alignedLength b_cigar)
-    minlength = 37 + B.length b_qname + 4 * V.length b_cigar + V.length b_qual + (V.length b_seq + 1) `shiftR` 1
 
-    pushSeq :: V.Vector vec Nucleotides => vec Nucleotides -> Push
+    pushSeq :: V.Vector vec Nucleotides => vec Nucleotides -> BgzfTokens -> BgzfTokens
     pushSeq v = case v V.!? 0 of
-                    Nothing -> mempty
+                    Nothing -> id
                     Just a  -> case v V.!? 1 of
-                        Nothing -> unsafePushByte (unNs a `shiftL` 4)
-                        Just b  -> unsafePushByte (unNs a `shiftL` 4 .|. unNs b)
-                                   <> pushSeq (V.drop 2 v)
+                        Nothing -> TkWord8 (unNs a `shiftL` 4)
+                        Just b  -> TkWord8 (unNs a `shiftL` 4 .|. unNs b) . pushSeq (V.drop 2 v)
 
-    pushExt :: (BamKey, Ext) -> Push
+    pushExt :: (BamKey, Ext) -> BgzfTokens -> BgzfTokens
     pushExt (BamKey k, e) = case e of
-        Text t -> common (4 + B.length t) 'Z' $
-                  unsafePushByteString t <> unsafePushByte 0
-
-        Bin  t -> common (4 + B.length t) 'H' $
-                  unsafePushByteString t <> unsafePushByte 0
-
-        Char c -> common 4 'A' $ unsafePushByte c
-
-        Float f -> common 7 'f' $ unsafePushWord32 (fromIntegral $ fromFloat f)
+        Text  t -> common 'Z' . TkString t . TkWord8 0
+        Bin   t -> common 'H' . TkString t . TkWord8 0
+        Char  c -> common 'A' . TkWord8 c
+        Float f -> common 'f' . TkWord32 (fromIntegral $ fromFloat f)
 
         Int i   -> case put_some_int (U.singleton i) of
-                        (c,op) -> common 7 c (op i)
+                        (c,op) -> common c . op i
 
         IntArr  ia -> case put_some_int ia of
-                        (c,op) -> common (4 * U.length ia) 'B' $ unsafePushByte (fromIntegral $ ord c)
-                                  <> unsafePushWord32 (fromIntegral $ U.length ia-1)
-                                  <> U.foldr ((<>) . op) mempty ia
+                        (c,op) -> common 'B' . TkWord8 (fromIntegral $ ord c)
+                                  . TkWord32 (fromIntegral $ U.length ia-1)
+                                  . U.foldr ((.) . op) id ia
 
-        FloatArr fa -> common (4 * U.length fa) 'B' $ unsafePushByte (fromIntegral $ ord 'f')
-                       <> unsafePushWord32 (fromIntegral $ U.length fa-1)
-                       <> U.foldr ((<>) . unsafePushWord32 . fromFloat) mempty fa
+        FloatArr fa -> common 'B' . TkWord8 (fromIntegral $ ord 'f')
+                       . TkWord32 (fromIntegral $ U.length fa-1)
+                       . U.foldr ((.) . TkWord32 . fromFloat) id fa
       where
-        common l z b = ensureBuffer l <> unsafePushWord16 k
-                    <> unsafePushByte (fromIntegral $ ord z) <> b
+        common :: Char -> BgzfTokens -> BgzfTokens
+        common z = TkWord16 k . TkWord8 (fromIntegral $ ord z)
 
-        put_some_int :: U.Vector Int -> (Char, Int -> Push)
+        put_some_int :: U.Vector Int -> (Char, Int -> BgzfTokens -> BgzfTokens)
         put_some_int is
-            | U.all (between        0    0xff) is = ('C', unsafePushByte . fromIntegral)
-            | U.all (between   (-0x80)   0x7f) is = ('c', unsafePushByte . fromIntegral)
-            | U.all (between        0  0xffff) is = ('S', unsafePushWord16 . fromIntegral)
-            | U.all (between (-0x8000) 0x7fff) is = ('s', unsafePushWord16 . fromIntegral)
-            | U.all                      (> 0) is = ('I', unsafePushWord32 . fromIntegral)
-            | otherwise                           = ('i', unsafePushWord32 . fromIntegral)
+            | U.all (between        0    0xff) is = ('C', TkWord8  . fromIntegral)
+            | U.all (between   (-0x80)   0x7f) is = ('c', TkWord8  . fromIntegral)
+            | U.all (between        0  0xffff) is = ('S', TkWord16 . fromIntegral)
+            | U.all (between (-0x8000) 0x7fff) is = ('s', TkWord16 . fromIntegral)
+            | U.all                      (> 0) is = ('I', TkWord32 . fromIntegral)
+            | otherwise                           = ('i', TkWord32 . fromIntegral)
 
         between :: Int -> Int -> Int -> Bool
         between l r x = l <= x && x <= r
@@ -224,7 +219,12 @@ pushBamRec BamRec{..} = mconcat
                           pokeByteOff buf 0 float >> peek buf
 
 packBam :: BamRec -> IO BamRaw
-packBam br = do bb' <- case pushBamRec br of Push p -> newBuffer 1000 >>= p
-                return $ bamRaw 0 (PS (buffer bb') 4 (len bb' - 4))
-
+packBam br = do bb <- newBuffer 1000
+                (bb', TkEnd) <- store_loop bb (pushBamRec br TkEnd)
+                return . bamRaw 0 $ PS (buffer bb') 4 (used bb' - 4)
+  where
+    store_loop bb tk = do (bb',tk') <- fillBuffer bb tk
+                          case tk' of TkEnd -> return (bb',tk')
+                                      _     -> do bb'' <- expandBuffer 0 bb'
+                                                  store_loop bb'' tk'
 

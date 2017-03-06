@@ -1,4 +1,4 @@
-{-# LANGUAGE ForeignFunctionInterface #-}
+{-# LANGUAGE ForeignFunctionInterface, CPP #-}
 
 -- Low-level IO operations
 -- These operations are either missing from the GHC run-time library,
@@ -68,13 +68,19 @@ foreign import ccall "unistd.h select" c_select
 fd2fds :: CInt -> [FDSET]
 fd2fds fd = replicate nb 0 ++ [setBit 0 off]
   where
-    (nb,off) = quotRem (fromIntegral fd) (bitSize (undefined::FDSET))
+    (nb,off) = quotRem (fromIntegral fd) bitSize_FDSET
+
+bitSize_FDSET :: Int
+#if MIN_VERSION_base(4,7,0)
+bitSize_FDSET = finiteBitSize (undefined::FDSET)
+#else
+bitSize_FDSET = bitSize (undefined::FDSET)
+#endif
 
 fds2mfd :: [FDSET] -> [CInt]
-fds2mfd fds = [fromIntegral (j+i*bitsize) |
-               (afds,i) <- zip fds [0..], j <- [0..bitsize],
+fds2mfd fds = [fromIntegral (j+i*bitSize_FDSET) |
+               (afds,i) <- zip fds [0..], j <- [0..bitSize_FDSET],
                testBit afds j]
-  where bitsize = bitSize (undefined::FDSET)
 
 unFd :: Fd -> CInt
 unFd (Fd x) = x

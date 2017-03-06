@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP #-}
 module Bio.Util.Zlib ( decompressGzip ) where
 
 import Prelude

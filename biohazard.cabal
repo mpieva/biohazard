@@ -1,5 +1,5 @@
 Name:                biohazard
-Version:             0.6.12
+Version:             0.6.13
 Synopsis:            bioinformatics support library
 Description:         This is a collection of modules I separated from
                      various bioinformatics tools.  The hope is to make
@@ -94,7 +94,7 @@ Library
                        vector                   == 0.11.*,
                        vector-algorithms        >= 0.3 && < 1.0,
                        vector-th-unbox          == 0.2.*,
-                       zlib                     >= 0.5 && < 0.7
+                       zlib                     == 0.6.*
 
   Ghc-options:         -Wall
 
@@ -126,7 +126,8 @@ Library
 
   Hs-source-dirs:      src
   Install-Includes:    src/cbits/myers_align.h
-  C-sources:           src/cbits/myers_align.c,
+  C-sources:           src/cbits/loops.c,
+                       src/cbits/myers_align.c,
                        src/cbits/trim.c
   CC-options:          -fPIC
 

@@ -445,7 +445,7 @@ data CompressParams = CompressParams {
         queue_depth :: Int }
     deriving Show
 
-compressChunk :: Int -> Ptr CChar -> CUInt -> IO Bytes
+compressChunk :: Int -> Ptr Word8 -> CUInt -> IO Bytes
 compressChunk lv ptr len =
     allocaBytes (#{const sizeof(z_stream)}) $ \stream -> do
     buf <- mallocBytes 65536
@@ -472,7 +472,7 @@ compressChunk lv ptr len =
     z_check "deflateEnd" =<< c_deflateEnd stream
 
     crc0 <- c_crc32 0 nullPtr 0
-    crc  <- c_crc32 crc0 ptr len
+    crc  <- c_crc32 crc0 (castPtr ptr) len
 
     compressed_length <- (+) (18+8) `fmap` #{peek z_stream, total_out} stream
     when (compressed_length > 65536) $ error "produced too big a block"

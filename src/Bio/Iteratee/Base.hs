@@ -49,6 +49,7 @@ import qualified Data.ByteString.Lazy as L
 -- corresponding to Data.Monoid.mempty.
 class NullPoint c where emptyP :: c
 
+instance NullPoint     (Endo a) where emptyP = Endo id
 instance NullPoint          [a] where emptyP = []
 instance NullPoint B.ByteString where emptyP = B.empty
 instance NullPoint L.ByteString where emptyP = L.empty

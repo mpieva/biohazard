@@ -1,225 +1,280 @@
--- | Buffer builder to assemble Bgzf blocks.  (This will probably be
--- renamed.)  The plan is to serialize stuff (BAM and BCF) into a
--- buffer, then Bgzf chunks from the buffer and reuse it.  This /should/
--- avoid redundant copying and relieve some pressure from the garbage
--- collector.  And I hope to plug a mysterious memory leak that doesn't
--- show up in the profiler.
---
--- Exported functions with @unsafe@ in the name resulting in a type of
--- 'Push' omit the bounds checking.  To use them safely, an appropriate
--- 'ensureBuffer' has to precede them.
---
--- XXX  This may not be the most clever way to do it.  According to the
--- reasoning behind the binary-serialise-cbor package, it would be more
--- clever to have a representation of the things we can 'Push' that's
--- similar to a list, and then a function (an Iteratee?) that consumes
--- the list of tokens and fills a buffer.
+{-# LANGUAGE ForeignFunctionInterface #-}
+-- | Buffer builder to assemble Bgzf blocks.  The plan is to serialize
+-- stuff (BAM and BCF) into a buffer, then Bgzf chunks from the buffer.
+-- We use a large buffer, and we always make sure there is plenty of
+-- space in it (to avoid redundant checks).  Whenever a block is ready
+-- to be compressed, we stick it into a MVar.  When we run out of space,
+-- we simply use a new buffer.  Multiple threads grab pieces from the
+-- MVar, compress them, pass them downstream through another MVar.  A
+-- final thread restores the order and writes the blocks.
 
-module Bio.Iteratee.Builder where
+module Bio.Iteratee.Builder (
+    BB(..),
+    newBuffer,
+    fillBuffer,
+    expandBuffer,
+    encodeBgzf,
+    BgzfTokens(..),
+    BclArgs(..),
+    BclSpecialType(..),
+    int_loop,
+    loop_bcl_special
+                            ) where
 
 import Bio.Iteratee
-import Bio.Iteratee.Bgzf
+import Bio.Iteratee.Bgzf                   ( compressChunk, maxBlockSize, bgzfEofMarker )
 import Bio.Prelude
-import Foreign.ForeignPtr
-import Foreign.Marshal.Alloc
-import Foreign.Marshal.Utils
-import Foreign.Ptr
-import Foreign.Storable
+import Foreign.ForeignPtr                  ( ForeignPtr, withForeignPtr, mallocForeignPtrBytes )
+import Foreign.Marshal.Utils               ( copyBytes )
+import Foreign.Ptr                         ( Ptr, plusPtr )
+import Foreign.Storable                    ( pokeByteOff )
 
 import qualified Data.ByteString            as B
 import qualified Data.ByteString.Unsafe     as B
-import qualified Data.ByteString.Builder    as B ( Builder, toLazyByteString )
-import qualified Data.ByteString.Lazy       as B ( foldrChunks )
+import qualified Data.Vector.Storable       as VS
 
--- | The 'MutableByteArray' is garbage collected, so we don't get leaks.
--- Once it has grown to a practical size (and the initial 128k should be
--- very practical), we don't get fragmentation either.  We also avoid
--- copies for the most part, since no intermediate 'ByteString's, either
--- lazy or strict have to be allocated.
+-- | We manage a large buffer (multiple megabytes), of which we fill an
+-- initial portion.  We remeber the size, the used part, and two marks
+-- where we later fill in sizes for the length prefixed BAM or BCF
+-- records.  We move the buffer down when we yield a piece downstream,
+-- and when we run out of space, we simply move to a new buffer.
+-- Garbage collection should take care of the rest.  Unused 'mark' must
+-- be set to (maxBound::Int) so it doesn't interfere with flushing.
+
 data BB = BB { buffer :: {-# UNPACK #-} !(ForeignPtr Word8)
-             , size   :: {-# UNPACK #-} !Int
-             , len    :: {-# UNPACK #-} !Int
-             , mark   :: {-# UNPACK #-} !Int
-             , mark2  :: {-# UNPACK #-} !Int }
+             , size   :: {-# UNPACK #-} !Int            -- total size of buffer
+             , off    :: {-# UNPACK #-} !Int            -- offset of active portion
+             , used   :: {-# UNPACK #-} !Int            -- used portion (inactive & active)
+             , mark   :: {-# UNPACK #-} !Int            -- offset of mark
+             , mark2  :: {-# UNPACK #-} !Int }          -- offset of mark2
 
--- This still seems to have considerable overhead.  Don't know if this
--- can be improved by effectively inlining IO and turning the BB into an
--- unboxed tuple.  XXX
-newtype Push = Push (BB -> IO BB)
+instance Show BB where
+    show bb = show (size bb, off bb, used bb, mark bb, mark2 bb)
 
-instance Monoid Push where
-    {-# INLINE mempty #-}
-    mempty                  = Push return
-    {-# INLINE mappend #-}
-    Push a `mappend` Push b = Push (a >=> b)
+-- | Things we are able to encode.  Taking inspiration from
+-- binary-serialise-cbor, we define these as a lazy list-like thing and
+-- consume it in a interpreter.
 
-instance NullPoint Push where
-    emptyP = Push return
+data BgzfTokens = TkWord32   {-# UNPACK #-} !Word32       BgzfTokens -- a 4-byte int
+                | TkWord16   {-# UNPACK #-} !Word16       BgzfTokens -- a 2-byte int
+                | TkWord8    {-# UNPACK #-} !Word8        BgzfTokens -- a byte
+                | TkFloat    {-# UNPACK #-} !Float        BgzfTokens -- a float
+                | TkDouble   {-# UNPACK #-} !Double       BgzfTokens -- a double
+                | TkString   {-# UNPACK #-} !B.ByteString BgzfTokens -- a raw string
+                | TkDecimal  {-# UNPACK #-} !Int          BgzfTokens -- roughly ':%d'
+                | TkLnString {-# UNPACK #-} !B.ByteString BgzfTokens -- a length-prefixed string
+                -- lotsa stuff might be missing here
 
+                | TkSetMark                               BgzfTokens -- sets the first mark
+                | TkEndRecord                             BgzfTokens -- completes a BAM record
+                | TkEndRecordPart1                        BgzfTokens -- completes part 1 of a BCF record
+                | TkEndRecordPart2                        BgzfTokens -- completes part 2 of a BCF record
+                | TkEnd                                              -- nothing more, for now
 
--- | Creates a buffer with a given initial capacity.
+                -- specialties
+                | TkBclSpecial !BclArgs                   BgzfTokens
+                | TkLowLevel {-# UNPACK #-} !Int (BB -> IO BB) BgzfTokens
+
+data BclSpecialType = BclNucsBin | BclNucsAsc | BclNucsAscRev | BclQualsBin | BclQualsAsc | BclQualsAscRev
+
+data BclArgs = BclArgs BclSpecialType
+                       {-# UNPACK #-} !(VS.Vector Word8)  -- bcl matrix
+                       {-# UNPACK #-} !Int                -- stride
+                       {-# UNPACK #-} !Int                -- first cycle
+                       {-# UNPACK #-} !Int                -- last cycle
+                       {-# UNPACK #-} !Int                -- cluster index
+
+-- | Creates a buffer.
 newBuffer :: Int -> IO BB
-newBuffer sz = mallocForeignPtrBytes sz >>= \ar -> return $ BB ar sz 0 0 0
+newBuffer sz = mallocForeignPtrBytes sz >>= \ar -> return $ BB ar sz 0 0 maxBound maxBound
 
--- | Ensures a given free space in the buffer by doubling its capacity
--- if necessary.
-{-# INLINE ensureBuffer #-}
-ensureBuffer :: Int -> Push
-ensureBuffer n = Push $ \b ->
-    if len b + n < size b
-    then return b
-    else expandBuffer b
+-- | Creates a new buffer, copying the content from an old one, with
+-- higher capacity.
+expandBuffer :: Int -> BB -> IO BB
+expandBuffer minsz b = do
+    let sz' = max (2 * (size b - used b)) minsz
+    arr1 <- mallocForeignPtrBytes sz'
+    withForeignPtr arr1 $ \d ->
+        withForeignPtr (buffer b) $ \s ->
+             copyBytes d (plusPtr s (off b)) (used b - off b)
+    return $ BB { buffer = arr1
+                , size   = sz'
+                , off    = 0
+                , used   = used b - off b
+                , mark   = if mark  b == maxBound then maxBound else mark  b - off b
+                , mark2  = if mark2 b == maxBound then maxBound else mark2 b - off b }
 
-expandBuffer :: BB -> IO BB
-expandBuffer b = do arr1 <- mallocForeignPtrBytes (size b + size b)
-                    withForeignPtr arr1 $ \d ->
-                        withForeignPtr (buffer b) $ \s ->
-                             copyBytes d s (len b)
-                    return $ BB { buffer = arr1
-                                , size   = size b + size b
-                                , len    = len b
-                                , mark   = mark b
-                                , mark2  = mark2 b }
+compressChunk' :: Int -> ForeignPtr Word8 -> Int -> Int -> IO B.ByteString
+compressChunk' lv fptr off len =
+    withForeignPtr fptr $ \ptr ->
+    compressChunk lv (plusPtr ptr off) (fromIntegral len)
 
-{-# INLINE unsafePushByte #-}
-unsafePushByte :: Word8 -> Push
-unsafePushByte w = Push $ \b -> do
-    withForeignPtr (buffer b) $ \p ->
-        pokeByteOff p (len b) w
-    return $ b { len = len b + 1 }
+instance Nullable (Endo BgzfTokens) where
+    nullC f = case appEndo f TkEnd of TkEnd -> True ; _ -> False
 
-{-# INLINE pushByte #-}
-pushByte :: Word8 -> Push
-pushByte b = ensureBuffer 1 <> unsafePushByte b
-
-{-# INLINE unsafePushWord32 #-}
-unsafePushWord32 :: Word32 -> Push
-unsafePushWord32 w = unsafePushByte (fromIntegral $ w `shiftR`  0)
-                  <> unsafePushByte (fromIntegral $ w `shiftR`  8)
-                  <> unsafePushByte (fromIntegral $ w `shiftR` 16)
-                  <> unsafePushByte (fromIntegral $ w `shiftR` 24)
-
-{-# INLINE unsafePushWord16 #-}
-unsafePushWord16 :: Word16 -> Push
-unsafePushWord16 w = unsafePushByte (fromIntegral $ w `shiftR`  0)
-                  <> unsafePushByte (fromIntegral $ w `shiftR`  8)
-
-{-# INLINE pushWord32 #-}
-pushWord32 :: Word32 -> Push
-pushWord32 w = ensureBuffer 4 <> unsafePushWord32 w
-
-{-# INLINE pushWord16 #-}
-pushWord16 :: Word16 -> Push
-pushWord16 w = ensureBuffer 2 <> unsafePushWord16 w
-
-{-# INLINE unsafePushByteString #-}
-unsafePushByteString :: B.ByteString -> Push
-unsafePushByteString bs = Push $ \b ->
-    B.unsafeUseAsCStringLen bs $ \(p,ln) ->
-        withForeignPtr (buffer b)  $ \adr ->
-            b { len = len b + ln } <$
-                copyBytes (adr `plusPtr` len b) p ln
-
-{-# INLINE pushByteString #-}
-pushByteString :: B.ByteString -> Push
-pushByteString bs = ensureBuffer (B.length bs) <> unsafePushByteString bs
-
-{-# INLINE unsafePushFloat #-}
-unsafePushFloat :: Float -> Push
-unsafePushFloat f =
-    unsafePushWord32 $ unsafeDupablePerformIO $
-    alloca $ \b -> poke (castPtr b) f >> peek b
-
-{-# INLINE pushFloat #-}
-pushFloat :: Float -> Push
-pushFloat f = ensureBuffer 4 <> unsafePushFloat f
-
-{-# INLINE pushBuilder #-}
-pushBuilder :: B.Builder -> Push
-pushBuilder = B.foldrChunks ((<>) . pushByteString) mempty . B.toLazyByteString
-
--- | Sets a mark.  This can later be filled in with a record length
--- (used to create BAM records).
-{-# INLINE unsafeSetMark #-}
-unsafeSetMark :: Push
-unsafeSetMark = Push $ \b -> return $ b { len = len b + 4, mark = len b }
-
-{-# INLINE setMark #-}
-setMark :: Push
-setMark = ensureBuffer 4 <> unsafeSetMark
-
--- | Ends a record by filling the length into the field that was
--- previously marked.  Terrible things will happen if this wasn't
--- preceded by a corresponding 'setMark'.
-{-# INLINE endRecord #-}
-endRecord :: Push
-endRecord = Push $ \b -> withForeignPtr (buffer b) $ \p -> do
-    let !l = len b - mark b - 4
-    pokeByteOff p (mark b + 0) (fromIntegral $ shiftR l  0 :: Word8)
-    pokeByteOff p (mark b + 1) (fromIntegral $ shiftR l  8 :: Word8)
-    pokeByteOff p (mark b + 2) (fromIntegral $ shiftR l 16 :: Word8)
-    pokeByteOff p (mark b + 3) (fromIntegral $ shiftR l 24 :: Word8)
-    return b
-
--- | Ends the first part of a record.  The length is filled in *before*
--- the mark, which is specifically done to support the *two* length
--- fields in BCF.  It also remembers the current position.  Horrible
--- things happen if this isn't preceeded by *two* succesive invocations
--- of 'setMark'.
-{-# INLINE endRecordPart1 #-}
-endRecordPart1 :: Push
-endRecordPart1 = Push $ \b -> withForeignPtr (buffer b) $ \p -> do
-    let !l = len b - mark b - 4
-    pokeByteOff p (mark b - 4) (fromIntegral $ shiftR l  0 :: Word8)
-    pokeByteOff p (mark b - 3) (fromIntegral $ shiftR l  8 :: Word8)
-    pokeByteOff p (mark b - 2) (fromIntegral $ shiftR l 16 :: Word8)
-    pokeByteOff p (mark b - 1) (fromIntegral $ shiftR l 24 :: Word8)
-    return $ b { mark2 = len b }
-
--- | Ends the second part of a record.  The length is filled in at the
--- mark, but computed from the sencond mark only.  This is specifically
--- done to support the *two* length fields in BCF.  Horrible things
--- happen if this isn't preceeded by *two* succesive invocations of
--- 'setMark' and one of 'endRecordPart1'.
-{-# INLINE endRecordPart2 #-}
-endRecordPart2 :: Push
-endRecordPart2 = Push $ \b -> withForeignPtr (buffer b) $ \p -> do
-    let !l = len b - mark2 b
-    pokeByteOff p (mark b + 0) (fromIntegral $ shiftR l  0 :: Word8)
-    pokeByteOff p (mark b + 1) (fromIntegral $ shiftR l  8 :: Word8)
-    pokeByteOff p (mark b + 2) (fromIntegral $ shiftR l 16 :: Word8)
-    pokeByteOff p (mark b + 3) (fromIntegral $ shiftR l 24 :: Word8)
-    return b
-
-
-{-# INLINE encodeBgzfWith #-}
-encodeBgzfWith :: MonadIO m => Int -> Enumeratee Push B.ByteString m b
-encodeBgzfWith lv o = newBuffer 128000 `ioBind` \bb -> eneeCheckIfDone (liftI . step bb) o
+-- | Expand a chain of tokens into a buffer, sending finished pieces
+-- downstream as soon as possible.
+encodeBgzf :: MonadIO m => Int -> Enumeratee (Endo BgzfTokens) B.ByteString m b
+encodeBgzf lv = (\out -> newBuffer (1024*1024) `ioBind` \bb -> eneeCheckIfDone (liftI . go bb) out)
+                ><> parRunIO (2*numCapabilities)
   where
-    step bb k (EOF  mx) = finalFlush bb k mx
-    step bb k (Chunk (Push p)) = p bb `ioBind` \bb' -> tryFlush bb' 0 k
+    go bb0 k (EOF  mx) = final_flush bb0 mx k
+    go bb0 k (Chunk f)
+        -- initially, we make sure we have reasonable space.  this may not be enough.
+        | size bb0 - used bb0 < 1024 = expandBuffer (1024*1024) bb0 `ioBind` \bb' -> go' bb' k (appEndo f TkEnd)
+        | otherwise                  =                                               go' bb0 k (appEndo f TkEnd)
 
-    tryFlush bb off k
-        | len bb - off < maxBlockSize
-            = withForeignPtr (buffer bb)
-                    (\p -> moveBytes p (p `plusPtr` off) (len bb - off))
-              `ioBind_` liftI (step (bb { len = len bb - off
-                                        , mark = mark bb - off `max` 0 }) k)
-        | otherwise
-            = withForeignPtr (buffer bb)
-                    (\adr -> compressChunk lv (adr `plusPtr` off) (fromIntegral maxBlockSize))
-              `ioBind` eneeCheckIfDone (tryFlush bb (off+maxBlockSize)) . k . Chunk
+    -- we arrive here because we ran out of buffer space, so we always expand it.
+    go1 bb0 k tk = expandBuffer (1024*1024) bb0 `ioBind` \bb' -> go' bb' k tk
 
-    finalFlush bb k mx
-        | len bb < maxBlockSize
-            = withForeignPtr (buffer bb)
-                    (\adr -> compressChunk lv (castPtr adr) (fromIntegral $ len bb))
-              `ioBind` eneeCheckIfDone (finalFlush2 mx) . k . Chunk
-
-        | otherwise
-            = error "WTF?!  This wasn't supposed to happen."
-
-    finalFlush2 mx k = idone (k $ Chunk bgzfEofMarker) (EOF mx)
+    go' bb0 k tk = fillBuffer bb0 tk `ioBind` \(bb',tk') -> flush_blocks tk' bb' k
 
 
+    -- We can flush anything that is between 'off' and the lower of 'mark'
+    -- and 'used'.  When done, we bump 'off'.
+    flush_blocks tk bb k
+        | min (mark bb) (used bb) - off bb < maxBlockSize =
+            case tk of TkEnd -> liftI $ go bb k
+                       _     -> go1 bb k tk
+
+        | otherwise = do
+            eneeCheckIfDone (flush_blocks tk bb { off = off bb + maxBlockSize }) $
+                k $ Chunk [compressChunk' lv (buffer bb) (off bb) maxBlockSize]
+
+    final_flush bb mx k
+        | used bb > off bb =
+            idone (k $ Chunk [ compressChunk' lv (buffer bb) (off bb) (used bb - off bb)
+                             , return bgzfEofMarker ]) (EOF mx)
+        | otherwise =
+            idone (k $ Chunk [ return bgzfEofMarker ]) (EOF mx)
+
+
+fillBuffer :: BB -> BgzfTokens -> IO (BB, BgzfTokens)
+fillBuffer bb0 tk = withForeignPtr (buffer bb0) (\p -> go_slowish p bb0 tk)
+  where
+    go_slowish p bb tk1 = go_fast p bb (used bb) tk1
+
+    go_fast p bb use tk1 = case tk1 of
+        -- no space?  not our job.
+        _ | size bb - use < 1024 -> return (bb { used = use },tk1)
+
+        -- the actual end.
+        TkEnd                    -> return (bb { used = use },tk1)
+
+        -- I'm cheating.  This stuff works only if the platform allows
+        -- unaligned accesses, is little-endian and uses IEEE floats.
+        -- It's true on i386 and ix86_64.
+        TkWord32   x tk' -> do pokeByteOff p use x
+                               go_fast p bb (use + 4) tk'
+
+        TkWord16   x tk' -> do pokeByteOff p use x
+                               go_fast p bb (use + 2) tk'
+
+        TkWord8    x tk' -> do pokeByteOff p use x
+                               go_fast p bb (use + 1) tk'
+
+        TkFloat    x tk' -> do pokeByteOff p use x
+                               go_fast p bb (use + 4) tk'
+
+        TkDouble   x tk' -> do pokeByteOff p use x
+                               go_fast p bb (use + 8) tk'
+
+        TkString   s tk'
+            -- Too big, can't handle.  We will get progressively bigger
+            -- buffers and eventually handle it; for very large strings,
+            -- it works, but isn't ideal.  XXX
+            | B.length s > size bb - use -> return (bb { used = use },tk')
+
+            | otherwise  -> do let ln = B.length s
+                               B.unsafeUseAsCString s $ \q ->
+                                    copyBytes (p `plusPtr` use) q ln
+                               go_fast p bb (use + ln) tk'
+
+        TkDecimal  x tk' -> do ln <- int_loop (p `plusPtr` use) x
+                               go_fast p bb (use + ln) tk'
+
+        TkLnString s tk'
+            -- Too big, can't handle.  We will get progressively bigger
+            -- buffers and eventually handle it; for very large strings,
+            -- it works, but isn't ideal.  XXX
+            | B.length s > size bb - use - 4 -> return (bb { used = use },tk')
+
+            | otherwise  -> do let ln = B.length s
+                               pokeByteOff p use (fromIntegral ln :: Word32)
+                               B.unsafeUseAsCString s $ \q ->
+                                    copyBytes (p `plusPtr` (use + 4)) q ln
+                               go_fast p bb (use + ln + 4) tk'
+
+        TkSetMark        tk' ->    go_slowish p bb { used = use + 4, mark = use } tk'
+
+        TkEndRecord      tk' -> do let !l = use - mark bb - 4
+                                   pokeByteOff p (mark bb) (fromIntegral l :: Word32)
+                                   go_slowish p bb { used = use, mark = maxBound } tk'
+
+        TkEndRecordPart1 tk' -> do let !l = use - mark bb - 4
+                                   pokeByteOff p (mark bb - 4) (fromIntegral l :: Word32)
+                                   go_slowish p bb { used = use, mark2 = use } tk'
+
+        TkEndRecordPart2 tk' -> do let !l = use - mark2 bb
+                                   pokeByteOff p (mark bb) (fromIntegral l :: Word32)
+                                   go_slowish p bb { used = use, mark = maxBound } tk'
+
+
+        TkBclSpecial special_args tk' -> do
+            l <- loop_bcl_special (p `plusPtr` use) special_args
+            go_fast p bb (use + l) tk'
+
+        TkLowLevel minsize proc tk'
+            | size bb - use < minsize -> return (bb { used = use },tk1)
+            | otherwise               -> flip (,) tk' <$> proc bb
+
+
+loop_bcl_special :: Ptr Word8 -> BclArgs -> IO Int
+loop_bcl_special p (BclArgs tp vec stride u v i) =
+
+    VS.unsafeWith vec $ \q -> case tp of
+        BclNucsBin -> do
+            nuc_loop p stride (plusPtr q i) u v
+            return $ (v - u + 2) `div` 2
+
+        BclNucsAsc -> do
+            nuc_loop_asc p stride (plusPtr q i) u v
+            return $ v - u + 1
+
+        BclNucsAscRev -> do
+            nuc_loop_asc_rev p stride (plusPtr q i) u v
+            return $ v - u + 1
+
+        BclQualsBin -> do
+            qual_loop p stride (plusPtr q i) u v
+            return $ v - u + 1
+
+        BclQualsAsc -> do
+            qual_loop_asc p stride (plusPtr q i) u v
+            return $ v - u + 1
+
+        BclQualsAscRev -> do
+            qual_loop_asc_rev p stride (plusPtr q i) u v
+            return $ v - u + 1
+
+foreign import ccall unsafe "nuc_loop"
+    nuc_loop :: Ptr Word8 -> Int -> Ptr Word8 -> Int -> Int -> IO ()
+
+foreign import ccall unsafe "nuc_loop_asc"
+    nuc_loop_asc :: Ptr Word8 -> Int -> Ptr Word8 -> Int -> Int -> IO ()
+
+foreign import ccall unsafe "nuc_loop_asc_rev"
+    nuc_loop_asc_rev :: Ptr Word8 -> Int -> Ptr Word8 -> Int -> Int -> IO ()
+
+foreign import ccall unsafe "qual_loop"
+    qual_loop :: Ptr Word8 -> Int -> Ptr Word8 -> Int -> Int -> IO ()
+
+foreign import ccall unsafe "qual_loop_asc"
+    qual_loop_asc :: Ptr Word8 -> Int -> Ptr Word8 -> Int -> Int -> IO ()
+
+foreign import ccall unsafe "qual_loop_asc_rev"
+    qual_loop_asc_rev :: Ptr Word8 -> Int -> Ptr Word8 -> Int -> Int -> IO ()
+
+foreign import ccall unsafe "int_loop"
+    int_loop :: Ptr Word8 -> Int -> IO Int
 

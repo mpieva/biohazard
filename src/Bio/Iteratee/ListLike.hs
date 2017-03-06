@@ -55,7 +55,6 @@ module Bio.Iteratee.ListLike (
   ,zipStreams5
   ,sequenceStreams_
   ,countConsumed
-  ,greedy
   -- ** Monadic functions
   ,mapStreamM
   ,mapStreamM_
@@ -858,50 +857,6 @@ enumPureNChunk str n iter
                            on_cont k e = return $ icont k e
                        in runIter iter' idoneM on_cont
 {-# INLINE enumPureNChunk #-}
-
--- | Convert an iteratee to a \"greedy\" version.
---
--- When a chunk is received, repeatedly run the input iteratee
--- until the entire chunk is consumed, then the outputs
--- are combined (via 'mconcat').
---
--- > > let l = [1..5::Int]
--- > > run =<< enumPure1Chunk l (joinI (takeStream 2 stream2list))
--- > [1,2]
--- > > run =<< enumPure1Chunk l (greedy $ joinI (takeStream 2 stream2list))
--- > [1,2,3,4,5]
---
--- Note that a greedy iteratee will consume the entire input chunk and force
--- the next chunk before returning a value.  A portion of the second chunk may
--- be consumed.
---
--- 'greedy' may be useful on the first parameter of 'convStream', e.g.
---
--- > convStream (greedy someIter)
---
--- to create more efficient converters.
-greedy ::
- (Monad m, LL.ListLike s el', Monoid a, Nullable s) =>
-  Iteratee s m a
-  -> Iteratee s m a
-greedy iter' = liftI (step [] iter')
- where
-  step acc iter (Chunk str)
-    | LL.null str = liftI (step acc iter)
-    | otherwise   = joinIM $ do
-      i2 <- enumPure1Chunk str iter
-      result <- runIter i2 (\a s -> return $ Left (a,s))
-                           (\k e -> return $ Right (icont k e))
-      case result of
-        Left (a, Chunk resS)
-          | LL.null resS
-              || LL.length resS == LL.length str -> return $
-                         idone (mconcat $ reverse (a:acc)) (Chunk resS)
-        Left (a, stream) -> return $ step (a:acc) iter stream
-        Right i -> return $ liftM (mconcat . reverse . (:acc)) i
-  step acc iter stream = joinIM $
-    enumChunk stream (liftM (mconcat . reverse . (:acc)) iter)
-{-# INLINE greedy #-}
 
 -- ------------------------------------------------------------------------
 -- Monadic functions

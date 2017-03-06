@@ -9,6 +9,7 @@ module Bio.Iteratee (
 
     protectTerm,
     parMapChunksIO,
+    parRunIO,
     progressGen,
     progressNum,
     progressPos,
@@ -199,6 +200,26 @@ parMapChunksIO np f = eneeCheckIfDonePass (go emptyQ)
                              goE mx (pushQ a qq) k Nothing
     go' !qq k (Chunk c) = do a <- liftIO (async (f c))
                              go (pushQ a qq) k Nothing
+
+    -- input ended, empty the queue
+    goE  _ !qq k (Just e) = cancelAll qq >> icont (go' emptyQ k) (Just e)
+    goE mx !qq k Nothing = case popQ qq of
+        Nothing      -> idone (liftI k) (EOF mx)
+        Just (a,qq') -> liftIO (wait a) >>= eneeCheckIfDonePass (goE mx qq') . k . Chunk
+
+parRunIO :: MonadIO m => Int -> Enumeratee [IO a] a m b
+parRunIO np = eneeCheckIfDonePass (go emptyQ)
+  where
+    -- check if the queue is full
+    go !qq k (Just  e) = cancelAll qq >> icont (go' emptyQ k) (Just e)
+    go !qq k  Nothing  = case popQ qq of
+        Just (a,qq') | lengthQ qq == np -> liftIO (wait a) >>= eneeCheckIfDonePass (go qq') . k . Chunk
+        _                               -> liftI $ go' qq k
+
+    -- we have room for input
+    go' !qq k (Chunk (c:cs)) = liftIO (async c) >>= \a -> go' (pushQ a qq) k (Chunk cs)
+    go' !qq k (Chunk [    ]) = go qq k Nothing
+    go' !qq k (EOF       mx) = goE mx qq k Nothing
 
     -- input ended, empty the queue
     goE  _ !qq k (Just e) = cancelAll qq >> icont (go' emptyQ k) (Just e)

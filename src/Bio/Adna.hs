@@ -33,7 +33,7 @@ module Bio.Adna (
 import Bio.Bam
 import Bio.Prelude
 import Bio.TwoBit
-import Data.Aeson hiding ( pairs )
+import Data.Aeson
 
 import qualified Data.Vector                    as V
 import qualified Data.Vector.Generic            as G
@@ -334,8 +334,8 @@ damagePatternsIter2Bit refs tbf ctx rng it =
         guard (not $ isUnmapped b)
         let ref_nm = sq_name $ getRef refs b_rname
             ref    = getFragment tbf ref_nm (b_pos - ctx) (alignedLength b_cigar + 2*ctx)
-            pairs  = aln_from_ref (U.drop ctx ref) b_seq b_cigar
-        return (b, ft, ref, pairs)) =$
+            pps    = aln_from_ref (U.drop ctx ref) b_seq b_cigar
+        return (b, ft, ref, pps)) =$
     damagePatternsIter ctx rng it
 
 -- | Enumeratee (almost) that computes some statistics from plain BAM
@@ -361,9 +361,9 @@ damagePatternsIterMD rng it =
         let b@BamRec{..} = unpackBam br
         guard (not $ isUnmapped b)
         md <- getMd b
-        let pairs = aln_from_md b_seq b_cigar md
-            ref   = U.map fromN $ U.filter ((/=) gap . fst) pairs
-        return (b, ft, ref, pairs)) =$
+        let pps = aln_from_md b_seq b_cigar md
+            ref = U.map fromN $ U.filter ((/=) gap . fst) pps
+        return (b, ft, ref, pps)) =$
     damagePatternsIter 0 rng it
   where
     fromN (ns,_) | ns == nucsA = 2
@@ -544,9 +544,9 @@ instance Monoid a => Monoid (DmgStats a) where
 
 revcom_both :: ( BamRec, FragType, U.Vector Word8, U.Vector (Nucleotides, Nucleotides) )
             -> ( BamRec, FragType, U.Vector Word8, U.Vector (Nucleotides, Nucleotides) )
-revcom_both (b, ft, ref, pairs)
-    | isReversed b = ( b, ft, revcom_ref ref, revcom_pairs pairs )
-    | otherwise    = ( b, ft,            ref,              pairs )
+revcom_both (b, ft, ref, pps)
+    | isReversed b = ( b, ft, revcom_ref ref, revcom_pairs pps )
+    | otherwise    = ( b, ft,            ref,              pps )
   where
     revcom_ref   = U.reverse . U.map (\c -> if c > 3 then c else xor c 2)
     revcom_pairs = U.reverse . U.map (compls *** compls)
