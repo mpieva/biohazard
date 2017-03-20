@@ -15,7 +15,6 @@ module Bio.Iteratee (
     progressPos,
 
     ($==),
-    ListLike,
     MonadIO, MonadMask,
     lift, liftIO,
     stdin, stdout, stderr,
@@ -46,20 +45,20 @@ module Bio.Iteratee (
     Fd,
     withFileFd,
 
-    module Bio.Iteratee.Binary,
+    module Bio.Iteratee.Bytes,
     module Bio.Iteratee.Char,
     module Bio.Iteratee.IO,
     module Bio.Iteratee.Iteratee,
-    module Bio.Iteratee.ListLike
+    module Bio.Iteratee.List
         ) where
 
 import Bio.Bam.Header
 import Bio.Iteratee.Base
-import Bio.Iteratee.Binary
+import Bio.Iteratee.Bytes
 import Bio.Iteratee.Char
 import Bio.Iteratee.IO
 import Bio.Iteratee.Iteratee
-import Bio.Iteratee.ListLike
+import Bio.Iteratee.List
 import Bio.Prelude
 import Bio.Util.Numeric                     ( showNum )
 import Control.Concurrent.Async             ( Async, async, wait, cancel )
@@ -67,13 +66,11 @@ import Control.Monad.Catch                  ( MonadMask(..) )
 import Control.Monad.IO.Class
 import Control.Monad.Trans.Class
 import Data.Binary.Get
-import Data.ListLike                        ( ListLike )
 import System.IO                            ( hIsTerminalDevice )
 
 import qualified Control.Monad.Catch            as CMC
 import qualified Data.Attoparsec.ByteString     as A
 import qualified Data.ByteString.Char8          as S
-import qualified Data.ListLike                  as LL
 import qualified Data.Vector.Generic            as VG
 import qualified Data.Vector.Generic.Mutable    as VM
 
@@ -166,17 +163,17 @@ enumInputs xs = go xs
 
 data Ordering' a = Less | Equal a | NotLess
 
-mergeSortStreams :: (Monad m, ListLike s a, Nullable s) => (a -> a -> Ordering' a) -> Enumeratee s s (Iteratee s m) b
+mergeSortStreams :: Monad m => (a -> a -> Ordering' a) -> Enumeratee [a] [a] (Iteratee [a] m) b
 mergeSortStreams comp = eneeCheckIfDone step
   where
     step out = peekStream >>= \mx -> lift peekStream >>= \my -> case (mx, my) of
         (Just x, Just y) -> case x `comp` y of
-            Less    -> do dropStream 1 ;                       eneeCheckIfDone step . out . Chunk $ LL.singleton x
-            NotLess -> do                lift (dropStream 1) ; eneeCheckIfDone step . out . Chunk $ LL.singleton y
-            Equal z -> do dropStream 1 ; lift (dropStream 1) ; eneeCheckIfDone step . out . Chunk $ LL.singleton z
+            Less    -> do dropStream 1 ;                       eneeCheckIfDone step . out $ Chunk [x]
+            NotLess -> do                lift (dropStream 1) ; eneeCheckIfDone step . out $ Chunk [y]
+            Equal z -> do dropStream 1 ; lift (dropStream 1) ; eneeCheckIfDone step . out $ Chunk [z]
 
-        (Just  x, Nothing) -> do       dropStream 1  ; eneeCheckIfDone step . out . Chunk $ LL.singleton x
-        (Nothing, Just  y) -> do lift (dropStream 1) ; eneeCheckIfDone step . out . Chunk $ LL.singleton y
+        (Just  x, Nothing) -> do       dropStream 1  ; eneeCheckIfDone step . out $ Chunk [x]
+        (Nothing, Just  y) -> do lift (dropStream 1) ; eneeCheckIfDone step . out $ Chunk [y]
         (Nothing, Nothing) -> idone (liftI out) $ EOF Nothing
 
 
@@ -239,28 +236,28 @@ protectTerm itr = do
 
 -- | A general progress indicator that prints some message after a set
 -- number of records have passed through.
-progressGen :: (MonadIO m, NullPoint s, ListLike s a)
-            => (Int -> a -> String) -> Int -> (String -> IO ()) -> Enumeratee s s m b
+progressGen :: MonadIO m
+            => (Int -> a -> String) -> Int -> (String -> IO ()) -> Enumeratee [a] [a] m b
 progressGen msg sz put = eneeCheckIfDonePass (icont . go 0)
   where
     go !_ k (EOF   mx) = idone (liftI k) (EOF mx)
     go !n k (Chunk as)
-        | LL.null as = liftI $ go n k
-        | otherwise  = let !n' = n + LL.length as
+        | null as    = liftI $ go n k
+        | otherwise  = let !n' = n + length as
                        in when (n' `div` sz /= n `div` sz) (liftIO . put $
-                                "\27[K" ++ msg n' (LL.head as) ++ "\r")
+                                "\27[K" ++ msg n' (head as) ++ "\r")
                           `ioBind_` eneeCheckIfDonePass (icont . go n') (k $ Chunk as)
 
 -- | A simple progress indicator that prints the number of records.
-progressNum :: (MonadIO m, NullPoint s, ListLike s a)
-            => String -> Int -> (String -> IO ()) -> Enumeratee s s m b
+progressNum :: MonadIO m
+            => String -> Int -> (String -> IO ()) -> Enumeratee [a] [a] m b
 progressNum msg = progressGen (\n _ -> msg ++ " " ++ showNum n)
 
 -- | A simple progress indicator that prints a position every set number
 -- of passed records.
-progressPos :: (MonadIO m, ListLike s a, NullPoint s)
+progressPos :: MonadIO m
             => (a -> (Refseq, Int)) -> String -> Refs
-            -> Int -> (String -> IO ()) -> Enumeratee s s m b
+            -> Int -> (String -> IO ()) -> Enumeratee [a] [a] m b
 progressPos f msg refs =
     progressGen $ \_ a -> let (!rs1, !po1) = f a
                               !nm = unpack . sq_name $ getRef refs rs1
@@ -317,7 +314,7 @@ parserToIteratee p = icont (f (A.parse p)) Nothing
 
 -- | Equivalent to @joinI $ takeStream n $ stream2vector@, but more
 -- efficient.
-stream2vectorN :: (MonadIO m, ListLike s a, Nullable s, VG.Vector v a) => Int -> Iteratee s m (v a)
+stream2vectorN :: (MonadIO m, VG.Vector v a) => Int -> Iteratee [a] m (v a)
 stream2vectorN n = do
     mv <- liftIO $ VM.new n
     l <- go mv 0
@@ -331,7 +328,7 @@ stream2vectorN n = do
                 Just  a -> liftIO (VM.write mv i a) >> go mv (i+1)
 
 -- | Reads the whole stream into a 'VG.Vector'.
-stream2vector :: (MonadIO m, ListLike s a, Nullable s, VG.Vector v a) => Iteratee s m (v a)
+stream2vector :: (MonadIO m, VG.Vector v a) => Iteratee [a] m (v a)
 stream2vector = liftIO (VM.new 1024) >>= go 0
   where
     go !i !mv = tryHead >>= \x -> case x of

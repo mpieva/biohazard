@@ -28,7 +28,6 @@ where
 
 import Bio.Iteratee.ReadableChunk
 import Bio.Iteratee.Iteratee
-import Bio.Iteratee.Binary ()
 import Control.Monad.Catch
 import Control.Monad.IO.Class
 import Prelude

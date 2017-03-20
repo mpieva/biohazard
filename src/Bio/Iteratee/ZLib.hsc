@@ -713,7 +713,7 @@ enumInflate f dp@(DecompressParams _ size _md) iter = do
 
 -- | Inflate if Gzip format is recognized, otherwise pass through.
 enumInflateAny :: MonadIO m => Enumeratee ByteString ByteString m a
-enumInflateAny it = do magic <- iLookAhead $ liftM2 (,) tryHead tryHead
+enumInflateAny it = do magic <- iLookAhead $ liftM2 (,) tryHeadBS tryHeadBS
                        case magic of
                            (Just 0x1f, Just 0x8b) ->
                                enumInflate GZip defaultDecompressParams it

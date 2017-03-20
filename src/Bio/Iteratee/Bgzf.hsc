@@ -122,24 +122,25 @@ get_bgzf_block off = do !(csize,xlen) <- get_bgzf_header
 -- | Decodes a BGZF block header and returns the block size if
 -- successful.
 get_bgzf_header :: Monad m => Iteratee Bytes m (Word16, Word16)
-get_bgzf_header = do n <- heads "\31\139"
-                     _cm <- headStream
-                     flg <- headStream
+get_bgzf_header = do x   <- headStreamBS
+                     y   <- headStreamBS
+                     _cm <- headStreamBS
+                     flg <- headStreamBS
                      if flg `testBit` 2 then do
-                         dropStream 6
+                         dropStreamBS 6
                          xlen <- endianRead2 LSB
-                         it <- takeStream (fromIntegral xlen) get_bsize >>= lift . tryRun
+                         it <- takeStreamBS (fromIntegral xlen) get_bsize >>= lift . tryRun
                          case it of Left e -> throwErr e
-                                    Right s | n == 2 -> return (s,xlen)
+                                    Right s | x == 31 && y == 139 -> return (s,xlen)
                                     _ -> throwErr $ iterStrExc "No BGZF"
                       else throwErr $ iterStrExc "No BGZF"
   where
-    get_bsize = do i1 <- headStream
-                   i2 <- headStream
+    get_bsize = do i1 <- headStreamBS
+                   i2 <- headStreamBS
                    len <- endianRead2 LSB
                    if i1 == 66 && i2 == 67 && len == 2
                       then endianRead2 LSB
-                      else dropStream (fromIntegral len) >> get_bsize
+                      else dropStreamBS (fromIntegral len) >> get_bsize
 
 -- | Tests whether a stream is in BGZF format.  Does not consume any
 -- input.
@@ -151,10 +152,11 @@ isBgzf = liftM isRight $ checkErr $ iLookAhead $ get_bgzf_header
 isGzip :: Monad m => Iteratee Bytes m Bool
 isGzip = liftM (either (const False) id) $ checkErr $ iLookAhead $ test
   where
-    test = do n <- heads "\31\139"
-              dropStream 24
+    test = do x   <- headStreamBS
+              y   <- headStreamBS
+              dropStreamBS 24
               b <- isFinished
-              return $ not b && n == 2
+              return $ not b && x == 31 && y == 139
 
 -- ------------------------------------------------------------------------- Output
 

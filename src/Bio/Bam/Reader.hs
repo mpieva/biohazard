@@ -173,7 +173,8 @@ isBam = firstOf [ isEmptyBam, isPlainBam, isBgzfBam, isGzipBam ]
 
 isEmptyBam = (\e -> if e then Just (\k -> return $ k mempty) else Nothing) `liftM` isFinished
 
-isPlainBam = (\n -> if n == 4 then Just (joinI . decompressPlain . decodeBam) else Nothing) `liftM` heads "BAM\SOH"
+isPlainBam = (\n -> if n == "BAM\SOH" then Just (joinI . decompressPlain . decodeBam) else Nothing)
+             `liftM` iGetString 4
 
 -- Interesting... iLookAhead interacts badly with the parallel
 -- decompression of BGZF.  (The chosen interface doesn't allow the EOF
@@ -257,11 +258,12 @@ decodeBam inner = do meta <- liftBlock get_bam_header
                      refs <- liftBlock get_ref_array
                      convStream getBamRaw $ inner $! mmerge meta refs
   where
-    get_bam_header  = do magic <- heads "BAM\SOH"
-                         when (magic /= 4) $ do s <- iGetString 10
-                                                fail $ "BAM signature not found: " ++ show magic ++ " " ++ show s
+    get_bam_header  = do magic <- iGetString 4 
+                         when (magic /= "BAM\SOH") $ do
+                                s <- iGetString 10
+                                fail $ "BAM signature not found: " ++ show magic ++ " " ++ show s
                          hdr_len <- endianRead4 LSB
-                         joinI $ takeStream (fromIntegral hdr_len) $ parserToIteratee parseBamMeta
+                         joinI $ takeStreamBS (fromIntegral hdr_len) $ parserToIteratee parseBamMeta
 
     get_ref_array = do nref <- endianRead4 LSB
                        foldM (\acc _ -> do

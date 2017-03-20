@@ -20,7 +20,6 @@ module Bio.Iteratee.IO.Fd(
 
 where
 
-import Bio.Iteratee.Binary ()
 import Bio.Iteratee.IO.Base
 import Bio.Iteratee.Iteratee
 import Bio.Iteratee.ReadableChunk

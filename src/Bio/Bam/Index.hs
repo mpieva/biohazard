@@ -175,7 +175,7 @@ readBaiIndex = iGetString 4 >>= switch
 
     switch "CSI\1" = do minshift <- fromIntegral `liftM` endianRead4 LSB
                         depth <- fromIntegral `liftM` endianRead4 LSB
-                        endianRead4 LSB >>= dropStream . fromIntegral -- aux data
+                        endianRead4 LSB >>= dropStreamBS . fromIntegral -- aux data
                         nref <- fromIntegral `liftM` endianRead4 LSB
                         getIndexArrays nref minshift depth (addOneCheckpoint minshift depth) return
 

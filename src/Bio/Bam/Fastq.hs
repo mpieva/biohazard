@@ -99,9 +99,9 @@ parseFastq' descr it = do skipJunk ; convStream (parserToIteratee $ (:[]) <$> pR
              | otherwise = Just (i-1)
 
 skipJunk :: Monad m => Iteratee Bytes m ()
-skipJunk = peekStream >>= check
+skipJunk = peekStreamBS >>= check
   where
-    check (Just c) | bad c = dropWhileStream (c2w '\n' /=) >> dropStream 1 >> skipJunk
+    check (Just c) | bad c = dropWhileStreamBS (c2w '\n' /=) >> dropStreamBS 1 >> skipJunk
     check _                = return ()
     bad c = c /= c2w '>' && c /= c2w '@'
 

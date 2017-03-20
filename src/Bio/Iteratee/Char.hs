@@ -4,27 +4,26 @@
 
 module Bio.Iteratee.Char (
   -- * Word and Line processors
-  printLines
-  ,printLinesUnterminated
-  ,enumLines
-  ,enumLinesBS
-  ,enumWords
+  -- printLines
+  -- ,printLinesUnterminated
+  -- enumLines
+  enumLinesBS
+  -- ,enumWords
   ,enumWordsBS
 )
 
 where
 
 import           Bio.Iteratee.Iteratee
-import           Bio.Iteratee.ListLike
+import           Bio.Iteratee.List
 import           Data.Char
 import           Data.Monoid
-import qualified Data.ListLike as LL
 import           Control.Monad (liftM)
 import           Control.Monad.IO.Class
 import qualified Data.ByteString.Char8 as BC
 import           Prelude
 
-
+{-
 -- |Print lines as they are received. This is the first `impure' iteratee
 -- with non-trivial actions during chunk processing
 --
@@ -45,9 +44,9 @@ printLines = lines'
 --  no newline is printed.
 --  this function should be used in preference to printLines when possible,
 --  as it is more efficient with long lines.
-printLinesUnterminated :: forall s el.
+printLinesUnterminated :: 
                        (Eq el, Nullable s, LL.StringLike s, LL.ListLike s el)
-                       => Iteratee s IO ()
+                       => Iteratee BC.ByteString IO ()
 printLinesUnterminated = lines'
  where
   lines' = do
@@ -63,7 +62,6 @@ terminators :: (Eq el, Nullable s, LL.StringLike s, LL.ListLike s el)
 terminators = do
   l <- heads (LL.fromString "\r\n")
   if l == 0 then heads (LL.fromString "\n") else return l
-
 
 -- |Convert the stream of characters to the stream of lines, and
 -- apply the given iteratee to enumerate the latter.
@@ -101,6 +99,7 @@ enumLines = convStream getter
 enumWords :: (LL.ListLike s Char, Nullable s, Monad m) => Enumeratee s [s] m a
 enumWords = convStream $ dropWhileStream isSpace >> liftM (:[]) (breakStream isSpace)
 {-# INLINE enumWords #-}
+-}
 
 -- Like enumWords, but operates on ByteStrings.
 -- This is provided as a higher-performance alternative to enumWords, and

@@ -20,7 +20,6 @@ module Bio.Iteratee.IO.Handle(
 
 where
 
-import Bio.Iteratee.Binary ()
 import Bio.Iteratee.Iteratee
 import Bio.Iteratee.ReadableChunk
 import Bio.Prelude
