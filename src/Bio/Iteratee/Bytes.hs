@@ -15,12 +15,17 @@ module Bio.Iteratee.Bytes (
   ,endianRead4
   ,endianRead8
 
+  -- * Iteratees treating Bytes as list of Word8
   ,headStreamBS
   ,tryHeadBS
   ,peekStreamBS
   ,takeStreamBS
   ,dropStreamBS
   ,dropWhileStreamBS
+
+  -- * Iteratees treating Bytes as list of Char
+  ,enumLinesBS
+  ,enumWordsBS
 )
 where
 
@@ -29,6 +34,7 @@ import Bio.Iteratee.Iteratee
 import Bio.Prelude
 
 import qualified Data.ByteString              as B
+import qualified Data.ByteString.Char8        as C
 import qualified Data.ByteString.Unsafe       as B
 
 -- ------------------------------------------------------------------------
@@ -215,3 +221,49 @@ takeStreamBS n' iter
       where (s1, s2) = B.splitAt n str
     step _n k stream       = idone (liftI k) stream
 {-# INLINE takeStreamBS #-}
+
+-- Like enumWords, but operates on ByteStrings.
+-- This is provided as a higher-performance alternative to enumWords, and
+-- is equivalent to treating the stream as a Data.ByteString.Char8.ByteString.
+enumWordsBS :: Monad m => Enumeratee Bytes [Bytes] m a
+enumWordsBS iter = convStream getter iter
+  where
+    getter = liftI step
+    lChar = isSpace . C.last
+    step (Chunk xs)
+      | C.null xs  = getter
+      | lChar xs   = idone (C.words xs) (Chunk C.empty)
+      | otherwise  = icont (step' xs) Nothing
+    step str       = idone mempty str
+    step' xs (Chunk ys)
+      | C.null ys  = icont (step' xs) Nothing
+      | lChar ys   = idone (C.words . C.append xs $ ys) mempty
+      | otherwise  = let w' = C.words . C.append xs $ ys
+                         ws = init w'
+                         ck = last w'
+                     in idone ws (Chunk ck)
+    step' xs str   = idone (C.words xs) str
+{-# INLINE enumWordsBS #-}
+
+-- Like enumLines, but operates on ByteStrings.
+-- This is provided as a higher-performance alternative to enumLines, and
+-- is equivalent to treating the stream as a Data.ByteString.Char8.ByteString.
+enumLinesBS :: Monad m => Enumeratee Bytes [Bytes] m a
+enumLinesBS = convStream getter
+  where
+    getter = icont step Nothing
+    lChar = (== '\n') . C.last
+    step (Chunk xs)
+      | C.null xs  = getter
+      | lChar xs   = idone (C.lines xs) (Chunk C.empty)
+      | otherwise  = icont (step' xs) Nothing
+    step str       = idone mempty str
+    step' xs (Chunk ys)
+      | C.null ys  = icont (step' xs) Nothing
+      | lChar ys   = idone (C.lines . C.append xs $ ys) mempty
+      | otherwise  = let w' = C.lines $ C.append xs ys
+                         ws = init w'
+                         ck = last w'
+                     in idone ws (Chunk ck)
+    step' xs str   = idone (C.lines xs) str
+{-# INLINE enumLinesBS #-}

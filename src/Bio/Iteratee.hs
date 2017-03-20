@@ -46,7 +46,6 @@ module Bio.Iteratee (
     withFileFd,
 
     module Bio.Iteratee.Bytes,
-    module Bio.Iteratee.Char,
     module Bio.Iteratee.IO,
     module Bio.Iteratee.Iteratee,
     module Bio.Iteratee.List
@@ -55,7 +54,6 @@ module Bio.Iteratee (
 import Bio.Bam.Header
 import Bio.Iteratee.Base
 import Bio.Iteratee.Bytes
-import Bio.Iteratee.Char
 import Bio.Iteratee.IO
 import Bio.Iteratee.Iteratee
 import Bio.Iteratee.List

@@ -51,7 +51,6 @@ Library
                        Bio.Iteratee.Bgzf,
                        Bio.Iteratee.Builder,
                        Bio.Iteratee.Bytes,
-                       Bio.Iteratee.Char,
                        Bio.Iteratee.Exception,
                        Bio.Iteratee.IO,
                        Bio.Iteratee.IO.Base,

@@ -155,12 +155,11 @@ heads st = loopE 0 st
   loopE cnt xs
     | nullC xs  = return cnt
     | otherwise = liftI (step cnt xs)
-  step cnt str (Chunk xs) | nullC xs  = liftI (step cnt str)
-  step cnt str stream     | nullC str = idone cnt stream
-  step cnt str s@(Chunk xs) =
-    if head str == head xs
-       then step (succ cnt) (tail str) (Chunk $ tail xs)
-       else idone cnt s
+  step cnt str (Chunk [])          = liftI (step cnt str)
+  step cnt [ ] stream              = idone cnt stream
+  step cnt (y:ys) s@(Chunk (x:xs))
+    | y == x    = step (succ cnt) ys (Chunk xs)
+    | otherwise = idone cnt s
   step cnt _ stream         = idone cnt stream
 {-# INLINE heads #-}
 
@@ -172,10 +171,9 @@ heads st = loopE 0 st
 peekStream :: Iteratee [el] m (Maybe el)
 peekStream = liftI step
   where
-    step s@(Chunk vec)
-      | null vec = liftI step
-      | otherwise   = idone (Just $ head vec) s
-    step stream     = idone Nothing stream
+    step   (Chunk [   ]) = liftI step
+    step s@(Chunk (x:_)) = idone (Just x) s
+    step stream          = idone Nothing stream
 {-# INLINE peekStream #-}
 
 -- | Return a chunk of @t@ elements length while consuming @d@ elements
@@ -279,10 +277,10 @@ breakStream :: (el -> Bool) -> Iteratee [el] m [el]
 breakStream cpred = icont (step mempty) Nothing
   where
     step bfr (Chunk str)
-      | null str       =  icont (step bfr) Nothing
+      | null str          =  icont (step bfr) Nothing
       | otherwise         =  case break cpred str of
         (str', tail')
-          | null tail' -> icont (step (bfr `mappend` str)) Nothing
+          | null tail'    -> icont (step (bfr `mappend` str)) Nothing
           | otherwise     -> idone (bfr `mappend` str') (Chunk tail')
     step bfr stream       =  idone bfr stream
 {-# INLINE breakStream #-}
@@ -305,7 +303,7 @@ breakE cpred = eneeCheckIfDonePass (icont . step)
       | null s  = liftI (step k)
       | otherwise  = case break cpred s of
         (str', tail')
-          | null tail' -> eneeCheckIfDonePass (icont . step) . k $ Chunk str'
+          | null tail'    -> eneeCheckIfDonePass (icont . step) . k $ Chunk str'
           | otherwise     -> idone (k $ Chunk str') (Chunk tail')
   step k stream           =  idone (liftI k) stream
 {-# INLINE breakE #-}
@@ -328,8 +326,8 @@ takeStream n' iter
                                  else runIter (liftI (step n' k)) od oc
     on_cont od oc _ (Just e) = runIter (dropStream n' >> throwErr e) od oc
     step n k (Chunk str)
-      | null str        = liftI (step n k)
-      | length str <= n = takeStream (n - length str) $ k (Chunk str)
+      | null str           = liftI (step n k)
+      | length str <= n    = takeStream (n - length str) $ k (Chunk str)
       | otherwise          = idone (k (Chunk s1)) (Chunk s2)
       where (s1, s2) = splitAt n str
     step _n k stream       = idone (liftI k) stream
@@ -372,7 +370,7 @@ takeUpTo i iter
     step n k (Chunk str)
       | null str       = liftI (step n k)
       | length str < n = takeUpTo (n - length str) $ k (Chunk str)
-      | otherwise         =
+      | otherwise      =
          -- check to see if the inner iteratee has completed, and if so,
          -- grab any remaining stream to put it in the outer iteratee.
          -- the outer iteratee is always complete at this stage, although
@@ -413,7 +411,7 @@ concatMapStream :: Monad m => (a -> t) -> Enumeratee [a] t m r
 concatMapStream f = eneeCheckIfDone (liftI . go)
   where
     go k (EOF   mx)              = idone (liftI k) (EOF mx)
-    go k (Chunk xs) | null xs = liftI (go k)
+    go k (Chunk xs) | null xs    = liftI (go k)
                     | otherwise  = eneeCheckIfDone (flip go (Chunk (tail xs))) . k . Chunk . f $ head xs
 
 -- | Apply a monadic function to the elements of a stream, concatenate
@@ -423,7 +421,7 @@ concatMapStreamM :: Monad m => (a -> m t) -> Enumeratee [a] t m r
 concatMapStreamM f = eneeCheckIfDone (liftI . go)
   where
     go k (EOF   mx)              = idone (liftI k) (EOF mx)
-    go k (Chunk xs) | null xs = liftI (go k)
+    go k (Chunk xs) | null xs    = liftI (go k)
                     | otherwise  = f (head xs) `mBind`
                                    eneeCheckIfDone (flip go (Chunk (tail xs))) . k . Chunk
 
@@ -431,9 +429,9 @@ concatMapStreamM f = eneeCheckIfDone (liftI . go)
 mapMaybeStream :: (a -> Maybe b) -> Enumeratee [a] [b] m r
 mapMaybeStream f = mapChunks mm
   where
-    mm l = if null l then empty else
-           case f (head l) of Nothing -> mm (tail l)
-                              Just b  -> b : mm (tail l)
+    mm [   ] = empty
+    mm (h:t) = case f h of Nothing -> mm t
+                           Just b  -> b : mm t
 
 
 -- |Creates an 'enumeratee' with only elements from the stream that
@@ -449,10 +447,10 @@ filterStream p = mapChunks (filter p)
 filterStreamM :: Monad m => (a -> m Bool) -> Enumeratee [a] [a] m r
 filterStreamM k = mapChunksM (go id)
   where
-    go acc s | null s = return $! acc empty
-             | otherwise = do p <- k (head s)
-                              let acc' = if p then (:) (head s) . acc else acc
-                              go acc' (tail s)
+    go acc [   ] = return $! acc empty
+    go acc (h:t) = do p <- k h
+                      let acc' = if p then (:) h . acc else acc
+                      go acc' t
 
 -- | Grouping on 'Iteratee's.  @groupStreamOn proj inner outer@ executes
 -- @inner (proj e)@, where @e@ is the first input element, to obtain an
@@ -466,11 +464,10 @@ groupStreamOn :: (Monad m, Eq t1)
               -> Enumeratee [e] [(t1, t2)] m a
 groupStreamOn proj inner = eneeCheckIfDonePass (icont . step)
   where
-    step outer   (EOF   mx) = idone (liftI outer) $ EOF mx
-    step outer c@(Chunk as)
-        | null as = liftI $ step outer
-        | otherwise  = let x = proj (head as)
-                       in lift (inner x) >>= \i -> step' x i outer c
+    step outer   (EOF      mx) = idone (liftI outer) $ EOF mx
+    step outer   (Chunk [   ]) = liftI $ step outer
+    step outer c@(Chunk (h:_)) = let x = proj h
+                                 in lift (inner x) >>= \i -> step' x i outer c
 
     -- We want to feed a 'Chunk' to the inner 'Iteratee', which might be
     -- finished.  In that case, we would want to abort, but we cannot,
@@ -504,10 +501,9 @@ groupStreamBy :: Monad m
               -> Enumeratee [t] [t2] m a
 groupStreamBy cmp inner = eneeCheckIfDonePass (icont . step)
   where
-    step outer    (EOF   mx) = idone (liftI outer) $ EOF mx
-    step outer  c@(Chunk as)
-        | null as = liftI $ step outer
-        | otherwise  = lift inner >>= \i -> step' (head as) i outer c
+    step outer   (EOF      mx) = idone (liftI outer) $ EOF mx
+    step outer   (Chunk [   ]) = liftI $ step outer
+    step outer c@(Chunk (h:_)) = lift inner >>= \i -> step' h i outer c
 
     step' c it outer (Chunk as)
         | null as = liftI $ step' c it outer
@@ -771,13 +767,9 @@ sequenceStreams_ = self
 
 -- |Transform an iteratee into one that keeps track of how much data it
 -- consumes.
-countConsumed :: (Monad m, Integral n) =>
-                 Iteratee [el] m a
-              -> Iteratee [el] m (a, n)
+countConsumed :: (Monad m, Integral n) => Iteratee [el] m a -> Iteratee [el] m (a, n)
 countConsumed i = go 0 (const i) (Chunk emptyP)
   where
-    -- go :: n -> (Stream [el] -> Iteratee [el] m a) -> Stream [el]
-       -- -> Iteratee [el] m (a, n)
     go !n f str@(EOF _) = (, n) `liftM` f str
     go !n f str@(Chunk c) = Iteratee rI
       where
@@ -812,23 +804,21 @@ enumPureNChunk str n iter
 -- ------------------------------------------------------------------------
 -- Monadic functions
 
--- | Map a monadic function over the elements of the stream and ignore the
--- result.
+-- | Maps a monadic function over the elements of the stream and ignores
+-- the result.
 mapStreamM_ :: Monad m => (el -> m b) -> Iteratee [el] m ()
 mapStreamM_ = mapChunksM_ . mapM_
 {-# INLINE mapStreamM_ #-}
 
--- | Map a monadic function over an 'Iteratee'.
-mapStreamM :: Monad m
-           => (el -> m el') -> Enumeratee [el] [el'] m a
+-- | Maps a monadic function over an 'Iteratee'.
+mapStreamM :: Monad m => (el -> m el') -> Enumeratee [el] [el'] m a
 mapStreamM = mapChunksM . mapM
 {-# INLINE mapStreamM #-}
 
-
--- | Fold a monadic function over an 'Iteratee'.
+-- | Folds a monadic function over an 'Iteratee'.
 foldStreamM :: Monad m => (b -> a -> m b) -> b -> Iteratee [a] m b
 foldStreamM k = foldChunksM go
   where
-    go b s | null s = return b
-           | otherwise = k b (head s) >>= \b' -> go b' (tail s)
+    go b [   ] = return b
+    go b (h:t) = k b h >>= \b' -> go b' t
 {-# INLINE foldStreamM #-}
