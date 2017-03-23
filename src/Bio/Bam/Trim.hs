@@ -391,18 +391,39 @@ twoMins a0 imax f = go a0 0 maxBound 0 0
                   | otherwise -> go m1 i1 m2 i2 (i+1)
 
 
-mergeTrimBam :: Monad m => [W.Vector Nucleotides] -> [W.Vector Nucleotides] -> Enumeratee [BamRec] [BamRec] m a
-mergeTrimBam fwd_ads rev_ads = convStream go
+mergeBam :: Int -> Int -> [W.Vector Nucleotides] -> [W.Vector Nucleotides] -> BamRec -> BamRec -> [BamRec]
+mergeBam lowq highq fwd_adapters rev_adapters r1 r2
+    = case merge_overlap r1 fwd_adapters r2 rev_adapters of
+        Nothing                   ->      [ r1, r2 ]
+        Just (r1',r2',rm,q1,_q2)
+            | q1 < lowq           ->      [ r1, r2 ]
+            | q1 >= highq         -> [ rm ]
+            | lm < l1 || lm < l2  -> [ rm ]
+            | otherwise           -> [ rm, r1', r2' ]
+          where
+            lm = V.length (b_seq rm)
+            l1 = V.length (b_seq r1) - 20
+            l2 = V.length (b_seq r2) - 20
+
+trimBam :: Int -> Int -> [W.Vector Nucleotides] -> BamRec -> [BamRec]
+trimBam lowq highq fwd_adapters r1
+    = case trim_adapter r1 fwd_adapters of
+        Nothing              -> [ r1 ]
+        Just (r',r1t,q1,_q2)
+            | q1 < lowq      -> [ r1 ]
+            | q1 >= highq    -> [ r1t ]
+            | otherwise      -> [ r1t, r' ]
+
+
+
+mergeTrimBam :: Monad m => Int -> Int -> [W.Vector Nucleotides] -> [W.Vector Nucleotides] -> Enumeratee [BamRec] [BamRec] m a
+mergeTrimBam lowq highq fwd_ads rev_ads = convStream go
   where
     go = do r1 <- headStream
             if isPaired r1
               then tryHead >>= go2 r1
-              else case trim_adapter r1 fwd_ads of
-                    Nothing                -> return [r1]
-                    Just (r1',r1t,_q1,_q2) -> return [r1t,r1']
+              else return $ trimBam lowq highq fwd_ads r1
 
     go2 r1  Nothing  = error $ "Lone mate found: " ++ show (b_qname r1)
-    go2 r1 (Just r2) = case merge_overlap r1 fwd_ads r2 rev_ads of
-                    Nothing                   -> return [r1,r2]
-                    Just (r1',r2',rm,_q1,_q2) -> return [rm,r1',r2']
+    go2 r1 (Just r2) = return $ mergeBam lowq highq fwd_ads rev_ads r1 r2
 

@@ -400,23 +400,18 @@ takeWhileE = breakE . (not .)
 -- This one is reimplemented and differs from the the one in
 -- "Data.Iteratee.ListLike" in so far that it doesn't pass on an 'EOF'
 -- received in the input, which is the expected behavior.
-{-# INLINE mapStream #-}
 mapStream :: (el -> el') -> Enumeratee [el] [el'] m a
 mapStream = mapChunks . map
+{-# INLINE mapStream #-}
 
 -- | Apply a function to the elements of a stream, concatenate the
 -- results into a stream.  No giant intermediate list is produced.
+concatMapStream :: Monoid t => (a -> t) -> Enumeratee [a] t m r
+concatMapStream = mapChunks . foldMap
 {-# INLINE concatMapStream #-}
-concatMapStream :: Monad m => (a -> t) -> Enumeratee [a] t m r
-concatMapStream f = eneeCheckIfDone (liftI . go)
-  where
-    go k (EOF   mx)              = idone (liftI k) (EOF mx)
-    go k (Chunk xs) | null xs    = liftI (go k)
-                    | otherwise  = eneeCheckIfDone (flip go (Chunk (tail xs))) . k . Chunk . f $ head xs
 
 -- | Apply a monadic function to the elements of a stream, concatenate
 -- the results into a stream.  No giant intermediate list is produced.
-{-# INLINE concatMapStreamM #-}
 concatMapStreamM :: Monad m => (a -> m t) -> Enumeratee [a] t m r
 concatMapStreamM f = eneeCheckIfDone (liftI . go)
   where
@@ -424,15 +419,11 @@ concatMapStreamM f = eneeCheckIfDone (liftI . go)
     go k (Chunk xs) | null xs    = liftI (go k)
                     | otherwise  = f (head xs) `mBind`
                                    eneeCheckIfDone (flip go (Chunk (tail xs))) . k . Chunk
+{-# INLINE concatMapStreamM #-}
 
-{-# INLINE mapMaybeStream #-}
 mapMaybeStream :: (a -> Maybe b) -> Enumeratee [a] [b] m r
-mapMaybeStream f = mapChunks mm
-  where
-    mm [   ] = empty
-    mm (h:t) = case f h of Nothing -> mm t
-                           Just b  -> b : mm t
-
+mapMaybeStream = mapChunks . mapMaybe
+{-# INLINE mapMaybeStream #-}
 
 -- |Creates an 'enumeratee' with only elements from the stream that
 -- satisfy the predicate function.  The outer stream is completely consumed.
@@ -443,7 +434,6 @@ filterStream p = mapChunks (filter p)
 {-# INLINE filterStream #-}
 
 -- | Apply a monadic filter predicate to an 'Iteratee'.
-{-# INLINE filterStreamM #-}
 filterStreamM :: Monad m => (a -> m Bool) -> Enumeratee [a] [a] m r
 filterStreamM k = mapChunksM (go id)
   where
@@ -451,6 +441,7 @@ filterStreamM k = mapChunksM (go id)
     go acc (h:t) = do p <- k h
                       let acc' = if p then (:) h . acc else acc
                       go acc' t
+{-# INLINE filterStreamM #-}
 
 -- | Grouping on 'Iteratee's.  @groupStreamOn proj inner outer@ executes
 -- @inner (proj e)@, where @e@ is the first input element, to obtain an
