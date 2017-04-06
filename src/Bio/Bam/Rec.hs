@@ -278,10 +278,13 @@ unpackBam br = BamRec {
                      fromIntegral (B.unsafeIndex (raw_data br) $ o+1) `shiftL`  8
 
         getInt32 :: (Num a, Bits a) => Int -> a
-        getInt32 o = fromIntegral (B.unsafeIndex (raw_data br) $ o+0)             .|.
-                     fromIntegral (B.unsafeIndex (raw_data br) $ o+1) `shiftL`  8 .|.
-                     fromIntegral (B.unsafeIndex (raw_data br) $ o+2) `shiftL` 16 .|.
-                     fromIntegral (B.unsafeIndex (raw_data br) $ o+3) `shiftL` 24
+        getInt32 o = fromIntegral (        B.unsafeIndex (raw_data br) $ o+0 )             .|.
+                     fromIntegral (        B.unsafeIndex (raw_data br) $ o+1 ) `shiftL`  8 .|.
+                     fromIntegral (        B.unsafeIndex (raw_data br) $ o+2 ) `shiftL` 16 .|.
+                     fromIntegral (signed (B.unsafeIndex (raw_data br) $ o+3)) `shiftL` 24
+
+        signed :: Word8 -> Int8
+        signed = fromIntegral
 
 -- | A collection of extension fields.  The key is actually only two @Char@s, but that proved impractical.
 -- (Hmm... we could introduce a Key type that is a 16 bit int, then give

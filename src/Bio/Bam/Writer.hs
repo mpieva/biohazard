@@ -50,11 +50,11 @@ encodeSamEntry refs b = conjoin '\t' [
     shows (b_flag b .&. 0xffff),
     unpck (sq_name $ getRef refs $ b_rname b),
     shows (b_pos b + 1),
-    shows (b_mapq b),
-    shows (b_cigar b),
+    shows (unQ $ b_mapq b),
+    V.foldr ((.) . shows) id (b_cigar b),
     unpck (sq_name $ getRef refs $ b_mrnm b),
     shows (b_mpos b + 1),
-    shows (b_isize b + 1),
+    shows (b_isize b),
     shows (V.toList $ b_seq b),
     (++)  (V.toList . V.map (chr . (+33) . fromIntegral . unQ) $ b_qual b) ] .
     foldr (\(k,v) f -> (:) '\t' . shows k . (:) ':' . extToSam v . f) id (b_exts b)
