@@ -7,6 +7,7 @@ module Bio.Adna (
     damagePatternsIter,
     damagePatternsIterMD,
     damagePatternsIter2Bit,
+    alnFromMd,
 
     DamageParameters(..),
     NewDamageParameters(..),
@@ -361,7 +362,7 @@ damagePatternsIterMD rng it =
         let b@BamRec{..} = unpackBam br
         guard (not $ isUnmapped b)
         md <- getMd b
-        let pps = aln_from_md b_seq b_cigar md
+        let pps = alnFromMd b_seq b_cigar md
             ref = U.map fromN $ U.filter ((/=) gap . fst) pps
         return (b, ft, ref, pps)) =$
     damagePatternsIter 0 rng it
@@ -581,8 +582,8 @@ aln_from_ref ref0 qry0 cig0 = U.fromList $ step ref0 qry0 cig0
 
 -- | Reconstructs the alignment from query, cigar, and md.  Only
 -- positions where the query is not gapped are produced.
-aln_from_md :: Vector_Nucs_half Nucleotides -> VS.Vector Cigar -> [MdOp] -> U.Vector NPair
-aln_from_md qry0 cig0 md0 = U.fromList $ step qry0 cig0 md0
+alnFromMd :: Vector_Nucs_half Nucleotides -> VS.Vector Cigar -> [MdOp] -> U.Vector NPair
+alnFromMd qry0 cig0 md0 = U.fromList $ step qry0 cig0 md0
   where
     step qry cig1 md
         | G.null qry || G.null cig1 || null md = []
