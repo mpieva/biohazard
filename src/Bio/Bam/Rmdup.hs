@@ -102,20 +102,20 @@ cheap_collapse_keep = Collapse do_cheap_collapse (map (\b -> b { b_flag = b_flag
 -- duplicates of each other.  The typical label function would extract
 -- read groups, libraries or samples.
 
-rmdup :: (Monad m, Ord l) => (BamRec -> l) -> Bool -> Collapse -> Enumeratee [BamRec] [BamRec] m r
+rmdup :: (Monad m, Ord l) => (BamRec -> l) -> Bool -> Collapse -> Enumeratee [BamRec] [(Int,BamRec)] m r
 rmdup label strand_preserved collapse_cfg =
     -- Easiest way to go about this:  We simply collect everything that
     -- starts at some specific coordinate and group it appropriately.
     -- Treat the groups separately, output, go on.
-    check_sort "input must be sorted for rmdup to work" ><>
+    check_sort id "input must be sorted for rmdup to work" ><>
     mapGroups rmdup_group ><>
-    check_sort "internal error, output isn't sorted anymore"
+    check_sort snd "internal error, output isn't sorted anymore"
   where
     rmdup_group = nice_sort . do_rmdup label strand_preserved collapse_cfg
     same_pos u v = b_cpos u == b_cpos v
     b_cpos u = (b_rname u, b_pos u)
 
-    nice_sort x = sortBy (comparing (V.length . b_seq)) x
+    nice_sort x = sortBy (comparing (V.length . b_seq . snd)) x
 
     mapGroups f o = tryHead >>= maybe (return o) (\a -> eneeCheckIfDone (mg1 f a []) o)
     mg1 f a acc k = tryHead >>= \mb -> case mb of
@@ -123,11 +123,11 @@ rmdup label strand_preserved collapse_cfg =
                         Just b | same_pos a b -> mg1 f a (b:acc) k
                                | otherwise -> eneeCheckIfDone (mg1 f b []) . k . Chunk . f $ a:acc
 
-check_sort :: Monad m => String -> Enumeratee [BamRec] [BamRec] m a
-check_sort msg out = tryHead >>= maybe (return out) (\a -> eneeCheckIfDone (step a) out)
+check_sort :: Monad m => (a -> BamRec) -> String -> Enumeratee [a] [a] m b
+check_sort f msg out = tryHead >>= maybe (return out) (\a -> eneeCheckIfDone (step a) out)
   where
     step a k = tryHead >>= maybe (return . k $ Chunk [a]) (step' a k)
-    step' a k b | (b_rname a, b_pos a) > (b_rname b, b_pos b) = fail $ "rmdup: " ++ msg
+    step' a k b | (b_rname (f a), b_pos (f a)) > (b_rname (f b), b_pos (f b)) = fail $ "rmdup: " ++ msg
                 | otherwise = eneeCheckIfDone (step b) . k $ Chunk [a]
 
 
@@ -192,15 +192,15 @@ check_sort msg out = tryHead >>= maybe (return out) (\a -> eneeCheckIfDone (step
    (4) See 'merge_singles' for how it's actually done.
 -}
 
-do_rmdup :: Ord l => (BamRec -> l) -> Bool -> Collapse -> [BamRec] -> [BamRec]
+do_rmdup :: Ord l => (BamRec -> l) -> Bool -> Collapse -> [BamRec] -> [(Int,BamRec)]
 do_rmdup label strand_preserved Collapse{..} =
     concatMap do_rmdup1 . M.elems . accumMap label id
   where
-    do_rmdup1 rds = results ++ originals (leftovers ++ r1 ++ r2 ++ r3)
+    do_rmdup1 rds = results ++ map ((,) 0) (originals (leftovers ++ r1 ++ r2 ++ r3))
       where
         (results, leftovers) = merge_singles singles' unaligned' $
-                [ (str, fromDecision b) | ((_,str  ),b) <- M.toList merged' ] ++
-                [ (str, fromDecision b) | ((_,str,_),b) <- M.toList pairs' ]
+                [ (str, second fromDecision b) | ((_,str  ),b) <- M.toList merged' ] ++
+                [ (str, second fromDecision b) | ((_,str,_),b) <- M.toList pairs' ]
 
         (raw_pairs, raw_singles)       = partition isPaired rds
         (merged, true_singles)         = partition (liftA2 (||) isMerged isTrimmed) raw_singles
@@ -208,8 +208,9 @@ do_rmdup label strand_preserved Collapse{..} =
         (pairs, raw_half_pairs)        = partition b_totally_aligned raw_pairs
         (half_unaligned, half_aligned) = partition isUnmapped raw_half_pairs
 
-        mkMap f x = let m1 = M.map collapse $ accumMap f id x
-                    in (M.map fst m1, concatMap snd $ M.elems m1)
+        mkMap :: Ord a => (BamRec -> a) -> [BamRec] -> (M.Map a (Int,Decision), [BamRec])
+        mkMap f x = let m1 = M.map (\xs -> (length xs, collapse xs)) $ accumMap f id x
+                    in (M.map (second fst) m1, concatMap (snd.snd) $ M.elems m1)
 
         (pairs',r1)   = mkMap (\b -> (b_mate_pos b,   b_strand b, b_mate b)) pairs
         (merged',r2)  = mkMap (\b -> (alignedLength (b_cigar b), b_strand b))           merged
@@ -237,10 +238,10 @@ do_rmdup label strand_preserved Collapse{..} =
 -- everything(?).  Then we don't have a mate for the consensus... though
 -- we could decide to duplicate one mate read to get it.
 
-merge_singles :: M.Map Bool Decision                    -- strand --> true singles & half aligned
+merge_singles :: M.Map Bool (Int,Decision)              -- strand --> true singles & half aligned
               -> M.Map Bool [BamRec]                    -- strand --> half unaligned
-              -> [ (Bool, BamRec) ]                     -- strand --> paireds & mergeds
-              -> ([BamRec],[BamRec])                    -- results, leftovers
+              -> [ (Bool, (Int, BamRec)) ]              -- strand --> paireds & mergeds
+              -> ([(Int,BamRec)],[BamRec])              -- results, leftovers
 
 merge_singles singles unaligneds = go
   where
@@ -250,14 +251,14 @@ merge_singles singles unaligneds = go
     -- representative, we add in its XP field and put it into the
     -- leftovers.  If there is unaligned stuff here that has the same
     -- strand, it goes to the leftovers.
-    go ( (str, v) : paireds) =
+    go ( (str, (m,v)) : paireds) =
         let (r,l) = merge_singles (M.delete str singles) (M.delete str unaligneds) paireds
             unal  = M.findWithDefault [] str unaligneds ++ l
 
         in case M.lookup str singles of
-            Nothing                 -> (             v : r,     unal )
-            Just (Consensus      w) -> ( add_xp_of w v : r,     unal )      -- XXX do we need this w?!
-            Just (Representative w) -> ( add_xp_of w v : r, w : unal )
+            Nothing                    -> (              (m,v) : r,     unal )
+            Just (n, Consensus      w) -> ( (n, add_xp_of w v) : r,     unal )      -- XXX do we need this w?!
+            Just (n, Representative w) -> ( (n, add_xp_of w v) : r, w : unal )
 
     -- No more pairs, delegate the problem
     go [] = merge_halves unaligneds (M.toList singles)
@@ -280,17 +281,16 @@ merge_singles singles unaligneds = go
 -- singleton.
 
 merge_halves :: M.Map Bool [BamRec]                     -- strand --> half unaligned
-             -> [(Bool, Decision)]                      -- strand --> true singles & half aligned
-             -> ([BamRec],[BamRec])                     -- results, leftovers
+             -> [(Bool, (Int,Decision))]                -- strand --> true singles & half aligned
+             -> ([(Int,BamRec)],[BamRec])               -- results, leftovers
 
 -- Emitting a consensus: make it a single.  Nothing goes to leftovers;
 -- we may still need it for something else to be emitted.  (While that
 -- would be strange, making sure the BAM file stays completely valid is
 -- probably better.)
-merge_halves unaligneds ((_, Consensus v) : singles) =
-    case merge_halves unaligneds singles of
-        (l,r) -> ( v { b_flag = b_flag v .&. complement pflags } : r, l )
+merge_halves unaligneds ((_, (n, Consensus v)) : singles) = ( (n, v { b_flag = b_flag v .&. complement pflags }) : r, l )
   where
+    (r,l)  = merge_halves unaligneds singles
     pflags = flagPaired .|. flagProperlyPaired .|. flagMateUnmapped .|. flagMateReversed .|. flagFirstMate .|. flagSecondMate
 
 
@@ -299,7 +299,7 @@ merge_halves unaligneds ((_, Consensus v) : singles) =
 -- result.  Everything else goes to leftovers.  If the representative
 -- happens to be unpaired, no mate is found and that case therefore is
 -- handled smoothly.
-merge_halves unaligneds ((str, Representative v) : singles) = (v : take 1 same ++ r, drop 1 same ++ diff ++ l)
+merge_halves unaligneds ((str, (n, Representative v)) : singles) = ((n,v) : map ((,)1) (take 1 same) ++ r, drop 1 same ++ diff ++ l)
   where
     (r,l)          = merge_halves (M.delete str unaligneds) singles
     (same,diff)    = partition (is_mate_of v) $ M.findWithDefault [] str unaligneds
