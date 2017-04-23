@@ -58,7 +58,6 @@ Library
                        Bio.Iteratee.IO.Handle,
                        Bio.Iteratee.Iteratee,
                        Bio.Iteratee.List,
-                       Bio.Iteratee.ReadableChunk,
                        Bio.Iteratee.ZLib,
                        Bio.Prelude,
                        Bio.PriorityQueue,

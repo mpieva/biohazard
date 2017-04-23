@@ -19,7 +19,6 @@ import Data.ByteString.Builder      ( hPutBuilder, Builder, toLazyByteString )
 import Data.ByteString.Internal     ( ByteString(..) )
 import Data.ByteString.Lazy         ( foldrChunks )
 import Foreign.Marshal.Alloc        ( alloca )
-import Foreign.Storable             ( pokeByteOff, peek )
 import System.IO                    ( openBinaryFile, IOMode(..) )
 
 import qualified Control.Monad.Catch                as C

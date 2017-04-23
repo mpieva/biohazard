@@ -26,11 +26,10 @@ module Bio.Iteratee.IO(
 
 where
 
-import Bio.Iteratee.ReadableChunk
 import Bio.Iteratee.Iteratee
+import Bio.Prelude
 import Control.Monad.Catch
 import Control.Monad.IO.Class
-import Prelude
 
 import qualified Bio.Iteratee.IO.Handle as H
 import qualified Bio.Iteratee.IO.Fd as FD
@@ -46,33 +45,33 @@ defaultBufSize = 2*1024*1024
 
 -- If Posix is available, use the fileDriverRandomFd as fileDriverRandom.  Otherwise, use a handle-based variant.
 enumFile
-  :: (MonadIO m, MonadMask m, NullPoint s, ReadableChunk s el) =>
+  :: (MonadIO m, MonadMask m) =>
      Int
      -> FilePath
-     -> Enumerator s m a
+     -> Enumerator Bytes m a
 enumFile = FD.enumFile
 
 enumFileRandom
-  :: (MonadIO m, MonadMask m, NullPoint s, ReadableChunk s el) =>
+  :: (MonadIO m, MonadMask m) =>
      Int
      -> FilePath
-     -> Enumerator s m a
+     -> Enumerator Bytes m a
 enumFileRandom = FD.enumFileRandom
 
 -- |Process a file using the given Iteratee.  This function wraps
 -- enumFd as a convenience.
 fileDriver
-  :: (MonadIO m, MonadMask m, NullPoint s, ReadableChunk s el) =>
-     Iteratee s m a
+  :: (MonadIO m, MonadMask m) =>
+     Iteratee Bytes m a
      -> FilePath
      -> m a
 fileDriver = FD.fileDriverFd defaultBufSize
 
 -- |A version of fileDriver with a user-specified buffer size (in elements).
 fileDriverVBuf
-  :: (MonadIO m, MonadMask m, NullPoint s, ReadableChunk s el) =>
+  :: (MonadIO m, MonadMask m) =>
      Int
-     -> Iteratee s m a
+     -> Iteratee Bytes m a
      -> FilePath
      -> m a
 fileDriverVBuf = FD.fileDriverFd
@@ -80,16 +79,16 @@ fileDriverVBuf = FD.fileDriverFd
 -- |Process a file using the given Iteratee.  This function wraps
 -- enumFdRandom as a convenience.
 fileDriverRandom
-  :: (MonadIO m, MonadMask m, NullPoint s, ReadableChunk s el) =>
-     Iteratee s m a
+  :: (MonadIO m, MonadMask m) =>
+     Iteratee Bytes m a
      -> FilePath
      -> m a
 fileDriverRandom = FD.fileDriverRandomFd defaultBufSize
 
 fileDriverRandomVBuf
-  :: (MonadIO m, MonadMask m, NullPoint s, ReadableChunk s el) =>
+  :: (MonadIO m, MonadMask m) =>
      Int
-     -> Iteratee s m a
+     -> Iteratee Bytes m a
      -> FilePath
      -> m a
 fileDriverRandomVBuf = FD.fileDriverRandomFd

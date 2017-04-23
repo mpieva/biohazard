@@ -24,10 +24,7 @@ module Bio.Iteratee.Builder (
 import Bio.Iteratee
 import Bio.Iteratee.Bgzf                   ( compressChunk, maxBlockSize, bgzfEofMarker )
 import Bio.Prelude
-import Foreign.ForeignPtr                  ( ForeignPtr, withForeignPtr, mallocForeignPtrBytes )
 import Foreign.Marshal.Utils               ( copyBytes )
-import Foreign.Ptr                         ( Ptr, plusPtr )
-import Foreign.Storable                    ( pokeByteOff )
 
 import qualified Data.ByteString            as B
 import qualified Data.ByteString.Unsafe     as B

@@ -10,7 +10,6 @@ import Bio.Iteratee
 import Bio.Prelude
 
 import Foreign.C.Types      ( CInt(..) )
-import Foreign.Ptr          ( Ptr )
 
 import qualified Data.ByteString                        as B
 import qualified Data.Vector.Generic                    as V

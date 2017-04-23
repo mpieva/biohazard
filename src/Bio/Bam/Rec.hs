@@ -59,10 +59,7 @@ import Bio.Prelude
 
 import Control.Monad.Primitive      ( unsafePrimToPrim, unsafeInlineIO )
 import Foreign.C.Types              ( CInt(..), CSize(..) )
-import Foreign.ForeignPtr
 import Foreign.Marshal.Alloc        ( alloca )
-import Foreign.Ptr                  ( Ptr, plusPtr )
-import Foreign.Storable             ( peek, poke, peekByteOff, pokeByteOff, Storable(..) )
 
 import qualified Data.ByteString                    as B
 import qualified Data.ByteString.Char8              as S

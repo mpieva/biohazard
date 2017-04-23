@@ -6,6 +6,13 @@ module Bio.Prelude (
     module System.Posix.Files,
     module System.Posix.IO,
     module System.Posix.Types,
+#if !MIN_VERSION_base_prelude(1,1,0)
+    module Foreign.Storable,
+    module Foreign.Ptr,
+    module Foreign.ForeignPtr,
+    module Foreign.StablePtr,
+#endif
+
     Bytes, LazyBytes,
     HashMap,
     HashSet,
@@ -63,11 +70,17 @@ import Data.IntMap         ( IntMap )
 import Data.IntSet         ( IntSet )
 import Data.Text.Encoding  ( encodeUtf8, decodeUtf8With )
 import Foreign.C.Error     ( throwErrnoIf_ )
-import Foreign.Ptr         ( castPtr )
 import System.IO           ( hPrint, hPutStr, hPutStrLn, stderr, stdout, stdin )
 import System.Posix.Files
 import System.Posix.IO
 import System.Posix.Types
+
+#if !MIN_VERSION_base_prelude(1,1,0)
+import Foreign.Storable
+import Foreign.Ptr
+import Foreign.ForeignPtr
+import Foreign.StablePtr
+#endif
 
 import qualified Data.ByteString.Unsafe as B
 import qualified Data.ByteString.Lazy   as BL

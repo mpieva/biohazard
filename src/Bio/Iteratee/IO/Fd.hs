@@ -1,6 +1,3 @@
-{-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE ConstraintKinds #-}
-
 -- |Random and Binary IO with generic Iteratees, using File Descriptors for IO.
 -- when available, these are the preferred functions for performing IO as they
 -- run in constant space and function properly with sockets, pipes, etc.
@@ -22,13 +19,11 @@ where
 
 import Bio.Iteratee.IO.Base
 import Bio.Iteratee.Iteratee
-import Bio.Iteratee.ReadableChunk
 import Bio.Prelude
 import Control.Monad.Catch as CIO
 import Control.Monad.IO.Class
+import Data.ByteString (packCStringLen)
 import Foreign.Marshal.Alloc
-import Foreign.Ptr
-import Foreign.Storable
 import System.IO (SeekMode(..))
 
 
@@ -36,12 +31,12 @@ import System.IO (SeekMode(..))
 -- Binary Random IO enumerators
 
 makefdCallback ::
-  (MonadIO m, NullPoint s, ReadableChunk s el) =>
+  MonadIO m =>
   Ptr el
   -> ByteCount
   -> Fd
   -> st
-  -> m (Either SomeException ((Bool, st), s))
+  -> m (Either SomeException ((Bool, st), Bytes))
 makefdCallback p bufsize fd st = do
   n <- liftIO $ myfdRead fd (castPtr p) bufsize
   case n of
@@ -49,42 +44,42 @@ makefdCallback p bufsize fd st = do
     Right 0  -> liftIO yield >> return (Right ((False, st), emptyP))
     Right n' -> liftM (\s -> Right ((True, st), s)) $
                   readFromPtr p (fromIntegral n')
+  where
+    readFromPtr buf l = liftIO $ packCStringLen (castPtr buf, l)
 
 -- |The enumerator of a POSIX File Descriptor.  This version enumerates
 -- over the entire contents of a file, in order, unless stopped by
 -- the iteratee.  In particular, seeking is not supported.
 enumFd
-  :: forall s el m a.(NullPoint s, ReadableChunk s el, MonadIO m, MonadMask m) =>
+  :: (MonadIO m, MonadMask m) =>
      Int
      -> Fd
-     -> Enumerator s m a
-enumFd bs fd iter =
-  let bufsize = bs * (sizeOf (undefined :: el))
-  in CIO.bracket (liftIO $ mallocBytes bufsize)
-                 (liftIO . free)
-                 (\p -> enumFromCallback (makefdCallback p (fromIntegral bufsize) fd) () iter)
+     -> Enumerator Bytes m a
+enumFd bufsize fd iter =
+  CIO.bracket (liftIO $ mallocBytes bufsize)
+              (liftIO . free)
+              (\p -> enumFromCallback (makefdCallback p (fromIntegral bufsize) fd) () iter)
 
 -- |A variant of enumFd that catches exceptions raised by the @Iteratee@.
 enumFdCatch
- :: forall e s el m a.(IException e, NullPoint s, ReadableChunk s el, MonadIO m, MonadMask m)
+ :: (IException e, MonadIO m, MonadMask m)
     => Int
     -> Fd
     -> (e -> m (Maybe EnumException))
-    -> Enumerator s m a
-enumFdCatch bs fd handler iter =
-  let bufsize = bs * (sizeOf (undefined :: el))
-  in CIO.bracket (liftIO $ mallocBytes bufsize)
-                 (liftIO . free)
-                 (\p -> enumFromCallbackCatch (makefdCallback p (fromIntegral bufsize) fd) handler () iter)
+    -> Enumerator Bytes m a
+enumFdCatch bufsize fd handler iter =
+  CIO.bracket (liftIO $ mallocBytes bufsize)
+              (liftIO . free)
+              (\p -> enumFromCallbackCatch (makefdCallback p (fromIntegral bufsize) fd) handler () iter)
 
 
 -- |The enumerator of a POSIX File Descriptor: a variation of @enumFd@ that
 -- supports RandomIO (seek requests).
 enumFdRandom
- :: forall s el m a.(NullPoint s, ReadableChunk s el, MonadIO m, MonadMask m) =>
+ :: (MonadIO m, MonadMask m) =>
     Int
     -> Fd
-    -> Enumerator s m a
+    -> Enumerator Bytes m a
 enumFdRandom bs fd iter = enumFdCatch bs fd handler iter
   where
     handler (SeekException off) =
@@ -107,18 +102,18 @@ fileDriver enumf bufsize iter filepath = CIO.bracket
 
 -- |Process a file using the given @Iteratee@.
 fileDriverFd
-  :: (NullPoint s, MonadIO m, MonadMask m, ReadableChunk s el) =>
+  :: (MonadIO m, MonadMask m) =>
      Int -- ^Buffer size (number of elements)
-     -> Iteratee s m a
+     -> Iteratee Bytes m a
      -> FilePath
      -> m a
 fileDriverFd = fileDriver enumFd
 
 -- |A version of fileDriverFd that supports seeking.
 fileDriverRandomFd
-  :: (NullPoint s, MonadIO m, MonadMask m, ReadableChunk s el) =>
+  :: (MonadIO m, MonadMask m) =>
      Int
-     -> Iteratee s m a
+     -> Iteratee Bytes m a
      -> FilePath
      -> m a
 fileDriverRandomFd = fileDriver enumFdRandom
@@ -134,17 +129,17 @@ enumFile' enumf bufsize filepath iter = CIO.bracket
   (flip (enumf bufsize) iter)
 
 enumFile ::
-  (NullPoint s, MonadIO m, MonadMask m, ReadableChunk s el)
+  (MonadIO m, MonadMask m)
   => Int                 -- ^Buffer size
   -> FilePath
-  -> Enumerator s m a
+  -> Enumerator Bytes m a
 enumFile = enumFile' enumFd
 
 enumFileRandom ::
-  (NullPoint s, MonadIO m, MonadMask m, ReadableChunk s el)
+  (MonadIO m, MonadMask m)
   => Int                 -- ^Buffer size
   -> FilePath
-  -> Enumerator s m a
+  -> Enumerator Bytes m a
 enumFileRandom = enumFile' enumFdRandom
 
 
