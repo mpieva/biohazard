@@ -18,6 +18,18 @@ void nuc_loop( char* p, int stride, char* q, int u, int v )
     }
 }
 
+void nuc_loop_wide( char* p, int stride, char* q, int u, int v )
+{
+    u *= stride ;
+    v *= stride ;
+
+    while( u < v ) {
+        char a = q[ u ] ;
+        *p++ = a ? 0x1 << (a&3) : 0xf  ;
+        u += stride ;
+    }
+}
+
 void nuc_loop_asc( char* p, int stride, char* q, int u, int v )
 {
     u *= stride ;

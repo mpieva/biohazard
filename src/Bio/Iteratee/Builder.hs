@@ -72,7 +72,7 @@ data BgzfTokens = TkWord32   {-# UNPACK #-} !Word32       BgzfTokens -- a 4-byte
                 | TkBclSpecial !BclArgs                   BgzfTokens
                 | TkLowLevel {-# UNPACK #-} !Int (BB -> IO BB) BgzfTokens
 
-data BclSpecialType = BclNucsBin | BclNucsAsc | BclNucsAscRev | BclQualsBin | BclQualsAsc | BclQualsAscRev
+data BclSpecialType = BclNucsBin | BclNucsWide | BclNucsAsc | BclNucsAscRev | BclQualsBin | BclQualsAsc | BclQualsAscRev
 
 data BclArgs = BclArgs BclSpecialType
                        {-# UNPACK #-} !(VS.Vector Word8)  -- bcl matrix
@@ -235,6 +235,10 @@ loop_bcl_special p (BclArgs tp vec stride u v i) =
             nuc_loop p stride (plusPtr q i) u v
             return $ (v - u + 2) `div` 2
 
+        BclNucsWide -> do
+            nuc_loop_wide p stride (plusPtr q i) u v
+            return $ v - u + 1
+
         BclNucsAsc -> do
             nuc_loop_asc p stride (plusPtr q i) u v
             return $ v - u + 1
@@ -257,6 +261,9 @@ loop_bcl_special p (BclArgs tp vec stride u v i) =
 
 foreign import ccall unsafe "nuc_loop"
     nuc_loop :: Ptr Word8 -> Int -> Ptr Word8 -> Int -> Int -> IO ()
+
+foreign import ccall unsafe "nuc_loop_wide"
+    nuc_loop_wide :: Ptr Word8 -> Int -> Ptr Word8 -> Int -> Int -> IO ()
 
 foreign import ccall unsafe "nuc_loop_asc"
     nuc_loop_asc :: Ptr Word8 -> Int -> Ptr Word8 -> Int -> Int -> IO ()

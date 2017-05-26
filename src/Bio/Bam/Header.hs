@@ -38,7 +38,8 @@ module Bio.Bam.Header (
         flagDuplicate,
         eflagTrimmed,
         eflagMerged,
-        eflagVestigial,
+        eflagAlternative,
+        eflagExactIndex,
 
         distinctBin,
 
@@ -292,25 +293,27 @@ getRef refs (Refseq i)
     | otherwise                                = BamSQ "*" 0 []
 
 
-flagPaired, flagProperlyPaired, flagUnmapped, flagMateUnmapped, flagReversed, flagMateReversed, flagFirstMate, flagSecondMate,
+flagPaired, flagProperlyPaired, flagUnmapped, flagMateUnmapped,
+ flagReversed, flagMateReversed, flagFirstMate, flagSecondMate,
  flagAuxillary, flagFailsQC, flagDuplicate :: Int
 
-flagPaired = 0x1
-flagProperlyPaired = 0x2
-flagUnmapped = 0x4
-flagMateUnmapped = 0x8
-flagReversed = 0x10
-flagMateReversed = 0x20
-flagFirstMate = 0x40
-flagSecondMate = 0x80
-flagAuxillary = 0x100
-flagFailsQC = 0x200
-flagDuplicate = 0x400
+flagPaired         =   0x1
+flagProperlyPaired =   0x2
+flagUnmapped       =   0x4
+flagMateUnmapped   =   0x8
+flagReversed       =  0x10
+flagMateReversed   =  0x20
+flagFirstMate      =  0x40
+flagSecondMate     =  0x80
+flagAuxillary      = 0x100
+flagFailsQC        = 0x200
+flagDuplicate      = 0x400
 
-eflagTrimmed, eflagMerged, eflagVestigial :: Int
-eflagTrimmed       = 0x1
-eflagMerged        = 0x2
-eflagVestigial     = 0x4
+eflagTrimmed, eflagMerged, eflagAlternative, eflagExactIndex :: Int
+eflagTrimmed     = 0x1
+eflagMerged      = 0x2
+eflagAlternative = 0x4
+eflagExactIndex  = 0x8
 
 
 -- | Compares two sequence names the way samtools does.

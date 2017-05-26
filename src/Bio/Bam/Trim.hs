@@ -1,7 +1,19 @@
 -- | Trimming of reads as found in BAM files.  Implements trimming low
 -- quality sequence from the 3' end.
 
-module Bio.Bam.Trim where
+module Bio.Bam.Trim
+        ( trim_3
+        , trim_3'
+        , trim_low_quality
+        , default_fwd_adapters
+        , default_rev_adapters
+        , find_merge
+        , mergeBam
+        , find_trim
+        , trimBam
+        , mergeTrimBam
+        , twoMins
+        ) where
 
 import Bio.Bam.Header
 import Bio.Bam.Rec
@@ -144,6 +156,19 @@ trim_low_quality :: Qual -> a -> [Qual] -> Bool
 trim_low_quality q = const $ all (< q)
 
 
+-- | Finds the merge point.  Input is list of forward adapters, list of
+-- reverse adapters, sequence1, quality1, sequence2, quality2; output is
+-- merge point and two qualities (YM, YN).
+find_merge :: [W.Vector Nucleotides] -> [W.Vector Nucleotides]
+           -> W.Vector Nucleotides -> W.Vector Qual
+           -> W.Vector Nucleotides -> W.Vector Qual
+           -> (Int, Int, Int)
+find_merge ads1 ads2 r1 q1 r2 q2 = (mlen, score2 - score1, plain_score - score1)
+  where
+    plain_score = 6 * fromIntegral (V.length r1 + V.length r2)
+    (score1, mlen, score2) = twoMins plain_score (V.length r1 + V.length r2) $
+                             merge_score ads1 ads2 r1 q1 r2 q2
+
 -- | Overlap-merging of read pairs.  We shall compute the likelihood
 -- for every possible overlap, then select the most likely one (unless it
 -- looks completely random), compute a quality from the second best
@@ -163,16 +188,15 @@ trim_low_quality q = const $ all (< q)
 -- would further limit the returned quality!  (In practice, map quality
 -- later imposes a limit anyway, so no worries...)
 
-merge_overlap :: BamRec -> [ W.Vector Nucleotides ]
-              -> BamRec -> [ W.Vector Nucleotides ]
-              -> Maybe ( BamRec, BamRec, BamRec, Int, Int )
-merge_overlap r1 ads1 r2 ads2
-    | V.null (b_seq r1) && V.null (b_seq r2) = Nothing
-    | otherwise                              = result mlen score1 score2
+mergeBam :: Int -> Int -> [W.Vector Nucleotides] -> [W.Vector Nucleotides] -> BamRec -> BamRec -> [BamRec]
+mergeBam lowq highq ads1 ads2 r1 r2
+    | V.null (b_seq r1) && V.null (b_seq r2) = [ r1', r2'     ]
+    | qual1 < lowq                           = [ r1', r2'     ]
+    | qual1 >= highq && mlen == 0            = [              ]
+    | qual1 >= highq                         = [           rm ]
+    | mlen < len_r1-20 || mlen < len_r2-20   = [           rm ]
+    | otherwise         = map flag_alternative [ r1', r2', rm ]
   where
-    -- the "merge" score if there is no overlap
-    plain_score = 6 * fromIntegral (len_r1 + len_r2)
-
     len_r1    = V.length  $ b_seq  r1
     len_r2    = V.length  $ b_seq  r2
 
@@ -181,17 +205,14 @@ merge_overlap r1 ads1 r2 ads2
     b_qual_r1 = V.convert $ b_qual r1
     b_qual_r2 = V.convert $ b_qual r2
 
-    (score1, mlen, score2) = twoMins plain_score (len_r1 + len_r2) $
-                             merge_score ads1 ads2 b_seq_r1 b_qual_r1 b_seq_r2 b_qual_r2
+    (mlen, qual1, qual2) = find_merge ads1 ads2 b_seq_r1 b_qual_r1 b_seq_r2 b_qual_r2
 
-    flag_vestigial    br = br { b_exts = updateE "FF" (Int $ extAsInt 0 "FF" br .|. eflagVestigial) $ b_exts br }
-    store_quals s1 s2 br = br { b_exts = updateE "YM" (Int $ s2          - s1) $
-                                         updateE "YN" (Int $ plain_score - s1) $ b_exts br }
+    flag_alternative br = br { b_exts = updateE "FF" (Int $ extAsInt 0 "FF" br .|. eflagAlternative) $ b_exts br }
+    store_quals      br = br { b_exts = updateE "YM" (Int qual1) $ updateE "YN" (Int qual2) $ b_exts br }
 
-    result l s1 s2 = Just ( store_quals s1 s2 $ flag_vestigial r1
-                          , store_quals s1 s2 $ flag_vestigial r2
-                          , store_quals s1 s2 $ merged_read l (fromIntegral . min 63 $ s2-s1)
-                          , s2 - s1, plain_score - s1 )
+    r1' = store_quals r1
+    r2' = store_quals r2
+    rm  = store_quals $ merged_read mlen (fromIntegral $ min 63 qual1)
 
     merged_read l qmax
         | V.length merged_seq /= l = error $ "Logic error in merged_read: " ++ show (V.length merged_seq, l)
@@ -205,60 +226,67 @@ merge_overlap r1 ads1 r2 ads2
       where
         merged_seq = V.convert $ V.concat
                 [ V.take (l - len_r2) (b_seq_r1)
-                , merge_seqs             (V.take l $ V.drop (l - len_r2) b_seq_r1)
+                , V.zipWith4 zz          (V.take l $ V.drop (l - len_r2) b_seq_r1)
                                          (V.take l $ V.drop (l - len_r2) b_qual_r1)
                              (V.reverse $ V.take l $ V.drop (l - len_r1) b_seq_r2)
                              (V.reverse $ V.take l $ V.drop (l - len_r1) b_qual_r2)
                 , V.reverse $ V.take (l - len_r1) b_seq_r2 ]
+          where
+            zz !n1 (Q !q1) !n2 (Q !q2) | n1 == compls n2 =        n1
+                                       | q1 > q2         =        n1
+                                       | otherwise       = compls n2
 
         merged_qual = V.convert $ V.concat
                 [ V.take (l - len_r2) (b_qual_r1)
-                , merge_quals qmax        (V.take l $ V.drop (l - len_r2) b_seq_r1)
+                , V.zipWith4 zz           (V.take l $ V.drop (l - len_r2) b_seq_r1)
                                           (V.take l $ V.drop (l - len_r2) b_qual_r1)
                               (V.reverse $ V.take l $ V.drop (l - len_r1) b_seq_r2)
                               (V.reverse $ V.take l $ V.drop (l - len_r1) b_qual_r2)
                 , V.reverse $ V.take (l - len_r1) b_qual_r2 ]
+          where
+            zz !n1 (Q !q1) !n2 (Q !q2) | n1 == compls n2 = Q $ min qmax (q1 + q2)
+                                       | q1 > q2         = Q $           q1 - q2
+                                       | otherwise       = Q $           q2 - q1
 
     pair_flags = flagPaired.|.flagProperlyPaired.|.flagMateUnmapped.|.flagMateReversed.|.flagFirstMate.|.flagSecondMate
 
-    merge_seqs v1 v2 v3 v4 = V.zipWith4 zz v1 v2 v3 v4
-      where
-        zz !n1 (Q !q1) !n2 (Q !q2) | n1 == compls n2 =        n1
-                                   | q1 > q2         =        n1
-                                   | otherwise       = compls n2
 
-    merge_quals qmax v1 v2 v3 v4 = V.zipWith4 zz v1 v2 v3 v4
-      where
-        zz !n1 (Q !q1) !n2 (Q !q2) | n1 == compls n2 = Q $ min qmax (q1 + q2)
-                                   | q1 > q2         = Q $           q1 - q2
-                                   | otherwise       = Q $           q2 - q1
+-- | Finds the trimming point.  Input is list of forward adapters,
+-- sequence, quality; output is trim point and two qualities (YM, YN).
+find_trim :: [W.Vector Nucleotides]
+          -> W.Vector Nucleotides -> W.Vector Qual
+          -> (Int, Int, Int)
+find_trim ads1 r1 q1 = (mlen, score2 - score1, plain_score - score1)
+  where
+    plain_score = 6 * fromIntegral (V.length r1)
+    (score1, mlen, score2) = twoMins plain_score (V.length r1) $
+                             merge_score ads1 [V.empty] r1 q1 V.empty V.empty
 
 -- | Trimming for a single read:  we need one adapter only (the one coming
 -- /after/ the read), here provided as a list of options, and then we
 -- merge with an empty second read.  Results in up to two reads (the
 -- original, possibly flagged, and the trimmed one, definitely flagged,
 -- and two qualities).
-trim_adapter :: BamRec -> [ W.Vector Nucleotides ] -> Maybe ( BamRec, BamRec, Int, Int )
-trim_adapter r1 ads1
-    | V.null (b_seq r1) = Nothing
-    | otherwise         = result mlen score1 score2
+trimBam :: Int -> Int -> [W.Vector Nucleotides] -> BamRec -> [BamRec]
+trimBam lowq highq ads1 r1
+    | V.null (b_seq r1)              = [ r1'      ]
+    | mlen == 0 && qual1 >= highq    = [          ]
+    | qual1 < lowq                   = [ r1'      ]
+    | qual1 >= highq                 = [      r1t ]
+    | otherwise = map flag_alternative [ r1', r1t ]
   where
     -- the "merge" score if there is no trimming
-    plain_score = 6 * fromIntegral (V.length (b_seq r1))
 
     b_seq_r1 = V.convert $ b_seq r1
     b_qual_r1 = V.convert $ b_qual r1
 
-    (score1, mlen, score2) = twoMins plain_score (V.length (b_seq r1)) $
-                             merge_score ads1 [V.empty] b_seq_r1 b_qual_r1 V.empty V.empty
+    (mlen, qual1, qual2) = find_trim ads1 b_seq_r1 b_qual_r1
 
-    flag_vestigial    br = br { b_exts = updateE "FF" (Int $ extAsInt 0 "FF" br .|. eflagVestigial) $ b_exts br }
-    store_quals s1 s2 br = br { b_exts = updateE "YM" (Int $ s2          - s1) $
-                                         updateE "YN" (Int $ plain_score - s1) $ b_exts br }
+    flag_alternative br = br { b_exts = updateE "FF" (Int $ extAsInt 0 "FF" br .|. eflagAlternative) $ b_exts br }
+    store_quals      br = br { b_exts = updateE "YM" (Int qual1) $ updateE "YN" (Int qual2) $ b_exts br }
 
-    result l s1 s2 = Just ( store_quals s1 s2 $ flag_vestigial r1
-                          , store_quals s1 s2 $ trimmed_read l
-                          , s2 - s1, plain_score - s1 )
+    r1'  = store_quals r1
+    r1t  = store_quals $ trimmed_read mlen
 
     trimmed_read l = nullBamRec {
             b_qname = b_qname r1,
@@ -388,31 +416,6 @@ twoMins a0 imax f = go a0 0 maxBound 0 0
                 x | x < m1    -> go  x  i m1 i1 (i+1)
                   | x < m2    -> go m1 i1  x  i (i+1)
                   | otherwise -> go m1 i1 m2 i2 (i+1)
-
-
-mergeBam :: Int -> Int -> [W.Vector Nucleotides] -> [W.Vector Nucleotides] -> BamRec -> BamRec -> [BamRec]
-mergeBam lowq highq fwd_adapters rev_adapters r1 r2
-    = case merge_overlap r1 fwd_adapters r2 rev_adapters of
-        Nothing                   ->      [ r1, r2 ]
-        Just (r1',r2',rm,q1,_q2)
-            | q1 < lowq           ->      [ r1, r2 ]
-            | q1 >= highq         -> [ rm ]
-            | lm < l1 || lm < l2  -> [ rm ]
-            | otherwise           -> [ rm, r1', r2' ]
-          where
-            lm = V.length (b_seq rm)
-            l1 = V.length (b_seq r1) - 20
-            l2 = V.length (b_seq r2) - 20
-
-trimBam :: Int -> Int -> [W.Vector Nucleotides] -> BamRec -> [BamRec]
-trimBam lowq highq fwd_adapters r1
-    = case trim_adapter r1 fwd_adapters of
-        Nothing              -> [ r1 ]
-        Just (r',r1t,q1,_q2)
-            | q1 < lowq      -> [ r1 ]
-            | q1 >= highq    -> [ r1t ]
-            | otherwise      -> [ r1t, r' ]
-
 
 
 mergeTrimBam :: Monad m => Int -> Int -> [W.Vector Nucleotides] -> [W.Vector Nucleotides] -> Enumeratee [BamRec] [BamRec] m a
