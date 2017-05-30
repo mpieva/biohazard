@@ -13,6 +13,8 @@ module Bio.Bam.Trim
         , trimBam
         , mergeTrimBam
         , twoMins
+        , merged_seq
+        , merged_qual
         ) where
 
 import Bio.Bam.Header
@@ -209,46 +211,54 @@ mergeBam lowq highq ads1 ads2 r1 r2
 
     flag_alternative br = br { b_exts = updateE "FF" (Int $ extAsInt 0 "FF" br .|. eflagAlternative) $ b_exts br }
     store_quals      br = br { b_exts = updateE "YM" (Int qual1) $ updateE "YN" (Int qual2) $ b_exts br }
+    pair_flags = flagPaired.|.flagProperlyPaired.|.flagMateUnmapped.|.flagMateReversed.|.flagFirstMate.|.flagSecondMate
 
     r1' = store_quals r1
     r2' = store_quals r2
     rm  = store_quals $ merged_read mlen (fromIntegral $ min 63 qual1)
 
-    merged_read l qmax
-        | V.length merged_seq /= l = error $ "Logic error in merged_read: " ++ show (V.length merged_seq, l)
-        | otherwise = nullBamRec {
+    merged_read l qmax = nullBamRec {
                 b_qname = b_qname r1,
                 b_flag  = flagUnmapped .|. complement pair_flags .&. b_flag r1,
-                b_seq   = merged_seq,
-                b_qual  = merged_qual,
+                b_seq   = V.convert $ merged_seq l b_seq_r1 b_qual_r1 b_seq_r2 b_qual_r2,
+                b_qual  = V.convert $ merged_qual qmax l b_seq_r1 b_qual_r1 b_seq_r2 b_qual_r2,
                 b_exts  = let ff = if l < len_r1 then eflagTrimmed else 0
                           in updateE "FF" (Int $ extAsInt 0 "FF" r1 .|. eflagMerged .|. ff) $ b_exts r1 }
-      where
-        merged_seq = V.convert $ V.concat
-                [ V.take (l - len_r2) (b_seq_r1)
-                , V.zipWith4 zz          (V.take l $ V.drop (l - len_r2) b_seq_r1)
-                                         (V.take l $ V.drop (l - len_r2) b_qual_r1)
-                             (V.reverse $ V.take l $ V.drop (l - len_r1) b_seq_r2)
-                             (V.reverse $ V.take l $ V.drop (l - len_r1) b_qual_r2)
-                , V.reverse $ V.take (l - len_r1) b_seq_r2 ]
-          where
-            zz !n1 (Q !q1) !n2 (Q !q2) | n1 == compls n2 =        n1
-                                       | q1 > q2         =        n1
-                                       | otherwise       = compls n2
 
-        merged_qual = V.convert $ V.concat
-                [ V.take (l - len_r2) (b_qual_r1)
-                , V.zipWith4 zz           (V.take l $ V.drop (l - len_r2) b_seq_r1)
-                                          (V.take l $ V.drop (l - len_r2) b_qual_r1)
-                              (V.reverse $ V.take l $ V.drop (l - len_r1) b_seq_r2)
-                              (V.reverse $ V.take l $ V.drop (l - len_r1) b_qual_r2)
-                , V.reverse $ V.take (l - len_r1) b_qual_r2 ]
-          where
-            zz !n1 (Q !q1) !n2 (Q !q2) | n1 == compls n2 = Q $ min qmax (q1 + q2)
-                                       | q1 > q2         = Q $           q1 - q2
-                                       | otherwise       = Q $           q2 - q1
+{-# INLINE merged_seq #-}
+merged_seq :: (V.Vector v Nucleotides, V.Vector v Qual)
+           => Int -> v Nucleotides -> v Qual -> v Nucleotides -> v Qual -> v Nucleotides
+merged_seq l b_seq_r1 b_qual_r1 b_seq_r2 b_qual_r2 = V.concat
+        [ V.take (l - len_r2) (b_seq_r1)
+        , V.zipWith4 zz          (V.take l $ V.drop (l - len_r2) b_seq_r1)
+                                 (V.take l $ V.drop (l - len_r2) b_qual_r1)
+                     (V.reverse $ V.take l $ V.drop (l - len_r1) b_seq_r2)
+                     (V.reverse $ V.take l $ V.drop (l - len_r1) b_qual_r2)
+        , V.reverse $ V.take (l - len_r1) b_seq_r2 ]
+  where
+    len_r1 = V.length b_qual_r1
+    len_r2 = V.length b_qual_r2
+    zz !n1 (Q !q1) !n2 (Q !q2) | n1 == compls n2 =        n1
+                               | q1 > q2         =        n1
+                               | otherwise       = compls n2
 
-    pair_flags = flagPaired.|.flagProperlyPaired.|.flagMateUnmapped.|.flagMateReversed.|.flagFirstMate.|.flagSecondMate
+{-# INLINE merged_qual #-}
+merged_qual :: (V.Vector v Nucleotides, V.Vector v Qual)
+            => Word8 -> Int -> v Nucleotides -> v Qual -> v Nucleotides -> v Qual -> v Qual
+merged_qual qmax l b_seq_r1 b_qual_r1 b_seq_r2 b_qual_r2 = V.concat
+        [ V.take (l - len_r2) (b_qual_r1)
+        , V.zipWith4 zz           (V.take l $ V.drop (l - len_r2) b_seq_r1)
+                                  (V.take l $ V.drop (l - len_r2) b_qual_r1)
+                      (V.reverse $ V.take l $ V.drop (l - len_r1) b_seq_r2)
+                      (V.reverse $ V.take l $ V.drop (l - len_r1) b_qual_r2)
+        , V.reverse $ V.take (l - len_r1) b_qual_r2 ]
+  where
+    len_r1 = V.length b_qual_r1
+    len_r2 = V.length b_qual_r2
+    zz !n1 (Q !q1) !n2 (Q !q2) | n1 == compls n2 = Q $ min qmax (q1 + q2)
+                               | q1 > q2         = Q $           q1 - q2
+                               | otherwise       = Q $           q2 - q1
+
 
 
 -- | Finds the trimming point.  Input is list of forward adapters,
