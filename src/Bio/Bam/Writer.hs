@@ -51,7 +51,8 @@ encodeSamEntry refs b = conjoin '\t' [
     shows (b_pos b + 1),
     shows (unQ $ b_mapq b),
     V.foldr ((.) . shows) id (b_cigar b),
-    unpck (sq_name $ getRef refs $ b_mrnm b),
+    if isValidRefseq (b_mrnm b) && b_mrnm b == b_rname b
+      then (:) '=' else unpck (sq_name $ getRef refs $ b_mrnm b),
     shows (b_mpos b + 1),
     shows (b_isize b),
     shows (V.toList $ b_seq b),
