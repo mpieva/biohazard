@@ -60,7 +60,6 @@ Library
                        Bio.Iteratee.List,
                        Bio.Iteratee.ZLib,
                        Bio.Prelude,
-                       Bio.PriorityQueue,
                        Bio.TwoBit,
                        Bio.Util.Numeric,
                        Bio.Util.Zlib
