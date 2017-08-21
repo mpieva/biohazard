@@ -149,13 +149,13 @@ xs ~~ [] = xs
 -- two, and finally in the file itself.  The first file that exists and
 -- can actually be parsed, is used.
 readBamIndex :: FilePath -> IO (BamIndex ())
-readBamIndex fp | takeExtension fp == ".bai" = fileDriver readBaiIndex fp
-                | takeExtension fp == ".csi" = fileDriver readBaiIndex fp
+readBamIndex fp | takeExtension fp == ".bai" = enumFile defaultBufSize fp readBaiIndex >>= run
+                | takeExtension fp == ".csi" = enumFile defaultBufSize fp readBaiIndex >>= run
                 | otherwise = tryIx               (fp <.> "bai") $
                               tryIx (dropExtension fp <.> "bai") $
                               tryIx               (fp <.> "csi") $
                               tryIx (dropExtension fp <.> "csi") $
-                              fileDriver readBaiIndex fp
+                              enumFile defaultBufSize fp readBaiIndex >>= run
   where
     tryIx f k = do e <- doesFileExist f
                    if e then do r <- enumFile defaultBufSize f readBaiIndex >>= tryRun

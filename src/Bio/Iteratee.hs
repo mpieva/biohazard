@@ -147,15 +147,15 @@ type Enumerator' h eo m b = (h -> Iteratee eo m b) -> m (Iteratee eo m b)
 type Enumeratee' h ei eo m b = (h -> Iteratee eo m b) -> Iteratee ei m (Iteratee eo m b)
 
 enumAuxFile :: (MonadIO m, MonadMask m) => FilePath -> Iteratee S.ByteString m a -> m a
-enumAuxFile fp it = liftIO (findAuxFile fp) >>= fileDriver it
+enumAuxFile fp it = liftIO (findAuxFile fp) >>= \f -> enumFile defaultBufSize f it >>= run
 
 enumDefaultInputs :: (MonadIO m, MonadMask m) => Enumerator S.ByteString m a
 enumDefaultInputs it0 = liftIO getArgs >>= flip enumInputs it0
 
 enumInputs :: (MonadIO m, MonadMask m) => [FilePath] -> Enumerator S.ByteString m a
-enumInputs [] = enumHandle defaultBufSize stdin
+enumInputs [] = enumFd defaultBufSize stdInput
 enumInputs xs = go xs
-  where go ("-":fs) = enumHandle defaultBufSize stdin >=> go fs
+  where go ("-":fs) = enumFd defaultBufSize stdInput >=> go fs
         go ( f :fs) = enumFile defaultBufSize f >=> go fs
         go [      ] = return
 

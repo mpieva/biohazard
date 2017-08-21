@@ -41,6 +41,7 @@ module Bio.Iteratee.Exception (
   -- * Exception types
   IFException (..)
   ,Exception (..)             -- from Control.Exception
+  ,FileOffset                 -- from System.Posix.Types
   -- ** Enumerator exceptions
   ,EnumException (..)
   ,DivergentException (..)
@@ -61,10 +62,10 @@ module Bio.Iteratee.Exception (
 )
 where
 
-import Bio.Iteratee.IO.Base
 import Control.Exception
 import Data.Data
 import Prelude
+import System.Posix.Types ( FileOffset )
 
 
 -- ----------------------------------------------

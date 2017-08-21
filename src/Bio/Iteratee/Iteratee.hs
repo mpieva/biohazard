@@ -62,13 +62,11 @@ module Bio.Iteratee.Iteratee (
   ,(<><)
   -- * Misc.
   ,seek
-  ,FileOffset
   -- * Classes
   ,module Bio.Iteratee.Base
 )
 where
 
-import Bio.Iteratee.IO.Base
 import Bio.Iteratee.Base
 import Bio.Prelude hiding (loop)
 import Control.Monad.IO.Class

@@ -1,39 +1,26 @@
-{-# LANGUAGE ConstraintKinds #-}
-
--- |Random and Binary IO with generic Iteratees.
+-- |Random and Binary IO with generic Iteratees, using File Descriptors for IO.
+-- when available, these are the preferred functions for performing IO as they
+-- run in constant space and function properly with sockets, pipes, etc.
 
 module Bio.Iteratee.IO(
   -- * Data
-  defaultBufSize,
+  defaultBufSize
   -- * File enumerators
-  -- ** Handle-based enumerators
-  H.enumHandle,
-  H.enumHandleRandom,
-  enumFile,
-  enumFileRandom,
-  -- ** FileDescriptor based enumerators
-  FD.enumFd,
-  FD.enumFdRandom,
-  -- * Iteratee drivers
-  --   These are FileDescriptor-based on POSIX systems, otherwise they are
-  --   Handle-based.  The Handle-based drivers are accessible on POSIX systems
-  --   at Data.Iteratee.IO.Handle
-  fileDriver,
-  fileDriverVBuf,
-  fileDriverRandom,
-  fileDriverRandomVBuf,
+  ,enumFile
+  ,enumFileRandom
+  -- * FileDescriptor based enumerators for monadic iteratees
+  ,enumFd
+  ,enumFdCatch
+  ,enumFdRandom
 )
-
 where
 
 import Bio.Iteratee.Iteratee
-import Bio.Prelude
+import Bio.Prelude hiding ( bracket )
 import Control.Monad.Catch
 import Control.Monad.IO.Class
-
-import qualified Bio.Iteratee.IO.Handle as H
-import qualified Bio.Iteratee.IO.Fd as FD
-
+import Data.ByteString.Internal (createAndTrim)
+import System.IO (SeekMode(..))
 
 -- | Default buffer size in elements.  This was 1024 in "Data.Iteratee",
 -- which is obviously too small.  Since we often want to merge many
@@ -42,54 +29,60 @@ import qualified Bio.Iteratee.IO.Fd as FD
 defaultBufSize :: Int
 defaultBufSize = 2*1024*1024
 
+-- ------------------------------------------------------------------------
+-- Binary Random IO enumerators
 
--- If Posix is available, use the fileDriverRandomFd as fileDriverRandom.  Otherwise, use a handle-based variant.
-enumFile
-  :: (MonadIO m, MonadMask m) =>
-     Int
-     -> FilePath
-     -> Enumerator Bytes m a
-enumFile = FD.enumFile
+makefdCallback :: MonadIO m => Int -> Fd -> st -> m (Either SomeException ((Bool, st), Bytes))
+makefdCallback bufsize fd st = do
+  s <- liftIO . createAndTrim bufsize $ \p ->
+       fromIntegral <$> fdReadBuf fd (castPtr p) (fromIntegral bufsize)
+  return $ Right ((True, st), s)
 
-enumFileRandom
-  :: (MonadIO m, MonadMask m) =>
-     Int
-     -> FilePath
-     -> Enumerator Bytes m a
-enumFileRandom = FD.enumFileRandom
+-- |The enumerator of a POSIX File Descriptor.  This version enumerates
+-- over the entire contents of a file, in order, unless stopped by
+-- the iteratee.  In particular, seeking is not supported.
+enumFd :: MonadIO m => Int -> Fd -> Enumerator Bytes m a
+enumFd bufsize fd = enumFromCallback (makefdCallback bufsize fd) ()
 
--- |Process a file using the given Iteratee.  This function wraps
--- enumFd as a convenience.
-fileDriver
-  :: (MonadIO m, MonadMask m) =>
-     Iteratee Bytes m a
-     -> FilePath
-     -> m a
-fileDriver = FD.fileDriverFd defaultBufSize
+-- |A variant of enumFd that catches exceptions raised by the @Iteratee@.
+enumFdCatch
+ :: (IException e, MonadIO m)
+    => Int
+    -> Fd
+    -> (e -> m (Maybe EnumException))
+    -> Enumerator Bytes m a
+enumFdCatch bufsize fd handler = enumFromCallbackCatch (makefdCallback bufsize fd) handler ()
 
--- |A version of fileDriver with a user-specified buffer size (in elements).
-fileDriverVBuf
-  :: (MonadIO m, MonadMask m) =>
-     Int
-     -> Iteratee Bytes m a
-     -> FilePath
-     -> m a
-fileDriverVBuf = FD.fileDriverFd
+-- |The enumerator of a POSIX File Descriptor: a variation of @enumFd@ that
+-- supports RandomIO (seek requests).
+enumFdRandom :: MonadIO m => Int -> Fd -> Enumerator Bytes m a
+enumFdRandom bs fd iter = enumFdCatch bs fd handler iter
+  where
+    handler (SeekException off) =
+        Nothing <$ (liftIO . fdSeek fd AbsoluteSeek $ fromIntegral off)
 
--- |Process a file using the given Iteratee.  This function wraps
--- enumFdRandom as a convenience.
-fileDriverRandom
-  :: (MonadIO m, MonadMask m) =>
-     Iteratee Bytes m a
-     -> FilePath
-     -> m a
-fileDriverRandom = FD.fileDriverRandomFd defaultBufSize
+enumFile' :: (MonadIO m, MonadMask m) =>
+  (Int -> Fd -> Enumerator s m a)
+  -> Int -- ^Buffer size
+  -> FilePath
+  -> Enumerator s m a
+enumFile' enumf bufsize filepath iter = bracket
+  (liftIO $ openFd filepath ReadOnly Nothing defaultFileFlags)
+  (liftIO . closeFd)
+  (flip (enumf bufsize) iter)
 
-fileDriverRandomVBuf
-  :: (MonadIO m, MonadMask m) =>
-     Int
-     -> Iteratee Bytes m a
-     -> FilePath
-     -> m a
-fileDriverRandomVBuf = FD.fileDriverRandomFd
+enumFile ::
+  (MonadIO m, MonadMask m)
+  => Int                 -- ^Buffer size
+  -> FilePath
+  -> Enumerator Bytes m a
+enumFile = enumFile' enumFd
+
+enumFileRandom ::
+  (MonadIO m, MonadMask m)
+  => Int                 -- ^Buffer size
+  -> FilePath
+  -> Enumerator Bytes m a
+enumFileRandom = enumFile' enumFdRandom
+
 

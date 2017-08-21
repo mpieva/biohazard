@@ -212,11 +212,11 @@ concatDefaultInputs :: (MonadIO m, MonadMask m) => Enumerator' BamMeta [BamRaw] 
 concatDefaultInputs it0 = liftIO getArgs >>= \fs -> concatInputs fs it0
 
 concatInputs :: (MonadIO m, MonadMask m) => [FilePath] -> Enumerator' BamMeta [BamRaw] m a
-concatInputs [        ] = \k -> enumHandle defaultBufSize stdin (decodeAnyBam k) >>= run
+concatInputs [        ] = \k -> enumFd defaultBufSize stdInput (decodeAnyBam k) >>= run
 concatInputs (fp0:fps0) = \k -> enum1 fp0 k >>= go fps0
   where
-    enum1 "-" k1 = enumHandle defaultBufSize stdin (decodeAnyBam k1) >>= run
-    enum1  fp k1 = enumFile   defaultBufSize    fp (decodeAnyBam k1) >>= run
+    enum1 "-" k1 = enumFd   defaultBufSize stdInput (decodeAnyBam k1) >>= run
+    enum1  fp k1 = enumFile defaultBufSize fp       (decodeAnyBam k1) >>= run
 
     go [       ] = return
     go (fp1:fps) = enum1 fp1 . const >=> go fps
@@ -229,11 +229,11 @@ mergeDefaultInputs (?) it0 = liftIO getArgs >>= \fs -> mergeInputs (?) fs it0
 mergeInputs :: (MonadIO m, MonadMask m)
     => (BamMeta -> Enumeratee [BamRaw] [BamRaw] (Iteratee [BamRaw] m) a)
     -> [FilePath] -> Enumerator' BamMeta [BamRaw] m a
-mergeInputs  _  [        ] = \k -> enumHandle defaultBufSize stdin (decodeAnyBam k) >>= run
+mergeInputs  _  [        ] = \k -> enumFd defaultBufSize stdInput (decodeAnyBam k) >>= run
 mergeInputs (?) (fp0:fps0) = go fp0 fps0
   where
-    enum1 "-" k1 = enumHandle defaultBufSize stdin (decodeAnyBam k1) >>= run
-    enum1  fp k1 = enumFile defaultBufSize fp (decodeAnyBam k1) >>= run
+    enum1 "-" k1 = enumFd   defaultBufSize stdInput (decodeAnyBam k1) >>= run
+    enum1  fp k1 = enumFile defaultBufSize fp       (decodeAnyBam k1) >>= run
 
     go fp [       ] = enum1 fp
     go fp (fp1:fps) = mergeEnums' (go fp1 fps) (enum1 fp) (?)
@@ -258,7 +258,7 @@ decodeBam inner = do meta <- liftBlock get_bam_header
                      refs <- liftBlock get_ref_array
                      convStream getBamRaw $ inner $! mmerge meta refs
   where
-    get_bam_header  = do magic <- iGetString 4 
+    get_bam_header  = do magic <- iGetString 4
                          when (magic /= "BAM\SOH") $ do
                                 s <- iGetString 10
                                 fail $ "BAM signature not found: " ++ show magic ++ " " ++ show s
