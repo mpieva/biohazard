@@ -1,3 +1,4 @@
+{-# LANGUAGE ForeignFunctionInterface #-}
 module Bio.TwoBit (
         TwoBitFile(..),
         TwoBitSequence(..),
@@ -24,14 +25,13 @@ module Bio.TwoBit (
 
 import           Bio.Prelude hiding ( left, right, chr )
 import           Data.Binary.Get
-import qualified Data.ByteString as B
-import qualified Data.ByteString.Lazy as L
--- can't use Data.IntMap.Strict to remain compatible with
--- containers-0.4.1 and therefore ghc 7.4  :-(
-import qualified Data.IntMap as I
-import qualified Data.HashMap.Lazy as M
-import qualified Data.Vector.Unboxed as U
-import           System.IO.Posix.MMap
+import qualified Data.ByteString                as B
+import           Data.ByteString.Internal ( fromForeignPtr )
+import qualified Data.ByteString.Lazy           as L
+import qualified Data.IntMap                    as I
+import qualified Data.HashMap.Lazy              as M
+import qualified Data.Vector.Unboxed            as U
+import           Foreign.C.Types
 import           System.Random
 
 -- ^ Would you believe it?  The 2bit format stores blocks of Ns in a table at
@@ -62,24 +62,41 @@ data TwoBitSequence = TBS { tbs_n_blocks   :: !(I.IntMap Int)
 -- not work on streams that are not actual files.  It's also unsafe if
 -- the file is modified in any way.
 openTwoBit :: FilePath -> IO TwoBitFile
-openTwoBit fp = do raw <- unsafeMMapFile fp
-                   return $ flip runGet (L.fromChunks [raw]) $ do
-                            sig <- getWord32be
-                            getWord32 <- case sig of
-                                    0x1A412743 -> return $ fromIntegral `fmap` getWord32be
-                                    0x4327411A -> return $ fromIntegral `fmap` getWord32le
-                                    _          -> fail $ "invalid .2bit signature " ++ showHex sig []
+openTwoBit fp = do
+        raw <- bracket (openFd fp ReadOnly Nothing defaultFileFlags) closeFd $ \fd -> do
+                  stat <- getFdStatus fd
+                  let size = fromIntegral (fileSize stat)
+                  if size <= 0
+                      then return mempty
+                      else do
+                          ptr <- c_mmap size (fromIntegral fd)
+                          if ptr == nullPtr
+                              then error "unable to mmap file"
+                              else do
+                                    fptr <- newForeignPtrEnv c_munmap (intPtrToPtr $ fromIntegral size) ptr
+                                    return $ fromForeignPtr fptr 0 (fromIntegral size)
 
-                            version <- getWord32
-                            unless (version == 0) $ fail $ "wrong .2bit version " ++ show version
+        return $ flip runGet (L.fromChunks [raw]) $ do
+                    sig <- getWord32be
+                    getWord32 <- case sig of
+                            0x1A412743 -> return $ fromIntegral `fmap` getWord32be
+                            0x4327411A -> return $ fromIntegral `fmap` getWord32le
+                            _          -> fail $ "invalid .2bit signature " ++ showHex sig []
 
-                            nseqs <- getWord32
-                            _reserved <- getWord32
+                    version <- getWord32
+                    unless (version == 0) $ fail $ "wrong .2bit version " ++ show version
 
-                            TBF raw <$> foldM (\ix _ -> do !key <- getWord8 >>= getByteString . fromIntegral
-                                                           !off <- getWord32
-                                                           return $! M.insert key (mkBlockIndex raw getWord32 off) ix
-                                              ) M.empty [1..nseqs]
+                    nseqs <- getWord32
+                    _reserved <- getWord32
+
+                    TBF raw <$> foldM (\ix _ -> do !key <- getWord8 >>= getByteString . fromIntegral
+                                                   !off <- getWord32
+                                                   return $! M.insert key (mkBlockIndex raw getWord32 off) ix
+                                      ) M.empty [1..nseqs]
+
+
+foreign import ccall unsafe  "my_mmap"   c_mmap   :: CSize -> CInt -> IO (Ptr Word8)
+foreign import ccall unsafe "&my_munmap" c_munmap :: FunPtr (Ptr () -> Ptr Word8 -> IO ())
 
 
 mkBlockIndex :: B.ByteString -> Get Int -> Int -> TwoBitSequence

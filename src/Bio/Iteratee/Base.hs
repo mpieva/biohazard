@@ -35,7 +35,6 @@ where
 import Bio.Iteratee.Exception
 import Bio.Prelude
 
-import Control.Monad.Base
 import Control.Monad.Catch as CIO
 import Control.Monad.IO.Class
 import Control.Monad.Trans.Class
@@ -170,8 +169,8 @@ bindIteratee = self
 instance NullPoint s => MonadTrans (Iteratee s) where
   lift m = Iteratee $ \onDone _ -> m >>= flip onDone (Chunk emptyP)
 
-instance (MonadBase b m, Nullable s, NullPoint s) => MonadBase b (Iteratee s m) where
-  liftBase = lift . liftBase
+-- instance (MonadBase b m, Nullable s, NullPoint s) => MonadBase b (Iteratee s m) where
+  -- liftBase = lift . liftBase
 
 instance (MonadIO m, Nullable s, NullPoint s) => MonadIO (Iteratee s m) where
   liftIO = lift . liftIO
@@ -205,12 +204,6 @@ instance forall s. (NullPoint s, Nullable s) => MonadTransControl (Iteratee s) w
       te e = icont (const (te e)) (Just e)
   {-# INLINE liftWith #-}
   {-# INLINE restoreT #-}
-
-instance (MonadBaseControl b m, Nullable s) => MonadBaseControl b (Iteratee s m) where
-  type StM (Iteratee s m) a = ComposeSt (Iteratee s) m a
-  liftBaseWith = defaultLiftBaseWith
-  restoreM     = defaultRestoreM
-
 
 -- |Send 'EOF' to the @Iteratee@ and disregard the unconsumed part of the
 -- stream.  If the iteratee is in an exception state, that exception is
