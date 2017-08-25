@@ -8,7 +8,15 @@ image: haskell:8.0
 pipelines:
   default:
     - step:
+        caches:
+          - ghc
+          - cabal
         script: # Modify the commands below to build your repository.
           - cabal update
           - cabal install --only-dep
           - cabal build
+
+definitions:
+  caches:
+    cabal: $HOME/.cabal
+    ghc: $HOME/.ghc/x86_64-linux-8.0.1
