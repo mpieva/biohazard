@@ -3,7 +3,7 @@
 # Only use spaces to indent your .yml configuration.
 # -----
 # You can specify a custom docker image from Docker Hub as your build environment.
-image: haskell:8.0
+image: haskell:8.0.2
 
 pipelines:
   default:
@@ -19,4 +19,4 @@ pipelines:
 definitions:
   caches:
     cabal: $HOME/.cabal
-    ghc: $HOME/.ghc/x86_64-linux-8.0.1
+    ghc: $HOME/.ghc/x86_64-linux-8.0.2
