@@ -1,4 +1,3 @@
-{-# LANGUAGE ForeignFunctionInterface #-}
 module Bio.TwoBit (
         TwoBitFile(..),
         TwoBitSequence(..),
@@ -24,14 +23,13 @@ module Bio.TwoBit (
     ) where
 
 import           Bio.Prelude hiding ( left, right, chr )
+import           Bio.Util.MMap
 import           Data.Binary.Get
 import qualified Data.ByteString                as B
-import           Data.ByteString.Internal ( fromForeignPtr )
 import qualified Data.ByteString.Lazy           as L
 import qualified Data.IntMap                    as I
 import qualified Data.HashMap.Lazy              as M
 import qualified Data.Vector.Unboxed            as U
-import           Foreign.C.Types
 import           System.Random
 
 -- ^ Would you believe it?  The 2bit format stores blocks of Ns in a table at
@@ -63,19 +61,7 @@ data TwoBitSequence = TBS { tbs_n_blocks   :: !(I.IntMap Int)
 -- the file is modified in any way.
 openTwoBit :: FilePath -> IO TwoBitFile
 openTwoBit fp = do
-        raw <- bracket (openFd fp ReadOnly Nothing defaultFileFlags) closeFd $ \fd -> do
-                  stat <- getFdStatus fd
-                  let size = fromIntegral (fileSize stat)
-                  if size <= 0
-                      then return mempty
-                      else do
-                          ptr <- c_mmap size (fromIntegral fd)
-                          if ptr == nullPtr
-                              then error "unable to mmap file"
-                              else do
-                                    fptr <- newForeignPtrEnv c_munmap (intPtrToPtr $ fromIntegral size) ptr
-                                    return $ fromForeignPtr fptr 0 (fromIntegral size)
-
+        raw <- unsafeMMapFile fp
         return $ flip runGet (L.fromChunks [raw]) $ do
                     sig <- getWord32be
                     getWord32 <- case sig of
@@ -93,11 +79,6 @@ openTwoBit fp = do
                                                    !off <- getWord32
                                                    return $! M.insert key (mkBlockIndex raw getWord32 off) ix
                                       ) M.empty [1..nseqs]
-
-
-foreign import ccall unsafe  "my_mmap"   c_mmap   :: CSize -> CInt -> IO (Ptr Word8)
-foreign import ccall unsafe "&my_munmap" c_munmap :: FunPtr (Ptr () -> Ptr Word8 -> IO ())
-
 
 mkBlockIndex :: B.ByteString -> Get Int -> Int -> TwoBitSequence
 mkBlockIndex raw getWord32 ofs = runGet getBlock $ L.fromChunks [B.drop ofs raw]

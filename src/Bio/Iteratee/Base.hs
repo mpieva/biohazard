@@ -38,7 +38,6 @@ import Bio.Prelude
 import Control.Monad.Catch as CIO
 import Control.Monad.IO.Class
 import Control.Monad.Trans.Class
-import Control.Monad.Trans.Control
 
 import qualified Control.Exception    as E
 import qualified Data.ByteString      as B
@@ -188,22 +187,6 @@ instance (MonadMask m, Nullable s, NullPoint s) => MonadMask (Iteratee s m) wher
     mask q      = Iteratee $ \od oc -> CIO.mask $ \u -> runIter (q $ ilift u) od oc
     uninterruptibleMask q = Iteratee $ \od oc -> CIO.uninterruptibleMask $ \u -> runIter (q $ ilift u) od oc
 
-
-instance forall s. (NullPoint s, Nullable s) => MonadTransControl (Iteratee s) where
-  type StT (Iteratee s) x = Either (x, Stream s) (Maybe SomeException)
-
-  liftWith f = lift $ f $ \t ->
-      (runIter t (\x s -> return $ Left (x,s))
-                 (\_ e -> return $ Right e) )
-  restoreT = join . lift . liftM
-               (either (uncurry idone)
-                       (te . fromMaybe (iterStrExc
-                          "iteratee: error in MonadTransControl instance")))
-    where
-      te :: SomeException -> Iteratee s m a
-      te e = icont (const (te e)) (Just e)
-  {-# INLINE liftWith #-}
-  {-# INLINE restoreT #-}
 
 -- |Send 'EOF' to the @Iteratee@ and disregard the unconsumed part of the
 -- stream.  If the iteratee is in an exception state, that exception is

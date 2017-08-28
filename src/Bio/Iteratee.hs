@@ -3,7 +3,6 @@
 
 module Bio.Iteratee (
     iGetString,
-    iterGet,
     iterLoop,
     iLookAhead,
 
@@ -63,7 +62,6 @@ import Control.Concurrent.Async             ( Async, async, wait, cancel )
 import Control.Monad.Catch                  ( MonadMask(..) )
 import Control.Monad.IO.Class
 import Control.Monad.Trans.Class
-import Data.Binary.Get
 import System.IO                            ( hIsTerminalDevice )
 
 import qualified Control.Monad.Catch            as CMC
@@ -102,23 +100,6 @@ iterLoop :: (Nullable s, Monad m) => (a -> Iteratee s m a) -> a -> Iteratee s m 
 iterLoop it a = do e <- isFinished
                    if e then return a
                         else it a >>= iterLoop it
-
--- | Convert a 'Get' into an 'Iteratee'.  The 'Get' is applied once, the
--- decoded data is returned, unneded input remains in the stream.
-iterGet :: Get a -> Iteratee S.ByteString m a
-iterGet = go . runGetIncremental
-  where
-    go (Fail  _ _ err) = throwErr (iterStrExc err)
-    go (Done rest _ a) = idone a (Chunk rest)
-    go (Partial   dec) = liftI $ \ck -> case ck of
-        Chunk s -> go (dec $ Just s)
-        EOF  mx -> case dec Nothing of
-            Fail  _ _ err -> throwErr (iterStrExc err)
-            Partial     _ -> throwErr (iterStrExc "<partial>")
-            Done rest _ a | S.null rest -> idone a (EOF mx)
-                          | otherwise   -> idone a (Chunk rest)
-
-
 infixl 1 $==
 {-# INLINE ($==) #-}
 -- | Compose an 'Enumerator\'' with an 'Enumeratee', giving a new
