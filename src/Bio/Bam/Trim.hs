@@ -30,7 +30,7 @@ import qualified Data.Vector.Generic                    as V
 import qualified Data.Vector.Storable                   as W
 
 -- | Trims from the 3' end of a sequence.
--- @trim_3\' p b@ trims the 3' end of the sequence in @b@ at the
+-- @trim_3' p b@ trims the 3' end of the sequence in @b@ at the
 -- earliest position such that @p@ evaluates to true on every suffix
 -- that was trimmed off.  Note that the 3' end may be the beginning of
 -- the sequence if it happens to be stored in reverse-complemented form.

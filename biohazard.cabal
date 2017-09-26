@@ -113,7 +113,8 @@ Library
                        UndecidableInstances
 
   Hs-source-dirs:      src
-  Install-Includes:    src/cbits/myers_align.h
+  Include-dirs:        src/cbits
+  Install-Includes:    myers_align.h
   C-sources:           src/cbits/loops.c,
                        src/cbits/mmap.c,
                        src/cbits/myers_align.c,

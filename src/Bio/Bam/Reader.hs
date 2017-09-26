@@ -57,7 +57,7 @@ import qualified Data.Vector.Unboxed                as U
 -- nucleotides is somewhat lacking:  the "=" symbol is not understood.
 --
 -- TONOTDO:
--- - Reader for gzipped/bzipped/bgzf'ed SAM.  Storing SAM is a bad idea,
+-- * Reader for gzipped\/bzipped\/bgzf'ed SAM.  Storing SAM is a bad idea,
 --   so why would anyone ever want to compress, much less index it?
 
 type BamrawEnumeratee m b = Enumeratee' BamMeta Bytes [BamRaw] m b

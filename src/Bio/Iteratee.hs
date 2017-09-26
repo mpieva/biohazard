@@ -102,16 +102,16 @@ iterLoop it a = do e <- isFinished
                         else it a >>= iterLoop it
 infixl 1 $==
 {-# INLINE ($==) #-}
--- | Compose an 'Enumerator\'' with an 'Enumeratee', giving a new
--- 'Enumerator\''.
+-- | Compose an 'Enumerator'' with an 'Enumeratee', giving a new
+-- 'Enumerator''.
 ($==) :: Monad m => Enumerator' hdr input m (Iteratee output m result)
                  -> Enumeratee      input             output m result
                  -> Enumerator' hdr                   output m result
 ($==) enum enee iter = run =<< enum (enee . iter)
 
--- | Merge two 'Enumerator\''s into one.  The header provided by the
--- inner 'Enumerator\'' is passed to the output iterator, the header
--- provided by the outer 'Enumerator\'' is passed to the merging iteratee
+-- | Merge two 'Enumerator''s into one.  The header provided by the
+-- inner 'Enumerator'' is passed to the output iterator, the header
+-- provided by the outer 'Enumerator'' is passed to the merging iteratee
 --
 -- XXX  Something about those headers is unsatisfactory... there should
 --      be an unobtrusive way to combine headers.
