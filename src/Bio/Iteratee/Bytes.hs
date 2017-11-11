@@ -226,7 +226,7 @@ takeStreamBS n' iter
 -- This is provided as a higher-performance alternative to enumWords, and
 -- is equivalent to treating the stream as a Data.ByteString.Char8.ByteString.
 enumWordsBS :: Monad m => Enumeratee Bytes [Bytes] m a
-enumWordsBS iter = convStream getter iter
+enumWordsBS = convStream getter
   where
     getter = liftI step
     lChar = isSpace . C.last

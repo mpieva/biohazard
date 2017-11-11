@@ -259,9 +259,9 @@ pushQ a (QQ l [] b) = QQ (l+1) (reverse (a:b)) []
 pushQ a (QQ l  f b) = QQ (l+1) f (a:b)
 
 popQ :: QQ a -> Maybe (a, QQ a)
-popQ (QQ l (a:[]) b) = Just (a, QQ (l-1) (reverse b) [])
-popQ (QQ l (a:fs) b) = Just (a, QQ (l-1) fs b)
 popQ (QQ _ [    ] _) = Nothing
+popQ (QQ l [ a  ] b) = Just (a, QQ (l-1) (reverse b) [])
+popQ (QQ l (a:fs) b) = Just (a, QQ (l-1) fs b)
 
 cancelAll :: MonadIO m => QQ (Async a) -> m ()
 cancelAll (QQ _ ff bb) = liftIO $ mapM_ cancel (ff ++ bb)
@@ -302,7 +302,7 @@ stream2vectorN n = do
     go mv i
         | i == n    = return n
         | otherwise =
-            tryHead >>= \x -> case x of
+            tryHead >>= \case
                 Nothing -> return i
                 Just  a -> liftIO (VM.write mv i a) >> go mv (i+1)
 
@@ -310,7 +310,7 @@ stream2vectorN n = do
 stream2vector :: (MonadIO m, VG.Vector v a) => Iteratee [a] m (v a)
 stream2vector = liftIO (VM.new 1024) >>= go 0
   where
-    go !i !mv = tryHead >>= \x -> case x of
+    go !i !mv = tryHead >>= \case
                   Nothing -> liftIO $ VG.unsafeFreeze $ VM.take i mv
                   Just  a -> do mv' <- if VM.length mv == i then liftIO (VM.grow mv (VM.length mv)) else return mv
                                 when (i `rem` 0x10000 == 0) $ liftIO performGC
@@ -318,7 +318,7 @@ stream2vector = liftIO (VM.new 1024) >>= go 0
                                 go (i+1) mv'
 
 withFileFd :: (MonadIO m, MonadMask m) => FilePath -> (Fd -> m a) -> m a
-withFileFd filepath iter = CMC.bracket
+withFileFd filepath = CMC.bracket
     (liftIO $ openFd filepath ReadOnly Nothing defaultFileFlags)
-    (liftIO . closeFd) iter
+    (liftIO . closeFd)
 

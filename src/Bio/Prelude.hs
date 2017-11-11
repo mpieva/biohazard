@@ -128,7 +128,7 @@ fdPutLazy fd = mapM_ (fdPut fd) . BL.toChunks
 
 withFd :: FilePath -> OpenMode -> Maybe FileMode -> OpenFileFlags
        -> (Fd -> IO a) -> IO a
-withFd fp om fm ff k = bracket (openFd fp om fm ff) closeFd k
+withFd fp om fm ff = bracket (openFd fp om fm ff) closeFd
 
 -- | Converts 'Bytes' into 'Text'.  This uses UTF8, but if there is an
 -- error, it pretends it was Latin1.  Evil as this is, it tends to Just

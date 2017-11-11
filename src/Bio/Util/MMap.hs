@@ -1,7 +1,7 @@
 {-# LANGUAGE ForeignFunctionInterface #-}
 module Bio.Util.MMap where
 
-import Bio.Prelude hiding ( left, right, chr )
+import Bio.Prelude
 import Data.ByteString.Internal ( fromForeignPtr )
 import Foreign.C.Types
 

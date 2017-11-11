@@ -66,7 +66,7 @@ type BamEnumeratee m b = Enumeratee' BamMeta Bytes [BamRec] m b
 isBamOrSam :: MonadIO m => Iteratee Bytes m (BamEnumeratee m a)
 isBamOrSam = maybe decodeSam wrap `liftM` isBam
   where
-    wrap enee it' = enee (\hdr -> mapStream unpackBam (it' hdr)) >>= lift . run
+    wrap enee it' = enee (mapStream unpackBam . it') >>= lift . run
 
 
 -- | Checks if a file contains BAM in any of the common forms,
@@ -90,20 +90,21 @@ decodeSam :: Monad m => (BamMeta -> Iteratee [BamRec] m a) -> Iteratee Bytes m (
 decodeSam inner = joinI $ enumLinesBS $ do
     let pHeaderLine acc str = case P.parseOnly parseBamMetaLine str of Right f -> return $ f : acc
                                                                        Left e  -> fail $ e ++ ", " ++ show str
-    meta <- liftM (foldr ($) mempty . reverse) (joinI $ breakE (not . S.isPrefixOf "@") $ foldStreamM pHeaderLine [])
+    meta <- fmap (foldr ($) mempty . reverse) (joinI $ breakE (not . S.isPrefixOf "@") $ foldStreamM pHeaderLine [])
     decodeSamLoop (meta_refs meta) (inner meta)
 
 decodeSamLoop :: Monad m => Refs -> Enumeratee [Bytes] [BamRec] m a
-decodeSamLoop refs inner = convStream (liftI parse_record) inner
-  where !refs' = M.fromList $ zip [ nm | BamSQ { sq_name = nm } <- F.toList refs ] [toEnum 0..]
-        ref x = M.lookupDefault invalidRefseq x refs'
+decodeSamLoop refs = convStream (liftI parse_record)
+  where
+    !refs' = M.fromList $ zip [ nm | BamSQ { sq_name = nm } <- F.toList refs ] [toEnum 0..]
+    ref x = M.lookupDefault invalidRefseq x refs'
 
-        parse_record (EOF x) = icont parse_record x
-        parse_record (Chunk []) = liftI parse_record
-        parse_record (Chunk (l:ls)) | "@" `S.isPrefixOf` l = parse_record (Chunk ls)
-        parse_record (Chunk (l:ls)) = case P.parseOnly (parseSamRec ref) l of
-            Right  r -> idone [r] (Chunk ls)
-            Left err -> icont parse_record (Just $ iterStrExc $ err ++ ", " ++ show l)
+    parse_record (EOF x) = icont parse_record x
+    parse_record (Chunk []) = liftI parse_record
+    parse_record (Chunk (l:ls)) | "@" `S.isPrefixOf` l = parse_record (Chunk ls)
+    parse_record (Chunk (l:ls)) = case P.parseOnly (parseSamRec ref) l of
+        Right  r -> idone [r] (Chunk ls)
+        Left err -> icont parse_record (Just $ iterStrExc $ err ++ ", " ++ show l)
 
 -- | Parser for SAM that doesn't look for a header.  Has the advantage
 -- that it doesn't stall on a pipe that never delivers data.  Has the
@@ -119,7 +120,7 @@ parseSamRec ref = mkBamRec
                   <*> snum <*> sequ <*> quals <*> exts <*> pure 0
   where
     sep      = P.endOfInput <|> () <$ P.char '\t'
-    word     = P.takeTill ((==) '\t') <* sep
+    word     = P.takeTill ('\t' ==) <* sep
     num      = P.decimal <* sep
     num'     = P.decimal <* sep
     snum     = P.signed P.decimal <* sep
@@ -143,7 +144,7 @@ parseSamRec ref = mkBamRec
 
     value    = P.char 'A' *> P.char ':' *> (Char <$>               anyWord8) <|>
                P.char 'i' *> P.char ':' *> (Int  <$>     P.signed P.decimal) <|>
-               P.char 'Z' *> P.char ':' *> (Text <$> P.takeTill ((==) '\t')) <|>
+               P.char 'Z' *> P.char ':' *> (Text <$>   P.takeTill ('\t' ==)) <|>
                P.char 'H' *> P.char ':' *> (Bin  <$>               hexarray) <|>
                P.char 'f' *> P.char ':' *> (Float . realToFrac <$> P.double) <|>
                P.char 'B' *> P.char ':' *> (
@@ -186,7 +187,7 @@ isPlainBam = (\n -> if n == "BAM\SOH" then Just (joinI . decompressPlain . decod
 -- @Iteratee@.)
 isBgzfBam  = do b <- isBgzf
                 k <- if b then joinI $ enumInflate GZip defaultDecompressParams isPlainBam else return Nothing
-                return $ (\_ -> (joinI . decompressBgzfBlocks . decodeBam)) `fmap` k
+                return $ const (joinI . decompressBgzfBlocks . decodeBam) `fmap` k
 
 isGzipBam  = do b <- isGzip
                 k <- if b then joinI $ enumInflate GZip defaultDecompressParams isPlainBam else return Nothing
@@ -212,14 +213,12 @@ concatDefaultInputs :: (MonadIO m, MonadMask m) => Enumerator' BamMeta [BamRaw] 
 concatDefaultInputs it0 = liftIO getArgs >>= \fs -> concatInputs fs it0
 
 concatInputs :: (MonadIO m, MonadMask m) => [FilePath] -> Enumerator' BamMeta [BamRaw] m a
-concatInputs [        ] = \k -> enumFd defaultBufSize stdInput (decodeAnyBam k) >>= run
-concatInputs (fp0:fps0) = \k -> enum1 fp0 k >>= go fps0
+concatInputs [       ] = enumFd defaultBufSize stdInput . decodeAnyBam >=> run
+concatInputs (fp0:fps) = enum1 fp0 >=> go fps
   where
-    enum1 "-" k1 = enumFd   defaultBufSize stdInput (decodeAnyBam k1) >>= run
-    enum1  fp k1 = enumFile defaultBufSize fp       (decodeAnyBam k1) >>= run
-
-    go [       ] = return
-    go (fp1:fps) = enum1 fp1 . const >=> go fps
+    go = foldr (\fp1 -> (>=>) (enum1 fp1 . const)) return
+    enum1 "-" = enumFd   defaultBufSize stdInput . decodeAnyBam >=> run
+    enum1  fp = enumFile defaultBufSize fp       . decodeAnyBam >=> run
 
 mergeDefaultInputs :: (MonadIO m, MonadMask m)
     => (BamMeta -> Enumeratee [BamRaw] [BamRaw] (Iteratee [BamRaw] m) a)
@@ -270,7 +269,7 @@ decodeBam inner = do meta <- liftBlock get_bam_header
                                    nm <- endianRead4 LSB >>= iGetString . fromIntegral
                                    ln <- endianRead4 LSB
                                    return $! acc |> BamSQ (S.init nm) (fromIntegral ln) []
-                             ) Z.empty $ [1..nref]
+                             ) Z.empty [1..nref]
 
     -- Need to merge information from header into actual reference list.
     -- The latter is the authoritative source for the *order* of the

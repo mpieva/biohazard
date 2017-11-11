@@ -94,12 +94,12 @@ expandBuffer minsz b = do
     withForeignPtr arr1 $ \d ->
         withForeignPtr (buffer b) $ \s ->
              copyBytes d (plusPtr s (off b)) (used b - off b)
-    return $ BB { buffer = arr1
-                , size   = sz'
-                , off    = 0
-                , used   = used b - off b
-                , mark   = if mark  b == maxBound then maxBound else mark  b - off b
-                , mark2  = if mark2 b == maxBound then maxBound else mark2 b - off b }
+    return BB{ buffer = arr1
+             , size   = sz'
+             , off    = 0
+             , used   = used b - off b
+             , mark   = if mark  b == maxBound then maxBound else mark  b - off b
+             , mark2  = if mark2 b == maxBound then maxBound else mark2 b - off b }
 
 compressChunk' :: Int -> ForeignPtr Word8 -> Int -> Int -> IO B.ByteString
 compressChunk' lv fptr off len =
@@ -134,7 +134,7 @@ encodeBgzf lv = (\out -> newBuffer (1024*1024) `ioBind` \bb -> eneeCheckIfDone (
             case tk of TkEnd -> liftI $ go bb k
                        _     -> go1 bb k tk
 
-        | otherwise = do
+        | otherwise =
             eneeCheckIfDone (flush_blocks tk bb { off = off bb + maxBlockSize }) $
                 k $ Chunk [compressChunk' lv (buffer bb) (off bb) maxBlockSize]
 
@@ -149,7 +149,7 @@ encodeBgzf lv = (\out -> newBuffer (1024*1024) `ioBind` \bb -> eneeCheckIfDone (
 fillBuffer :: BB -> BgzfTokens -> IO (BB, BgzfTokens)
 fillBuffer bb0 tk = withForeignPtr (buffer bb0) (\p -> go_slowish p bb0 tk)
   where
-    go_slowish p bb tk1 = go_fast p bb (used bb) tk1
+    go_slowish p bb = go_fast p bb (used bb)
 
     go_fast p bb use tk1 = case tk1 of
         -- no space?  not our job.

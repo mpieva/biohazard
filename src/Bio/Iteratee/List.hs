@@ -770,7 +770,7 @@ countConsumed i = go 0 (const i) (Chunk emptyP)
             onDone a str'@(Chunk c') =
                 od (a, newLen - fromIntegral (length c')) str'
             onDone a str'@(EOF _) = od (a, n) str'
-            onCont f' mExc = oc (go newLen f') mExc
+            onCont f' = oc (go newLen f')
 {-# INLINE countConsumed #-}
 
 -- ------------------------------------------------------------------------
@@ -808,8 +808,5 @@ mapStreamM = mapChunksM . mapM
 
 -- | Folds a monadic function over an 'Iteratee'.
 foldStreamM :: Monad m => (b -> a -> m b) -> b -> Iteratee [a] m b
-foldStreamM k = foldChunksM go
-  where
-    go b [   ] = return b
-    go b (h:t) = k b h >>= \b' -> go b' t
+foldStreamM = foldChunksM . foldM
 {-# INLINE foldStreamM #-}

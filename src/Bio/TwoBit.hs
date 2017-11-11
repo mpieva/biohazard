@@ -27,7 +27,7 @@ import           Bio.Util.MMap
 import           Data.Binary.Get
 import qualified Data.ByteString                as B
 import qualified Data.ByteString.Lazy           as L
-import qualified Data.IntMap                    as I
+import qualified Data.IntMap.Strict             as I
 import qualified Data.HashMap.Lazy              as M
 import qualified Data.Vector.Unboxed            as U
 import           System.Random
@@ -150,8 +150,8 @@ mergeBlocks [     ] [     ] = []
 -- lowercasing.  Here, we take a user supplied function to apply
 -- masking.
 getSubseqWith :: (Nucleotide -> Mask -> a) -> TwoBitFile -> Range -> [a]
-getSubseqWith maskf tbf (Range { r_pos = Pos { p_seq = chr, p_start = start }, r_length = len }) = do
-    let sq1 = maybe (error $ unpack chr ++ " doesn't exist") id $ M.lookup chr (tbf_seqs tbf)
+getSubseqWith maskf tbf Range{ r_pos = Pos { p_seq = chr, p_start = start }, r_length = len } = do
+    let sq1 = fromMaybe (error $ unpack chr ++ " doesn't exist") $ M.lookup chr (tbf_seqs tbf)
     let go = getFwdSubseqWith tbf sq1
     if start < 0
         then reverse $ take len $ go (maskf . cmp_nt) (-start-len)
@@ -162,8 +162,8 @@ getSubseqWith maskf tbf (Range { r_pos = Pos { p_seq = chr, p_start = start }, r
 
 -- | Works only in forward direction.
 getLazySubseq :: TwoBitFile -> Position -> [Nucleotide]
-getLazySubseq tbf (Pos { p_seq = chr, p_start = start }) = do
-    let sq1 = maybe (error $ unpack chr ++ " doesn't exist") id $ M.lookup chr (tbf_seqs tbf)
+getLazySubseq tbf Pos{ p_seq = chr, p_start = start } = do
+    let sq1 = fromMaybe (error $ unpack chr ++ " doesn't exist") $ M.lookup chr (tbf_seqs tbf)
     let go  = getFwdSubseqWith tbf sq1
     if start < 0
         then error "sorry, can't go backwards"

@@ -470,7 +470,7 @@ damagePatternsIter ctx rng it = mapStream revcom_both =$ do
   where
     {-# INLINE withPair #-}
     withPair (Ns u, Ns v) k = case pairTab `U.unsafeIndex` fromIntegral (16*u+v) of
-         j -> if j >= 0 then k j else return ()
+            j -> when (j >= 0) (k j)
 
     !pairTab = U.replicate 256 (-1) U.//
             [ (fromIntegral $ 16*u+v, x*4+y) | (Ns u,x) <- zip [nucsA, nucsC, nucsG, nucsT] [0,1,2,3]

@@ -115,10 +115,10 @@ rmdup label strand_preserved collapse_cfg =
     same_pos u v = b_cpos u == b_cpos v
     b_cpos u = (b_rname u, b_pos u)
 
-    nice_sort x = sortBy (comparing (V.length . b_seq . snd)) x
+    nice_sort = sortBy $ comparing (V.length . b_seq . snd)
 
     mapGroups f o = tryHead >>= maybe (return o) (\a -> eneeCheckIfDone (mg1 f a []) o)
-    mg1 f a acc k = tryHead >>= \mb -> case mb of
+    mg1 f a acc k = tryHead >>= \case
                         Nothing -> return . k . Chunk . f $ a:acc
                         Just b | same_pos a b -> mg1 f a (b:acc) k
                                | otherwise -> eneeCheckIfDone (mg1 f b []) . k . Chunk . f $ a:acc
@@ -209,7 +209,7 @@ do_rmdup label strand_preserved Collapse{..} =
         (half_unaligned, half_aligned) = partition isUnmapped raw_half_pairs
 
         mkMap :: Ord a => (BamRec -> a) -> [BamRec] -> (M.Map a (Int,Decision), [BamRec])
-        mkMap f x = let m1 = M.map (\xs -> (length xs, collapse xs)) $ accumMap f id x
+        mkMap f x = let m1 = M.map (length &&& collapse) $ accumMap f id x
                     in (M.map (second fst) m1, concatMap (snd.snd) $ M.elems m1)
 
         (pairs',r1)   = mkMap (\b -> (b_mate_pos b,   b_strand b, b_mate b)) pairs
@@ -412,11 +412,11 @@ do_collapse maxq  brs = ( Consensus b0 { b_exts  = modify_extensions $ b_exts b0
     xa' = nub' [ T.split ';' xas | Just (Text xas) <- map (lookup "XA" . b_exts) brs ]
 
     modify_extensions es = foldr ($!) es $
-        [ let vs = [ v | Just v <- map (lookup k . b_exts) brs ]
+        [ let vs = mapMaybe (lookup k . b_exts) brs
           in if null vs then id else updateE k $! maj vs | k <- do_maj ] ++
         [ let vs = [ v | Just (Int v) <- map (lookup k . b_exts) brs ]
           in if null vs then id else updateE k $! Int (rmsq vs) | k <- do_rmsq ] ++
-        [ deleteE k | k <- useless ] ++
+        map deleteE useless ++
         [ updateE "NM" $! Int nm'
         , updateE "XP" $! Int (foldl' (\a b -> a `oplus` extAsInt 1 "XP" b) 0 brs)
         , if null xa' then id else updateE "XA" $! (Text $ T.intercalate (T.singleton ';') xa')
@@ -528,7 +528,7 @@ wrapTo l b = if overhangs then do_wrap else [Right b]
   where
     overhangs = not (isUnmapped b) && b_pos b < l && l < b_pos b + alignedLength (b_cigar b)
 
-    do_wrap = case split_ecig (l - b_pos b) $ toECig (b_cigar b) (maybe [] id $ getMd b) of
+    do_wrap = case split_ecig (l - b_pos b) $ toECig (b_cigar b) (fromMaybe [] $ getMd b) of
                   (left,right) -> [ Right $ b { b_cigar = toCigar  left }            `setMD` left
                                   , Left  $ b { b_cigar = toCigar right, b_pos = 0 } `setMD` right ]
 
@@ -589,7 +589,7 @@ data ECig = WithMD                      -- terminate, do generate MD field
 
 
 toECig :: VS.Vector Cigar -> [MdOp] -> ECig
-toECig cig md = go (VS.toList cig) md
+toECig = go . VS.toList
   where
     go        cs  (MdNum  0:mds) = go cs mds
     go        cs  (MdDel []:mds) = go cs mds

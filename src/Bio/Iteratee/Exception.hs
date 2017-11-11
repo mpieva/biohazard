@@ -118,7 +118,7 @@ instance Exception DivergentException where
   fromException = enumExceptionFromException
 
 -- |Create an enumerator exception from a @String@.
-data EnumStringException = EnumStringException String
+newtype EnumStringException = EnumStringException String
   deriving (Show, Typeable)
 
 instance Exception EnumStringException where
@@ -130,7 +130,7 @@ enStrExc :: String -> EnumException
 enStrExc = EnumException . EnumStringException
 
 -- |The enumerator received an 'IterException' it could not handle.
-data EnumUnhandledIterException = EnumUnhandledIterException IterException
+newtype EnumUnhandledIterException = EnumUnhandledIterException IterException
   deriving (Show, Typeable)
 
 instance Exception EnumUnhandledIterException where
@@ -177,7 +177,7 @@ instance IException IterException where
   fromIterException = Just
 
 -- |A seek request within an @Iteratee@.
-data SeekException = SeekException FileOffset
+newtype SeekException = SeekException FileOffset
   deriving (Typeable, Show)
 
 instance Exception SeekException where
@@ -197,7 +197,7 @@ instance Exception EofException where
 instance IException EofException where
 
 -- |An @Iteratee exception@ specified by a @String@.
-data IterStringException = IterStringException String deriving (Typeable, Show)
+newtype IterStringException = IterStringException String deriving (Typeable, Show)
 
 instance Exception IterStringException where
   toException   = iterExceptionToException

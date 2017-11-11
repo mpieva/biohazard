@@ -118,7 +118,7 @@ decompose dtok br =
     then [] else [(b_rname, b_pos, isReversed b, pchunks)]
   where
     b@BamRec{..} = unpackBam br
-    pchunks = firstBase b_pos 0 0 (maybe [] id $ getMd b)
+    pchunks = firstBase b_pos 0 0 (fromMaybe [] $ getMd b)
 
     !max_cig = V.length b_cigar
     !max_seq = V.length b_seq
@@ -129,27 +129,14 @@ decompose dtok br =
     -- and BAQ.  If QUAL is invalid, we replace it (arbitrarily) with
     -- 23 (assuming a rather conservative error rate of ~0.5%), BAQ is
     -- added to QUAL, and MAPQ is an upper limit for effective quality.
-    get_seq :: Int -> Nucleotides -> DamagedBase
-    get_seq i = case b_seq `V.unsafeIndex` i of                                 -- nucleotide
-            n | n == nucsA -> DB nucA qe dtok dmg
-              | n == nucsC -> DB nucC qe dtok dmg
-              | n == nucsG -> DB nucG qe dtok dmg
-              | n == nucsT -> DB nucT qe dtok dmg
-              | otherwise  -> DB nucA (Q 0) dtok dmg
-      where
-        !q   = case b_qual `V.unsafeIndex` i of Q 0xff -> Q 30 ; x -> x         -- quality; invalid (0xff) becomes 30
-        !q'  | i >= B.length baq = q                                            -- no BAQ available
-             | otherwise = Q (unQ q + (B.index baq i - 64))                     -- else correct for BAQ
-        !qe  = min q' b_mapq                                                    -- use MAPQ as upper limit
-        !dmg = if i+i > max_seq then i-max_seq else i
 
-    get_seq' :: Int -> DamagedBase
-    get_seq' i = case b_seq `V.unsafeIndex` i of                                -- nucleotide
-            n | n == nucsA -> DB nucA qe dtok dmg nucsA
-              | n == nucsC -> DB nucC qe dtok dmg nucsC
-              | n == nucsG -> DB nucG qe dtok dmg nucsG
-              | n == nucsT -> DB nucT qe dtok dmg nucsT
-              | otherwise  -> DB nucA (Q 0) dtok dmg n
+    get_seq :: Int -> (Nucleotides -> Nucleotides) -> DamagedBase
+    get_seq i f = case b_seq `V.unsafeIndex` i of                                -- nucleotide
+            n | n == nucsA -> DB nucA qe dtok dmg (f n)
+              | n == nucsC -> DB nucC qe dtok dmg (f n)
+              | n == nucsG -> DB nucG qe dtok dmg (f n)
+              | n == nucsT -> DB nucT qe dtok dmg (f n)
+              | otherwise  -> DB nucA (Q 0) dtok dmg (f n)
       where
         !q   = case b_qual `V.unsafeIndex` i of Q 0xff -> Q 30 ; x -> x         -- quality; invalid (0xff) becomes 30
         !q'  | i >= B.length baq = q                                            -- no BAQ available
@@ -194,11 +181,11 @@ decompose dtok br =
     nextBase !wt !pos !is !ic !io mds = case mds of
         MdNum   0 : mds' -> nextBase wt pos is ic io mds'
         MdDel  [] : mds' -> nextBase wt pos is ic io mds'
-        MdNum   1 : mds' -> nextBase' (get_seq' is      ) mds'
-        MdNum   n : mds' -> nextBase' (get_seq' is      ) (MdNum (n-1) : mds')
-        MdRep ref : mds' -> nextBase' (get_seq  is ref  ) mds'
-        MdDel   _ : _    -> nextBase' (get_seq  is nucsN) mds
-        [              ] -> nextBase' (get_seq  is nucsN) [ ]
+        MdNum   1 : mds' -> nextBase' (get_seq is id   ) mds'
+        MdNum   n : mds' -> nextBase' (get_seq is id   ) (MdNum (n-1) : mds')
+        MdRep ref : mds' -> nextBase' (get_seq is $ const ref  ) mds'
+        MdDel   _ : _    -> nextBase' (get_seq is $ const nucsN) mds
+        [              ] -> nextBase' (get_seq is $ const nucsN) [ ]
       where
         nextBase' ref mds' = Base wt ref b_mapq $ nextIndel  [] [] (pos+1) (is+1) ic (io+1) mds'
 
@@ -223,11 +210,9 @@ decompose dtok br =
             Mat :* cl | io == cl  -> nextIndel  ins     del   pos     is  (ic+1) 0 mds
                       | otherwise -> indel del out $ nextBase (length del) pos is ic io mds -- ends up generating a 'Base'
       where
-        indel d o k = rlist o `seq` Indel d o k
+        indel d o k = foldr seq (Indel d o k) o
         out    = concat $ reverse ins
-        isq cl = [ get_seq i gap | i <- [is..is+cl-1] ] : ins
-        rlist [    ] = ()
-        rlist (a:as) = a `seq` rlist as
+        isq cl = [ get_seq i $ const gap | i <- [is..is+cl-1] ] : ins
 
         -- We have to treat (MdNum 0), because samtools actually
         -- generates(!) it all over the place and if not handled as a

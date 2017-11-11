@@ -229,7 +229,7 @@ mergeBam lowq highq ads1 ads2 r1 r2
 merged_seq :: (V.Vector v Nucleotides, V.Vector v Qual)
            => Int -> v Nucleotides -> v Qual -> v Nucleotides -> v Qual -> v Nucleotides
 merged_seq l b_seq_r1 b_qual_r1 b_seq_r2 b_qual_r2 = V.concat
-        [ V.take (l - len_r2) (b_seq_r1)
+        [ V.take (l - len_r2) b_seq_r1
         , V.zipWith4 zz          (V.take l $ V.drop (l - len_r2) b_seq_r1)
                                  (V.take l $ V.drop (l - len_r2) b_qual_r1)
                      (V.reverse $ V.take l $ V.drop (l - len_r1) b_seq_r2)
@@ -246,7 +246,7 @@ merged_seq l b_seq_r1 b_qual_r1 b_seq_r2 b_qual_r2 = V.concat
 merged_qual :: (V.Vector v Nucleotides, V.Vector v Qual)
             => Word8 -> Int -> v Nucleotides -> v Qual -> v Nucleotides -> v Qual -> v Qual
 merged_qual qmax l b_seq_r1 b_qual_r1 b_seq_r2 b_qual_r2 = V.concat
-        [ V.take (l - len_r2) (b_qual_r1)
+        [ V.take (l - len_r2) b_qual_r1
         , V.zipWith4 zz           (V.take l $ V.drop (l - len_r2) b_seq_r1)
                                   (V.take l $ V.drop (l - len_r2) b_qual_r1)
                       (V.reverse $ V.take l $ V.drop (l - len_r1) b_seq_r2)

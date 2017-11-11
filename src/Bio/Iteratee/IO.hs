@@ -56,7 +56,7 @@ enumFdCatch bufsize fd handler = enumFromCallbackCatch (makefdCallback bufsize f
 -- |The enumerator of a POSIX File Descriptor: a variation of @enumFd@ that
 -- supports RandomIO (seek requests).
 enumFdRandom :: MonadIO m => Int -> Fd -> Enumerator Bytes m a
-enumFdRandom bs fd iter = enumFdCatch bs fd handler iter
+enumFdRandom bs fd = enumFdCatch bs fd handler
   where
     handler (SeekException off) =
         Nothing <$ (liftIO . fdSeek fd AbsoluteSeek $ fromIntegral off)

@@ -33,9 +33,9 @@ showNum :: Show a => a -> String
 showNum = triplets [] . reverse . show
   where
     triplets acc [] = acc
-    triplets acc (a:[]) = a:acc
-    triplets acc (a:b:[]) = b:a:acc
-    triplets acc (a:b:c:[]) = c:b:a:acc
+    triplets acc [a] = a:acc
+    triplets acc [a,b] = b:a:acc
+    triplets acc [a,b,c] = c:b:a:acc
     triplets acc (a:b:c:s) = triplets (',':c:b:a:acc) s
 
 showOOM :: Double -> String
@@ -189,8 +189,8 @@ log1pexp x | x <=  -37 = exp x
 -- sorted in descending(!) order.
 {-# INLINE lsum #-}
 lsum :: (Floating a, Ord a) => [a] -> a
-lsum xs = foldl1' (\x y -> if x >= y then x + log1pexp (y-x) else err) xs
-    where err = error $ "lsum: argument list must be in descending order"
+lsum = foldl1' (\x y -> if x >= y then x + log1pexp (y-x) else err)
+    where err = error "lsum: argument list must be in descending order"
 
 -- | Computes \( \log \left( c e^x + (1-c) e^y \right) \).
 {-# INLINE llerp #-}

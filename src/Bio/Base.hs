@@ -299,7 +299,7 @@ instance Read Nucleotide where
 
     readList ('-':cs) = readList cs
     readList (c:cs) | isSpace c = readList cs
-                    | otherwise = case readsPrec 0 (c:cs) of
+                    | otherwise = case reads (c:cs) of
                             [] -> [ ([],c:cs) ]
                             xs -> [ (n:ns,r2) | (n,r1) <- xs, (ns,r2) <- readList r1 ]
     readList [] = [([],[])]

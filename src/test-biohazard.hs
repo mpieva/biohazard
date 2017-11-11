@@ -15,7 +15,7 @@ testBgzf = TestList [ TestCase checkBamBlockList, TestCase checkBamBlockListSeek
 
 checkBamBlockList :: Assertion
 checkBamBlockList =
-    fileDriver (joinI $ decompress' $ getBlockList) someBgzfFile
+    fileDriver (joinI $ decompress' getBlockList) someBgzfFile
     >>= assertEqual "unexpected block list" knownBlocks
 
 checkBamBlockListSeek :: Assertion

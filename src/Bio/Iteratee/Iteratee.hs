@@ -2,7 +2,6 @@
             ,RankNTypes
             ,FlexibleContexts
             ,ScopedTypeVariables
-            ,BangPatterns
             ,DeriveDataTypeable #-}
 
 -- |Monadic and General Iteratees:
@@ -516,7 +515,7 @@ enumPure1Chunk str iter = runIter iter idoneM onCont
 -- | Enumerate chunks from a list
 --
 enumList :: (Monad m) => [s] -> Enumerator s m a
-enumList chunks = go chunks
+enumList = go
  where
   go [] i = return i
   go xs' i = runIter i idoneM (onCont xs')
@@ -544,8 +543,8 @@ enumFromCallback ::
   (st -> m (Either SomeException ((Bool, st), s)))
   -> st
   -> Enumerator s m a
-enumFromCallback c st =
-  enumFromCallbackCatch c (\NotAnException -> return Nothing) st
+enumFromCallback c =
+  enumFromCallbackCatch c (\NotAnException -> return Nothing)
 
 -- Dummy exception to catch in enumFromCallback
 -- This never gets thrown, but it lets us
