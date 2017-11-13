@@ -26,7 +26,7 @@ import System.Random                ( randomRIO )
 
 import qualified Bio.Bam.Regions                as R
 import qualified Control.Exception              as E
-import qualified Data.IntMap                    as M
+import qualified Data.IntMap.Strict             as M
 import qualified Data.ByteString                as B
 import qualified Data.Vector                    as V
 import qualified Data.Vector.Mutable            as W
@@ -115,7 +115,7 @@ rgnToSegments bi@BamIndex{..} beg end bins cpts =
     , let boff' = max boff cpt
     , boff' < eoff ]
   where
-    !cpt = maybe 0 snd $ lookupLE beg cpts
+    !cpt = maybe 0 snd $ M.lookupLE beg cpts
 
 -- list of bins for given range of coordinates, from Heng's horrible code
 binList :: BamIndex a -> Int -> Int -> [Int]
@@ -332,14 +332,6 @@ eneeBamSubseq bi ref subs = foldr ((>=>) . eneeBamSegment) return segs ><> filte
 
 eneeBamRegions :: Monad m => BamIndex b -> [R.Region] -> Enumeratee [BamRaw] [BamRaw] m a
 eneeBamRegions bi = foldr ((>=>) . uncurry (eneeBamSubseq bi)) return . R.toList . R.fromList
-
-
-lookupLE :: M.Key -> M.IntMap a -> Maybe (M.Key, a)
-lookupLE k m = case ma of
-    Just a              -> Just (k,a)
-    Nothing | M.null m1 -> Nothing
-            | otherwise -> Just $ M.findMax m1
-  where (m1,ma,_) = M.splitLookup k m
 
 
 -- | Subsample randomly from a BAM file.  If an index exists, this

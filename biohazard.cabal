@@ -15,7 +15,7 @@ Copyright:           (C) 2010-2017 Udo Stenzel
 
 Cabal-version:       >= 1.10
 Build-type:          Simple
-Tested-With:         GHC == 7.8.4, GHC == 7.10.1, GHC == 8.0.1
+Tested-With:         GHC == 7.8.4, GHC == 7.10.3, GHC == 8.0.2, GHC == 8.2.1
 
 source-repository head
   type:     git
@@ -61,8 +61,8 @@ Library
 
   Build-depends:       async                    >= 2.0 && < 2.2,
                        attoparsec               >= 0.10 && < 0.14,
-                       base                     >= 4.6 && < 4.11,
-                       base-prelude             == 1.0.* || == 1.2.*,
+                       base                     >= 4.7 && < 4.11,
+                       base-prelude             == 1.2.*,
                        binary                   >= 0.7 && < 0.9,
                        bytestring               >= 0.10.2 && < 0.11,
                        containers               == 0.5.*,

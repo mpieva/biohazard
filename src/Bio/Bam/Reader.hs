@@ -90,7 +90,7 @@ decodeSam :: Monad m => (BamMeta -> Iteratee [BamRec] m a) -> Iteratee Bytes m (
 decodeSam inner = joinI $ enumLinesBS $ do
     let pHeaderLine acc str = case P.parseOnly parseBamMetaLine str of Right f -> return $ f : acc
                                                                        Left e  -> fail $ e ++ ", " ++ show str
-    meta <- fmap (foldr ($) mempty . reverse) (joinI $ breakE (not . S.isPrefixOf "@") $ foldStreamM pHeaderLine [])
+    meta <- liftM (foldr ($) mempty . reverse) (joinI $ breakE (not . S.isPrefixOf "@") $ foldStreamM pHeaderLine [])
     decodeSamLoop (meta_refs meta) (inner meta)
 
 decodeSamLoop :: Monad m => Refs -> Enumeratee [Bytes] [BamRec] m a

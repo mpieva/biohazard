@@ -59,7 +59,7 @@ enumFdRandom :: MonadIO m => Int -> Fd -> Enumerator Bytes m a
 enumFdRandom bs fd = enumFdCatch bs fd handler
   where
     handler (SeekException off) =
-        Nothing <$ (liftIO . fdSeek fd AbsoluteSeek $ fromIntegral off)
+        liftIO $ fdSeek fd AbsoluteSeek (fromIntegral off) >> return Nothing
 
 enumFile' :: (MonadIO m, MonadMask m) =>
   (Int -> Fd -> Enumerator s m a)

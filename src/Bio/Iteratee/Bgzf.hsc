@@ -17,8 +17,6 @@ import Control.Concurrent.Async             ( async, wait )
 import Foreign.C.String                     ( withCAString )
 import Foreign.C.Types                      ( CInt(..), CChar(..), CUInt(..), CULong(..) )
 import Foreign.Marshal.Alloc                ( mallocBytes, free, allocaBytes )
-import Foreign.Ptr                          ( nullPtr, castPtr, Ptr, plusPtr, minusPtr )
-import Foreign.Storable                     ( peekByteOff, pokeByteOff )
 
 import qualified Data.ByteString            as S
 import qualified Data.ByteString.Unsafe     as S

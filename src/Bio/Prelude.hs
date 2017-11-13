@@ -6,12 +6,6 @@ module Bio.Prelude (
     module System.Posix.Files,
     module System.Posix.IO,
     module System.Posix.Types,
-#if !MIN_VERSION_base_prelude(1,1,0)
-    module Foreign.Storable,
-    module Foreign.Ptr,
-    module Foreign.ForeignPtr,
-    module Foreign.StablePtr,
-#endif
 
     Bytes, LazyBytes,
     HashMap,
@@ -24,11 +18,6 @@ module Bio.Prelude (
 #ifdef __GLASGOW_HASKELL__
     (:!:),
 #endif
-#endif
-
-#if !MIN_VERSION_base(4,7,0)
-    isLeft,
-    isRight,
 #endif
 
 #if !MIN_VERSION_base(4,8,0)
@@ -49,10 +38,8 @@ module Bio.Prelude (
 import BasePrelude
 #if MIN_VERSION_base(4,9,0)
                     hiding ( EOF, log1p, log1pexp, log1mexp, expm1 )
-#elif MIN_VERSION_base(4,7,0)
-                    hiding ( EOF )
 #else
-                    hiding ( EOF, block )
+                    hiding ( EOF )
 #endif
 
 #if !MIN_VERSION_base(4,8,0)
@@ -74,13 +61,6 @@ import System.IO           ( hPrint, hPutStr, hPutStrLn, stderr, stdout, stdin )
 import System.Posix.Files
 import System.Posix.IO
 import System.Posix.Types
-
-#if !MIN_VERSION_base_prelude(1,1,0)
-import Foreign.Storable
-import Foreign.Ptr
-import Foreign.ForeignPtr
-import Foreign.StablePtr
-#endif
 
 import qualified Data.ByteString.Unsafe as B
 import qualified Data.ByteString.Lazy   as BL
@@ -111,12 +91,6 @@ class Unpack s where unpack :: s -> String
 instance Unpack ByteString where unpack = S.unpack
 instance Unpack Text       where unpack = T.unpack
 instance Unpack String     where unpack = id
-
-#if !MIN_VERSION_base(4,7,0)
-isLeft, isRight :: Either a b -> Bool
-isLeft = either (const False) (const True)
-isRight = either (const True) (const False)
-#endif
 
 fdPut :: Fd -> Bytes -> IO ()
 fdPut fd s = B.unsafeUseAsCStringLen s $ \(p,l) ->

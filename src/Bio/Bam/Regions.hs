@@ -1,9 +1,9 @@
 module Bio.Bam.Regions where
 
 import Bio.Bam.Header ( Refseq(..) )
-import Data.List ( foldl' )
-import qualified Data.IntMap as IM
-import Prelude
+import Bio.Prelude
+
+import qualified Data.IntMap.Strict as IM
 
 data Region = Region { refseq :: !Refseq, start :: !Int, end :: !Int }
   deriving (Eq, Ord, Show)
@@ -32,7 +32,7 @@ add (Region (Refseq r) b e) (Regions m) =
 addInt :: Int -> Int -> Subsequence -> Subsequence
 addInt b e (Subsequence m0) = Subsequence $ merge_into b e m0
   where
-    merge_into x y m = case lookupLT y m of
+    merge_into x y m = case IM.lookupLT y m of
         Just (u,v) | x < u && y <= v -> merge_into x v $ IM.delete u m    -- extend to the left
                    | x < u           -> merge_into x y $ IM.delete u m    -- subsume
                    | y <= v          -> m                                 -- subsumed
@@ -40,11 +40,6 @@ addInt b e (Subsequence m0) = Subsequence $ merge_into b e m0
         _                            -> IM.insert  x y m                  -- no overlap
 
 overlaps :: Int -> Int -> Subsequence -> Bool
-overlaps b e (Subsequence m) = case lookupLT e m of
+overlaps b e (Subsequence m) = case IM.lookupLT e m of
         Just (_,v) -> b < v
         Nothing    -> False
-
-lookupLT :: IM.Key -> IM.IntMap a -> Maybe (IM.Key, a)
-lookupLT k m | IM.null m1 = Nothing
-             | otherwise  = Just $ IM.findMax m1
-  where (m1,_) = IM.split k m

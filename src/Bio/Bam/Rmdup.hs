@@ -12,7 +12,7 @@ import Bio.Prelude hiding ( left, right )
 
 import qualified Data.ByteString        as B
 import qualified Data.ByteString.Char8  as T
-import qualified Data.Map               as M
+import qualified Data.Map.Strict        as M
 import qualified Data.Vector.Generic    as V
 import qualified Data.Vector.Storable   as VS
 import qualified Data.Vector.Unboxed    as U

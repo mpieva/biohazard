@@ -204,8 +204,8 @@ instance VM.MVector MVector_Nucs_half Nucleotides where
 
     {-# INLINE basicUnsafeRead #-}
     basicUnsafeRead (MVector_Nucs_half o _ fp) i
-        | even (o+i) = Ns . (.&.) 0xF . (`shiftR` 4) <$> b
-        | otherwise  = Ns . (.&.) 0xF                <$> b
+        | even (o+i) = liftM (Ns . (.&.) 0xF . (`shiftR` 4)) b
+        | otherwise  = liftM (Ns . (.&.) 0xF               ) b
       where b = unsafePrimToPrim $ withForeignPtr fp $ \p -> peekByteOff p ((o+i) `shiftR` 1)
 
     {-# INLINE basicUnsafeWrite #-}
