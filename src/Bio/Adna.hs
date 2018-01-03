@@ -17,7 +17,11 @@ module Bio.Adna (
     Alignment(..),
     FragType(..),
     Subst(..),
+
     NPair,
+    npair,
+    fst_np,
+    snd_np,
 
     noDamage,
     univDamage,
@@ -274,14 +278,35 @@ type SubstitutionStats = [( Subst, U.Vector Int )]
 
 
 data FragType = Complete | Leading | Trailing deriving (Show, Eq)
-type NPair = ( Nucleotides, Nucleotides )
+
+-- | Compact storage of a pair of ambiguous 'Nucleotides'.  Used to
+-- represent alignments in a way that is accessible even to assembly
+-- code.  The first and sencond field are stored in the low and high
+-- nybble, respectively.  See 'fst_np', 'snd_np', 'npair'.
+newtype NPair = NPair Word8 deriving (Eq, Ord)
+
+npair :: Nucleotides -> Nucleotides -> NPair
+npair (Ns r) (Ns q) = NPair $ shiftL q 4 .|. r .&. 0xF
+
+fst_np, snd_np :: NPair -> Nucleotides
+fst_np (NPair w) = Ns (w .&. 0xF)
+snd_np (NPair w) = Ns (shiftR w 4)
+
+instance Storable NPair where
+    sizeOf    _ = 1
+    alignment _ = 1
+    peek p = NPair <$> peek (castPtr p :: Ptr Word8)
+    poke p (NPair v) = poke (castPtr p :: Ptr Word8) v
+
+instance Show NPair where
+    showsPrec _ p = shows (fst_np p) . (:) '/' . shows (snd_np p)
 
 -- Alignment record, might have been gotten from practically anywhere
 -- with varying completeness.  We record anything we can get, most is
 -- optional.  Reference sequence is filled with Ns if missing.
 data Alignment = ALN
-    { a_sequence :: !(U.Vector NPair)       -- the alignment proper
-    , a_fragment_type :: !FragType }    -- was the adapter trimmed?
+    { a_sequence :: !(VS.Vector NPair)      -- the alignment proper
+    , a_fragment_type :: !FragType }        -- was the adapter trimmed?
 
 addFragType :: BamMeta -> Enumeratee [BamRaw] [(BamRaw,FragType)] m b
 addFragType meta = mapStream $ \br -> (br, case unpackBam br of
@@ -353,15 +378,15 @@ damagePatternsIterMD rng it =
         guard (not $ isUnmapped b)
         md <- getMd b
         let pps = alnFromMd b_seq b_cigar md
-            ref = U.map fromN $ U.filter ((/=) gap . fst) pps
+            ref = U.convert $ VS.map fromN $ VS.filter ((/=) gap) $ VS.map fst_np pps
         return (b, ft, ref, pps)) =$
     damagePatternsIter 0 rng it
   where
-    fromN (ns,_) | ns == nucsA = 2
-                 | ns == nucsC = 1
-                 | ns == nucsG = 3
-                 | ns == nucsT = 0
-                 | otherwise   = 4
+    fromN ns | ns == nucsA = 2
+             | ns == nucsC = 1
+             | ns == nucsG = 3
+             | ns == nucsT = 0
+             | otherwise   = 4
 
 -- | Common logic for statistics. The function 'get_ref_and_aln'
 -- reconstructs reference sequence and alignment from a Bam record.  It
@@ -370,7 +395,7 @@ damagePatternsIterMD rng it =
 damagePatternsIter :: MonadIO m
                    => Int -> Int
                    -> Iteratee [Alignment] m b
-                   -> Iteratee [(BamRec, FragType, U.Vector Word8, U.Vector NPair)] m (DmgStats b)
+                   -> Iteratee [(BamRec, FragType, U.Vector Word8, VS.Vector NPair)] m (DmgStats b)
 damagePatternsIter ctx rng it = mapStream revcom_both =$ do
     let maxwidth = ctx + rng
     acc_bc <- liftIO $ UM.replicate (2 * 5 *    maxwidth) (0::Int)
@@ -382,9 +407,6 @@ damagePatternsIter ctx rng it = mapStream revcom_both =$ do
               when (U.any (<0) ref || U.any (>4) ref) . error $
                     "Unexpected value in reference fragment: " ++ show ref
 #endif
-              let good_pairs     = U.indexed             a_sequence
-                  good_pairs_rev = U.indexed $ U.reverse a_sequence
-
               -- basecompositon near 5' end, near 3' end
               let (width5, width3) = case a_fragment_type of
                                             Leading -> (full_width, 0)
@@ -397,41 +419,42 @@ damagePatternsIter ctx rng it = mapStream revcom_both =$ do
 
               -- For substitutions, decide what damage class we're in:
               -- 0 - no damage, 1 - damaged 5' end, 2 - damaged 3' end, 3 - both
-              let dmgbase = 2*4*4*rng * ( (if U.null a_sequence || U.head a_sequence /= (nucsC,nucsT) then 1 else 0)
-                                        + (if U.null a_sequence || U.last a_sequence /= (nucsC,nucsT) then 2 else 0) )
+              let dmgbase = 2*4*4*rng * ( (if VS.null a_sequence || VS.head a_sequence /= npair nucsC nucsT then 1 else 0)
+                                        + (if VS.null a_sequence || VS.last a_sequence /= npair nucsC nucsT then 2 else 0) )
 
               -- substitutions near 5' end
               let len_at_5 = case a_fragment_type of Leading  -> min rng (G.length b_seq)
                                                      Complete -> min rng (G.length b_seq `div` 2)
                                                      Trailing -> 0
-              U.forM_ (U.take len_at_5 good_pairs) $
-                    \(i,uv) -> withPair uv $ \j -> bump (j * rng + i + dmgbase) acc_st
+              flip G.imapM_ (VS.take len_at_5 a_sequence) $
+                    \i uv -> withPair uv $ \j -> bump (j * rng + i + dmgbase) acc_st
 
               -- substitutions at CpG sites near 5' end
-              U.zipWithM_
-                  (\(i,(u,v)) (_,(w,z)) ->
-                      when (u == nucsC && w == nucsG) $ do
-                          withNs v $ \y -> bump (  y   * rng +  i ) acc_cg
-                          withNs z $ \y -> bump ((y+4) * rng + i+1) acc_cg)
-                  (U.take len_at_5 good_pairs) (U.drop 1 good_pairs)
+              G.izipWithM_
+                  (\i uv wz ->
+                      when (fst_np uv == nucsC && fst_np wz == nucsG) $ do
+                          withNs (snd_np uv) $ \y -> bump (  y   * rng +  i ) acc_cg
+                          withNs (snd_np wz) $ \y -> bump ((y+4) * rng + i+1) acc_cg)
+                  (VS.take len_at_5 a_sequence) (VS.drop 1 a_sequence)
 
               -- substitutions near 3' end
               let len_at_3 = case a_fragment_type of Leading  -> 0
                                                      Complete -> min rng (G.length b_seq `div` 2)
                                                      Trailing -> min rng (G.length b_seq)
-              U.forM_ (U.take len_at_3 good_pairs_rev) $
-                    \(i,uv) -> withPair uv $ \j -> bump ((17+j) * rng -i -1 + dmgbase) acc_st
+              flip G.imapM_ (VS.take len_at_3 (VS.reverse a_sequence)) $
+                    \i uv -> withPair uv $ \j -> bump ((17+j) * rng -i -1 + dmgbase) acc_st
 
               -- substitutions at CpG sites near 3' end
-              U.zipWithM_
-                  (\(_,(u,v)) (i,(w,z)) ->
-                      when (u == nucsC && w == nucsG) $ do
-                          withNs v $ \y -> bump ((y+ 9) * rng - i-2) acc_cg
-                          withNs z $ \y -> bump ((y+13) * rng - i-1) acc_cg)
-                  (U.drop 1 good_pairs_rev) (U.take len_at_3 good_pairs_rev)
-
+              G.izipWithM_
+                  (\i wz uv ->
+                      when (fst_np uv == nucsC && fst_np wz == nucsG) $ do
+                          withNs (snd_np uv) $ \y -> bump ((y+ 9) * rng - i-2) acc_cg
+                          withNs (snd_np wz) $ \y -> bump ((y+13) * rng - i-1) acc_cg)
+                  (VS.take len_at_3 (VS.reverse a_sequence))
+                  (VS.drop 1 (VS.reverse a_sequence))
 
               return ALN{..}
+
 
     let nsubsts = 4*4*rng
         mk_substs off = sequence [ (,) (n1 :-> n2) <$> U.unsafeFreeze (UM.slice ((4*i+j)*rng + off*nsubsts) rng acc_st)
@@ -439,9 +462,9 @@ damagePatternsIter ctx rng it = mapStream revcom_both =$ do
                                  , (j,n2) <- zip [0..] [nucA..nucT] ]
 
     accs <- liftIO $ DmgStats <$> sequence [ (,) nuc <$> U.unsafeFreeze (UM.slice (i*maxwidth) maxwidth acc_bc)
-                                           | (i,nuc) <- zip [2,1,3,0,4] [Just nucA, Just nucC, Just nucG, Just nucT, Nothing] ]
+                                           | (i,nuc) <- zip [2,1,3,0,4] [Just nucA,Just nucC,Just nucG,Just nucT,Nothing] ]
                               <*> sequence [ (,) nuc <$> U.unsafeFreeze (UM.slice (i*maxwidth) maxwidth acc_bc)
-                                           | (i,nuc) <- zip [7,6,8,5,9] [Just nucA, Just nucC, Just nucG, Just nucT, Nothing] ]
+                                           | (i,nuc) <- zip [7,6,8,5,9] [Just nucA,Just nucC,Just nucG,Just nucT,Nothing] ]
 
                               <*> mk_substs 0
                               <*> mk_substs 1
@@ -469,12 +492,14 @@ damagePatternsIter ctx rng it = mapStream revcom_both =$ do
                    , substs3d3 = mconcat [ substs3d3 accs', substs3dd accs'] }
   where
     {-# INLINE withPair #-}
-    withPair (Ns u, Ns v) k = case pairTab `U.unsafeIndex` fromIntegral (16*u+v) of
+    withPair (NPair i) k =
+        case pairTab `U.unsafeIndex` fromIntegral i of
             j -> when (j >= 0) (k j)
 
     !pairTab = U.replicate 256 (-1) U.//
-            [ (fromIntegral $ 16*u+v, x*4+y) | (Ns u,x) <- zip [nucsA, nucsC, nucsG, nucsT] [0,1,2,3]
-                                             , (Ns v,y) <- zip [nucsA, nucsC, nucsG, nucsT] [0,1,2,3] ]
+            [ (fromIntegral i, x*4+y) | (u,x) <- zip [nucsA, nucsC, nucsG, nucsT] [0,1,2,3]
+                                      , (v,y) <- zip [nucsA, nucsC, nucsG, nucsT] [0,1,2,3]
+                                      , let NPair i = npair u v ]
     {-# INLINE bump #-}
 #ifdef DEBUG
     bump i v = UM.read v i >>= UM.write v i . succ
@@ -533,20 +558,20 @@ instance Monoid a => Monoid (DmgStats a) where
                                      | otherwise        = (x :-> y, U.zipWith (+) u v)
 
 
-revcom_both :: ( BamRec, FragType, U.Vector Word8, U.Vector (Nucleotides, Nucleotides) )
-            -> ( BamRec, FragType, U.Vector Word8, U.Vector (Nucleotides, Nucleotides) )
+revcom_both :: ( BamRec, FragType, U.Vector Word8, VS.Vector NPair )
+            -> ( BamRec, FragType, U.Vector Word8, VS.Vector NPair )
 revcom_both (b, ft, ref, pps)
     | isReversed b = ( b, ft, revcom_ref ref, revcom_pairs pps )
     | otherwise    = ( b, ft,            ref,              pps )
   where
-    revcom_ref   = U.reverse . U.map (\c -> if c > 3 then c else xor c 2)
-    revcom_pairs = U.reverse . U.map (compls *** compls)
+    revcom_ref   =  U.reverse .  U.map (\c -> if c > 3 then c else xor c 2)
+    revcom_pairs = VS.reverse . VS.map (\p -> npair (compls $ fst_np p) (compls $ snd_np p))
 
 
 -- | Reconstructs the alignment from reference, query, and cigar.  Only
 -- positions where the query is not gapped are produced.
-aln_from_ref :: U.Vector Word8 -> Vector_Nucs_half Nucleotides -> VS.Vector Cigar -> U.Vector NPair
-aln_from_ref ref0 qry0 cig0 = U.fromList $ step ref0 qry0 cig0
+aln_from_ref :: U.Vector Word8 -> Vector_Nucs_half Nucleotides -> VS.Vector Cigar -> VS.Vector NPair
+aln_from_ref ref0 qry0 cig0 = VS.fromList $ step ref0 qry0 cig0
   where
     step ref qry cig1
         | U.null ref || G.null qry || G.null cig1 = []
@@ -554,14 +579,14 @@ aln_from_ref ref0 qry0 cig0 = U.fromList $ step ref0 qry0 cig0
                       case G.unsafeTail cig1 of { cig ->
                       case op of {
 
-        Mat -> zipWith (\r q -> (nn r,q)) (G.toList (G.take n ref))
-                                          (G.toList (G.take n qry)) ++ step (G.drop n ref) (G.drop n qry) cig ;
-        Del ->                                                         step (G.drop n ref)           qry  cig ;
-        Ins ->    map (\q -> ( gap,  q )) (G.toList (G.take n qry)) ++ step           ref  (G.drop n qry) cig ;
-        SMa ->    map (\q -> ( gap,  q )) (G.toList (G.take n qry)) ++ step           ref  (G.drop n qry) cig ;
-        HMa ->   replicate n (gap, nucsN)                           ++ step           ref            qry  cig ;
-        Nop ->                                                         step           ref            qry  cig ;
-        Pad ->                                                         step           ref            qry  cig }}}
+        Mat -> zipWith (npair . nn) (G.toList (G.take n ref))
+                                    (G.toList (G.take n qry)) ++ step (G.drop n ref) (G.drop n qry) cig ;
+        Del ->                                                   step (G.drop n ref)           qry  cig ;
+        Ins -> map (npair gap) (G.toList (G.take n qry))      ++ step           ref  (G.drop n qry) cig ;
+        SMa -> map (npair gap) (G.toList (G.take n qry))      ++ step           ref  (G.drop n qry) cig ;
+        HMa -> replicate n (npair gap nucsN)                  ++ step           ref            qry  cig ;
+        Nop ->                                                   step           ref            qry  cig ;
+        Pad ->                                                   step           ref            qry  cig }}}
 
     nn 0 = nucsT
     nn 1 = nucsC
@@ -572,8 +597,8 @@ aln_from_ref ref0 qry0 cig0 = U.fromList $ step ref0 qry0 cig0
 
 -- | Reconstructs the alignment from query, cigar, and md.  Only
 -- positions where the query is not gapped are produced.
-alnFromMd :: Vector_Nucs_half Nucleotides -> VS.Vector Cigar -> [MdOp] -> U.Vector NPair
-alnFromMd qry0 cig0 md0 = U.fromList $ step qry0 cig0 md0
+alnFromMd :: Vector_Nucs_half Nucleotides -> VS.Vector Cigar -> [MdOp] -> VS.Vector NPair
+alnFromMd qry0 cig0 md0 = VS.fromList $ step qry0 cig0 md0
   where
     step qry cig1 md
         | G.null qry || G.null cig1 || null md = []
@@ -584,20 +609,22 @@ alnFromMd qry0 cig0 md0 = U.fromList $ step qry0 cig0 md0
     step' qry op n cig (MdDel [] : md) = step' qry op n cig md
 
     step' qry Mat n cig (MdNum m : md)
-            | n <  m = map (\q -> (q,q)) (G.toList (G.take n qry)) ++ step  (G.drop n qry)           cig (MdNum (m-n) : md)
-            | n >  m = map (\q -> (q,q)) (G.toList (G.take m qry)) ++ step' (G.drop m qry) Mat (n-m) cig                md
-            | n == m = map (\q -> (q,q)) (G.toList (G.take n qry)) ++ step  (G.drop n qry)           cig                md
-    step' qry Mat n cig (MdRep c : md) =         ( c, G.head qry )  : step' (G.tail   qry) Mat (n-1) cig                md
+            | n <  m =    map twin (G.toList (G.take n qry)) ++ step  (G.drop n qry)           cig (MdNum (m-n) : md)
+            | n >  m =    map twin (G.toList (G.take m qry)) ++ step' (G.drop m qry) Mat (n-m) cig                md
+            | n == m =    map twin (G.toList (G.take n qry)) ++ step  (G.drop n qry)           cig                md
+    step' qry Mat n cig (MdRep c : md) = npair c (G.head qry) : step' (G.tail   qry) Mat (n-1) cig                md
     step'   _ Mat _   _          _     = []
 
     step' qry Del n cig (MdDel (_:ss) : md) = step' qry Del (n-1) cig (MdDel ss : md)
     step'   _ Del _   _               _     = []
 
-    step' qry Ins n cig                 md  = map ((,) gap) (G.toList (G.take n qry)) ++ step (G.drop n qry) cig md
-    step' qry SMa n cig                 md  = map ((,) gap) (G.toList (G.take n qry)) ++ step (G.drop n qry) cig md
-    step' qry HMa n cig                 md  =                replicate n (gap, nucsN) ++ step           qry  cig md
-    step' qry Nop _ cig                 md  =                                            step           qry  cig md
-    step' qry Pad _ cig                 md  =                                            step           qry  cig md
+    step' qry Ins n cig                 md  = map (npair gap) (G.toList (G.take n qry)) ++ step (G.drop n qry) cig md
+    step' qry SMa n cig                 md  = map (npair gap) (G.toList (G.take n qry)) ++ step (G.drop n qry) cig md
+    step' qry HMa n cig                 md  =             replicate n (npair gap nucsN) ++ step           qry  cig md
+    step' qry Nop _ cig                 md  =                                              step           qry  cig md
+    step' qry Pad _ cig                 md  =                                              step           qry  cig md
+
+    twin q = npair q q
 
 -- | Number of mismatches allowed by BWA.
 -- @bwa_cal_maxdiff thresh len@ returns the number of mismatches
