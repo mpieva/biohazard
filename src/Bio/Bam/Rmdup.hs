@@ -257,7 +257,7 @@ merge_singles singles unaligneds = go
 
         in case M.lookup str singles of
             Nothing                    -> (              (m,v) : r,     unal )
-            Just (n, Consensus      w) -> ( (n, add_xp_of w v) : r,     unal )      -- XXX do we need this w?!
+            Just (n, Consensus      w) -> ( (n, add_xp_of w v) : r,     unal )
             Just (n, Representative w) -> ( (n, add_xp_of w v) : r, w : unal )
 
     -- No more pairs, delegate the problem
@@ -569,12 +569,10 @@ mask_all (Mat' n ec) = SMa' n $ mask_all ec
 mask_all (Ins' n ec) = SMa' n $ mask_all ec
 mask_all (SMa' n ec) = SMa' n $ mask_all ec
 
--- | Argh, this business with the CIGAR operations is a mess, it gets
--- worse when combined with MD.  Okay, we will support CIGAR (no "=" and
--- "X" operations) and MD.  If we have MD on input, we generate it on
--- output, too.  And in between, we break everything into /very small/
--- operations.  (Yes, the two terminating constructors are a weird
--- hack.)
+-- | Extended CIGAR.  This subsumes both the CIGAR string and the
+-- optional MD field.  If we have MD on input, we generate it on output,
+-- too.  And in between, we break everything into /very small/
+-- operations.
 
 data ECig = WithMD                      -- terminate, do generate MD field
           | WithoutMD                   -- terminate, don't bother with MD

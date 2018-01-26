@@ -52,11 +52,6 @@ import System.FilePath              ( (</>), isAbsolute, splitSearchPath )
 import qualified Data.ByteString.Char8 as S
 import qualified Data.Vector.Unboxed   as U
 
-#if __GLASGOW_HASKELL__ == 704
-import Data.Vector.Generic          ( Vector(..) )
-import Data.Vector.Generic.Mutable  ( MVector(..) )
-#endif
-
 -- | A nucleotide base.  We only represent A,C,G,T.  The contained
 -- 'Word8' ist guaranteed to be 0..3.
 newtype Nucleotide = N { unN :: Word8 } deriving ( Eq, Ord, Enum, Ix, Storable )

@@ -1,3 +1,8 @@
+-- | Parser for @FastA/FastQ@, 'Iteratee' style, based on
+-- "Data.Attoparsec", and written such that it is compatible with module
+-- 'Bio.Bam'.  This gives import of @FastA/FastQ@ while respecting some
+-- local (to MPI EVAN) conventions.
+
 module Bio.Bam.Fastq ( parseFastq, parseFastq', parseFastqCassava ) where
 
 import Bio.Bam.Header
@@ -11,19 +16,13 @@ import qualified Data.ByteString                    as B
 import qualified Data.ByteString.Char8              as S
 import qualified Data.Vector.Generic                as V
 
--- ^ Parser for @FastA/FastQ@, 'Iteratee' style, based on
--- "Data.Attoparsec", and written such that it is compatible with module
--- 'Bio.Bam'.  This gives import of @FastA/FastQ@ while respecting some
--- local conventions.
-
 -- | Reader for DNA (not protein) sequences in FastA and FastQ.  We read
 -- everything vaguely looking like FastA or FastQ, then shoehorn it into
 -- a BAM record.  We strive to extract information following more or
--- less established conventions from the header, but we won't support
--- everything under the sun.  The recognized syntactical warts are
--- converted into appropriate flags and removed.  Only the canonical
--- variant of FastQ is supported (qualities stored as raw bytes with
--- base 33).
+-- less established conventions from the header, but don't aim for
+-- completeness.  The recognized syntactical warts are converted into
+-- appropriate flags and removed.  Only the canonical variant of FastQ
+-- is supported (qualities stored as raw bytes with offset 33).
 --
 -- Supported additional conventions:
 --
@@ -36,17 +35,12 @@ import qualified Data.Vector.Generic                as V
 --
 -- * A name prefix of @T_@ flags the sequence as unpaired and trimmed
 --
--- * A name prefix of @C_@, either before or after any of the other
+-- * A name prefix of @C_@, optionally before or after any of the other
 --   prefixes, is turned into the extra flag @XP:i:-1@ (result of
 --   duplicate removal with unknown duplicate count).
 --
 -- * A collection of tags separated from the name by an octothorpe is
 --   removed and put into the fields @XI@ and @XJ@ as text.
---
--- * In 'parseFastqCassava' only, if the first word of the description
---   has at least four colon separated subfields, the first if used to
---   flag first/second mate, the second is the \"QC failed\" flag, and
---   the fourth is the index sequence.
 --
 -- Everything before the first sequence header is ignored.  Headers can
 -- start with @\>@ or @\@@, we treat both equally.  The first word of
@@ -63,6 +57,13 @@ import qualified Data.Vector.Generic                as V
 parseFastq :: Monad m => Enumeratee Bytes [ BamRec ] m a
 parseFastq = parseFastq' (const id)
 
+-- | Like 'parseFastq', but also
+--
+-- * If the first word of the description has at least four colon
+--   separated subfields, the first is used to flag first/second mate,
+--   the second is the \"QC failed\" flag, and the fourth is the index
+--   sequence.
+
 parseFastqCassava :: Monad m => Enumeratee Bytes [ BamRec ] m a
 parseFastqCassava = parseFastq' (pdesc . S.split ':' . S.takeWhile (' ' /=))
   where
@@ -78,7 +79,6 @@ parseFastqCassava = parseFastq' (pdesc . S.split ':' . S.takeWhile (' ' /=))
 -- which can modify the parsed record.  Note that the quality field can
 -- end up empty.
 
-{-# WARNING parseFastq' "parseFastq' no longer removes syntactic warts!" #-}
 parseFastq' :: Monad m => ( Bytes -> BamRec -> BamRec ) -> Enumeratee Bytes [ BamRec ] m a
 parseFastq' descr it = do skipJunk ; convStream (parserToIteratee $ (:[]) <$> pRec) it
   where

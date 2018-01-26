@@ -1,3 +1,12 @@
+-- | Parsers for BAM and SAM.
+--
+-- TONOTDO:
+--
+-- * Reader for gzipped\/bzipped\/bgzf'ed SAM.  Storing SAM is a bad idea,
+--   so why would anyone ever want to compress, much less index it?
+-- * Proper support for the "=" symbol.  It's completely alien to the
+--   ususal representation of sequences.
+
 module Bio.Bam.Reader (
     Block(..),
     decompressBgzfBlocks,
@@ -51,14 +60,6 @@ import qualified Data.Sequence                      as Z
 import qualified Data.Vector.Generic                as V
 import qualified Data.Vector.Storable               as VS
 import qualified Data.Vector.Unboxed                as U
-
--- ^ Parsers for BAM and SAM.  We employ an @Iteratee@ interface, and we
--- strive to support everything possible in BAM.  The implementation of
--- nucleotides is somewhat lacking:  the "=" symbol is not understood.
---
--- TONOTDO:
--- * Reader for gzipped\/bzipped\/bgzf'ed SAM.  Storing SAM is a bad idea,
---   so why would anyone ever want to compress, much less index it?
 
 type BamrawEnumeratee m b = Enumeratee' BamMeta Bytes [BamRaw] m b
 type BamEnumeratee m b = Enumeratee' BamMeta Bytes [BamRec] m b
@@ -281,7 +282,7 @@ decodeBam inner = do meta <- liftBlock get_bam_header
         in meta { meta_refs = fmap (\s -> maybe s (mmerge' s) (M.lookup (sq_name s) tbl)) refs }
 
     mmerge' l r | sq_length l == sq_length r = l { sq_other_shit = sq_other_shit l ++ sq_other_shit r }
-               | otherwise                  = l -- contradiction in header, but we'll just ignore it
+                | otherwise                  = l -- contradiction in header, but we'll just ignore it
 
 
 {-# INLINE getBamRaw #-}

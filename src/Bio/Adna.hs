@@ -1,4 +1,16 @@
 {-# LANGUAGE DeriveGeneric, CPP #-}
+
+-- | Things specific to ancient DNA, e.g. damage models.
+--
+-- For aDNA, we need a substitution probability.  We have three options:
+-- use an empirically determined PSSM, use an arithmetically defined
+-- PSSM based on the /Johnson/ model, use a context sensitive PSSM based
+-- on the /Johnson/ model and an alignment.  Using /Dindel/, actual
+-- substitutions relative to a called haplotype would be taken into
+-- account.  Since we're not going to do that, taking alignments into
+-- account is difficult, somewhat approximate, and therefore not worth
+-- the hassle.
+
 module Bio.Adna (
     DmgStats(..),
     CompositionStats,
@@ -45,20 +57,9 @@ import qualified Data.Vector.Storable           as VS
 import qualified Data.Vector.Unboxed            as U
 import qualified Data.Vector.Unboxed.Mutable    as UM
 
--- ^ Things specific to ancient DNA, e.g. damage models.
---
--- For aDNA, we need a substitution probability.  We have three options:
--- use an empirically determined PSSM, use an arithmetically defined
--- PSSM based on the /Johnson/ model, use a context sensitive PSSM based
--- on the /Johnson/ model and an alignment.  Using /Dindel/, actual
--- substitutions relative to a called haplotype would be taken into
--- account.  Since we're not going to do that, taking alignments into
--- account is difficult, somewhat approximate, and therefore not worth
--- the hassle.
---
--- We represent substitution matrices by the type 'Mat44D'.  Internally,
+-- | We represent substitution matrices by the type 'Mat44D'.  Internally,
 -- this is a vector of packed vectors.  Conveniently, each of the packed
--- vectors represents all transition /into/ the given nucleotide.
+-- vectors represents all transitions /into/ the given nucleotide.
 
 newtype Mat44D = Mat44D (U.Vector Double) deriving (Show, Generic)
 newtype MMat44D = MMat44D (UM.IOVector Double)
@@ -254,8 +255,6 @@ empDamage NDP{..} =
 --   mind, 'substs5d5', 'substs5d3', 'substs5dd' are like 'substs5', but
 --   counting only reads where the 5' end is damaged, where the 3' end
 --   is damaged, and where both ends are damaged, respectively.
---
--- XXX  This got kind of ugly.  We'll see where this goes...
 
 data DmgStats a = DmgStats {
     basecompo5 :: CompositionStats,
@@ -301,9 +300,8 @@ instance Storable NPair where
 instance Show NPair where
     showsPrec _ p = shows (fst_np p) . (:) '/' . shows (snd_np p)
 
--- Alignment record, might have been gotten from practically anywhere
--- with varying completeness.  We record anything we can get, most is
--- optional.  Reference sequence is filled with Ns if missing.
+-- | Alignment record.  The reference sequence is filled with Ns if
+-- missing.
 data Alignment = ALN
     { a_sequence :: !(VS.Vector NPair)      -- the alignment proper
     , a_fragment_type :: !FragType }        -- was the adapter trimmed?
@@ -647,18 +645,6 @@ alnFromMd qry0 cig0 md0 = VS.fromList $ step qry0 cig0 md0
 --      return 2;
 --   }
 -- @
---      double sum, y = 1.0;
---      int k, x = 1;
---      for (k = 1, sum = elambda; k < 1000; ++k) {
---          y *= l * err;
---          x *= k;
---          sum += elambda * y / x;
---          if (1.0 - sum < thres) return k;
---      }
---      return 2;
---   }
--- @
---
 
 bwa_cal_maxdiff :: Double -> Int -> Int
 bwa_cal_maxdiff thresh len = k_fin-1

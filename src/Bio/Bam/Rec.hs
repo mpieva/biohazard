@@ -6,13 +6,6 @@
 -- do not have support for ambiguity codes, and the "=" symbol is not
 -- understood.
 
--- TODO:
--- - Automatic creation of some kind of index.  If possible, this should
---   be the standard index for sorted BAM and/or the newer CSI format.
---   Optionally, a block index for slicing of large files, even unsorted
---   ones.  Maybe an index by name and an index for group-sorted files.
---   Sensible indices should be generated whenever a file is written.
-
 module Bio.Bam.Rec (
     BamRaw,
     bamRaw,
@@ -103,7 +96,7 @@ instance Storable Cigar where
         where
             w = fromEnum op .|. shiftL num 4
 
--- | extracts the aligned length from a cigar line
+-- | Extracts the aligned length from a cigar line.
 -- This gives the length of an alignment as measured on the reference,
 -- which is different from the length on the query or the length of the
 -- alignment.

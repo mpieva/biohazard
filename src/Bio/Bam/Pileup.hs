@@ -1,4 +1,19 @@
 {-# LANGUAGE Rank2Types, DeriveGeneric #-}
+
+-- | Pileup, similar to Samtools
+--
+-- Pileup turns a sorted sequence of reads into a sequence of \"piles\",
+-- one for each site where a genetic variant might be called.  We will
+-- scan each read's CIGAR line and MD field in concert with the sequence
+-- and effective quality.  Effective quality is the lowest available
+-- quality score of QUAL, MAPQ, and BQ.  For aDNA calling, a base is
+-- represented as four probabilities, derived from a position dependent
+-- damage model.
+--
+-- XXX  Pileup is pretty slow and expensive, probably because of
+-- heavyweight intermediate data structures.  Should try and fuse them
+-- away before version 1.0.0 (heffalump will be happy).
+
 module Bio.Bam.Pileup where
 
 import Bio.Bam.Header
@@ -9,57 +24,6 @@ import Bio.Prelude
 import qualified Data.ByteString        as B
 import qualified Data.Vector.Generic    as V
 import qualified Data.Vector.Unboxed    as U
-
--- ^ Genotype Calling:  like Samtools(?), but for aDNA
---
--- The goal for this module is to call haploid and diploid single
--- nucleotide variants the best way we can, including support for aDNA.
--- Indel calling is out of scope, we only do it "on the side".
---
--- The cleanest way to call genotypes under all circumstances is
--- probably the /Dindel/ approach:  define candidate haplotypes, align
--- each read to each haplotype, then call the likely haplotypes with a
--- quality derived from the quality scores.  This approach neatly
--- integrates indel calling with ancient DNA and makes a separate indel
--- realigner redundant.  However, it's rather expensive in that it
--- requires inclusion of an aligner, and we'd need an aligner that is
--- compatible with the chosen error model, which might be hard.
---
--- Here we'll take a short cut:  We do not really call indels.  Instead,
--- these variants are collected and are assigned an affine score.  This
--- works best if indels are 'left-aligned' first.  In theory, one indel
--- variant could be another indel variant with a sequencing error---we
--- ignore that possibility for the most part.  Once indels are taken
--- care off, SNVs are treated separately as independent columns of the
--- pileup.
---
--- Regarding the error model, there's a choice between /samtools/ or the
--- naive model everybody else (GATK, Rasmus Nielsen, etc.) uses.  Naive
--- is easy to marry to aDNA, samtools is (probably) better.  Either way,
--- we introduce a number of parameters (@eta@ and @kappa@ for
--- /samtools/, @lambda@, @delta@, @delta_ss@ for /Johnson/).  Running a
--- maximum likehood fit for those may be valuable.  It would be cool, if
--- we could do that without rerunning the complete genotype caller, but
--- it's not a priority.
---
--- So, outline of the genotype caller:  We read BAM (minimally
--- filtering; general filtering is somebody else's problem, but we might
--- want to split by read group).  We will scan each read's CIGAR line in
--- concert with the sequence and effective quality.  Effective quality
--- is the lowest available quality score of QUAL, MAPQ, and BQ.  For
--- aDNA calling, the base is transformed into four likelihoods based on
--- the aDNA substitution matrix.
---
--- So, either way, we need something like "pileup", where indel variants
--- are collected as they are (any length), while matches are piled up.
---
--- Regarding output, we certainly don't want to write VCF or BCF.  (No
--- VCF because it's ugly, no BCF, because the tool support is
--- non-existent.)  It will definitely be something binary.  For the GL
--- values, small floating point formats may make sense: half-precision
--- floating point's representable range would be 6.1E-5 to 6.5E+5, 0.4.4
--- minifloat from Bio.Util goes from 0 to 63488.
-
 
 -- | The primitive pieces for genotype calling:  A position, a base
 -- represented as four likelihoods, an inserted sequence, and the
@@ -109,8 +73,8 @@ instance Show DamagedBase where
 -- | Decomposes a BAM record into chunks suitable for piling up.  We
 -- pick apart the CIGAR and MD fields, and combine them with sequence
 -- and quality as appropriate.  Clipped bases are removed/skipped as
--- appropriate.  We also do apply a substitution matrix to each base,
--- which must be supplied along with the read.
+-- needed.  We also apply a substitution matrix to each base, which must
+-- be supplied along with the read.
 {-# INLINE decompose #-}
 decompose :: DmgToken -> BamRaw -> [PosPrimChunks]
 decompose dtok br =
@@ -163,7 +127,7 @@ decompose dtok br =
       where
         -- We have to treat (MdNum 0), because samtools actually
         -- generates(!) it all over the place and if not handled as a
-        -- special case, it looks like an incinsistend MD field.
+        -- special case, it looks like an inconsistent MD field.
         drop_del n (MdDel ns : mds')
             | n < length ns = MdDel (drop n ns) : mds'
             | n > length ns = drop_del (n - length ns) mds'
@@ -228,10 +192,11 @@ decompose dtok br =
 -- fitlering (so not very useful), but we keep them because it's easy to
 -- track them.
 
-data CallStats = CallStats { read_depth       :: {-# UNPACK #-} !Int       -- number of contributing reads
-                           , reads_mapq0      :: {-# UNPACK #-} !Int       -- number of (non-)contributing reads with MAPQ==0
-                           , sum_mapq         :: {-# UNPACK #-} !Int       -- sum of map qualities of contributing reads
-                           , sum_mapq_squared :: {-# UNPACK #-} !Int }     -- sum of squared map qualities of contributing reads
+data CallStats = CallStats
+    { read_depth       :: {-# UNPACK #-} !Int       -- number of contributing reads
+    , reads_mapq0      :: {-# UNPACK #-} !Int       -- number of (non-)contributing reads with MAPQ==0
+    , sum_mapq         :: {-# UNPACK #-} !Int       -- sum of map qualities of contributing reads
+    , sum_mapq_squared :: {-# UNPACK #-} !Int }     -- sum of squared map qualities of contributing reads
   deriving (Show, Eq, Generic)
 
 instance Monoid CallStats where
@@ -243,22 +208,6 @@ instance Monoid CallStats where
                             , reads_mapq0      = reads_mapq0 x + reads_mapq0 y
                             , sum_mapq         = sum_mapq x + sum_mapq y
                             , sum_mapq_squared = sum_mapq_squared x + sum_mapq_squared y }
-
--- | Genotype likelihood values.  A variant call consists of a position,
--- some measure of qualities, genotype likelihood values, and a
--- representation of variants.  A note about the GL values:  @VCF@ would
--- normalize them so that the smallest one becomes zero.  We do not do
--- that here, since we might want to compare raw values for a model
--- test.  We also store them in a 'Double' to make arithmetics easier.
--- Normalization is appropriate when converting to @VCF@.
---
--- If GL is given, we follow the same order used in VCF:
--- \"the ordering of genotypes for the likelihoods is given by:
--- F(j/k) = (k*(k+1)/2)+j.  In other words, for biallelic sites the
--- ordering is: AA,AB,BB; for triallelic sites the ordering is:
--- AA,AB,BB,AC,BC,CC, etc.\"
-
-type GL = U.Vector Prob
 
 newtype V_Nuc  = V_Nuc  (U.Vector Nucleotide)  deriving (Eq, Ord, Show)
 newtype V_Nucs = V_Nucs (U.Vector Nucleotides) deriving (Eq, Ord, Show)
@@ -277,10 +226,10 @@ type BasePile  =                          [DamagedBase]
 type IndelPile = [( Qual, ([Nucleotides], [DamagedBase]) )]   -- a list of indel variants
 
 -- | Running pileup results in a series of piles.  A 'Pile' has the
--- basic statistics of a 'VarCall', but no GL values and a pristine list
--- of variants instead of a proper call.  We emit one pile with two
--- 'BasePile's (one for each strand) and one 'IndelPile' (the one
--- immediately following) at a time.
+-- basic statistics of a 'VarCall', but no likelihood values and a
+-- pristine list of variants instead of a proper call.  We emit one pile
+-- with two 'BasePile's (one for each strand) and one 'IndelPile' (the
+-- one immediately following) at a time.
 
 data Pile' a b = Pile { p_refseq     :: {-# UNPACK #-} !Refseq
                       , p_pos        :: {-# UNPACK #-} !Int
@@ -293,27 +242,6 @@ data Pile' a b = Pile { p_refseq     :: {-# UNPACK #-} !Refseq
 -- | Raw pile.  Bases and indels are piled separately on forward and
 -- backward strands.
 type Pile = Pile' (BasePile, BasePile) (IndelPile, IndelPile)
-
--- | Simple single population model.  'prob_div' is the fraction of
--- homozygous divergent sites, 'prob_het' is the fraction of
--- heterozygous variant sites among sites that are not homozygous
--- divergent.
-data SinglePop = SinglePop { prob_div :: !Double, prob_het :: !Double }
-
--- | Computes posterior  genotype probabilities from likelihoods under
--- the 'SinglePop' model.
-{-# INLINE single_pop_posterior #-}
-single_pop_posterior :: ( U.Unbox a, Ord a, Floating a )
-                     => SinglePop -> Int -> U.Vector (Prob' a) -> U.Vector (Prob' a)
-single_pop_posterior SinglePop{..} refix lks = U.map (/ U.sum v) v
-  where
-    priors = U.replicate (U.length lks)
-                         ((1/3) * prob_het  * (1-prob_div))                                 -- hets
-                U.// [ (refix, (1-prob_het) * (1-prob_div)) ]                               -- ref
-                U.// [ (i,               (1/3) * prob_div ) | i <- hixes, i /= refix ]      -- homs
-
-    v = U.zipWith (\l p -> l * toProb (realToFrac p)) lks priors
-    hixes = takeWhile (< U.length lks) $ scanl (+) 0 [2..]
 
 -- | The pileup enumeratee takes 'BamRaw's, decomposes them, interleaves
 -- the pieces appropriately, and generates 'Pile's.  The output will

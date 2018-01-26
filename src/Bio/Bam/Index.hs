@@ -9,8 +9,7 @@ module Bio.Bam.Index (
     eneeBamRefseq,
     eneeBamSubseq,
     eneeBamRegions,
-    eneeBamUnaligned,
-    subsampleBam
+    eneeBamUnaligned
 ) where
 
 import Bio.Bam.Header
@@ -18,14 +17,11 @@ import Bio.Bam.Reader
 import Bio.Bam.Rec
 import Bio.Bam.Regions              ( Region(..), Subsequence(..) )
 import Bio.Iteratee
-import Bio.Iteratee.Bgzf
 import Bio.Prelude
 import System.Directory             ( doesFileExist )
 import System.FilePath              ( dropExtension, takeExtension, (<.>) )
-import System.Random                ( randomRIO )
 
 import qualified Bio.Bam.Regions                as R
-import qualified Control.Exception              as E
 import qualified Data.IntMap.Strict             as M
 import qualified Data.ByteString                as B
 import qualified Data.Vector                    as V
@@ -333,43 +329,3 @@ eneeBamSubseq bi ref subs = foldr ((>=>) . eneeBamSegment) return segs ><> filte
 eneeBamRegions :: Monad m => BamIndex b -> [R.Region] -> Enumeratee [BamRaw] [BamRaw] m a
 eneeBamRegions bi = foldr ((>=>) . uncurry (eneeBamSubseq bi)) return . R.toList . R.fromList
 
-
--- | Subsample randomly from a BAM file.  If an index exists, this
--- produces an infinite stream taken from random locations in the file.
---
--- XXX It would be cool if we could subsample from multiple BAM files.
--- It's a bit annoying to code: we'd probably read the indices up front,
--- estimate how many reads we'd find in each file, then open them
--- recursively to form a monad stack where the merging function has to
--- select randomly where to read from.  Hm.
-
-subsampleBam :: (MonadIO m, MonadMask m) => FilePath -> Enumerator' BamMeta [BamRaw] m b
-subsampleBam fp o = liftIO (E.try (readBamIndex fp)) >>= subsam
-  where
-    -- no index, so just stream
-    subsam (Left e) = enumFile defaultBufSize fp >=> run $
-                      joinI $ decompressBgzfBlocks $
-                      joinI $ decodeBam $ \hdr ->
-                      takeWhileE (isValidRefseq . b_rname . unpackBam) (o hdr)
-                            `const` (e::E.SomeException)
-
-    -- with index: chose random bins and read from them
-    subsam (Right bix) = withFileFd fp $ \fd -> do
-                         hdr <- enumFdRandom defaultBufSize fd >=> run $
-                                joinI $ decompressBgzfBlocks' 1 $
-                                joinI $ decodeBam return
-                         go fd (o hdr)
-      where
-        !ckpts = U.fromList . V.foldr ((++) . M.elems) [] $ refseq_ckpoints bix
-
-        go fd o1 = enumCheckIfDone o1 >>= go' fd
-
-        go'  _ (True,  o2) = return o2
-        go' fd (False, o2) = do i <- liftIO $ randomRIO (0, U.length ckpts -1)
-                                enum fd i o2 >>= go fd
-
-        enum fd i = enumFdRandom defaultBufSize fd               $=
-                    decompressBgzfBlocks' 1                      $=
-                    (\it -> do seek . fromIntegral $ ckpts U.! i
-                               convStream getBamRaw it)          $=
-                    takeStream 512

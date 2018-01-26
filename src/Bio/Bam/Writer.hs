@@ -1,3 +1,6 @@
+-- | Printers for BAM and SAM.  BAM is properly supported, SAM can be
+-- piped to standard output.
+
 module Bio.Bam.Writer (
     IsBamRec(..),
     encodeBamWith,
@@ -28,12 +31,6 @@ import qualified Data.Vector.Generic                as V
 import qualified Data.Vector.Storable               as VS
 import qualified Data.Vector.Unboxed                as U
 import qualified Data.Sequence                      as Z
-
--- ^ Printers for BAM.  We employ an @Iteratee@ interface, and we strive
--- to keep BAM records in their encoded form.  This is most compact and
--- often faster, since it saves the time for repeated decoding and
--- encoding, if that's not strictly needed.
-
 
 -- | write in SAM format to stdout
 -- This is useful for piping to other tools (say, AWK scripts) or for
@@ -118,11 +115,7 @@ encodeBamWith lv meta = eneeBam ><> encodeBgzf lv
 pushBamRaw :: BamRaw -> BgzfTokens -> BgzfTokens
 pushBamRaw = TkLnString . raw_data
 
--- | writes BAM encoded stuff to a file
--- XXX This should(!) write indexes on the side---a simple block index
--- for MapReduce style slicing, a standard BAM index or a name index
--- would be possible.  When writing to a file, this makes even more
--- sense than when writing to a @Handle@.
+-- | Writes BAM encoded stuff to a file.
 writeBamFile :: IsBamRec r => FilePath -> BamMeta -> Iteratee [r] IO ()
 writeBamFile fp meta =
     C.bracket (liftIO $ openBinaryFile fp WriteMode)
@@ -135,12 +128,7 @@ writeBamFile fp meta =
 pipeBamOutput :: IsBamRec r => BamMeta -> Iteratee [r] IO ()
 pipeBamOutput meta = encodeBamWith 0 meta =$ mapChunksM_ (liftIO . S.hPut stdout)
 
--- | writes BAM encoded stuff to a @Handle@
--- We generate BAM with dynamic blocks, then stream them out to the file.
---
--- XXX This could write indexes on the side---a simple block index
--- for MapReduce style slicing, a standard BAM index or a name index
--- would be possible.
+-- | Writes BAM encoded stuff to a 'Handle'.
 writeBamHandle :: (MonadIO m, IsBamRec r) => Handle -> BamMeta -> Iteratee [r] m ()
 writeBamHandle hdl meta = encodeBamWith 6 meta =$ mapChunksM_ (liftIO . S.hPut hdl)
 

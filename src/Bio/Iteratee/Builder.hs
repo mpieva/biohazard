@@ -1,12 +1,8 @@
 {-# LANGUAGE ForeignFunctionInterface #-}
--- | Buffer builder to assemble Bgzf blocks.  The plan is to serialize
+-- | Buffer builder to assemble Bgzf blocks.  The idea is to serialize
 -- stuff (BAM and BCF) into a buffer, then Bgzf chunks from the buffer.
 -- We use a large buffer, and we always make sure there is plenty of
--- space in it (to avoid redundant checks).  Whenever a block is ready
--- to be compressed, we stick it into a MVar.  When we run out of space,
--- we simply use a new buffer.  Multiple threads grab pieces from the
--- MVar, compress them, pass them downstream through another MVar.  A
--- final thread restores the order and writes the blocks.
+-- space in it (to avoid redundant checks).
 
 module Bio.Iteratee.Builder (
     BB(..),
@@ -178,8 +174,7 @@ fillBuffer bb0 tk = withForeignPtr (buffer bb0) (\p -> go_slowish p bb0 tk)
 
         TkString   s tk'
             -- Too big, can't handle.  We will get progressively bigger
-            -- buffers and eventually handle it; for very large strings,
-            -- it works, but isn't ideal.  XXX
+            -- buffers and eventually handle it.
             | B.length s > size bb - use -> return (bb { used = use },tk')
 
             | otherwise  -> do let ln = B.length s
@@ -192,8 +187,7 @@ fillBuffer bb0 tk = withForeignPtr (buffer bb0) (\p -> go_slowish p bb0 tk)
 
         TkLnString s tk'
             -- Too big, can't handle.  We will get progressively bigger
-            -- buffers and eventually handle it; for very large strings,
-            -- it works, but isn't ideal.  XXX
+            -- buffers and eventually handle it.
             | B.length s > size bb - use - 4 -> return (bb { used = use },tk')
 
             | otherwise  -> do let ln = B.length s

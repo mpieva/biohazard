@@ -14,7 +14,7 @@ import qualified Data.ByteString.Char8 as S
 
 -- | Fixes abuse of flags valued 0x800 and 0x1000.  We used them for
 -- low quality and low complexity, but they have since been redefined.
--- If set, we clear them and store them into the ZD field.  Also fixes
+-- If set, we clear them and store them into the ZQ field.  Also fixes
 -- abuse of the combination of the paired, 1st mate and 2nd mate flags
 -- used to indicate merging or trimming.  These are canonicalized and
 -- stored into the FF field.  This function is unsafe on BAM files of
@@ -38,9 +38,9 @@ fixupFlagAbuse b =
         is_trimmed = flags' .&. (flagPaired .|. flagFirstMate .|. flagSecondMate) == flagSecondMate
         newflags = (if is_merged then eflagMerged else 0) .|. (if is_trimmed then eflagTrimmed else 0)
 
-        -- Extended flags, renamed to avoid collision with BWA Goes like this:  if FF is there, use
-        -- it.  Else check if XF is there _and_is_numeric_.  If so, use it and remove it, and set FF
-        -- instead.  Else use 0 and leave it alone.  Note that this solves the collision with BWA,
+        -- Extended flags, renamed to avoid collision with BWA.  Goes like this:  if FF is there, use
+        -- it.  Else check if XF is there __and is numeric__.  If so, use it, remove it, and set FF
+        -- instead.  Else use 0 and leave it alone.  Note that this resolves the collision with BWA,
         -- since BWA puts a character there, not an int.
         cleaned_exts = case (lookup "FF" (b_exts b), lookup "XF" (b_exts b)) of
                 ( Just (Int i), _ ) -> updateE "FF" (Int (i .|. newflags))                (b_exts b)
@@ -51,7 +51,7 @@ fixupFlagAbuse b =
 
 -- | Fixes typical inconsistencies produced by Bwa: sometimes, 'mate unmapped' should be set, and we
 -- can see it, because we match the mate's coordinates.  Sometimes 'properly paired' should not be
--- set, because one mate in unmapped.  This function is generally safe, but needs to be called only
+-- set, because one mate is unmapped.  This function is generally safe, but needs to be called only
 -- on the output of affected (older?) versions of Bwa.
 fixupBwaFlags :: BamRec -> BamRec
 fixupBwaFlags b = b { b_flag = fixPP $ b_flag b .|. if mu then flagMateUnmapped else 0 }
@@ -65,6 +65,7 @@ fixupBwaFlags b = b { b_flag = fixPP $ b_flag b .|. if mu then flagMateUnmapped 
         -- If either mate is unmapped, remove "properly paired".
         fixPP f | f .&. (flagUnmapped .|. flagMateUnmapped) == 0 = f
                 | otherwise = f .&. complement flagProperlyPaired
+
 
 -- | Removes syntactic warts from old read names or the read names used
 -- in FastQ files.

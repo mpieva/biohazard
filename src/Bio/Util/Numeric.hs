@@ -1,19 +1,18 @@
+-- | Random useful stuff I didn't know where to put.
+
 module Bio.Util.Numeric (
     wilson, invnormcdf, choose,
     estimateComplexity, showNum, showOOM,
     log1p, expm1, (<#>),
     log1mexp, log1pexp,
-    lsum, llerp,
-    sigmoid2, isigmoid2
+    lsum, llerp
                 ) where
 
 import Data.List ( foldl1' )
 import Data.Char ( intToDigit )
 import Prelude
 
--- ^ Random useful stuff I didn't know where to put.
-
--- | calculates the Wilson Score interval.
+-- | Calculates the Wilson Score interval.
 -- If @(l,m,h) = wilson c x n@, then @m@ is the binary proportion and
 -- @(l,h)@ it's @c@-confidence interval for @x@ positive examples out of
 -- @n@ observations.  @c@ is typically something like 0.05.
@@ -51,8 +50,8 @@ showOOM x | x < 0 = '-' : showOOM (negate x)
                                             '0' : if s == '.' then [] else [s]
                         | otherwise = findSuffix (y*0.001) ss
 
--- Stolen from Lennart Augustsson's erf package, who in turn took it rom
--- http://home.online.no/~pjacklam/notes/invnorm/ Accurate to about 1e-9.
+-- Stolen from Lennart Augustsson's erf package, who in turn took it from
+-- <http://home.online.no/~pjacklam/notes/invnorm/> Accurate to about 1e-9.
 invnormcdf :: (Ord a, Floating a) => a -> a
 invnormcdf p =
     let a1 = -3.969683028665376e+01
@@ -108,25 +107,31 @@ invnormcdf p =
 -- How many different things are there?
 --
 -- Let the total number be @m@.  The copy number follows a Poisson
--- distribution with paramter @\lambda@.  Let @z := e^{\lambda}@, then
+-- distribution with paramter @\lambda@.  Let \( z := e^{\lambda} \), then
 -- we have:
 --
---   P( 0 ) = e^{-\lambda} = 1/z
---   P( 1 ) = \lambda e^{-\lambda} = ln z / z
---   P(>=1) = 1 - e^{-\lambda} = 1 - 1/z
---
---   singles = m ln z / z
---   total   = m (1 - 1/z)
---
---   D := total/singles = (1 - 1/z) * z / ln z
---   f := z - 1 - D ln z = 0
+-- \[
+--   P( 0 ) = e^{-\lambda} = \frac{1}{z}                    \\
+--   P( 1 ) = \lambda e^{-\lambda} = \frac{\ln z}{z}                   \\
+--   P(\ge 1) = 1 - e^{-\lambda} = 1 - \frac{1}{z}                    \\
+-- \]
+-- \[
+--   \mbox{singles} = m \frac{\ln z}{z}                   \\
+--   \mbox{total}   = m \left( 1 - \frac{1}{z} \right)                  \\
+-- \]
+-- \[
+--   D := \frac{\mbox{total}}{\mbox{singles}} = (1 - \frac{1}{z}) * \frac{z}{\ln z}                  \\
+--   f := z - 1 - D \ln z = 0
+-- \]
 --
 -- To get @z@, we solve using Newton iteration and then substitute to
 -- get @m@:
 --
---   df/dz = 1 - D/z
---   z' := z - z (z - 1 - D ln z) / (z - D)
---   m = singles * z /log z
+-- \[
+--   df/dz = 1 - D/z                                    \\
+--   z' = z - \frac{ z (z - 1 - D \ln z) }{ z - D }     \\
+--   m = \mbox{singles} * \frac{z}{\ln z}
+-- \]
 --
 -- It converges as long as the initial @z@ is large enough, and @10D@
 -- (in the line for @zz@ below) appears to work well.
@@ -144,7 +149,7 @@ estimateComplexity total singles | total   <= singles = Nothing
     m = fromIntegral singles * zz / log zz
 
 
--- | Computes @log (exp x + exp y)@ without leaving the log domain and
+-- | Computes \( \ln \left( e^x + e^y \right) \) without leaving the log domain and
 -- hence without losing precision.
 infixl 5 <#>
 {-# INLINE (<#>) #-}
@@ -152,7 +157,7 @@ infixl 5 <#>
 x <#> y = if x >= y then x + log1pexp (y-x) else y + log1pexp (x-y)
 
 -- | Computes @log (1+x)@ to a relative precision of @10^-8@ even for
--- very small @x@.  Stolen from http://www.johndcook.com/cpp_log_one_plus_x.html
+-- very small @x@.  Stolen from <http://www.johndcook.com/cpp_log_one_plus_x.html>
 {-# INLINE log1p #-}
 log1p :: (Floating a, Ord a) => a -> a
 log1p x | x < -1 = error "log1p: argument must be greater than -1"
@@ -163,20 +168,20 @@ log1p x | x < -1 = error "log1p: argument must be greater than -1"
         | otherwise = (1 - 0.5*x) * x
 
 
--- | Computes @exp x - 1@ to a relative precision of @10^-10@ even for
--- very small @x@.  Stolen from http://www.johndcook.com/cpp_expm1.html
+-- | Computes \( e^x - 1 \) to a relative precision of @10^-10@ even for
+-- very small @x@.  Stolen from <http://www.johndcook.com/cpp_expm1.html>
 {-# INLINE expm1 #-}
 expm1 :: (Floating a, Ord a) => a -> a
 expm1 x | x > -0.00001 && x < 0.00001 = (1 + 0.5 * x) * x       -- Taylor approx
         | otherwise                   = exp x - 1               -- direct eval
 
--- | Computes @log (1 - exp x)@, following Martin Mächler.
+-- | Computes \( \ln (1 - e^x) \), following Martin Mächler.
 {-# INLINE log1mexp #-}
 log1mexp :: (Floating a, Ord a) => a -> a
 log1mexp x | x > - log 2 = log (- expm1 x)
            | otherwise   = log1p (- exp x)
 
--- | Computes @log (1 + exp x)@, following Martin Mächler.
+-- | Computes \( \ln (1 + e^x) \), following Martin Mächler.
 {-# INLINE log1pexp #-}
 log1pexp :: (Floating a, Ord a) => a -> a
 log1pexp x | x <=  -37 = exp x
@@ -185,14 +190,14 @@ log1pexp x | x <=  -37 = exp x
            | otherwise = x
 
 
--- | Computes \( \log ( \sum_i e^{x_i} ) \) sensibly.  The list must be
+-- | Computes \( \ln ( \sum_i e^{x_i} ) \) sensibly.  The list must be
 -- sorted in descending(!) order.
 {-# INLINE lsum #-}
 lsum :: (Floating a, Ord a) => [a] -> a
 lsum = foldl1' (\x y -> if x >= y then x + log1pexp (y-x) else err)
     where err = error "lsum: argument list must be in descending order"
 
--- | Computes \( \log \left( c e^x + (1-c) e^y \right) \).
+-- | Computes \( \ln \left( c e^x + (1-c) e^y \right) \).
 {-# INLINE llerp #-}
 llerp :: (Floating a, Ord a) => a -> a -> a -> a
 llerp c x y | c <= 0.0  = y
@@ -200,20 +205,9 @@ llerp c x y | c <= 0.0  = y
             | x >= y    = log     c  + x + log1p ( (1-c)/c * exp (y-x) )        -- Hmm.
             | otherwise = log1p (-c) + y + log1p ( c/(1-c) * exp (x-y) )        -- Hmm.
 
--- | Binomial coefficient:  @n `choose` k == n! / ((n-k)! k!)@
+-- | Binomial coefficient: \( \mbox{choose n k} = \frac{n!}{(n-k)! k!} \)
 {-# INLINE choose #-}
 choose :: Integral a => a -> a -> a
-n `choose` k = product [n-k+1 .. n] `div` product [2..k]
-
-
--- | Kind-of sigmoid function that maps the reals to the interval
--- @[0,1)@.  Good to compute a probability without introducing boundary
--- conditions.
-sigmoid2 :: (Fractional a, Floating a) => a -> a
-sigmoid2 x = y*y where y = (exp x - 1) / (exp x + 1)
-
--- | Inverse of 'sigmoid2'.
-isigmoid2 :: (Fractional a, Floating a) => a -> a
-isigmoid2 y = log $ (1 + sqrt y) / (1 - sqrt y)
+choose n k = product [n-k+1 .. n] `div` product [2..k]
 
 

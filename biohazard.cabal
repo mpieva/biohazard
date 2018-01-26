@@ -1,16 +1,16 @@
 Name:                biohazard
-Version:             0.6.17
+Version:             0.6.18
 Synopsis:            bioinformatics support library
 Description:         This is a collection of modules I separated from
                      various bioinformatics tools.
 Category:            Bioinformatics
 
-Homepage:            http://github.com/udo-stenzel/biohazard
+Homepage:            https://bitbucket.org/ustenzel/biohazard
 License:             BSD3
 License-File:        LICENSE
 
 Author:              Udo Stenzel
-Maintainer:          udo.stenzel@eva.mpg.de
+Maintainer:          u.stenzel@web.de
 Copyright:           (C) 2010-2017 Udo Stenzel
 
 Cabal-version:       >= 1.10
@@ -121,6 +121,5 @@ Library
                        src/cbits/myers_align.c,
                        src/cbits/trim.c
   CC-options:          -fPIC
-
 
 -- :vim:tw=132:

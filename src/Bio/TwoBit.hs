@@ -1,3 +1,14 @@
+-- | Would you believe it?  The 2bit format stores blocks of Ns in a table at
+-- the beginning of a sequence, then packs four bases into a byte.  So it
+-- is neither possible nor necessary to store Ns in the main sequence, and
+-- you would think they aren't stored there, right?  And they aren't.
+-- Instead Ts are stored which the reader has to replace with Ns.
+--
+-- The sensible way to treat these is probably to just say there are two
+-- kinds of implied annotation (repeats and large gaps for a typical
+-- genome), which can be interpreted in whatever way fits.  And that's why
+-- we have 'Mask' and 'getSubseqWith'.
+
 module Bio.TwoBit (
         TwoBitFile(..),
         TwoBitSequence(..),
@@ -31,19 +42,6 @@ import qualified Data.IntMap.Strict             as I
 import qualified Data.HashMap.Lazy              as M
 import qualified Data.Vector.Unboxed            as U
 import           System.Random
-
--- ^ Would you believe it?  The 2bit format stores blocks of Ns in a table at
--- the beginning of a sequence, then packs four bases into a byte.  So it
--- is neither possible nor necessary to store Ns in the main sequence, and
--- you would think they aren't stored there, right?  And they aren't.
--- Instead Ts are stored which the reader has to replace with Ns.
---
--- The sensible way to treat these is probably to just say there are two
--- kinds of implied annotation (repeats and large gaps for a typical
--- genome), which can be interpreted in whatever way fits.  And that's why
--- we have 'Mask' and 'getSubseqWith'.
---
--- TODO:  use binary search for the Int->Int mappings on the raw data?
 
 data TwoBitFile = TBF {
     tbf_raw :: B.ByteString,
@@ -91,7 +89,7 @@ mkBlockIndex raw getWord32 ofs = runGet getBlock $ L.fromChunks [B.drop ofs raw]
 
     readBlockList = getWord32 >>= \n -> liftM2 zip (repM n getWord32) (repM n getWord32)
 
--- | Repeat monadic action 'n' times.  Returns result in reverse(!)
+-- | Repeat monadic action @n@ times.  Returns result in reverse(!)
 -- order, but doesn't build a huge list of thunks in memory.
 repM :: Monad m => Int -> m a -> m [a]
 repM n0 m = go [] n0

@@ -1,10 +1,10 @@
 #ifndef INCLUDED_MYERS_ALIGN
 #define INCLUDED_MYERS_ALIGN
 
-enum myers_align_mode { 
-	myers_align_globally = 0,
-	myers_align_is_prefix = 1,
-	myers_align_has_prefix = 2 } ;
+enum myers_align_mode {
+    myers_align_globally = 0,
+    myers_align_is_prefix = 1,
+    myers_align_has_prefix = 2 } ;
 
 //! \brief aligns two sequences in O(nd) time
 //! This alignment algorithm following Eugene W. Myers: "An O(ND)

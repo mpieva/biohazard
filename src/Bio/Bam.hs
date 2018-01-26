@@ -1,3 +1,5 @@
+-- | Umbrella module for most of what's under 'Bio.Bam'.
+
 module Bio.Bam (
     module Bio.Bam.Fastq,
     module Bio.Bam.Filter,
@@ -19,6 +21,4 @@ import Bio.Bam.Rec
 import Bio.Bam.Trim
 import Bio.Bam.Writer
 import Bio.Iteratee
-
--- ^ Umbrella module for most of what's under 'Bio.Bam'.
 

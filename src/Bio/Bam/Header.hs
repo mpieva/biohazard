@@ -317,13 +317,14 @@ eflagExactIndex  = 0x8
 
 
 -- | Compares two sequence names the way samtools does.
--- samtools sorts by "strnum_cmp":
--- . if both strings start with a digit, parse the initial
+-- samtools sorts by \"strnum_cmp\":
+--
+-- * if both strings start with a digit, parse the initial
 --   sequence of digits and compare numerically, if equal,
 --   continue behind the numbers
--- . else compare the first characters (possibly NUL), if equal
+-- * else compare the first characters (possibly NUL), if equal
 --   continue behind them
--- . else both strings ended and the shorter one counts as
+-- * else both strings ended and the shorter one counts as
 --   smaller (and that part is stupid)
 
 compareNames :: Seqid -> Seqid -> Ordering

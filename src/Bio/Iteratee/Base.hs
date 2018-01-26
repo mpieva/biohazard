@@ -15,7 +15,6 @@ module Bio.Iteratee.Base (
   -- ** Control functions
   ,run
   ,tryRun
-  ,mapIteratee
   ,ilift
   ,ifold
   -- ** Creating Iteratees
@@ -168,9 +167,6 @@ bindIteratee = self
 instance NullPoint s => MonadTrans (Iteratee s) where
   lift m = Iteratee $ \onDone _ -> m >>= flip onDone (Chunk emptyP)
 
--- instance (MonadBase b m, Nullable s, NullPoint s) => MonadBase b (Iteratee s m) where
-  -- liftBase = lift . liftBase
-
 instance (MonadIO m, Nullable s, NullPoint s) => MonadIO (Iteratee s m) where
   liftIO = lift . liftIO
 
@@ -216,14 +212,6 @@ tryRun iter = runIter iter onDone onCont
     onCont' _ Nothing  = return $ maybeExc (toException EofException)
     onCont' _ (Just e) = return $ maybeExc e
     maybeExc e = maybe (Left (E.throw e)) Left (fromException e)
-
--- |Transform a computation inside an @Iteratee@.
-mapIteratee :: (NullPoint s, Monad n, Monad m) =>
-  (m a -> n b)
-  -> Iteratee s m a
-  -> Iteratee s n b
-mapIteratee f = lift . f . run
-{-# DEPRECATED mapIteratee "This function will be removed, compare to 'ilift'" #-}
 
 -- | Lift a computation in the inner monad of an iteratee.
 --

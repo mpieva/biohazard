@@ -1,6 +1,3 @@
--- | Basically a reexport of "Data.Iteratee" less the names that clash
--- with "Prelude" plus a handful of utilities.
-
 module Bio.Iteratee (
     iGetString,
     iterLoop,
@@ -112,9 +109,6 @@ infixl 1 $==
 -- | Merge two 'Enumerator''s into one.  The header provided by the
 -- inner 'Enumerator'' is passed to the output iterator, the header
 -- provided by the outer 'Enumerator'' is passed to the merging iteratee
---
--- XXX  Something about those headers is unsatisfactory... there should
---      be an unobtrusive way to combine headers.
 
 {-# INLINE mergeEnums' #-}
 mergeEnums' :: (Nullable s2, Nullable s1, Monad m)
