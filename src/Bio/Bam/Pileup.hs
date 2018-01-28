@@ -9,10 +9,6 @@
 -- quality score of QUAL, MAPQ, and BQ.  For aDNA calling, a base is
 -- represented as four probabilities, derived from a position dependent
 -- damage model.
---
--- XXX  Pileup is pretty slow and expensive, probably because of
--- heavyweight intermediate data structures.  Should try and fuse them
--- away before version 1.0.0 (heffalump will be happy).
 
 module Bio.Bam.Pileup where
 
@@ -30,7 +26,7 @@ import qualified Data.Vector.Unboxed    as U
 -- length of a deleted sequence.  The logic is that we look at a base
 -- followed by some indel, and all those indels are combined into a
 -- single insertion and a single deletion.
-data PrimChunks = Seek Int PrimBase                                   -- ^ skip to position (at start or after N operation)
+data PrimChunks = Seek {-# UNPACK #-} !Int PrimBase                   -- ^ skip to position (at start or after N operation)
                 | Indel [Nucleotides] [DamagedBase] PrimBase          -- ^ observed deletion and insertion between two bases
                 | EndOfRead                                           -- ^ nothing anymore
   deriving Show
