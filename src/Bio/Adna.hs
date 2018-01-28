@@ -1,4 +1,4 @@
-{-# LANGUAGE DeriveGeneric, CPP #-}
+{-# LANGUAGE DeriveGeneric #-}
 
 -- | Things specific to ancient DNA, e.g. damage models.
 --
@@ -401,10 +401,6 @@ damagePatternsIter ctx rng it = mapStream revcom_both =$ do
     acc_cg <- liftIO $ UM.replicate (2 * 2 * 4 *     rng) (0::Int)
 
     it' <- flip mapStreamM it $ \(BamRec{..}, a_fragment_type, ref, a_sequence) -> liftIO $ do
-#ifdef DEBUG
-              when (U.any (<0) ref || U.any (>4) ref) . error $
-                    "Unexpected value in reference fragment: " ++ show ref
-#endif
               -- basecompositon near 5' end, near 3' end
               let (width5, width3) = case a_fragment_type of
                                             Leading -> (full_width, 0)
@@ -499,11 +495,7 @@ damagePatternsIter ctx rng it = mapStream revcom_both =$ do
                                       , (v,y) <- zip [nucsA, nucsC, nucsG, nucsT] [0,1,2,3]
                                       , let NPair i = npair u v ]
     {-# INLINE bump #-}
-#ifdef DEBUG
-    bump i v = UM.read v i >>= UM.write v i . succ
-#else
     bump i v = UM.unsafeRead v i >>= UM.unsafeWrite v i . succ
-#endif
 
     {-# INLINE withNs #-}
     withNs ns k | ns == nucsA = k 0

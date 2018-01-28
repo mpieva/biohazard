@@ -21,11 +21,6 @@ source-repository head
   type:     git
   location: https://bitbucket.org/ustenzel/biohazard.git
 
-Flag debug
-  Description: enable additional sanity checks
-  Default:     False
-  Manual:      True
-
 Library
   Exposed-modules:     Bio.Adna,
                        Bio.Align,
