@@ -192,8 +192,8 @@ find_merge ads1 ads2 r1 q1 r2 q2 = (mlen, score2 - score1, plain_score - score1)
 
 mergeBam :: Int -> Int -> [W.Vector Nucleotides] -> [W.Vector Nucleotides] -> BamRec -> BamRec -> [BamRec]
 mergeBam lowq highq ads1 ads2 r1 r2
-    | V.null (b_seq r1) && V.null (b_seq r2) = [ r1', r2'     ]
-    | qual1 < lowq                           = [ r1', r2'     ]
+    | V.null (b_seq r1) && V.null (b_seq r2) = [              ]
+    | qual1 < lowq || mlen < 0               = [ r1', r2'     ]
     | qual1 >= highq && mlen == 0            = [              ]
     | qual1 >= highq                         = [           rm ]
     | mlen < len_r1-20 || mlen < len_r2-20   = [           rm ]
@@ -279,9 +279,9 @@ find_trim ads1 r1 q1 = (mlen, score2 - score1, plain_score - score1)
 -- and two qualities).
 trimBam :: Int -> Int -> [W.Vector Nucleotides] -> BamRec -> [BamRec]
 trimBam lowq highq ads1 r1
-    | V.null (b_seq r1)              = [ r1'      ]
+    | V.null (b_seq r1)              = [          ]
     | mlen == 0 && qual1 >= highq    = [          ]
-    | qual1 < lowq                   = [ r1'      ]
+    | qual1 < lowq || mlen < 0       = [ r1'      ]
     | qual1 >= highq                 = [      r1t ]
     | otherwise = map flag_alternative [ r1', r1t ]
   where
@@ -417,7 +417,7 @@ foreign import ccall unsafe "prim_match_reads"
 
 {-# INLINE twoMins #-}
 twoMins :: (Bounded a, Ord a) => a -> Int -> (Int -> a) -> (a,Int,a)
-twoMins a0 imax f = go a0 0 maxBound 0 0
+twoMins a0 imax f = go a0 (-1) maxBound 0 0
   where
     go !m1 !i1 !m2 !i2 !i
         | i == imax = (m1,i1,m2)
