@@ -30,6 +30,7 @@ module Bio.Prelude (
 
     Hashable(..),
     Unpack(..),
+    fdGet,
     fdPut,
     fdPutLazy,
     withFd
@@ -49,6 +50,7 @@ import Control.Arrow       ( first, second )
 
 import Bio.Base
 import Data.ByteString     ( ByteString )
+import Data.ByteString.Internal ( createAndTrim )
 import Data.Text           ( Text )
 import Data.Hashable       ( Hashable(..) )
 import Data.HashMap.Strict ( HashMap )
@@ -91,6 +93,13 @@ class Unpack s where unpack :: s -> String
 instance Unpack ByteString where unpack = S.unpack
 instance Unpack Text       where unpack = T.unpack
 instance Unpack String     where unpack = id
+
+-- | @fdGet bs fd@ reads up to @bs@ 'Bytes' from file descriptor @Fd@.
+-- Returns an empty 'Bytes' at end of file.
+fdGet :: Int -> Fd -> IO Bytes
+fdGet bs fd =
+    createAndTrim bs $ \p ->
+        fromIntegral <$> fdReadBuf fd (castPtr p) (fromIntegral bs)
 
 fdPut :: Fd -> Bytes -> IO ()
 fdPut fd s = B.unsafeUseAsCStringLen s $ \(p,l) ->

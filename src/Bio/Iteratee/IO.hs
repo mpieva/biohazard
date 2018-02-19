@@ -10,17 +10,17 @@ module Bio.Iteratee.IO(
   ,enumFileRandom
   -- * FileDescriptor based enumerators for monadic iteratees
   ,enumFd
-  ,enumFdCatch
   ,enumFdRandom
 )
 where
 
 import Bio.Iteratee.Iteratee
-import Bio.Prelude hiding ( bracket )
+import Bio.Prelude hiding ( bracket, loop )
 import Control.Monad.Catch
 import Control.Monad.IO.Class
-import Data.ByteString.Internal (createAndTrim)
 import System.IO (SeekMode(..))
+
+import qualified Data.ByteString as B
 
 -- | Default buffer size in elements.  This was 1024 in "Data.Iteratee",
 -- which is obviously too small.  Since we often want to merge many
@@ -29,37 +29,40 @@ import System.IO (SeekMode(..))
 defaultBufSize :: Int
 defaultBufSize = 2*1024*1024
 
--- ------------------------------------------------------------------------
--- Binary Random IO enumerators
-
-makefdCallback :: MonadIO m => Int -> Fd -> st -> m (Either SomeException ((Bool, st), Bytes))
-makefdCallback bufsize fd st = do
-  s <- liftIO . createAndTrim bufsize $ \p ->
-       fromIntegral <$> fdReadBuf fd (castPtr p) (fromIntegral bufsize)
-  return $ Right ((True, st), s)
-
 -- |The enumerator of a POSIX File Descriptor.  This version enumerates
 -- over the entire contents of a file, in order, unless stopped by
 -- the iteratee.  In particular, seeking is not supported.
 enumFd :: MonadIO m => Int -> Fd -> Enumerator Bytes m a
-enumFd bufsize fd = enumFromCallback (makefdCallback bufsize fd) ()
+enumFd bufsize fd = loop
+  where
+    loop iter = runIter iter idoneM onCont
 
--- |A variant of enumFd that catches exceptions raised by the @Iteratee@.
-enumFdCatch
- :: (IException e, MonadIO m)
-    => Int
-    -> Fd
-    -> (e -> m (Maybe EnumException))
-    -> Enumerator Bytes m a
-enumFdCatch bufsize fd handler = enumFromCallbackCatch (makefdCallback bufsize fd) handler ()
+    onCont k j@(Just _) = return (icont k j)
+    onCont k   Nothing  = do
+        s <- liftIO $ fdGet bufsize fd
+        if B.null s then return $ liftI k
+                    else loop . k $ Chunk s
+
 
 -- |The enumerator of a POSIX File Descriptor: a variation of @enumFd@ that
 -- supports RandomIO (seek requests).
 enumFdRandom :: MonadIO m => Int -> Fd -> Enumerator Bytes m a
-enumFdRandom bs fd = enumFdCatch bs fd handler
+enumFdRandom bs fd = loop
   where
-    handler (SeekException off) =
-        liftIO $ fdSeek fd AbsoluteSeek (fromIntegral off) >> return Nothing
+    loop iter = runIter iter idoneM onCont
+
+    onCont k Nothing  = do
+        s <- liftIO $ fdGet bs fd
+        if B.null s then return $ liftI k
+                    else loop . k $ Chunk s
+
+    onCont k j@(Just e) = case fromException e of
+      Just (SeekException off) -> do
+                   liftIO . void $ fdSeek fd AbsoluteSeek (fromIntegral off)
+                   loop $ liftI k
+      Nothing -> return (icont k j)
+
+
 
 enumFile' :: (MonadIO m, MonadMask m) =>
   (Int -> Fd -> Enumerator s m a)
