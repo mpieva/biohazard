@@ -181,7 +181,7 @@ parseBamMetaLine = P.char '@' >> P.choice [hdLine, sqLine, coLine, otherLine]
 
     coLine = P.string "CO\t" >>
              (\s meta -> s `seq` meta { meta_comment = s : meta_comment meta })
-               <$> P.takeWhile (/= 'n')
+               <$> P.takeWhile (/= '\n')
 
     otherLine = (\k ts meta -> meta { meta_other_shit = (k,ts) : meta_other_shit meta })
                   <$> bamkey <*> (tabs >> P.sepBy1 tagother tabs)
